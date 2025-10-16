@@ -57,7 +57,7 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between">
               <div class="flex-1">
-                <h3 class="font-medium text-base mb-0.5">
+                <h3 class="font-medium text-base mb-0.5 flex items-center gap-2">
                   <a href="{{ entry.item|media_url }}" 
                      class="hover:text-indigo-400 transition-colors line-clamp-1">
                     {% if entry.item.media_type == 'season' %}
@@ -66,6 +66,23 @@
                       {{ entry.item.title }}
                     {% endif %}
                   </a>
+                  {% if entry.liked %}
+                    <span class="text-red-400" title="Liked">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                      </svg>
+                    </span>
+                  {% endif %}
+                  {% if entry.is_rewatch %}
+                    <span class="text-indigo-400" title="Rewatch">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                        <path d="M3 21v-5h5"/>
+                      </svg>
+                    </span>
+                  {% endif %}
                 </h3>
                 
                 <!-- Entry Metadata -->
@@ -88,36 +105,14 @@
                       <span class="text-yellow-400">{{ entry.rating|floatformat:1 }}</span>
                     </div>
                   {% endif %}
-                  {% if entry.liked %}
-                    <span class="text-red-400">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
-                      </svg>
-                    </span>
-                  {% endif %}
-                  {% if entry.is_rewatch %}
-                    <span class="text-indigo-400" title="Rewatch">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                        <path d="M21 3v5h-5"/>
-                        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                        <path d="M3 21v-5h5"/>
-                      </svg>
-                    </span>
-                  {% endif %}
+                  
                 </div>
                 
                 <!-- Tags -->
                 {% if entry.tags.exists %}
                   <div class="flex flex-wrap gap-1 mb-1">
                     {% for tag in entry.tags.all %}
-                      <span class="tag-chip text-xs px-2 py-0.5 rounded-full 
-                        {% if 'w/' in tag.name %}bg-blue-600 text-white
-                        {% elif 'in theater' in tag.name or 'cinemark' in tag.name or 'amc' in tag.name or 'regal' in tag.name %}bg-green-600 text-white
-                        {% elif 'high' in tag.name or 'plane' in tag.name %}bg-purple-600 text-white
-                        {% elif 'opening weekend' in tag.name or 'thursday preview' in tag.name or 'imax' in tag.name %}bg-orange-600 text-white
-                        {% elif 'alternate version' in tag.name or 'extended version' in tag.name %}bg-gray-600 text-white
-                        {% else %}bg-indigo-600 text-white{% endif %}">
+                      <span class="tag-chip text-xs px-2 py-0.5 rounded-full border border-white/80 text-white bg-transparent">
                         {{ tag.name }}
                       </span>
                     {% endfor %}

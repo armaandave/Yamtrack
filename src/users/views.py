@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 def profile(request):
     """Render the user's profile page."""
     # Get recent diary entries for the preview
-    recent_diary_entries = DiaryEntry.objects.filter(
-        user=request.user
-    ).select_related('item').order_by('-created_at')[:7]
+    recent_diary_entries = (
+        DiaryEntry.objects.filter(user=request.user)
+        .select_related('item')
+        .order_by('-consumed_at', '-created_at')[:7]
+    )
     
     return render(request, "users/profile.html", {
         "user": request.user,

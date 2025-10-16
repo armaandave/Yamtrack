@@ -4,10 +4,19 @@
      x-data="{ trackOpen: false, listsOpen: false, historyOpen: false }">
   <div class="relative rounded-t-lg">
     <div class="{% if from_grid %}aspect-[2/3]{% else %}h-48{% endif %} relative">
-      <img alt="{{ title }}"
-           class="lazyload w-full h-full bg-[#3e454d] {% if item.image != IMG_NONE %}object-cover object-bottom{% endif %}"
-           data-src="{% get_user_poster_image item user %}"
-           src="{{ IMG_NONE }}">
+      {% if hof_display %}
+        <a href="{{ item|media_url }}" class="block w-full h-full">
+          <img alt="{{ title }}"
+               class="lazyload w-full h-full bg-[#3e454d] {% if item.image != IMG_NONE %}object-cover object-bottom{% endif %}"
+               data-src="{% get_user_poster_image item user %}"
+               src="{{ IMG_NONE }}">
+        </a>
+      {% else %}
+        <img alt="{{ title }}"
+             class="lazyload w-full h-full bg-[#3e454d] {% if item.image != IMG_NONE %}object-cover object-bottom{% endif %}"
+             data-src="{% get_user_poster_image item user %}"
+             src="{{ IMG_NONE }}">
+      {% endif %}
 
 
 
@@ -262,11 +271,13 @@
     </div>
   </div>
 
+  {% if not hof_display %}
   <div class="p-3 rounded-b-lg">
     <a href="{{ item|media_url }}"
        class="text-sm font-semibold text-white hover:text-indigo-400 transition duration-300 line-clamp-1"
        title="{{ title }}">{{ title }}</a>
   </div>
+  {% endif %}
 
   {% if item.media_type == MediaTypes.EPISODE.value %}
     {% include "app/components/fill_track_episode.html" with request=request media=item episode=item episode_title=title csrf_token=csrf_token TRACK_TIME=TRACK_TIME only %}

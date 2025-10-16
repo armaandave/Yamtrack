@@ -1,7 +1,7 @@
 {% if data and data.items %}
   <div class="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-4">
     {% for item in data.items %}
-      <div class="relative bg-[#39404b] rounded-lg overflow-hidden shadow-lg">
+      <div class="relative bg-[#39404b] rounded-lg overflow-hidden shadow-lg group">
         <img src="{{ item.image }}" alt="{{ item.title }}" class="w-full aspect-[2/3] object-cover">
         <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent"></div>
         <div class="absolute bottom-0 left-0 right-0 p-3">
@@ -10,11 +10,26 @@
             <p class="text-xs text-gray-300 truncate">{{ item.subtitle }}</p>
           {% endif %}
         </div>
+        
+        <!-- Interactive overlay for hover effects -->
+        <div class="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+          <button hx-post="{% url 'toggle_hof' %}"
+                  hx-vals='{"media_type": "{{ media_type }}", "item_id": "{{ item.media_id }}", "source": "{{ item.source }}"}'
+                  hx-target="#hof-search-results"
+                  hx-swap="outerHTML"
+                  hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                  class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200">
+            Add to Hall of Fame
+          </button>
+        </div>
+        
+        <!-- Small add button for mobile/touch -->
         <button hx-post="{% url 'toggle_hof' %}"
                 hx-vals='{"media_type": "{{ media_type }}", "item_id": "{{ item.media_id }}", "source": "{{ item.source }}"}'
                 hx-target="#hof-search-results"
                 hx-swap="outerHTML"
-                class="absolute top-2 right-2 px-2 py-1 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                class="absolute top-2 right-2 px-2 py-1 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 group-hover:opacity-0 transition-opacity duration-200">
           Add
         </button>
       </div>

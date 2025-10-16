@@ -8,10 +8,25 @@
     this.selectedType = type;
     this.searchQuery = '';
     this.hofOpen = true;
-    // Clear previous results
-    document.getElementById('hof-search-results').innerHTML = '';
+    const el = document.getElementById('hof-search-results');
+    if (el) { el.innerHTML = ''; }
   }
-}">
+}"
+     x-init="
+       let originalBodyOverflow = '';
+       $watch('hofOpen', (v) => {
+         if (v) {
+           originalBodyOverflow = document.body.style.overflow;
+           document.body.style.overflow = 'hidden';
+           document.body.style.position = 'fixed';
+           document.body.style.width = '100%';
+         } else {
+           document.body.style.overflow = originalBodyOverflow;
+           document.body.style.position = '';
+           document.body.style.width = '';
+         }
+       });
+     ">
   <div class="flex items-center justify-between mb-4">
     <div class="flex items-center">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-yellow-400 mr-2">
@@ -82,8 +97,11 @@
   <div x-show="hofOpen"
        @keydown.escape.window="hofOpen = false"
        @close-hof-modal.window="hofOpen = false"
-       class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+       class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+       @wheel.stop
+       @touchmove.stop>
     <div class="bg-[#2a2f35] rounded-lg shadow-xl overflow-hidden relative"
+         role="dialog" aria-modal="true"
          style="width: 60vw; max-width: 765px; height: 60vh;"
          @click.outside="hofOpen = false">
       <div class="p-6 h-full flex flex-col">
@@ -111,7 +129,7 @@
                    hx-target="#hof-search-results"
                    hx-indicator=".htmx-indicator"
                    hx-include="[name='media_type']"
-                   @input="console.log('Search input:', $event.target.value, 'Media type:', selectedType)"
+                   @input="console.log('[HOF] Search input:', $event.target.value, 'Media type:', selectedType)"
                    class="w-full py-2 pl-10 pr-4 text-sm text-gray-300 bg-[#39404b] rounded-md placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
             <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-gray-400">
@@ -123,10 +141,11 @@
         </div>
 
         <div class="flex-1 min-h-0 overflow-hidden relative">
-          <div id="hof-search-results" class="h-full overflow-y-auto p-1">
+          <div id="hof-search-results" 
+               class="h-full overflow-y-auto p-1 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
             {# Search results will be loaded here via HTMX #}
           </div>
-          <div class="htmx-indicator flex justify-center items-center py-8 absolute inset-0 bg-[#2a2f35]">
+          <div class="htmx-indicator flex justify-center items-center py-8 absolute inset-0 bg-[#2a2f35] pointer-events-none">
             <div class="flex items-center space-x-2 text-gray-400">
               <div class="animate-spin rounded-full h-5 w-5 border-2 border-current border-t-transparent"></div>
               <span>Searching...</span>
@@ -136,4 +155,6 @@
       </div>
     </div>
   </div>
+
+  
 </div> 

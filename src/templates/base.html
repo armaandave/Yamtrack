@@ -583,8 +583,8 @@
           if (!container) return;
           
           container.innerHTML = this.tags.map(tag => `
-            <span class="tag-chip text-xs px-2 py-0.5 rounded-full 
-              ${this.getTagColor(tag)}">
+            <span class="tag-chip text-xs px-2 py-0.5 rounded-full border bg-transparent"
+                  style="border-color: var(--poster-accent); color: var(--poster-accent);">
               ${tag}
               <button type="button" 
                       @click="removeTag('${tag}')"

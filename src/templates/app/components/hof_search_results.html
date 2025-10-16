@@ -1,10 +1,22 @@
 {% load app_tags %}
 
 {% if data.results %}
-  <div class="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-4 p-4">
+  <div class="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-4 p-4" data-hof="results-loaded">
     {% for item in data.results %}
       <div class="relative group">
         {% include "app/components/media_card.html" with item=item title=item.title from_grid=True hof_search=True %}
+        
+        <!-- Always-visible Add button (top-right) -->
+        <button hx-post="{% url 'toggle_hof' %}"
+                hx-vals='{"media_type": "{{ media_type }}", "media_id": "{{ item.media_id }}", "source": "{{ item.source }}"}'
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                hx-swap="none"
+                class="absolute top-2 right-2 z-10 px-2 py-1 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                onclick="console.log('[HOF] Add clicked', {mt:'{{ media_type }}', id:'{{ item.media_id }}', src:'{{ item.source }}'})">
+          Add
+        </button>
+
+        <!-- Hover overlay Add (nice UX on desktop) -->
         <div class="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
           <button hx-post="{% url 'toggle_hof' %}"
                   hx-vals='{"media_type": "{{ media_type }}", "media_id": "{{ item.media_id }}", "source": "{{ item.source }}"}'

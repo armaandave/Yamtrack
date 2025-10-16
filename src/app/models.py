@@ -1746,7 +1746,8 @@ class DiaryEntry(models.Model):
         indexes = [
             models.Index(fields=["user", "-consumed_at"]),
         ]
-        ordering = ["-created_at"]
+        # Default to date of consumption so lists reflect actual watch/read order
+        ordering = ["-consumed_at", "-created_at"]
 
     def __str__(self):
         """Return string representation of the diary entry."""

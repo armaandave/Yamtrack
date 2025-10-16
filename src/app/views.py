@@ -1052,9 +1052,15 @@ def toggle_hof(request):
             from django.template.loader import render_to_string
             from django.http import HttpResponse
             
-            # Return a response that triggers the hofUpdated event
+            # Return a response that triggers events for UI updates
+            # - hofUpdated: refreshes the HOF grid (listener on #hof-grid)
+            # - close-hof-modal: closes the modal (Alpine listens on window)
+            import json
             response = HttpResponse()
-            response['HX-Trigger'] = 'hofUpdated'
+            response['HX-Trigger'] = json.dumps({
+                'hofUpdated': True,
+                'close-hof-modal': True,
+            })
             return response
     except Exception as e:
         print(f"HOF Toggle - Error: {e}")
@@ -1375,8 +1381,14 @@ def diary_list(request):
     item_id = request.GET.get("item_id")
     page = request.GET.get("page", 1)
     
-    # Base queryset - order by created_at descending (newest first) to reflect actual logging order
-    entries = DiaryEntry.objects.filter(user=request.user).select_related('item').prefetch_related('tags').order_by('-created_at')
+    # Base queryset - order by consumed_at descending to reflect actual watch/read date
+    # Fallback to created_at to provide deterministic order when consumed_at ties
+    entries = (
+        DiaryEntry.objects.filter(user=request.user)
+        .select_related('item')
+        .prefetch_related('tags')
+        .order_by('-consumed_at', '-created_at')
+    )
     
     # Apply filters
     if media_type:
