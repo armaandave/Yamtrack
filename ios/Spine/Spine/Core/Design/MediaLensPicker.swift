@@ -141,27 +141,27 @@ private struct MediaLensOrb: View {
 
     var body: some View {
         Button(action: onTap) {
-            ZStack {
+            VStack(spacing: 5) {
                 Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: isSelected ? theme.gradientColors : [.white.opacity(0.14), .white.opacity(0.05)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .fill(.white.opacity(isSelected ? 0.12 : 0.07))
                     .overlay {
                         Circle()
-                            .stroke(isSelected ? theme.accentColor.opacity(0.72) : .white.opacity(0.14), lineWidth: 1)
+                            .stroke(isSelected ? .white.opacity(0.42) : .white.opacity(0.13), lineWidth: 1)
                     }
+                    .overlay {
+                        MediaTypeGlyph(theme: theme, size: isSelected ? 21 : 18)
+                    }
+                    .frame(width: 48, height: 48)
 
-                MediaTypeGlyph(theme: theme, size: isSelected ? 22 : 18)
+                Capsule()
+                    .fill(.white.opacity(isSelected ? 0.70 : 0))
+                    .frame(width: 14, height: 2)
             }
-            .frame(width: isSelected ? 58 : 48, height: isSelected ? 58 : 48)
-            .contentShape(Circle())
+            .frame(width: 52, height: 58)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .scaleEffect(isSelected ? 1.06 : 0.94)
+        .scaleEffect(isSelected ? 1.02 : 0.98)
         .accessibilityLabel(theme.displayName)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }

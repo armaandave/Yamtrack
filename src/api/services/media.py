@@ -589,6 +589,10 @@ def resolved_backdrop_urls(
     ).first()
     custom_url = _backdrop_preference_url(user, item, request=request)
     if media_type == MediaTypes.SEASON.value:
+        if tmdb_backdrops is None and season_number is not None:
+            from app.providers import tmdb
+
+            tmdb_backdrops = tmdb.get_season_backdrop_images(media_id, season_number)
         default_url = (
             _curated_backdrop_url(item, request=request)
             or (tmdb_backdrops[0]["url"] if tmdb_backdrops else None)

@@ -1638,6 +1638,39 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(seasons.data["seasons"], detail.data["seasons"])
 
     @patch("app.providers.tmdb.get_title_logo", return_value=None)
+    @patch("app.providers.tmdb.get_season_backdrop_images")
+    @patch("app.providers.mdblist.get_media_ratings", return_value={})
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_season_detail_uses_first_episode_still_as_default_backdrop(
+        self,
+        metadata_mock,
+        _ratings_mock,
+        season_backdrops_mock,
+        _logo_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "1399",
+            "media_type": "season",
+            "source": "tmdb",
+            "title": "Game of Thrones",
+            "season_title": "Season 1",
+            "image": "https://example.com/season-poster.jpg",
+            "season_number": 1,
+            "episodes": [],
+        }
+        season_backdrops_mock.return_value = [
+            {"url": "https://example.com/episode-1.jpg"},
+            {"url": "https://example.com/episode-2.jpg"},
+        ]
+
+        response = self.client.get("/api/v1/media/tmdb/tv/1399/seasons/1/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["backdrop_url"], "https://example.com/episode-1.jpg")
+        self.assertIsNone(response.data["custom_backdrop_url"])
+        season_backdrops_mock.assert_called_once_with("1399", 1)
+
+    @patch("app.providers.tmdb.get_title_logo", return_value=None)
     @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
     @patch("app.providers.mdblist.get_media_ratings", return_value={})
     @patch("api.services.media.provider_services.get_media_metadata")

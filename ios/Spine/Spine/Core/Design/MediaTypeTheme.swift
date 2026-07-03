@@ -81,6 +81,14 @@ struct MediaTypeGlyph: View {
             Text(symbolText)
                 .font(.system(size: size, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+        } else if theme.slug == "movie" {
+            MovieReelShape()
+                .fill(.white, style: FillStyle(eoFill: true))
+                .frame(width: size * 1.34, height: size * 1.02)
+        } else if theme.slug == "tv" {
+            RetroTVShape()
+                .fill(.white, style: FillStyle(eoFill: true))
+                .frame(width: size * 1.44, height: size * 1.18)
         } else if theme.slug == "comic" {
             ComicBurstShape()
                 .stroke(.white, style: StrokeStyle(lineWidth: max(1.2, size * 0.08), lineCap: .round, lineJoin: .round))
@@ -91,6 +99,80 @@ struct MediaTypeGlyph: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white, theme.accentColor)
         }
+    }
+}
+
+private struct MovieReelShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let reelRect = CGRect(x: rect.minX, y: rect.minY, width: rect.height * 0.92, height: rect.height * 0.92)
+        let center = CGPoint(x: reelRect.midX, y: reelRect.midY)
+        let radius = min(reelRect.width, reelRect.height) / 2
+
+        path.addEllipse(in: reelRect)
+
+        let holeRadius = radius * 0.17
+        for angle in stride(from: -CGFloat.pi / 2, to: CGFloat.pi * 1.5, by: CGFloat.pi * 2 / 5) {
+            let holeCenter = CGPoint(
+                x: center.x + cos(angle) * radius * 0.56,
+                y: center.y + sin(angle) * radius * 0.56
+            )
+            path.addEllipse(in: CGRect(
+                x: holeCenter.x - holeRadius,
+                y: holeCenter.y - holeRadius,
+                width: holeRadius * 2,
+                height: holeRadius * 2
+            ))
+        }
+        path.addEllipse(in: CGRect(x: center.x - radius * 0.06, y: center.y - radius * 0.06, width: radius * 0.12, height: radius * 0.12))
+
+        let baseY = reelRect.maxY - radius * 0.08
+        path.move(to: CGPoint(x: center.x + radius * 0.30, y: baseY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: baseY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: baseY + radius * 0.07))
+        path.addLine(to: CGPoint(x: center.x + radius * 0.20, y: baseY + radius * 0.07))
+        path.closeSubpath()
+
+        return path
+    }
+}
+
+private struct RetroTVShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let body = CGRect(
+            x: rect.minX,
+            y: rect.minY + rect.height * 0.24,
+            width: rect.width,
+            height: rect.height * 0.68
+        )
+        path.addRoundedRect(in: body, cornerSize: CGSize(width: rect.width * 0.07, height: rect.width * 0.07))
+
+        let screen = CGRect(
+            x: body.minX + body.width * 0.07,
+            y: body.minY + body.height * 0.16,
+            width: body.width * 0.66,
+            height: body.height * 0.68
+        )
+        path.addRoundedRect(in: screen, cornerSize: CGSize(width: rect.width * 0.07, height: rect.width * 0.07))
+
+        path.addEllipse(in: CGRect(x: body.maxX - body.width * 0.18, y: body.minY + body.height * 0.30, width: body.width * 0.10, height: body.width * 0.10))
+        path.addEllipse(in: CGRect(x: body.maxX - body.width * 0.20, y: body.minY + body.height * 0.58, width: body.width * 0.14, height: body.width * 0.14))
+
+        let antennaWidth = max(1, rect.width * 0.07)
+        path.move(to: CGPoint(x: body.midX, y: body.minY + antennaWidth * 0.3))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.minY + rect.height * 0.02))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28 + antennaWidth, y: rect.minY + rect.height * 0.02))
+        path.addLine(to: CGPoint(x: body.midX + antennaWidth * 0.55, y: body.minY + antennaWidth * 0.3))
+        path.closeSubpath()
+
+        path.move(to: CGPoint(x: body.midX, y: body.minY + antennaWidth * 0.3))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.70, y: rect.minY + rect.height * 0.02))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.70 + antennaWidth, y: rect.minY + rect.height * 0.02))
+        path.addLine(to: CGPoint(x: body.midX + antennaWidth * 0.55, y: body.minY + antennaWidth * 0.3))
+        path.closeSubpath()
+
+        return path
     }
 }
 
