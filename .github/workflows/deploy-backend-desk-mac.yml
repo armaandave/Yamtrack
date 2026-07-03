@@ -6,7 +6,7 @@ on:
       branch:
         description: "Git branch to deploy"
         required: true
-        default: "main"
+        default: "myapp-main"
         type: string
 
 jobs:
@@ -17,4 +17,8 @@ jobs:
       - name: Deploy requested branch
         run: |
           cd /Users/armaandave/projects/spine
-          ./scripts/codex-mobile-deploy-backend.sh "${{ inputs.branch }}"
+          branch="${{ inputs.branch }}"
+          git fetch origin "$branch"
+          git checkout "$branch"
+          git reset --hard "origin/$branch"
+          ./scripts/codex-mobile-deploy-backend.sh "$branch"
