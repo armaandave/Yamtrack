@@ -2454,6 +2454,69 @@ class ApiV1FoundationTests(TestCase):
         selected = [backdrop["url"] for backdrop in response.data["backdrops"] if backdrop["is_selected"]]
         self.assertEqual(selected, ["https://example.com/second.jpg"])
 
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.providers.tmdb.get_season_backdrop_images")
+    def test_media_backdrops_endpoint_supports_seasons(self, backdrops_mock, metadata_mock):
+        user = get_user_model().objects.create_user(username="season-backdrop", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            media_id="1399",
+            title="Game of Thrones",
+            image="https://example.com/poster.jpg",
+            season_number=1,
+        )
+        CustomBackdropPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/episode-2.jpg",
+        )
+        metadata_mock.return_value = {
+            "season/1": {
+                "season_title": "Season 1",
+                "image": "https://example.com/poster.jpg",
+                "episodes": [],
+            },
+        }
+        backdrops_mock.return_value = [
+            {
+                "url": "https://example.com/episode-1.jpg",
+                "thumbnail_url": "https://example.com/episode-1-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": None,
+                "episode_number": 1,
+            },
+            {
+                "url": "https://example.com/episode-2.jpg",
+                "thumbnail_url": "https://example.com/episode-2-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": None,
+                "episode_number": 2,
+            },
+        ]
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/tmdb/season/1399/backdrops/?season_number=1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [backdrop["url"] for backdrop in response.data["backdrops"]],
+            [
+                "https://example.com/episode-1.jpg",
+                "https://example.com/episode-2.jpg",
+            ],
+        )
+        self.assertTrue(response.data["backdrops"][1]["is_selected"])
+        backdrops_mock.assert_called_once_with("1399", 1)
+
     def test_media_backdrops_endpoint_rejects_unsupported_media(self):
         user = get_user_model().objects.create_user(username="backdrop2", password="strong-password-123")
         self.client.force_authenticate(user)
@@ -2486,6 +2549,36 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             CustomBackdropPreference.objects.get(user=user, item=item).custom_image_url,
             "https://example.com/new-backdrop.jpg",
+        )
+
+    def test_media_season_backdrop_save_updates_preference_without_changing_item_image(self):
+        user = get_user_model().objects.create_user(username="seasonbackdrop2", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            media_id="1399",
+            title="Game of Thrones",
+            image="https://example.com/original-season.jpg",
+            season_number=1,
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.put(
+            "/api/v1/media/tmdb/season/1399/backdrop/",
+            {
+                "backdrop_url": "https://example.com/new-season-backdrop.jpg",
+                "season_number": 1,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["custom_backdrop_url"], "https://example.com/new-season-backdrop.jpg")
+        item.refresh_from_db()
+        self.assertEqual(item.image, "https://example.com/original-season.jpg")
+        self.assertEqual(
+            CustomBackdropPreference.objects.get(user=user, item=item).custom_image_url,
+            "https://example.com/new-season-backdrop.jpg",
         )
 
     @patch("app.providers.tmdb.get_title_logo", return_value=None)

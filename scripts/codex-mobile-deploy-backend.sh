@@ -16,9 +16,13 @@ fi
 
 cd "$repo_dir"
 
-git checkout "$branch"
 git fetch origin
-git pull
+if git show-ref --verify --quiet "refs/heads/$branch"; then
+  git checkout "$branch"
+else
+  git checkout --track "origin/$branch"
+fi
+git reset --hard "origin/$branch"
 
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 docker compose --env-file .env.production -f docker-compose.production.yml exec app python manage.py shell -c "from django.core.cache import cache; cache.clear()"

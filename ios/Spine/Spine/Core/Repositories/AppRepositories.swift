@@ -344,8 +344,13 @@ struct APIMediaRepository: MediaRepository {
     }
 
     func backdrops(ref: MediaRef) async throws -> [PosterOption] {
+        var query: [URLQueryItem] = []
+        if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
+            query.append(URLQueryItem(name: "season_number", value: String(seasonNumber)))
+        }
         let response: BackdropOptionsResponse = try await client.get(
             "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/backdrops/",
+            query: query,
             authenticated: true
         )
         return response.backdrops
@@ -354,7 +359,10 @@ struct APIMediaRepository: MediaRepository {
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse {
         try await client.put(
             "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/backdrop/",
-            body: BackdropSaveRequest(backdropUrl: backdropURL),
+            body: BackdropSaveRequest(
+                backdropUrl: backdropURL,
+                seasonNumber: ref.mediaType == "season" ? ref.seasonNumber : nil
+            ),
             authenticated: true
         )
     }

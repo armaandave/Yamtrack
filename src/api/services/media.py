@@ -175,6 +175,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         source=source,
         media_type=media_type,
         media_id=media_id,
+        season_number=season_number,
         metadata=metadata,
         request=request,
         user=user,
@@ -373,21 +374,38 @@ def book_cover_options(*, source, media_id, request=None, user=None):
     return {"item": item, "posters": posters, "current_poster": selected_url}
 
 
-def backdrop_options(*, source, media_type, media_id, request=None, user=None):
-    """Return selectable backdrops for TMDB movie/TV media."""
-    if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
-        raise ValueError("Backdrop customization is only available for TMDB movies and TV shows.")
+def backdrop_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
+    """Return selectable backdrops for TMDB movie/TV/season media."""
+    if source != Sources.TMDB.value or media_type not in [
+        MediaTypes.MOVIE.value,
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+    ]:
+        raise ValueError("Backdrop customization is only available for TMDB movies, TV shows, and seasons.")
+    season_number = _required_season_number(media_type, season_number)
 
-    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
-    metadata = provider_services.get_media_metadata(media_type, media_id, source)
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id, season_number=season_number)
+    metadata = provider_services.get_media_metadata(
+        "tv_with_seasons" if media_type == MediaTypes.SEASON.value else media_type,
+        media_id,
+        source,
+        [season_number] if media_type == MediaTypes.SEASON.value else None,
+    )
+    if media_type == MediaTypes.SEASON.value:
+        metadata = metadata[f"season/{season_number}"]
     raw_default_url = backdrop_url(metadata)
     from app.providers import tmdb
 
-    tmdb_backdrops = tmdb.get_backdrop_images(media_id, media_type)
+    tmdb_backdrops = (
+        tmdb.get_season_backdrop_images(media_id, season_number)
+        if media_type == MediaTypes.SEASON.value
+        else tmdb.get_backdrop_images(media_id, media_type)
+    )
     default_url, custom_url = resolved_backdrop_urls(
         source=source,
         media_type=media_type,
         media_id=media_id,
+        season_number=season_number,
         metadata=metadata,
         request=request,
         user=user,
@@ -408,7 +426,7 @@ def backdrop_options(*, source, media_type, media_id, request=None, user=None):
         "is_selected": raw_default_url == selected_url,
     }
 
-    backdrops = [original]
+    backdrops = [original] if raw_default_url else []
     for backdrop in tmdb_backdrops:
         if backdrop["url"] == raw_default_url:
             continue
@@ -423,14 +441,19 @@ def backdrop_options(*, source, media_type, media_id, request=None, user=None):
     return {"backdrops": backdrops}
 
 
-def save_backdrop_preference(*, source, media_type, media_id, backdrop_url, user):
+def save_backdrop_preference(*, source, media_type, media_id, backdrop_url, user, season_number=None):
     """Save a user's backdrop preference without mutating the item poster."""
-    if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
-        raise ValueError("Backdrop customization is only available for TMDB movies and TV shows.")
+    if source != Sources.TMDB.value or media_type not in [
+        MediaTypes.MOVIE.value,
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+    ]:
+        raise ValueError("Backdrop customization is only available for TMDB movies, TV shows, and seasons.")
+    season_number = _required_season_number(media_type, season_number)
     if not backdrop_url:
         raise ValueError("backdrop_url is required.")
 
-    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id, season_number=season_number)
     CustomBackdropPreference.objects.update_or_create(
         user=user,
         item=item,
@@ -473,7 +496,7 @@ def _required_season_number(media_type, season_number):
     if media_type != MediaTypes.SEASON.value:
         return None
     if season_number in [None, ""]:
-        raise ValueError("season_number is required for season posters.")
+        raise ValueError("season_number is required for seasons.")
     return int(season_number)
 
 
@@ -534,6 +557,7 @@ def resolved_backdrop_urls(
     media_type,
     media_id,
     metadata,
+    season_number=None,
     request=None,
     user=None,
     item=None,
@@ -541,19 +565,36 @@ def resolved_backdrop_urls(
 ):
     """Return the resolved default backdrop and viewer custom backdrop."""
     raw_default_url = backdrop_url(metadata)
-    if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
+    if source != Sources.TMDB.value or media_type not in [
+        MediaTypes.MOVIE.value,
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+    ]:
         return raw_default_url, custom_backdrop_url_for_user(
             user,
             {
                 "source": source,
                 "media_type": media_type,
                 "media_id": media_id,
+                "season_number": season_number,
             },
             request=request,
         )
 
-    item = item or Item.objects.filter(source=source, media_type=media_type, media_id=media_id).first()
+    item = item or Item.objects.filter(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+    ).first()
     custom_url = _backdrop_preference_url(user, item, request=request)
+    if media_type == MediaTypes.SEASON.value:
+        default_url = (
+            _curated_backdrop_url(item, request=request)
+            or (tmdb_backdrops[0]["url"] if tmdb_backdrops else None)
+            or raw_default_url
+        )
+        return default_url, custom_url
     default_url = (
         _curated_backdrop_url(item, request=request)
         or _tmdb_vote_sorted_backdrop_url(

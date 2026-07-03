@@ -98,6 +98,52 @@ class Metadata(TestCase):
 
         self.assertEqual(crew[0]["image"], "https://image.tmdb.org/t/p/w500/denis.jpg")
 
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_season_backdrops_use_episode_stills(self, mock_api_request, mock_tv_with_seasons):
+        cache.clear()
+        mock_tv_with_seasons.return_value = {
+            "season/1": {
+                "episodes": [
+                    {"episode_number": 1},
+                    {"episode_number": 2},
+                ],
+            },
+        }
+        mock_api_request.side_effect = [
+            {
+                "stills": [
+                    {
+                        "file_path": "/still-1.jpg",
+                        "width": 1920,
+                        "height": 1080,
+                        "aspect_ratio": 1.778,
+                        "vote_average": 8,
+                        "vote_count": 4,
+                    },
+                ],
+            },
+            {
+                "stills": [
+                    {"file_path": "/still-1.jpg", "width": 1920, "height": 1080},
+                    {"file_path": "/still-2.jpg", "width": 1280, "height": 720},
+                ],
+            },
+        ]
+
+        backdrops = tmdb.get_season_backdrop_images("1399", 1)
+
+        self.assertEqual(
+            [backdrop["url"] for backdrop in backdrops],
+            [
+                "https://image.tmdb.org/t/p/original/still-1.jpg",
+                "https://image.tmdb.org/t/p/original/still-2.jpg",
+            ],
+        )
+        self.assertEqual(backdrops[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w780/still-1.jpg")
+        self.assertEqual(backdrops[0]["episode_number"], 1)
+        self.assertEqual(backdrops[1]["episode_number"], 2)
+
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
     def test_tv_changes(self, mock_api_request, mock_localdate):

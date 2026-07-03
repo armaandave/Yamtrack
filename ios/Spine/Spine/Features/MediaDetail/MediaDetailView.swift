@@ -280,7 +280,7 @@ enum MediaArtworkCustomization {
     }
 
     static func supportsBackdrop(source: String, mediaType: String) -> Bool {
-        source == "tmdb" && ["movie", "tv"].contains(mediaType)
+        source == "tmdb" && ["movie", "tv", "season"].contains(mediaType)
     }
 }
 
@@ -428,7 +428,7 @@ struct MediaDetailView: View {
             switch sheet {
             case .posterMenu:
                 PosterMenuSheet(
-                    posterLabel: canCustomizeBackdrop(viewModel.detail) ? "Customize Poster" : "Customize Cover",
+                    posterLabel: "Customize Poster",
                     showsTVShowOption: parentTVRef(viewModel.detail) != nil,
                     showsPosterOption: canCustomizePoster(viewModel.detail),
                     showsBackdropOption: canCustomizeBackdrop(viewModel.detail),
@@ -536,7 +536,7 @@ struct MediaDetailView: View {
                 PosterPickerView(
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
-                    title: isBook(detail) ? "Customize Cover" : "Customize Poster",
+                    title: "Customize Poster",
                     showsLanguageFilter: !isBook(detail),
                     contentMode: isBook(detail) ? .fit : .fill,
                     onUnauthorized: onUnauthorized
@@ -2776,6 +2776,8 @@ private struct CreditSection: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
