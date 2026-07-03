@@ -51,5 +51,5 @@ if [[ ! -e .env.production && ! -L .env.production ]]; then
   ln -s "$env_file" .env.production
 fi
 
-docker compose --env-file "$env_file" -f docker-compose.production.yml up -d --build
-docker compose --env-file "$env_file" -f docker-compose.production.yml exec app python manage.py shell -c "from django.core.cache import cache; cache.clear()"
+docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml up -d --build
+docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml exec app python manage.py shell -c "from django.core.cache import cache; cache.clear()"
