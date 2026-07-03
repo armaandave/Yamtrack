@@ -1323,6 +1323,60 @@ def get_backdrop_images(media_id, media_type):
     return data
 
 
+def get_season_backdrop_images(media_id, season_number):
+    """Return all episode stills for a season as backdrop options."""
+    season_number = int(season_number)
+    cache_key = f"{Sources.TMDB.value}_season_backdrops_{media_id}_{season_number}"
+    data = cache.get(cache_key)
+
+    if data is None:
+        season = tv_with_seasons(media_id, [season_number])[f"season/{season_number}"]
+        params = {**base_params}
+        params.pop("language", None)
+        seen = set()
+        backdrops = []
+
+        for episode in season.get("episodes", []):
+            episode_number = episode.get("episode_number")
+            if episode_number is None:
+                continue
+            url = f"{base_url}/tv/{media_id}/season/{season_number}/episode/{episode_number}/images"
+
+            try:
+                response = services.api_request(
+                    Sources.TMDB.value,
+                    "GET",
+                    url,
+                    params=params,
+                )
+            except requests.exceptions.HTTPError as error:
+                handle_error(error)
+
+            for still in response.get("stills", []):
+                file_path = still.get("file_path")
+                if not file_path or file_path in seen:
+                    continue
+                seen.add(file_path)
+                backdrops.append(
+                    {
+                        "url": f"https://image.tmdb.org/t/p/original{file_path}",
+                        "thumbnail_url": f"https://image.tmdb.org/t/p/w780{file_path}",
+                        "width": still.get("width", 0),
+                        "height": still.get("height", 0),
+                        "aspect_ratio": still.get("aspect_ratio", 1.778),
+                        "vote_average": still.get("vote_average", 0),
+                        "vote_count": still.get("vote_count", 0),
+                        "language": still.get("iso_639_1"),
+                        "episode_number": episode_number,
+                    },
+                )
+
+        data = backdrops
+        cache.set(cache_key, data, 86400)
+
+    return data
+
+
 def get_title_logo(media_id, media_type):
     """Return the best title logo for a movie or TV show from TMDB."""
     if media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
