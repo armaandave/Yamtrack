@@ -6,11 +6,13 @@ from django.contrib.admin.sites import AlreadyRegistered
 
 from app.models import (
     BookSession,
+    CustomBackdropPreference,
     CustomPosterPreference,
     DiaryEntry,
     DiaryEntryTag,
     Episode,
     Item,
+    MediaLike,
     Tag,
     UserMessage,
 )
@@ -58,9 +60,26 @@ class MediaAdmin(admin.ModelAdmin):
     list_filter = ["status"]
 
 
+@admin.register(MediaLike)
+class MediaLikeAdmin(admin.ModelAdmin):
+    """Admin for canonical media likes."""
+
+    search_fields = ["item__title", "user__username"]
+    list_display = ["user", "item", "created_at"]
+    list_filter = ["item__media_type", "created_at"]
+
+
 class CustomPosterPreferenceAdmin(admin.ModelAdmin):
     """Custom admin for CustomPosterPreference model."""
     
+    search_fields = ["item__title", "user__username"]
+    list_display = ["__str__", "user", "item", "updated_at"]
+    list_filter = ["user"]
+
+
+class CustomBackdropPreferenceAdmin(admin.ModelAdmin):
+    """Custom admin for CustomBackdropPreference model."""
+
     search_fields = ["item__title", "user__username"]
     list_display = ["__str__", "user", "item", "updated_at"]
     list_filter = ["user"]
@@ -101,6 +120,7 @@ class BookSessionAdmin(admin.ModelAdmin):
 
 
 admin.site.register(CustomPosterPreference, CustomPosterPreferenceAdmin)
+admin.site.register(CustomBackdropPreference, CustomBackdropPreferenceAdmin)
 admin.site.register(DiaryEntry, DiaryEntryAdmin)
 admin.site.register(Tag, TagAdmin)
 admin.site.register(DiaryEntryTag, DiaryEntryTagAdmin)
@@ -113,11 +133,13 @@ SpecialModels = [
     "Item",
     "Episode",
     "BasicMedia",
+    "CustomBackdropPreference",
     "CustomPosterPreference",
     "DiaryEntry",
     "Tag",
     "DiaryEntryTag",
     "BookSession",
+    "MediaLike",
     "UserMessage",
 ]
 for model in app_models:

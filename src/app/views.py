@@ -1250,77 +1250,22 @@ def book_cover_selection_modal(request, source, media_id):
 @require_GET
 def book_cover_selection_content(request, source, media_id):
     """Return the heavy content for the book cover modal (covers grid)."""
-    media_type = MediaTypes.BOOK.value
     try:
-        # Get or create the item
-        try:
-            item = Item.objects.get(
-                media_id=media_id,
-                source=source,
-                media_type=media_type,
-            )
-        except Item.DoesNotExist:
-            from app.providers import services
-            metadata = services.get_media_metadata(media_type, media_id, source)
-            item = Item.objects.create(
-                media_id=media_id,
-                source=source,
-                media_type=media_type,
-                title=metadata["title"],
-                image=metadata["image"],
-            )
+        from api.services import media as media_service
 
-        # Gather ISBNs
-        if source == Sources.HARDCOVER.value:
-            from app.providers import hardcover
-            isbns = hardcover.get_book_isbns(media_id)
-        elif source == Sources.OPENLIBRARY.value:
-            from app.providers import services as svc
-            metadata = svc.get_media_metadata(media_type, media_id, source)
-            isbns = metadata.get("details", {}).get("isbn", []) or []
-        else:
-            isbns = []
-
-        # Fetch covers (may be slow)
-        import asyncio
-        from app.providers import openlibrary
-        covers_list = []
-        try:
-            if source == Sources.OPENLIBRARY.value:
-                covers_list = asyncio.run(openlibrary.get_reliable_covers_for_book(media_id, isbns, cap=20))
-            else:
-                covers_list = asyncio.run(openlibrary.get_reliable_covers_by_isbns(isbns, cap=20))
-        except Exception as e:
-            logger.warning("Reliable cover fetch failed, falling back to ISBN covers: %s", e)
-            covers_list = openlibrary.get_book_cover_images(isbns)
-
-        original_cover = {
-            "url": item.image,
-            "thumbnail_url": item.image,
-            "isbn": isbns[0] if isbns else "N/A",
-            "width": 0,
-            "height": 0,
-            "aspect_ratio": 0.667,
-            "language": None,
-            "is_current": True,
-            "is_original": True,
-        }
-        posters = [original_cover]
-        for cover in covers_list:
-            if cover["url"] != item.image:
-                posters.append(cover)
-
-        from app.models import CustomPosterPreference
-        try:
-            current_preference = CustomPosterPreference.objects.get(user=request.user, item=item)
-            current_poster = current_preference.custom_image_url
-        except CustomPosterPreference.DoesNotExist:
-            current_poster = item.image
+        options = media_service.book_cover_options(
+            source=source,
+            media_id=media_id,
+            request=request,
+            user=request.user,
+        )
+        for poster in options["posters"]:
+            poster["is_current"] = poster["is_selected"]
 
         context = {
-            "item": item,
-            "posters": posters,
-            "current_poster": current_poster,
+            "item": options["item"],
+            "posters": options["posters"],
+            "current_poster": options["current_poster"],
             "is_book": True,
         }
         return render(request, "app/components/poster_selection_modal_content.html", context)
@@ -3453,17 +3398,19 @@ def update_diary_entry(request, entry_id):
         
         logger.info(f"Parsed data - Date: {consumed_at}, Rating: {rating}, Review: '{review}', Liked: {liked}, Rewatch: {is_rewatch}, Tags: {tag_names}")
         
-        # Update the entry
-        entry.consumed_at = consumed_at
-        entry.rating = rating
-        entry.review = review
-        entry.liked = liked
-        entry.is_rewatch = is_rewatch
-        entry.save()
-        
-        # Update tags
-        from app.services import update_diary_entry_tags
-        update_diary_entry_tags(entry, tag_names)
+        from app.services import update_diary_entry as update_diary_entry_service
+
+        update_diary_entry_service(
+            entry,
+            {
+                "consumed_at": consumed_at,
+                "rating": rating,
+                "review": review,
+                "liked": liked,
+                "is_rewatch": is_rewatch,
+            },
+            tags=tag_names,
+        )
         
         logger.info(f"Diary entry updated successfully: {entry}")
         logger.info(f"Updated values - Date: {entry.consumed_at}, Rating: {entry.rating}, Review: '{entry.review}', Liked: {entry.liked}")
@@ -3515,85 +3462,9 @@ def delete_diary_entry(request, entry_id):
     """Delete a diary entry."""
     try:
         entry = get_object_or_404(DiaryEntry, id=entry_id, user=request.user)
-        item = entry.item
-        user = entry.user
-        book_instance = None
-        book_completion_entry = False
+        from app.services import delete_diary_entry as delete_diary_entry_service
 
-        if item.media_type == MediaTypes.BOOK.value:
-            try:
-                book_instance = Book.objects.get(user=user, item=item)
-                book_completion_entry = (
-                    book_instance.completion_diary_entry_id == entry.id
-                )
-            except Book.DoesNotExist:
-                book_instance = None
-        
-        logger.info(f"Deleting diary entry {entry_id} for {item} by {user}")
-        
-        # Delete the entry
-        entry.delete()
-        
-        # Check if this was the last diary entry for this item
-        remaining_entries = DiaryEntry.objects.filter(
-            user=user, 
-            item=item
-        ).exists()
-        
-        logger.info(f"Remaining diary entries for {item}: {remaining_entries}")
-        
-        # If no diary entries remain, also delete the media instance (unwatch)
-        if not remaining_entries:
-            if item.media_type == MediaTypes.MOVIE.value:
-                try:
-                    movie_instance = Movie.objects.get(user=user, item=item)
-                    logger.info(f"Deleting Movie instance to unwatch: {movie_instance}")
-                    movie_instance.delete()
-                    logger.info(f"Successfully unwatched {item} for {user}")
-                except Movie.DoesNotExist:
-                    logger.info(f"No Movie instance found for {item} - already unwatched")
-                    
-            elif item.media_type == MediaTypes.TV.value:
-                try:
-                    tv_instance = TV.objects.get(user=user, item=item)
-                    logger.info(f"Deleting TV instance to unwatch: {tv_instance}")
-                    
-                    # Delete all related episodes and seasons first
-                    for season in tv_instance.seasons.all():
-                        season.episodes.all().delete()
-                        season.delete()
-                    
-                    # Delete the TV instance
-                    tv_instance.delete()
-                    logger.info(f"Successfully unwatched TV show {item} and all seasons/episodes for {user}")
-                except TV.DoesNotExist:
-                    logger.info(f"No TV instance found for {item} - already unwatched")
-                    
-            elif item.media_type == MediaTypes.SEASON.value:
-                try:
-                    season_instance = Season.objects.get(user=user, item=item)
-                    logger.info(f"Deleting Season instance to unwatch: {season_instance}")
-                    
-                    # Delete all related episodes first
-                    season_instance.episodes.all().delete()
-                    
-                    # Delete the season instance
-                    season_instance.delete()
-                    logger.info(f"Successfully unwatched season {item} and all episodes for {user}")
-                except Season.DoesNotExist:
-                    logger.info(f"No Season instance found for {item} - already unwatched")
-            elif item.media_type == MediaTypes.BOOK.value and book_instance:
-                if not book_instance.completed_manually:
-                    logger.info("Deleting Book instance created via diary completion")
-                    book_instance.delete()
-                else:
-                    logger.info("Book instance retained (manual tracking)")
-            elif item.media_type == MediaTypes.BOOK.value and not book_instance:
-                logger.info(f"No Book instance found for {item} - already untracked")
-        elif item.media_type == MediaTypes.BOOK.value and book_instance and book_completion_entry:
-            logger.info("Clearing diary completion link from Book instance")
-            book_instance.completion_diary_entry = None
-            book_instance.save(update_fields=['completion_diary_entry'])
+        delete_diary_entry_service(request.user, entry)
         
         # Return success response
         return JsonResponse({"success": True})

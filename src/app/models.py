@@ -218,6 +218,27 @@ class Item(CalendarTriggerMixin, models.Model):
             events.tasks.reload_calendar(items_to_process=items_to_process)
 
 
+class MediaLike(models.Model):
+    """Canonical user-level like for a media item."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="media_likes")
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "item"],
+                name="app_medialike_unique_user_item",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "-created_at", "-id"]),
+            models.Index(fields=["item", "-created_at"]),
+        ]
+        ordering = ["-created_at", "-id"]
+
+
 class MediaManager(models.Manager):
     """Custom manager for media models."""
 
@@ -1940,6 +1961,8 @@ class Anime(Media):
 class Movie(Media):
     """Model for movies."""
 
+    liked = models.BooleanField(default=False)
+
     tracker = FieldTracker()
 
 
@@ -2288,6 +2311,30 @@ class CustomPosterPreference(models.Model):
         return f"{self.user.username}'s custom poster for {self.item.title}"
 
 
+class CustomBackdropPreference(models.Model):
+    """Model to store user's custom backdrop preferences for media items."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    custom_image_url = models.URLField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Meta options for the model."""
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "item"],
+                name="unique_user_item_backdrop",
+            )
+        ]
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        """Return string representation."""
+        return f"{self.user.username}'s custom backdrop for {self.item.title}"
+
+
 class DiaryEntry(models.Model):
     """Model to store diary entries for movie consumption."""
 
@@ -2309,8 +2356,12 @@ class DiaryEntry(models.Model):
                 MediaTypes.MOVIE.value,
                 MediaTypes.TV.value,
                 MediaTypes.SEASON.value,
+                MediaTypes.EPISODE.value,
+                MediaTypes.ANIME.value,
+                MediaTypes.MANGA.value,
                 MediaTypes.BOOK.value,
                 MediaTypes.GAME.value,
+                MediaTypes.COMIC.value,
             ]
         },
     )
@@ -2357,16 +2408,20 @@ class DiaryEntry(models.Model):
         return f"{self.user.username}'s entry for {self.item} on {self.consumed_at}"
 
     def clean(self):
-        """Validate that the item is a movie, TV show, season, book, or game."""
+        """Validate that the item is a tracked media type."""
         if self.item.media_type not in [
             MediaTypes.MOVIE.value,
             MediaTypes.TV.value,
             MediaTypes.SEASON.value,
+            MediaTypes.EPISODE.value,
+            MediaTypes.ANIME.value,
+            MediaTypes.MANGA.value,
             MediaTypes.BOOK.value,
             MediaTypes.GAME.value,
+            MediaTypes.COMIC.value,
         ]:
             raise ValidationError(
-                "Diary entries can only be created for movies, TV shows, seasons, books, and games."
+                "Diary entries can only be created for tracked media types."
             )
         super().clean()
 

@@ -7,6 +7,7 @@ from django.core.cache import cache
 from app import helpers
 from app.models import MediaTypes, Sources
 from app.providers import services
+from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,16 @@ def search(query, page):
                 "media_type": MediaTypes.BOOK.value,
                 "title": hit["document"]["title"],
                 "image": get_image_url(hit["document"]),
+                "ratings_count": hit["document"].get("ratings_count"),
+                "rating": hit["document"].get("rating"),
+                "edition_count": hit["document"].get("edition_count"),
+                "first_publish_year": hit["document"].get("first_publish_year"),
+                "author_name": hit["document"].get("author_name"),
             }
             for hit in hits
         ]
         total_results = response["data"]["search"]["results"]["found"]
+        results = rank_results(query, results, MediaTypes.BOOK.value)
 
         data = helpers.format_search_response(
             page,
@@ -114,9 +121,93 @@ def search(query, page):
     return data
 
 
+def discover(*, page=1, page_size=None, genre=None, year=None):
+    """Browse Hardcover books by genre/tag and/or release year."""
+    per_page = page_size or settings.PER_PAGE
+    offset = (page - 1) * per_page
+    where = _discover_where(genre=genre, year=year)
+    cache_key = f"discover_{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{genre}_{year}_{page}_{per_page}"
+    data = cache.get(cache_key)
+
+    if data is None:
+        discover_query = """
+        query DiscoverBooks($where: books_bool_exp!, $limit: Int!, $offset: Int!) {
+          books(
+            where: $where,
+            limit: $limit,
+            offset: $offset,
+            order_by: {ratings_count: desc}
+          ) {
+            id
+            title
+            cached_image(path: "url")
+            ratings_count
+            rating
+            editions_count
+            release_year
+            author_name: cached_contributors(path: "[0]['author']['name']")
+          }
+          books_aggregate(where: $where) {
+            aggregate {
+              count
+            }
+          }
+        }
+        """
+
+        try:
+            response = services.api_request(
+                Sources.HARDCOVER.value,
+                "POST",
+                base_url,
+                params={
+                    "query": discover_query,
+                    "variables": {"where": where, "limit": per_page, "offset": offset},
+                },
+                headers={"Authorization": settings.HARDCOVER_API},
+            )
+        except requests.exceptions.HTTPError as error:
+            response = handle_error(error)
+
+        rows = response["data"]["books"]
+        results = [
+            {
+                "media_id": row["id"],
+                "source": Sources.HARDCOVER.value,
+                "media_type": MediaTypes.BOOK.value,
+                "title": row["title"],
+                "image": row.get("cached_image") or settings.IMG_NONE,
+                "ratings_count": row.get("ratings_count"),
+                "rating": row.get("rating"),
+                "edition_count": row.get("editions_count"),
+                "first_publish_year": row.get("release_year"),
+                "author_name": row.get("author_name"),
+                "release_date": str(row["release_year"]) if row.get("release_year") else None,
+            }
+            for row in rows
+        ]
+        total_results = response["data"]["books_aggregate"]["aggregate"]["count"]
+        data = helpers.format_search_response(page, per_page, total_results, results)
+        data["per_page"] = per_page
+        cache.set(cache_key, data)
+
+    return data
+
+
+def _discover_where(*, genre=None, year=None):
+    clauses = []
+    if genre:
+        clauses.append(
+            {"cached_tags": {"_contains": {"Genre": [{"tag": genre}]}}},
+        )
+    if year:
+        clauses.append({"release_year": {"_eq": int(year)}})
+    return {"_and": clauses} if clauses else {}
+
+
 def book(media_id):
     """Get metadata for a book from Hardcover."""
-    cache_key = f"{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{media_id}_v3"
+    cache_key = f"{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{media_id}_v6"
     data = cache.get(cache_key)
 
     if data is None:
@@ -134,6 +225,7 @@ def book(media_id):
             release_date
             slug
             canonical_id
+            cached_featured_series
             cached_contributors(path: "[0]['author']['name']")
             default_cover_edition {
               edition_format
@@ -224,6 +316,8 @@ def book(media_id):
                    media_id, publishers, isbns, release_date)
         
         recommendations = None
+        featured_series = get_featured_series(book_data.get("cached_featured_series"))
+        series_items = get_series_books(featured_series.get("id")) if featured_series else []
 
         # Try multiple approaches to get recommendations
         recommendations = []
@@ -360,6 +454,12 @@ def book(media_id):
                 except Exception as e:
                     logger.warning(f"Author fallback failed: {e}")
 
+        related = {
+            "recommendations": get_recommendations(recommendations),
+        }
+        if featured_series and series_items:
+            related[featured_series["name"]] = series_items
+
         data = {
             "media_id": book_data["id"],
             "source": Sources.HARDCOVER.value,
@@ -382,14 +482,98 @@ def book(media_id):
                 "publishers": publishers,
                 "isbn": isbns,
             },
-            "related": {
-                "recommendations": get_recommendations(recommendations),
-            },
+            "related": related,
         }
 
         cache.set(cache_key, data)
 
     return data
+
+
+def get_featured_series(series_data):
+    """Return the primary Hardcover series id/name from cached_featured_series."""
+    if isinstance(series_data, list):
+        series_data = series_data[0] if series_data else None
+    if not isinstance(series_data, dict) or not series_data.get("id"):
+        return None
+
+    series = series_data.get("series") or series_data
+    if not isinstance(series, dict) or not series.get("id"):
+        return None
+
+    name = series.get("name") or series.get("title")
+    if not name:
+        return None
+
+    return {"id": series["id"], "name": name}
+
+
+def get_series_books(series_id):
+    """Fetch and format Hardcover series books for related carousels."""
+    query = """
+    query GetSeriesBooks($series_id: Int!) {
+      series_by_pk(id: $series_id) {
+        book_series(order_by: {position: asc}) {
+          position
+          book {
+            id
+            title
+            slug
+            users_read_count
+            cached_image(path: "url")
+          }
+        }
+      }
+    }
+    """
+
+    try:
+        response = services.api_request(
+            Sources.HARDCOVER.value,
+            "POST",
+            base_url,
+            params={"query": query, "variables": {"series_id": int(series_id)}},
+            headers={"Authorization": settings.HARDCOVER_API},
+        )
+    except Exception as e:
+        logger.warning("Series books failed: %s", e)
+        return []
+
+    rows = (response.get("data", {}).get("series_by_pk") or {}).get("book_series") or []
+    best_by_position = {}
+    no_position = []
+    for index, row in enumerate(rows):
+        book_data = row.get("book")
+        if not book_data:
+            continue
+        position = row.get("position")
+        item = {
+            "position": position,
+            "users_read_count": book_data.get("users_read_count") or 0,
+            "index": index,
+            "book": book_data,
+        }
+        if position is None:
+            no_position.append(item)
+            continue
+        current = best_by_position.get(position)
+        if not current or item["users_read_count"] > current["users_read_count"]:
+            best_by_position[position] = item
+
+    series_books = sorted(
+        [*best_by_position.values(), *no_position],
+        key=lambda item: (item["position"] is None, item["position"] or 0, item["index"]),
+    )
+    return [
+        {
+            "media_id": row["book"]["id"],
+            "source": Sources.HARDCOVER.value,
+            "media_type": MediaTypes.BOOK.value,
+            "title": row["book"]["title"],
+            "image": row["book"].get("cached_image") or settings.IMG_NONE,
+        }
+        for row in series_books
+    ]
 
 
 def format_release_date(release_date):
@@ -441,7 +625,7 @@ def get_ratings(rating_data):
     """Get processed rating from API data."""
     if not rating_data:
         return None
-    return round(float(rating_data) * 2, 1)
+    return round(float(rating_data), 1)
 
 
 def get_edition_details(edition_data):

@@ -1,14 +1,14 @@
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from api.serializers.common import (
     get_or_create_item_from_metadata,
-    image_url,
-    media_ref_from_item,
+    media_summary_from_item,
     user_summary,
 )
-from app.models import Tag
+from app.models import MediaLike, Tag
 from app.providers import services as provider_services
-from app.services import create_diary_entry, update_diary_entry_tags
+from app.services import create_diary_entry, update_diary_entry
 from social.models import Activity, ContentLike
 
 
@@ -30,17 +30,13 @@ def diary_payload(entry, request=None, viewer=None):
     return {
         "id": entry.id,
         "user": user_summary(entry.user, request=request),
-        "media": {
-            "ref": media_ref_from_item(entry.item),
-            "title": entry.item.title,
-            "image_url": image_url(request, entry.item.image),
-        },
+        "media": media_summary_from_item(entry.item, request=request),
         "consumed_at": entry.consumed_at,
         "rating": str(entry.rating) if entry.rating is not None else None,
         "review_title": entry.review_title,
         "review": entry.review,
         "contains_spoilers": entry.contains_spoilers,
-        "liked": entry.liked,
+        "liked": entry.liked or MediaLike.objects.filter(user=entry.user, item=entry.item).exists(),
         "is_rewatch": entry.is_rewatch,
         "tags": [tag.name for tag in entry.tags.all()],
         "visibility": entry.visibility,
@@ -84,37 +80,39 @@ def create_entry(user, data):
         target_id=entry.id,
         item=item,
         visibility=entry.visibility,
-        snapshot={"rating": str(entry.rating) if entry.rating is not None else None},
+        snapshot={
+            "rating": str(entry.rating) if entry.rating is not None else None,
+            "liked": bool(entry.liked),
+        },
     )
     return entry
 
 
 def update_entry(entry, data):
     """Update a diary entry from API payload."""
-    for field in [
-        "consumed_at",
-        "rating",
-        "review",
-        "review_title",
-        "liked",
-        "is_rewatch",
-        "contains_spoilers",
-        "visibility",
-    ]:
-        if field in data:
-            setattr(entry, field, data[field])
-    entry.save()
-    if "tags" in data:
-        update_diary_entry_tags(entry, data["tags"])
-    return entry
+    data = dict(data)
+    tags = data.pop("tags", None)
+    return update_diary_entry(entry, data, tags=tags)
 
 
-def tag_results(query):
+def tag_results(query, user=None, *, limit=10):
     """Return tag search results."""
     queryset = Tag.objects.all()
+    ordering = ["-usage_count", "name"]
+    if user is not None:
+        queryset = (
+            queryset.filter(diary_entries__user=user)
+            .annotate(user_usage_count=Count("diary_entries", filter=Q(diary_entries__user=user)))
+            .distinct()
+        )
+        ordering = ["-user_usage_count", "name"]
     if query:
         queryset = queryset.filter(name__icontains=query)
+    if limit is not None:
+        queryset = queryset.order_by(*ordering)[:limit]
+    else:
+        queryset = queryset.order_by(*ordering)
     return [
-        {"name": tag.name, "usage_count": tag.usage_count}
-        for tag in queryset.order_by("-usage_count", "name")[:10]
+        {"name": tag.name, "usage_count": getattr(tag, "user_usage_count", tag.usage_count)}
+        for tag in queryset
     ]

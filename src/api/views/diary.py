@@ -1,3 +1,4 @@
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -8,6 +9,7 @@ from api.serializers.diary import DiaryEntryWriteSerializer
 from api.services import diary as diary_service
 from api.services.social import set_like
 from app.models import DiaryEntry
+from app.services import delete_diary_entry
 from social.models import ContentLike
 
 
@@ -21,17 +23,26 @@ class DiaryListView(APIView):
             DiaryEntry.objects.filter(user=request.user)
             .select_related("item", "user")
             .prefetch_related("tags")
-            .order_by("-created_at")
+            .order_by("-consumed_at", "-id")
         )
         media_type = request.query_params.get("media_type")
         year = request.query_params.get("year")
         item_id = request.query_params.get("item_id")
+        tag = request.query_params.get("tag", "").strip().lower()
+        has_review = request.query_params.get("has_review") == "true"
+        liked = request.query_params.get("liked") == "true"
         if media_type:
             entries = entries.filter(item__media_type=media_type)
         if year:
             entries = entries.filter(consumed_at__year=year)
         if item_id:
             entries = entries.filter(item_id=item_id)
+        if tag:
+            entries = entries.filter(tags__name=tag)
+        if has_review:
+            entries = entries.filter(Q(review__gt="") | Q(review_title__gt=""))
+        if liked:
+            entries = entries.filter(liked=True)
         return Response(
             {
                 "count": entries.count(),
@@ -39,7 +50,7 @@ class DiaryListView(APIView):
                 "previous": None,
                 "results": [
                     diary_service.diary_payload(entry, request=request, viewer=request.user)
-                    for entry in entries[:100]
+                    for entry in entries
                 ],
             },
         )
@@ -79,7 +90,7 @@ class DiaryDetailView(APIView):
 
     def delete(self, request, entry_id):
         entry = get_object_or_404(DiaryEntry, id=entry_id, user=request.user)
-        entry.delete()
+        delete_diary_entry(request.user, entry)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -89,7 +100,9 @@ class DiaryTagsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response({"results": diary_service.tag_results(request.query_params.get("q", ""))})
+        user = request.user if request.query_params.get("mine") == "true" else None
+        limit = None if request.query_params.get("all") == "true" else 10
+        return Response({"results": diary_service.tag_results(request.query_params.get("q", ""), user=user, limit=limit)})
 
 
 class DiaryLikeView(APIView):

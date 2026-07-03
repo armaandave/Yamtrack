@@ -1,9 +1,10 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404
 
 from api.permissions import can_view_user_profile
-from api.serializers.common import image_url, media_ref_from_item, user_summary
+from api.serializers.common import media_summary_from_item, user_summary
 from app.models import DiaryEntry
 from lists.models import CustomList
 from social.models import (
@@ -14,6 +15,8 @@ from social.models import (
     FollowStatus,
     SocialAuditLog,
 )
+
+MEDIA_ACTIVITY_VERBS = ("diary_created", "progress_updated")
 
 
 def follow_user(actor, username):
@@ -102,33 +105,50 @@ def feed_queryset(user):
         from_user=user,
         status=FollowStatus.ACCEPTED,
     ).values("to_user")
-    return Activity.objects.filter(actor__in=following).select_related("actor", "item")
+    return _media_activity(Activity.objects.filter(actor__in=following)).select_related("actor", "item")
 
 
 def user_activity_queryset(viewer, target_user):
     """Return visible activity for a profile."""
     if not can_view_user_profile(viewer, target_user):
         return Activity.objects.none()
-    return Activity.objects.filter(actor=target_user).select_related("actor", "item")
+    return _media_activity(Activity.objects.filter(actor=target_user)).select_related("actor", "item")
+
+
+def _media_activity(queryset):
+    """Recent activity is media activity, not every social object event."""
+    return _with_live_targets(queryset.filter(verb__in=MEDIA_ACTIVITY_VERBS, item__isnull=False))
+
+
+def _with_live_targets(queryset):
+    """Hide diary activity after the backing log is gone."""
+    return queryset.annotate(
+        diary_exists=Exists(DiaryEntry.objects.filter(id=OuterRef("target_id"))),
+    ).filter(~Q(target_type="diary") | Q(diary_exists=True))
 
 
 def activity_payload(activity, request=None, viewer=None):
     """Serialize a materialized feed item."""
+    snapshot = activity.snapshot or {}
+    object_payload = {
+        "type": activity.target_type,
+        "id": activity.target_id,
+        **snapshot,
+    }
+    if activity.verb == "progress_updated":
+        object_payload = {
+            "type": activity.target_type,
+            "id": activity.target_id,
+            "previous": snapshot.get("previous"),
+            "current": snapshot.get("current"),
+        }
     return {
         "id": activity.id,
         "type": activity.verb,
         "created_at": activity.created_at,
         "actor": user_summary(activity.actor, request=request),
-        "media": {
-            "title": activity.item.title if activity.item else None,
-            "ref": media_ref_from_item(activity.item) if activity.item else None,
-            "image_url": image_url(request, activity.item.image) if activity.item else None,
-        },
-        "object": {
-            "type": activity.target_type,
-            "id": activity.target_id,
-            **activity.snapshot,
-        },
+        "media": media_summary_from_item(activity.item, request=request) if activity.item else None,
+        "object": object_payload,
         "viewer": {
             "can_view": True,
             "has_liked": bool(

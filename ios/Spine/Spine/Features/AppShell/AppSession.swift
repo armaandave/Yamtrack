@@ -13,9 +13,19 @@ final class AppSession {
     var errorMessage: String?
 
     let repositories: AppRepositories
+    let letterboxdImportCoordinator: LetterboxdImportCoordinator
+    let storygraphImportCoordinator: StoryGraphImportCoordinator
 
     init(repositories: AppRepositories) {
         self.repositories = repositories
+        self.letterboxdImportCoordinator = LetterboxdImportCoordinator(importRepository: repositories.imports)
+        self.storygraphImportCoordinator = StoryGraphImportCoordinator(importRepository: repositories.imports)
+        self.letterboxdImportCoordinator.onUnauthorized = { [weak self] in
+            Task { await self?.logout() }
+        }
+        self.storygraphImportCoordinator.onUnauthorized = { [weak self] in
+            Task { await self?.logout() }
+        }
     }
 
     func start() async {
@@ -26,7 +36,10 @@ final class AppSession {
 
         do {
             try await repositories.auth.refresh()
-            state = .signedIn(nil)
+            let profile = try? await repositories.profile.me()
+            state = .signedIn(profile.map(AuthUser.init(profile:)))
+            letterboxdImportCoordinator.resumeIfNeeded()
+            storygraphImportCoordinator.resumeIfNeeded()
         } catch {
             await repositories.auth.logout()
             errorMessage = error.localizedDescription
@@ -39,6 +52,8 @@ final class AppSession {
         do {
             let user = try await repositories.auth.login(usernameOrEmail: usernameOrEmail, password: password)
             state = .signedIn(user)
+            letterboxdImportCoordinator.resumeIfNeeded()
+            storygraphImportCoordinator.resumeIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -49,6 +64,8 @@ final class AppSession {
         do {
             let user = try await repositories.auth.register(username: username, email: email, password: password)
             state = .signedIn(user)
+            letterboxdImportCoordinator.resumeIfNeeded()
+            storygraphImportCoordinator.resumeIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -56,6 +73,14 @@ final class AppSession {
 
     func logout() async {
         await repositories.auth.logout()
+        letterboxdImportCoordinator.clearFinishedJob()
+        storygraphImportCoordinator.clearFinishedJob()
         state = .signedOut
+    }
+}
+
+private extension AuthUser {
+    init(profile: UserProfile) {
+        self.init(id: profile.id, username: profile.username, displayName: profile.displayName, isPrivate: profile.isPrivate)
     }
 }

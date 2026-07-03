@@ -11,9 +11,12 @@ from django.utils.text import slugify
 from app import helpers
 from app.models import MediaTypes, Sources
 from app.providers import services
+from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
+NO_LOGO = "__no_logo__"
+DETAIL_CACHE_VERSION = "v2"
 base_params = {
     "api_key": settings.TMDB_API,
     "language": settings.TMDB_LANG,
@@ -102,9 +105,13 @@ def search(media_type, query, page):
                 "media_type": media_type,
                 "title": get_title(media),
                 "image": get_image_url(media["poster_path"]),
+                "popularity": media.get("popularity"),
+                "vote_count": media.get("vote_count"),
+                "release_date": media.get("release_date") or media.get("first_air_date"),
             }
             for media in response["results"]
         ]
+        results = rank_results(query, results, media_type)
 
         total_results = response["total_results"]
         per_page = 20  # TMDB always returns 20 results per page
@@ -117,6 +124,95 @@ def search(media_type, query, page):
 
         cache.set(cache_key, data)
 
+    return data
+
+
+def _normalize_name(value):
+    return slugify(str(value or "")).casefold()
+
+
+def _genre_map(media_type):
+    cache_key = f"{Sources.TMDB.value}_{media_type}_genre_map"
+    data = cache.get(cache_key)
+    if data is None:
+        url = f"{base_url}/genre/{media_type}/list"
+        try:
+            response = services.api_request(Sources.TMDB.value, "GET", url, params=base_params)
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+        data = {_normalize_name(genre["name"]): genre["id"] for genre in response.get("genres", [])}
+        cache.set(cache_key, data, 60 * 60 * 24 * 7)
+    return data
+
+
+TV_GENRE_ALIASES = {
+    "action": "action-adventure",
+    "adventure": "action-adventure",
+    "fantasy": "sci-fi-fantasy",
+    "science-fiction": "sci-fi-fantasy",
+    "sci-fi": "sci-fi-fantasy",
+    "scifi": "sci-fi-fantasy",
+}
+
+
+def _genre_id(media_type, genre):
+    genres = _genre_map(media_type)
+    normalized = _normalize_name(genre)
+    genre_id = genres.get(normalized)
+    if genre_id or media_type != MediaTypes.TV.value:
+        return genre_id
+    alias = TV_GENRE_ALIASES.get(normalized)
+    return genres.get(alias)
+
+
+def discover(media_type, *, page=1, genre=None, year=None):
+    """Discover TMDB movies/TV shows by genre and/or year."""
+    cache_key = f"discover_{Sources.TMDB.value}_{media_type}_{genre}_{year}_{page}_{settings.TMDB_LANG}_{settings.TMDB_NSFW}"
+    data = cache.get(cache_key)
+    if data is None:
+        params = {
+            **base_params,
+            "page": page,
+            "sort_by": "vote_count.desc",
+        }
+        if settings.TMDB_NSFW:
+            params["include_adult"] = "true"
+        if genre:
+            genre_id = _genre_id(media_type, genre)
+            if not genre_id:
+                msg = f"Unknown TMDB {media_type} genre: {genre}"
+                raise ValueError(msg)
+            params["with_genres"] = genre_id
+        if year:
+            params["primary_release_year" if media_type == MediaTypes.MOVIE.value else "first_air_date_year"] = year
+
+        try:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                f"{base_url}/discover/{media_type}",
+                params=params,
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        results = [
+            {
+                "media_id": media["id"],
+                "source": Sources.TMDB.value,
+                "media_type": media_type,
+                "title": get_title(media),
+                "image": get_image_url(media.get("poster_path")),
+                "backdrop_path": media.get("backdrop_path"),
+                "popularity": media.get("popularity"),
+                "vote_count": media.get("vote_count"),
+                "release_date": media.get("release_date") or media.get("first_air_date"),
+            }
+            for media in response.get("results", [])
+        ]
+        data = helpers.format_search_response(page, 20, response.get("total_results", len(results)), results)
+        data["per_page"] = 20
+        cache.set(cache_key, data, 60 * 60 * 6)
     return data
 
 
@@ -205,6 +301,7 @@ def get_crew(credits, limit=15):
                 "rank": rank,
                 "order": order,
                 "person_id": member.get("id"),
+                "image": get_image_url(member.get("profile_path")),
             },
         )
 
@@ -229,6 +326,7 @@ def get_crew(credits, limit=15):
                 "roles": roles,
                 "person_id": entry.get("person_id"),
                 "job": (roles or [""])[0],
+                "image": entry.get("image"),
             }
         )
 
@@ -270,7 +368,7 @@ def get_creator_id(created_by):
 
 def movie(media_id):
     """Return the metadata for the selected movie from The Movie Database."""
-    cache_key = f"{Sources.TMDB.value}_{MediaTypes.MOVIE.value}_{media_id}"
+    cache_key = f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.MOVIE.value}_{media_id}"
     data = cache.get(cache_key)
 
     if data is None:
@@ -322,6 +420,7 @@ def movie(media_id):
             "title": response["title"],
             "max_progress": 1,
             "image": get_image_url(response["poster_path"]),
+            "backdrop_path": response.get("backdrop_path"),
             "synopsis": get_synopsis(response["overview"]),
             "genres": get_genres(response["genres"]),
             "score": get_score(response["vote_average"]),
@@ -426,7 +525,7 @@ def fetch_and_cache_seasons(media_id, season_numbers, tv_data):
         # Cache TV metadata if we haven't fetched it yet
         if fetched_tv_data is None:
             fetched_tv_data = process_tv(response)
-            tv_cache_key = f"{Sources.TMDB.value}_{MediaTypes.TV.value}_{media_id}"
+            tv_cache_key = f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.TV.value}_{media_id}"
             cache.set(tv_cache_key, fetched_tv_data)
 
         # Process and cache each season
@@ -467,7 +566,7 @@ def tv_with_seasons(media_id, season_numbers):
     if not season_numbers:
         return tv(media_id)
 
-    tv_cache_key = f"{Sources.TMDB.value}_{MediaTypes.TV.value}_{media_id}"
+    tv_cache_key = f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.TV.value}_{media_id}"
     tv_data = cache.get(tv_cache_key)
 
     cached_seasons, uncached_seasons = get_cached_seasons(media_id, season_numbers)
@@ -492,7 +591,7 @@ def tv_with_seasons(media_id, season_numbers):
 
 def tv(media_id):
     """Return the metadata for the selected tv show from The Movie Database."""
-    cache_key = f"{Sources.TMDB.value}_{MediaTypes.TV.value}_{media_id}"
+    cache_key = f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.TV.value}_{media_id}"
     data = cache.get(cache_key)
 
     if data is None:
@@ -533,6 +632,7 @@ def process_tv(response):
         "title": response["name"],
         "max_progress": num_episodes,
         "image": get_image_url(response["poster_path"]),
+        "backdrop_path": response.get("backdrop_path"),
         "synopsis": get_synopsis(response["overview"]),
         "genres": get_genres(response["genres"]),
         "score": get_score(response["vote_average"]),
@@ -948,7 +1048,7 @@ def get_tv_rating(content_ratings):
 
 def person_page(person_id):
     """Return person details and credits for the person page."""
-    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v5"
+    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v6"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1093,6 +1193,11 @@ def person_page(person_id):
             "name": response.get("name") or "",
             "image": get_image_url(response.get("profile_path")),
             "biography": (response.get("biography") or "").strip() or None,
+            "known_for_department": response.get("known_for_department"),
+            "birth_date": response.get("birthday"),
+            "death_date": response.get("deathday"),
+            "place_of_birth": response.get("place_of_birth"),
+            "popularity": response.get("popularity"),
             "credits": credits,
         }
 
@@ -1169,6 +1274,108 @@ def get_poster_images(media_id, media_type, season_number=None):
         cache.set(cache_key, data, 86400)
         
     return data
+
+
+def get_backdrop_images(media_id, media_type):
+    """Get all available backdrop images for a movie or TV show from TMDB."""
+    if media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
+        raise ValueError("Backdrop images are only available for movies and TV shows")
+
+    cache_key = f"{Sources.TMDB.value}_{media_type}_backdrops_{media_id}"
+    data = cache.get(cache_key)
+
+    if data is None:
+        url = f"{base_url}/{media_type}/{media_id}/images"
+        params = {**base_params}
+        del params["language"]
+
+        try:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                url,
+                params=params,
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        backdrops = []
+        for backdrop in response.get("backdrops", []):
+            file_path = backdrop["file_path"]
+            backdrops.append({
+                "url": f"https://image.tmdb.org/t/p/original{file_path}",
+                "thumbnail_url": f"https://image.tmdb.org/t/p/w780{file_path}",
+                "width": backdrop["width"],
+                "height": backdrop["height"],
+                "aspect_ratio": backdrop["aspect_ratio"],
+                "vote_average": backdrop.get("vote_average", 0),
+                "vote_count": backdrop.get("vote_count", 0),
+                "language": backdrop.get("iso_639_1"),
+            })
+
+        data = sorted(
+            backdrops,
+            key=lambda x: (x["vote_average"], x["vote_count"]),
+            reverse=True,
+        )
+        cache.set(cache_key, data, 86400)
+
+    return data
+
+
+def get_title_logo(media_id, media_type):
+    """Return the best title logo for a movie or TV show from TMDB."""
+    if media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
+        raise ValueError("Title logos are only available for movies and TV shows")
+
+    cache_key = f"{Sources.TMDB.value}_{media_type}_logo_{media_id}"
+    data = cache.get(cache_key)
+    if data == NO_LOGO:
+        return None
+
+    if data is None:
+        url = f"{base_url}/{media_type}/{media_id}/images"
+        params = {**base_params}
+        params.pop("language", None)
+
+        try:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                url,
+                params=params,
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        lang = getattr(settings, "TMDB_LANG", "en") or "en"
+        logos = response.get("logos", [])
+        candidates = [logo for logo in logos if logo.get("iso_639_1") == lang]
+        if not candidates:
+            candidates = [logo for logo in logos if logo.get("iso_639_1") is None]
+
+        if not candidates:
+            data = NO_LOGO
+        else:
+            logo = max(
+                candidates,
+                key=lambda item: (
+                    item.get("vote_average") or 0,
+                    item.get("vote_count") or 0,
+                    item.get("width") or 0,
+                ),
+            )
+            file_path = logo["file_path"]
+            data = {
+                "url": f"https://image.tmdb.org/t/p/w500{file_path}",
+                "width": logo.get("width"),
+                "height": logo.get("height"),
+                "aspect_ratio": logo.get("aspect_ratio"),
+            }
+
+        cache.set(cache_key, data, 86400)
+
+    return None if data == NO_LOGO else data
 
 
 def watch_provider_regions():

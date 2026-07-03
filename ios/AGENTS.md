@@ -14,8 +14,8 @@ Spine iOS is a **native SwiftUI client** for the Spine media tracker — one app
 **Current maintainer direction:**
 
 - **iOS-first delivery** — web UI in `src/` is not the focus; this app is the primary user surface.
-- **Backend is Django on a home server** (Docker) today; a **REST API** will be added in `src/` incrementally.
-- **Start with mock data** — UI and navigation ship before every API endpoint exists.
+- **Backend is Django on a home server** (Docker) today; the **REST API** in `src/` is the data source for the app.
+- **Live API only** — the app always talks to the Django API; there is no offline/fake data layer in the client.
 
 Reference: `spine-prd.md` (product direction; PRD still says web-first — iOS supersedes that for this repo).
 
@@ -29,10 +29,10 @@ Reference: `spine-prd.md` (product direction; PRD still says web-first — iOS s
 | Language            | Swift 5.9+                                                             |
 | UI                  | SwiftUI                                                                |
 | Minimum iOS         | **iOS 17** (unless user requests lower)                                |
-| Architecture        | **MVVM** + **repository protocol** (mock / live swap)                  |
-| Networking (later)  | `URLSession` + `Codable` — no third-party HTTP client unless requested |
+| Architecture        | **MVVM** + **repository protocol** (live API implementations)          |
+| Networking          | `URLSession` + `Codable` — no third-party HTTP client unless requested   |
 | Images              | `AsyncImage` first; Kingfisher/Nuke only if needed                     |
-| Persistence (later) | In-memory → Keychain (tokens) → optional SwiftData cache               |
+| Persistence (later) | Keychain (tokens) → optional SwiftData cache                           |
 | Dependencies        | **Swift Package Manager only** — no CocoaPods                          |
 
 
@@ -53,9 +53,8 @@ ios/
     ├── Core/
     │   ├── Models/           # Codable types — mirror API JSON shape
     │   ├── Networking/       # APIClient, Endpoints, AuthTokenStore
-    │   │   └── Mock/         # Mock repositories + fixture JSON
     │   ├── Design/           # colors, spacing, typography (optional)
-    │   └── Environment/      # AppEnvironment (.mock / .live)
+    │   └── Environment/      # AppEnvironment, AppConfig
     ├── Features/
     │   ├── Auth/
     │   ├── Search/
@@ -66,7 +65,6 @@ ios/
     │   ├── Lists/
     │   └── Feed/             # after social API exists
     └── Resources/
-        └── Fixtures/         # static JSON for previews & mocks
 ```
 
 **Rules:**
@@ -87,24 +85,23 @@ protocol MediaRepository {
     func detail(id: Int, mediaType: MediaType) async throws -> MediaDetail
 }
 
-struct MockMediaRepository: MediaRepository { ... }
 struct APIMediaRepository: MediaRepository { ... }
 ```
 
 - Views and ViewModels depend on **protocols**, not concrete API types.
 - Inject repositories via environment or initializer (avoid singletons except `AppEnvironment`).
+- Unit tests may use small in-test fakes; do not add app-shipped fake data layers.
 
 ### 4.2 App environment
 
 ```swift
 enum AppEnvironment {
-    case mock
-    case live(baseURL: URL)
+    static var apiClient: APIClient { ... }
 }
 ```
 
-- **Default in Simulator: `.mock`** until API v1 is stable.
-- Single switch point in `SpineApp` — not per-screen flags.
+- `AppRepositories.current()` always wires live API repositories.
+- API base URL comes from `AppConfig` / `SPINE_API_BASE_URL`.
 
 ### 4.3 ViewModels
 
@@ -122,7 +119,7 @@ enum AppEnvironment {
 
 ## 5) Backend contract (API)
 
-**Status:** REST API **not built yet** in Django. Design iOS models against the **planned** v1 contract; adjust when `docs/api/` or OpenAPI lands.
+Design iOS models against the v1 contract; adjust when `docs/api/` or OpenAPI lands.
 
 ### 5.1 Planned base URL
 
@@ -143,9 +140,7 @@ enum AppEnvironment {
 | Lists    | CRUD `/api/v1/lists/`                        | after core tracking            |
 
 
-Until endpoints exist, **Mock repositories return fixture JSON** from `Resources/Fixtures/`.
-
-### 5.3 Auth (when live)
+### 5.3 Auth
 
 - Store refresh token in **Keychain**.
 - Attach `Authorization: Bearer …` on API requests.
@@ -155,7 +150,7 @@ Until endpoints exist, **Mock repositories return fixture JSON** from `Resources
 
 - Map HTTP status to user-visible messages.
 - 401 → clear tokens, return to login.
-- Network offline → cached/mock fallback only if explicitly designed; default to error UI.
+- Network offline → show error UI; do not silently substitute fake data.
 
 ---
 
@@ -163,7 +158,7 @@ Until endpoints exist, **Mock repositories return fixture JSON** from `Resources
 
 **In scope:**
 
-1. Auth screens (UI only → wire to API when ready)
+1. Auth screens wired to API
 2. Search (multi-type or type filter)
 3. Media detail (poster, metadata, user status)
 4. Track / rate / progress update
@@ -193,18 +188,38 @@ Use SF Symbols unless custom assets are provided. No web/Tailwind parity require
 
 ---
 
-## 8) Non-negotiable rules
+## 8) ShipSwift / SwiftUI skills
+
+For SwiftUI UI work, consider the installed ShipSwift skills:
+
+- `add-component` for reusable UI components, loading states, empty states, cards, buttons, forms, charts, and visual polish.
+- `build-feature` for larger UI features such as onboarding, settings, camera, chat, paywall, auth, or multi-screen flows.
+- `explore-recipes` when looking for relevant ShipSwift recipes before implementing.
+
+Use these skills only when directly relevant to the requested SwiftUI UI change.
+
+Rules:
+
+- Do not use ShipSwift for backend, model, data, networking, test, build-system, or bug-fix work unless the task is specifically about SwiftUI UI.
+- Prefer the smallest relevant recipe/component.
+- Do not introduce broad ShipSwift architecture, dependencies, naming conventions, or modules unless explicitly requested.
+- Keep the result consistent with the existing Pylon design system and file structure.
+- Keep diffs minimal.
+
+---
+
+## 9) Non-negotiable rules
 
 1. **No API keys** in the iOS repo (TMDB, MAL, IGDB, etc.).
 2. **No AGPL backend code** copied into Swift — client is a separate work; keep it a thin HTTP client.
 3. **No secrets in git** — base URLs for dev OK; tokens never committed.
-4. **HTTPS only** for non-local builds (App Transport Security); tunnel URL is fine for dev
-5. **Previews required** — every significant View should have `#Preview` using mock data.
-6. **Don’t block on backend** — ship UI with mocks; integrate API endpoint-by-endpoint.
+4. **HTTPS only** for non-local builds (App Transport Security); tunnel URL is fine for dev.
+5. **No app-shipped fake data** — previews and the running app use the live API (or are omitted when the API is unavailable).
+6. **Coordinate with backend** — if an endpoint is missing, add it in Django; do not fake it in the client.
 
 ---
 
-## 9) Getting started (human + agent)
+## 10) Getting started (human + agent)
 
 ### Create the Xcode project (once)
 
@@ -215,13 +230,12 @@ Use SF Symbols unless custom assets are provided. No web/Tailwind parity require
 
 ### First implementation order
 
-1. `AppEnvironment` + `MockMediaRepository`
+1. `AppEnvironment` + `APIClient` + `APIMediaRepository`
 2. `Core/Models` — `MediaType`, `MediaSummary`, `TrackingStatus`, `DiaryEntry`
-3. `Features/Search` — search UI with mock results
-4. `Features/MediaDetail` — detail from mock
-5. `Features/Diary` — list from mock
+3. `Features/Search` — search UI against live API
+4. `Features/MediaDetail` — detail from API
+5. `Features/Diary` — list from API
 6. Tab shell + navigation
-7. When Django exposes `/api/v1/…` — add `APIClient` + `APIMediaRepository`
 
 ### Run
 
@@ -232,17 +246,17 @@ Use SF Symbols unless custom assets are provided. No web/Tailwind parity require
 
 ---
 
-## 10) Testing
+## 11) Testing
 
 - **Unit tests:** ViewModels and JSON decoding (`SpineTests/`)
 - **UI tests:** defer until core flows stable
-- Use fixture JSON for decoder tests — same files as mocks
+- Use inline JSON fixtures in tests for decoder coverage — keep test data in `SpineTests/`, not in the app target
 
 No XCTest required for every change; required for non-trivial decoding/network logic.
 
 ---
 
-## 11) Attribution (App Store / About)
+## 12) Attribution (App Store / About)
 
 About screen must credit third-party data sources when showing their metadata, e.g.:
 
@@ -252,7 +266,7 @@ Match backend/provider requirements; see Django settings for which providers are
 
 ---
 
-## 12) Coordination with backend
+## 13) Coordination with backend
 
 When adding an iOS feature that needs data:
 
@@ -264,13 +278,12 @@ Agent working **only on iOS** should note API gaps in the PR/summary, not silent
 
 ---
 
-## 13) Change handoff template
+## 14) Change handoff template
 
 When completing non-trivial iOS work, summarize:
 
 1. What changed (screens, flows)
-2. Mock vs live API status
-3. Backend dependencies (endpoints still needed)
-4. How to run/preview
+2. API endpoints used or still needed
+3. Backend dependencies
+4. How to run/preview (including API availability)
 5. Known limitations
-

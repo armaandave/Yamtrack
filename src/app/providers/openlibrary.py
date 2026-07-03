@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ from django.core.cache import cache
 from app import helpers
 from app.models import MediaTypes, Sources
 from app.providers import services
+from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,11 @@ def search(query, page):
     if data is None:
         params = {
             "q": query,
-            "fields": "title,key,editions,editions.key,editions.cover_i,editions.title",
+            "fields": (
+                "title,key,cover_i,author_name,edition_count,first_publish_year,"
+                "ratings_count,ratings_average,editions,editions.key,"
+                "editions.cover_i,editions.title"
+            ),
             "limit": settings.PER_PAGE,
             "page": page,
         }
@@ -55,32 +61,10 @@ def search(query, page):
         except requests.RequestException as e:
             handle_error(e)
 
-        results = []
-        for doc in response.get("docs", []):
-            if doc["editions"]["docs"] == []:
-                continue
-
-            top_edition = doc["editions"]["docs"][0]
-            media_id = extract_openlibrary_id(top_edition["key"])
-            title = doc["title"]
-            edition_title = top_edition["title"]
-
-            if edition_title != title:
-                result_title = f"{edition_title}: {title}"
-            else:
-                result_title = title
-
-            results.append(
-                {
-                    "media_id": media_id,
-                    "source": Sources.OPENLIBRARY.value,
-                    "media_type": MediaTypes.BOOK.value,
-                    "title": result_title,
-                    "image": get_image_url(top_edition),
-                },
-            )
+        results = [result for doc in response.get("docs", []) if (result := _search_result(doc))]
 
         total_results = response["numFound"]
+        results = rank_results(query, results, MediaTypes.BOOK.value)
         data = helpers.format_search_response(
             page,
             settings.PER_PAGE,
@@ -90,6 +74,82 @@ def search(query, page):
 
         cache.set(cache_key, data)
     return data
+
+
+def discover(*, page=1, page_size=None, genre=None, year=None):
+    """Browse Open Library books by subject and/or first publish year."""
+    per_page = page_size or settings.PER_PAGE
+    q = _discover_query(genre=genre, year=year)
+    cache_key = f"discover_{Sources.OPENLIBRARY.value}_{MediaTypes.BOOK.value}_{q}_{page}_{per_page}"
+    data = cache.get(cache_key)
+
+    if data is None:
+        params = {
+            "q": q,
+            "fields": (
+                "title,key,cover_i,author_name,edition_count,first_publish_year,"
+                "ratings_count,ratings_average,editions,editions.key,"
+                "editions.cover_i,editions.title"
+            ),
+            "limit": per_page,
+            "page": page,
+            "sort": "ratings_count desc",
+        }
+
+        try:
+            response = services.api_request(
+                Sources.OPENLIBRARY.value,
+                "GET",
+                search_url,
+                params=params,
+                headers=headers,
+            )
+        except requests.RequestException as e:
+            handle_error(e)
+
+        results = [result for doc in response.get("docs", []) if (result := _search_result(doc))]
+        data = helpers.format_search_response(page, per_page, response["numFound"], results)
+        data["per_page"] = per_page
+        cache.set(cache_key, data)
+
+    return data
+
+
+def _search_result(doc):
+    editions = (doc.get("editions") or {}).get("docs") or []
+    if not editions:
+        return None
+
+    top_edition = editions[0]
+    media_id = extract_openlibrary_id(top_edition["key"])
+    title = doc["title"]
+    edition_title = top_edition["title"]
+    result_title = f"{edition_title}: {title}" if edition_title != title else title
+
+    return {
+        "media_id": media_id,
+        "source": Sources.OPENLIBRARY.value,
+        "media_type": MediaTypes.BOOK.value,
+        "title": result_title,
+        "image": get_image_url(top_edition),
+        "author_name": doc.get("author_name"),
+        "edition_count": doc.get("edition_count"),
+        "first_publish_year": doc.get("first_publish_year"),
+        "ratings_count": doc.get("ratings_count"),
+        "ratings_average": doc.get("ratings_average"),
+        "release_date": str(doc["first_publish_year"]) if doc.get("first_publish_year") else None,
+    }
+
+
+def _discover_query(*, genre=None, year=None):
+    parts = []
+    if genre:
+        subject = str(genre).strip().replace('"', r"\"")
+        subject_key = re.sub(r"[^a-z0-9]+", "_", subject.casefold()).strip("_")
+        parts.append(f'(subject_key:{subject_key} OR subject:"{subject}")')
+    if year:
+        parts.append(f"first_publish_year:{year}")
+    return " AND ".join(parts) or "*"
 
 
 def extract_openlibrary_id(path):
@@ -280,7 +340,7 @@ def book(media_id):
 
 async def async_book(media_id):
     """Asynchronous implementation of book metadata retrieval."""
-    cache_key = f"{Sources.OPENLIBRARY.value}_{MediaTypes.BOOK.value}_{media_id}_v2"
+    cache_key = f"{Sources.OPENLIBRARY.value}_{MediaTypes.BOOK.value}_{media_id}_v3"
     data = cache.get(cache_key)
 
     if data is None:
@@ -746,8 +806,7 @@ async def get_ratings(response_work):
             count = summary.get("count")
 
             if average and count:
-                # Convert to 10-point scale (multiply by 2) and round to 1 decimal place
-                score = round(summary["average"] * 2, 1)
+                score = round(summary["average"], 1)
                 score_count = summary["count"]
                 return score, score_count
 
