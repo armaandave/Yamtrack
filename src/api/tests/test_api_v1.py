@@ -1440,7 +1440,7 @@ class ApiV1FoundationTests(TestCase):
             "cached_contributors": "Fallback Name",
             "contributions": [
                 {"contribution": "Illustrator", "author": {"id": 1, "name": "Artist"}},
-                {"contribution": "Author", "author": {"id": 80626, "name": "Dan Wells"}},
+                {"contribution": None, "author": {"id": 80626, "name": "Dan Wells"}},
             ],
         })
 

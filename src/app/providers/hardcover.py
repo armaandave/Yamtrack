@@ -504,7 +504,8 @@ def get_authors(book_data):
     authors = []
     seen = set()
     for contribution in book_data.get("contributions") or []:
-        if contribution.get("contribution") != "Author":
+        role = contribution.get("contribution")
+        if role and role != "Author":
             continue
         author = contribution.get("author") or {}
         author_id = author.get("id")
