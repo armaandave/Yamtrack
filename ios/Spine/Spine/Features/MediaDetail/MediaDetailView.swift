@@ -1426,19 +1426,43 @@ struct MediaDetailView: View {
         let credits = rawAuthors.compactMap { value -> CreditDisplay? in
             if let object = value.objectValue {
                 guard let name = object["name"]?.displayString, !name.isEmpty else { return nil }
-                let source = object["source"]?.displayString
-                let personId = object["person_id"]?.displayString
-                let ref = source.flatMap { source in
-                    personId.flatMap { personId in
-                        personId.isEmpty ? nil : PersonRef(source: source, id: personId)
-                    }
-                }
-                return CreditDisplay(name: name, subtitle: "Author", imageUrl: nil, personRef: ref)
+                let source = object["source"]?.displayString ?? bookAuthorSourceFallback(detail)
+                let personId = object["person_id"]?.displayString ?? object["id"]?.displayString
+                let ref = bookAuthorRef(source: source, personId: personId ?? name)
+                return CreditDisplay(name: name, subtitle: "Author", imageUrl: bookAuthorImageURL(object), personRef: ref)
             }
             guard let name = value.displayString, !name.isEmpty else { return nil }
-            return CreditDisplay(name: name, subtitle: "Author", imageUrl: nil, personRef: nil)
+            return CreditDisplay(
+                name: name,
+                subtitle: "Author",
+                imageUrl: nil,
+                personRef: bookAuthorRef(source: bookAuthorSourceFallback(detail), personId: name)
+            )
         }
-        return credits.isEmpty ? authors(detail).map { CreditDisplay(name: $0, subtitle: "Author", imageUrl: nil, personRef: nil) } : credits
+        return credits.isEmpty ? authors(detail).map {
+            CreditDisplay(
+                name: $0,
+                subtitle: "Author",
+                imageUrl: nil,
+                personRef: bookAuthorRef(source: bookAuthorSourceFallback(detail), personId: $0)
+            )
+        } : credits
+    }
+
+    private func bookAuthorSourceFallback(_ detail: MediaDetail) -> String? {
+        ["hardcover", "openlibrary"].contains(detail.ref.source) ? detail.ref.source : nil
+    }
+
+    private func bookAuthorRef(source: String?, personId: String?) -> PersonRef? {
+        guard let source, let personId, !source.isEmpty, !personId.isEmpty else { return nil }
+        return PersonRef(source: source, id: personId)
+    }
+
+    private func bookAuthorImageURL(_ object: [String: JSONValue]) -> String? {
+        object["image_url"]?.displayString
+            ?? object["image"]?.displayString
+            ?? object["profile_url"]?.displayString
+            ?? object["cached_image"]?.displayString
     }
 
     private func releaseDate(_ detail: MediaDetail) -> String? {

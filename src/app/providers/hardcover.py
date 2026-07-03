@@ -232,6 +232,7 @@ def book(media_id):
               author {
                 id
                 name
+                cached_image(path: "url")
               }
             }
             default_cover_edition {
@@ -520,6 +521,8 @@ def get_authors(book_data):
         if author_id:
             item["person_id"] = str(author_id)
             item["source"] = Sources.HARDCOVER.value
+        if author.get("cached_image"):
+            item["image_url"] = author["cached_image"]
         authors.append(item)
 
     if authors:
@@ -560,6 +563,7 @@ def person_page(person_id):
                 release_date
                 rating
                 ratings_count
+                reviews_count
                 users_count
               }
             }
@@ -600,10 +604,19 @@ def person_page(person_id):
                 "year": str(year) if year else None,
                 "release_date": book_data.get("release_date"),
                 "rating": book_data.get("rating"),
-                "vote_count": book_data.get("ratings_count") or book_data.get("users_count") or 0,
+                "ratings_count": book_data.get("ratings_count") or 0,
+                "reviews_count": book_data.get("reviews_count") or 0,
+                "users_count": book_data.get("users_count") or 0,
             })
 
-        credits.sort(key=lambda item: (-float(item.get("vote_count") or 0), item.get("title") or ""))
+        credits.sort(
+            key=lambda item: (
+                -float(item.get("users_count") or 0),
+                -float(item.get("ratings_count") or 0),
+                -float(item.get("reviews_count") or 0),
+                item.get("title") or "",
+            ),
+        )
         data = {
             "source": Sources.HARDCOVER.value,
             "person_id": str(author.get("id") or person_id),
