@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Git branch to deploy"
-        required: true
-        default: "myapp-main"
+        description: "Git branch to deploy. Leave blank to deploy the selected workflow branch."
+        required: false
+        default: ""
         type: string
 
 jobs:
@@ -17,8 +17,6 @@ jobs:
       - name: Deploy requested branch
         run: |
           cd /Users/armaandave/projects/spine
-          branch="${{ inputs.branch }}"
-          git fetch origin "$branch"
-          git checkout "$branch"
-          git reset --hard "origin/$branch"
+          requested_branch="${{ inputs.branch }}"
+          branch="${requested_branch:-$GITHUB_REF_NAME}"
           ./scripts/codex-mobile-deploy-backend.sh "$branch"
