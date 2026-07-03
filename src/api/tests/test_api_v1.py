@@ -1388,53 +1388,85 @@ class ApiV1FoundationTests(TestCase):
     def test_hardcover_person_page_returns_author_profile_and_books(self, api_request_mock):
         from app.providers import hardcover
 
-        api_request_mock.return_value = {
-            "data": {
-                "authors": [
-                    {
-                        "id": 80626,
-                        "name": "Dan Wells",
-                        "bio": "Author biography.",
-                        "born_date": "1977-03-04",
-                        "born_year": 1977,
-                        "death_date": None,
-                        "death_year": None,
-                        "books_count": 12,
-                        "cached_image": "https://example.com/dan.jpg",
-                        "contributions": [
-                            {
-                                "contribution": "Author",
-                                "book": {
-                                    "id": 1,
-                                    "title": "Less Popular Book",
-                                    "cached_image": "https://example.com/less.jpg",
-                                    "release_year": 2010,
-                                    "release_date": "2010-03-30",
-                                    "rating": 4.8,
-                                    "ratings_count": 2000,
-                                    "reviews_count": 100,
-                                    "users_count": 100,
-                                },
-                            },
-                            {
-                                "contribution": "Author",
-                                "book": {
-                                    "id": 328491,
-                                    "title": "I Am Not a Serial Killer",
-                                    "cached_image": "https://example.com/book.jpg",
-                                    "release_year": 2009,
-                                    "release_date": "2009-03-30",
-                                    "rating": 3.8,
-                                    "ratings_count": 1000,
-                                    "reviews_count": 50,
-                                    "users_count": 2000,
-                                },
-                            },
-                        ],
-                    },
-                ],
+        api_request_mock.side_effect = [
+            {
+                "data": {
+                    "authors": [
+                        {
+                            "id": 80626,
+                            "name": "Dan Wells",
+                            "bio": "Author biography.",
+                            "born_date": "1977-03-04",
+                            "born_year": 1977,
+                            "death_date": None,
+                            "death_year": None,
+                            "books_count": 12,
+                            "cached_image": "https://example.com/dan.jpg",
+                            "contributions": [],
+                        },
+                    ],
+                },
             },
-        }
+            {
+                "data": {
+                    "by_id": [
+                        {
+                            "id": 1,
+                            "title": "Edited Anthology",
+                            "cached_image": "https://example.com/anthology.jpg",
+                            "release_year": 2010,
+                            "release_date": "2010-03-30",
+                            "rating": 4.8,
+                            "ratings_count": 2000,
+                            "reviews_count": 100,
+                            "users_count": 9000,
+                            "contributions": [
+                                {
+                                    "contribution": "Editor",
+                                    "author": {"id": 80626, "name": "Dan Wells"},
+                                },
+                            ],
+                        },
+                    ],
+                    "by_name": [
+                        {
+                            "id": 328491,
+                            "title": "I Am Not a Serial Killer",
+                            "cached_image": "https://example.com/book.jpg",
+                            "release_year": 2009,
+                            "release_date": "2009-03-30",
+                            "rating": 3.8,
+                            "ratings_count": 1000,
+                            "reviews_count": 50,
+                            "users_count": 2000,
+                            "contributions": [
+                                {
+                                    "contribution": "Author",
+                                    "author": {"id": 99, "name": "Dan Wells"},
+                                },
+                            ],
+                        },
+                        {
+                            "id": 2,
+                            "title": "Less Popular Authored Book",
+                            "cached_image": "https://example.com/less.jpg",
+                            "release_year": 2011,
+                            "release_date": "2011-03-30",
+                            "rating": 4.2,
+                            "ratings_count": 500,
+                            "reviews_count": 20,
+                            "users_count": 100,
+                            "contributions": [
+                                {
+                                    "contribution": "Author",
+                                    "author": {"id": 80626, "name": "Dan Wells"},
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ]
 
         response = hardcover.person_page("80626")
 
@@ -1447,7 +1479,8 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response["birth_date"], "1977-03-04")
         self.assertEqual(response["credits"][0]["media_type"], MediaTypes.BOOK.value)
         self.assertEqual(response["credits"][0]["media_id"], "328491")
-        self.assertEqual(response["credits"][1]["media_id"], "1")
+        self.assertEqual(response["credits"][1]["media_id"], "2")
+        self.assertEqual(response["credits"][2]["media_id"], "1")
 
     def test_hardcover_get_authors_returns_native_author_refs(self):
         from app.providers import hardcover
@@ -1456,14 +1489,10 @@ class ApiV1FoundationTests(TestCase):
             "cached_contributors": "Fallback Name",
             "contributions": [
                 {"contribution": "Illustrator", "author": {"id": 1, "name": "Artist"}},
-<<<<<<< HEAD
-                {"contribution": None, "author": {"id": 80626, "name": "Dan Wells"}},
-=======
                 {
-                    "contribution": "Author",
+                    "contribution": None,
                     "author": {"id": 80626, "name": "Dan Wells", "cached_image": "https://example.com/dan.jpg"},
                 },
->>>>>>> 4a6ae905 (author fixes)
             ],
         })
 

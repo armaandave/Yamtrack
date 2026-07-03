@@ -263,7 +263,7 @@ struct PersonDetailView: View {
 
                 Spacer()
 
-                if !types.isEmpty {
+                if types.count > 1 {
                     Picker("Credit type", selection: $selectedFilmographyType) {
                         ForEach(types) { type in
                             Text(type.title).tag(type)

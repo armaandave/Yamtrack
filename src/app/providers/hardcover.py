@@ -534,9 +534,12 @@ def get_authors(book_data):
     return None
 
 
+AUTHOR_BOOK_LIMIT = 500
+
+
 def person_page(person_id):
     """Return Hardcover author details and book credits for the person page."""
-    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v1"
+    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v2"
     data = cache.get(cache_key)
 
     if data is None:
@@ -553,7 +556,7 @@ def person_page(person_id):
             slug
             books_count
             cached_image(path: "url")
-            contributions(where: {contributable_type: {_eq: "Book"}}) {
+            contributions(where: {contributable_type: {_eq: "Book"}}, limit: 100) {
               contribution
               book {
                 id
@@ -585,38 +588,7 @@ def person_page(person_id):
         if not author:
             services.raise_not_found_error(Sources.HARDCOVER.value, person_id, "person")
 
-        credits = []
-        seen = set()
-        for contribution in author.get("contributions") or []:
-            book_data = contribution.get("book") or {}
-            book_id = book_data.get("id")
-            if not book_id or book_id in seen:
-                continue
-            seen.add(book_id)
-            year = book_data.get("release_year")
-            credits.append({
-                "media_type": MediaTypes.BOOK.value,
-                "source": Sources.HARDCOVER.value,
-                "media_id": str(book_id),
-                "title": book_data.get("title") or "",
-                "image": book_data.get("cached_image") or settings.IMG_NONE,
-                "roles": [contribution.get("contribution") or "Author"],
-                "year": str(year) if year else None,
-                "release_date": book_data.get("release_date"),
-                "rating": book_data.get("rating"),
-                "ratings_count": book_data.get("ratings_count") or 0,
-                "reviews_count": book_data.get("reviews_count") or 0,
-                "users_count": book_data.get("users_count") or 0,
-            })
-
-        credits.sort(
-            key=lambda item: (
-                -float(item.get("users_count") or 0),
-                -float(item.get("ratings_count") or 0),
-                -float(item.get("reviews_count") or 0),
-                item.get("title") or "",
-            ),
-        )
+        credits = get_author_books(author)
         data = {
             "source": Sources.HARDCOVER.value,
             "person_id": str(author.get("id") or person_id),
@@ -634,6 +606,152 @@ def person_page(person_id):
         cache.set(cache_key, data)
 
     return data
+
+
+def get_author_books(author):
+    """Return deduped Hardcover books for an author, resilient to split author records."""
+    books = []
+    try:
+        books = fetch_author_books(author)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Hardcover author books fallback for %s failed: %s", author.get("id"), error)
+
+    # Keep the profile relation as a fallback because Hardcover data can be incomplete in either direction.
+    for contribution in author.get("contributions") or []:
+        if contribution.get("book"):
+            books.append({
+                **contribution["book"],
+                "matched_contributions": [contribution],
+            })
+
+    best_by_id = {}
+    for book_data in books:
+        credit = author_book_credit(book_data, author)
+        if not credit:
+            continue
+        current = best_by_id.get(credit["media_id"])
+        if current is None or author_book_sort_key(credit) < author_book_sort_key(current):
+            best_by_id[credit["media_id"]] = credit
+
+    return sorted(best_by_id.values(), key=author_book_sort_key)
+
+
+def fetch_author_books(author):
+    """Fetch books through top-level books queries by id and exact name."""
+    query = """
+    query GetAuthorBooks($author_id: Int!, $author_name: String!, $limit: Int!) {
+      by_id: books(
+        where: {contributions: {author: {id: {_eq: $author_id}}}},
+        limit: $limit,
+        order_by: [{users_count: desc}, {ratings_count: desc}, {reviews_count: desc}, {title: asc}]
+      ) {
+        id
+        title
+        cached_image(path: "url")
+        release_year
+        release_date
+        rating
+        ratings_count
+        reviews_count
+        users_count
+        contributions(where: {author: {id: {_eq: $author_id}}}) {
+          contribution
+          author {
+            id
+            name
+          }
+        }
+      }
+      by_name: books(
+        where: {contributions: {author: {name: {_eq: $author_name}}}},
+        limit: $limit,
+        order_by: [{users_count: desc}, {ratings_count: desc}, {reviews_count: desc}, {title: asc}]
+      ) {
+        id
+        title
+        cached_image(path: "url")
+        release_year
+        release_date
+        rating
+        ratings_count
+        reviews_count
+        users_count
+        contributions(where: {author: {name: {_eq: $author_name}}}) {
+          contribution
+          author {
+            id
+            name
+          }
+        }
+      }
+    }
+    """
+    response = services.api_request(
+        Sources.HARDCOVER.value,
+        "POST",
+        base_url,
+        params={
+            "query": query,
+            "variables": {
+                "author_id": int(author["id"]),
+                "author_name": author.get("name") or "",
+                "limit": AUTHOR_BOOK_LIMIT,
+            },
+        },
+        headers={"Authorization": settings.HARDCOVER_API},
+    )
+    data = response.get("data") or {}
+    return [*(data.get("by_id") or []), *(data.get("by_name") or [])]
+
+
+def author_book_credit(book_data, author):
+    """Format one Hardcover book as an iOS-ready person credit."""
+    book_id = book_data.get("id")
+    if not book_id:
+        return None
+    roles = author_book_roles(book_data, author)
+    year = book_data.get("release_year")
+    return {
+        "media_type": MediaTypes.BOOK.value,
+        "source": Sources.HARDCOVER.value,
+        "media_id": str(book_id),
+        "title": book_data.get("title") or "",
+        "image": book_data.get("cached_image") or settings.IMG_NONE,
+        "roles": roles or ["Author"],
+        "year": str(year) if year else None,
+        "release_date": book_data.get("release_date"),
+        "rating": book_data.get("rating"),
+        "ratings_count": book_data.get("ratings_count") or 0,
+        "reviews_count": book_data.get("reviews_count") or 0,
+        "users_count": book_data.get("users_count") or 0,
+        "is_author_role": "Author" in roles or not roles,
+    }
+
+
+def author_book_roles(book_data, author):
+    """Return roles matching this author id or exact author name."""
+    author_id = str(author.get("id") or "")
+    author_name = author.get("name") or ""
+    roles = []
+    for contribution in book_data.get("matched_contributions") or book_data.get("contributions") or []:
+        contributor = contribution.get("author") or {}
+        if str(contributor.get("id") or "") != author_id and contributor.get("name") != author_name:
+            continue
+        role = contribution.get("contribution") or "Author"
+        if role not in roles:
+            roles.append(role)
+    return roles
+
+
+def author_book_sort_key(item):
+    """Sort true authored books first, then popularity, then title."""
+    return (
+        0 if item.get("is_author_role") else 1,
+        -float(item.get("users_count") or 0),
+        -float(item.get("ratings_count") or 0),
+        -float(item.get("reviews_count") or 0),
+        item.get("title") or "",
+    )
 
 
 def get_series_books(series_id):
