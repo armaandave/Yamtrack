@@ -16,7 +16,7 @@ fi
 
 cd "$repo_dir"
 
-git fetch origin
+git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
 if git show-ref --verify --quiet "refs/heads/$branch"; then
   git checkout "$branch"
 else
