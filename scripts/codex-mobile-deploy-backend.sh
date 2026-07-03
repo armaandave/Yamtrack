@@ -30,6 +30,17 @@ if [[ -z "$repo_url" ]]; then
   fi
 fi
 
+source_repo_abs=""
+if [[ -d "$source_repo_dir" ]]; then
+  source_repo_abs="$(cd "$source_repo_dir" && pwd -P)"
+fi
+repo_parent="$(dirname "$repo_dir")"
+repo_abs="$(mkdir -p "$repo_parent" && cd "$repo_parent" && pwd -P)/$(basename "$repo_dir")"
+if [[ -n "$source_repo_abs" && "$repo_abs" == "$source_repo_abs" ]]; then
+  echo "Deploy directory must be separate from source repo: $repo_dir" >&2
+  exit 1
+fi
+
 if [[ -e "$repo_dir" && ! -d "$repo_dir/.git" ]]; then
   echo "Deploy directory exists but is not a Git repo: $repo_dir" >&2
   exit 1
@@ -46,6 +57,7 @@ git remote set-url origin "$repo_url"
 git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
 git checkout -B "$branch" "origin/$branch"
 git reset --hard "origin/$branch"
+echo "Deploying $branch at $(git rev-parse --short HEAD) from $repo_dir"
 
 if [[ ! -e .env.production && ! -L .env.production ]]; then
   ln -s "$env_file" .env.production
