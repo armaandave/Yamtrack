@@ -24,31 +24,16 @@ struct MediaLensChip: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             onTap()
         } label: {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.white.opacity(0.24), .white.opacity(0.02)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-                    .overlay {
-                        Circle()
-                            .stroke(theme.accentColor.opacity(isPressed ? 0.72 : 0.38), lineWidth: 1)
-                    }
-
+            Circle()
+                .fill(.clear)
+                .modifier(MediaLensCircleStyle(isSelected: true, isPressed: isPressed && !reduceMotion))
+                .overlay {
                 MediaTypeGlyph(theme: theme, size: symbolSize)
-            }
+                }
             .frame(width: size, height: size)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .scaleEffect(isPressed && !reduceMotion ? 0.92 : 1)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .updating($isPressed) { _, state, _ in

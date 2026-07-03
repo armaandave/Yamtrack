@@ -49,6 +49,52 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.filmography.map(\.title), ["Fight Club"])
     }
 
+    func testPersonDetailDecodesHardcoverAuthorBooks() throws {
+        let json = """
+        {
+          "id": "80626",
+          "source": "hardcover",
+          "name": "Dan Wells",
+          "biography": "Author biography.",
+          "profile_url": "https://example.com/dan.jpg",
+          "known_for_department": "Author",
+          "birth_date": "1977-03-04",
+          "death_date": null,
+          "place_of_birth": null,
+          "popularity": 12,
+          "credits": {
+            "cast": [
+              {
+                "ref": {
+                  "item_id": null,
+                  "source": "hardcover",
+                  "media_type": "book",
+                  "media_id": "328491",
+                  "season_number": null,
+                  "episode_number": null
+                },
+                "title": "I Am Not a Serial Killer",
+                "subtitle": "2009",
+                "overview": null,
+                "image_url": "https://example.com/book.jpg",
+                "poster_url": "https://example.com/book.jpg",
+                "release_date": "2009-03-30",
+                "default_source": "hardcover",
+                "user_state": null
+              }
+            ]
+          }
+        }
+        """
+
+        let detail = try JSONDecoder.api.decode(PersonDetail.self, from: Data(json.utf8))
+
+        XCTAssertEqual(detail.ref, PersonRef(source: "hardcover", id: "80626"))
+        XCTAssertEqual(detail.knownForDepartment, "Author")
+        XCTAssertEqual(detail.filmography.first?.ref.mediaType, "book")
+        XCTAssertEqual(detail.filmography.first?.title, "I Am Not a Serial Killer")
+    }
+
     @MainActor
     func testPersonDetailViewModelLoadsAndDeduplicatesFilmography() async {
         let ref = PersonRef(source: "tmdb", id: "819")

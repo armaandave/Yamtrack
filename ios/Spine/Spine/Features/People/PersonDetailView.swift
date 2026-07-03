@@ -131,6 +131,7 @@ struct PersonDetailView: View {
         .task {
             if viewModel.detail == nil {
                 await viewModel.load()
+                syncSelectedFilmographyType()
             }
         }
     }
@@ -172,6 +173,7 @@ struct PersonDetailView: View {
             .scrollContentBackground(.hidden)
             .refreshable {
                 await viewModel.load()
+                syncSelectedFilmographyType()
             }
         } else if let error = viewModel.errorMessage {
             ContentUnavailableView(
@@ -251,28 +253,40 @@ struct PersonDetailView: View {
     }
 
     private var filmographySection: some View {
-        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedFilmographyType.rawValue }
+        let types = FilmographyType.available(in: viewModel.filmography)
+        let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
+        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                PersonSectionLabel(title: "Filmography")
+                PersonSectionLabel(title: selectedType.sectionTitle)
 
                 Spacer()
 
-                Picker("Filmography type", selection: $selectedFilmographyType) {
-                    ForEach(FilmographyType.allCases) { type in
-                        Text(type.title).tag(type)
+                if !types.isEmpty {
+                    Picker("Credit type", selection: $selectedFilmographyType) {
+                        ForEach(types) { type in
+                            Text(type.title).tag(type)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .frame(width: max(75, CGFloat(types.count) * 75))
+                } else {
+                    Picker("Credit type", selection: $selectedFilmographyType) {
+                        ForEach(FilmographyType.allCases) { type in
+                            Text(type.title).tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
             }
 
             if filmography.isEmpty {
                 ContentUnavailableView(
-                    "No \(selectedFilmographyType.title.lowercased())",
+                    "No \(selectedType.title.lowercased())",
                     systemImage: "square.grid.2x2",
-                    description: Text("TMDB credits will appear here when available.")
+                    description: Text("Credits will appear here when available.")
                 )
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 220)
@@ -317,6 +331,13 @@ struct PersonDetailView: View {
         return chips
     }
 
+    private func syncSelectedFilmographyType() {
+        let types = FilmographyType.available(in: viewModel.filmography)
+        if let first = types.first, !types.contains(selectedFilmographyType) {
+            selectedFilmographyType = first
+        }
+    }
+
     private func clean(_ value: String?) -> String? {
         guard let text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
             return nil
@@ -332,6 +353,7 @@ struct PersonDetailView: View {
 private enum FilmographyType: String, CaseIterable, Identifiable {
     case movie
     case tv
+    case book
 
     var id: String { rawValue }
 
@@ -341,6 +363,23 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
             "Film"
         case .tv:
             "TV"
+        case .book:
+            "Books"
+        }
+    }
+
+    var sectionTitle: String {
+        switch self {
+        case .book:
+            "Books"
+        case .movie, .tv:
+            "Filmography"
+        }
+    }
+
+    static func available(in media: [MediaSummary]) -> [FilmographyType] {
+        allCases.filter { type in
+            media.contains { $0.ref.mediaType == type.rawValue }
         }
     }
 }

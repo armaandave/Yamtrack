@@ -82,9 +82,9 @@ struct MediaTypeGlyph: View {
                 .font(.system(size: size, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         } else if theme.slug == "movie" {
-            MovieReelShape()
+            ClapperboardShape()
                 .fill(.white, style: FillStyle(eoFill: true))
-                .frame(width: size * 1.34, height: size * 1.02)
+                .frame(width: size * 1.36, height: size * 1.14)
         } else if theme.slug == "tv" {
             RetroTVShape()
                 .fill(.white, style: FillStyle(eoFill: true))
@@ -102,36 +102,95 @@ struct MediaTypeGlyph: View {
     }
 }
 
-private struct MovieReelShape: Shape {
+struct MediaLensCircleStyle: ViewModifier {
+    let isSelected: Bool
+    var isPressed = false
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white)
+            .background {
+                Circle()
+                    .fill(isSelected ? Color.white.opacity(0.155) : Color.black.opacity(0.36))
+            }
+            .overlay {
+                Circle()
+                    .stroke(.white.opacity(isSelected ? 0.0 : 0.065), lineWidth: 1)
+            }
+            .scaleEffect(isPressed ? 0.94 : 1)
+    }
+}
+
+private struct ClapperboardShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        let reelRect = CGRect(x: rect.minX, y: rect.minY, width: rect.height * 0.92, height: rect.height * 0.92)
-        let center = CGPoint(x: reelRect.midX, y: reelRect.midY)
-        let radius = min(reelRect.width, reelRect.height) / 2
 
-        path.addEllipse(in: reelRect)
+        let body = CGRect(
+            x: rect.minX + rect.width * 0.08,
+            y: rect.minY + rect.height * 0.43,
+            width: rect.width * 0.84,
+            height: rect.height * 0.48
+        )
+        path.addRoundedRect(in: body, cornerSize: CGSize(width: rect.width * 0.045, height: rect.width * 0.045))
 
-        let holeRadius = radius * 0.17
-        for angle in stride(from: -CGFloat.pi / 2, to: CGFloat.pi * 1.5, by: CGFloat.pi * 2 / 5) {
-            let holeCenter = CGPoint(
-                x: center.x + cos(angle) * radius * 0.56,
-                y: center.y + sin(angle) * radius * 0.56
-            )
-            path.addEllipse(in: CGRect(
-                x: holeCenter.x - holeRadius,
-                y: holeCenter.y - holeRadius,
-                width: holeRadius * 2,
-                height: holeRadius * 2
-            ))
+        path.addRect(CGRect(
+            x: body.minX + body.width * 0.08,
+            y: body.minY + body.height * 0.38,
+            width: body.width * 0.84,
+            height: body.height * 0.46
+        ))
+
+        let stripTop = body.minY + body.height * 0.08
+        let stripBottom = body.minY + body.height * 0.33
+        for index in 0 ..< 3 {
+            let x = body.minX + body.width * (0.08 + CGFloat(index) * 0.31)
+            let width = body.width * 0.20
+            path.move(to: CGPoint(x: x, y: stripBottom))
+            path.addLine(to: CGPoint(x: x + width * 0.54, y: stripTop))
+            path.addLine(to: CGPoint(x: x + width, y: stripTop))
+            path.addLine(to: CGPoint(x: x + width * 0.46, y: stripBottom))
+            path.closeSubpath()
         }
-        path.addEllipse(in: CGRect(x: center.x - radius * 0.06, y: center.y - radius * 0.06, width: radius * 0.12, height: radius * 0.12))
 
-        let baseY = reelRect.maxY - radius * 0.08
-        path.move(to: CGPoint(x: center.x + radius * 0.30, y: baseY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: baseY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: baseY + radius * 0.07))
-        path.addLine(to: CGPoint(x: center.x + radius * 0.20, y: baseY + radius * 0.07))
+        let slate = [
+            CGPoint(x: rect.minX + rect.width * 0.08, y: rect.minY + rect.height * 0.39),
+            CGPoint(x: rect.minX + rect.width * 0.72, y: rect.minY + rect.height * 0.06),
+            CGPoint(x: rect.minX + rect.width * 0.78, y: rect.minY + rect.height * 0.06),
+            CGPoint(x: rect.minX + rect.width * 0.88, y: rect.minY + rect.height * 0.22),
+            CGPoint(x: rect.minX + rect.width * 0.20, y: rect.minY + rect.height * 0.56)
+        ]
+        path.move(to: slate[0])
+        for point in slate.dropFirst() {
+            path.addLine(to: point)
+        }
         path.closeSubpath()
+
+        for cut in [
+            [
+                CGPoint(x: rect.minX + rect.width * 0.22, y: rect.minY + rect.height * 0.33),
+                CGPoint(x: rect.minX + rect.width * 0.36, y: rect.minY + rect.height * 0.26),
+                CGPoint(x: rect.minX + rect.width * 0.32, y: rect.minY + rect.height * 0.43),
+                CGPoint(x: rect.minX + rect.width * 0.18, y: rect.minY + rect.height * 0.50)
+            ],
+            [
+                CGPoint(x: rect.minX + rect.width * 0.48, y: rect.minY + rect.height * 0.20),
+                CGPoint(x: rect.minX + rect.width * 0.62, y: rect.minY + rect.height * 0.13),
+                CGPoint(x: rect.minX + rect.width * 0.58, y: rect.minY + rect.height * 0.30),
+                CGPoint(x: rect.minX + rect.width * 0.44, y: rect.minY + rect.height * 0.37)
+            ],
+            [
+                CGPoint(x: rect.minX + rect.width * 0.69, y: rect.minY + rect.height * 0.09),
+                CGPoint(x: rect.minX + rect.width * 0.76, y: rect.minY + rect.height * 0.06),
+                CGPoint(x: rect.minX + rect.width * 0.72, y: rect.minY + rect.height * 0.23),
+                CGPoint(x: rect.minX + rect.width * 0.64, y: rect.minY + rect.height * 0.27)
+            ]
+        ] {
+            path.move(to: cut[0])
+            for point in cut.dropFirst() {
+                path.addLine(to: point)
+            }
+            path.closeSubpath()
+        }
 
         return path
     }

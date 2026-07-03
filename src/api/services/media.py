@@ -223,9 +223,9 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
 
 
 def person_detail(*, source, person_id, request=None, user=None):
-    """Return a TMDB person profile plus iOS-ready filmography summaries."""
-    if source != Sources.TMDB.value:
-        msg = "People pages are only supported for TMDB in v1."
+    """Return a provider person profile plus iOS-ready media summaries."""
+    if source not in {Sources.TMDB.value, Sources.HARDCOVER.value, Sources.OPENLIBRARY.value}:
+        msg = "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1."
         raise NotImplementedError(msg)
 
     person = provider_services.get_person_page(source, person_id)
@@ -251,7 +251,7 @@ def person_detail(*, source, person_id, request=None, user=None):
                     user=user,
                 )
                 for credit in person_credits
-                if credit.get("media_type") in {MediaTypes.MOVIE.value, MediaTypes.TV.value}
+                if credit.get("media_type") in {MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.BOOK.value}
             ],
         },
     }

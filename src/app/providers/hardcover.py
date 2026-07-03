@@ -227,6 +227,13 @@ def book(media_id):
             canonical_id
             cached_featured_series
             cached_contributors(path: "[0]['author']['name']")
+            contributions(where: {contributable_type: {_eq: "Book"}}) {
+              contribution
+              author {
+                id
+                name
+              }
+            }
             default_cover_edition {
               edition_format
               isbn_13
@@ -283,23 +290,7 @@ def book(media_id):
         publishers = get_publishers(book_data)
         isbns = get_isbns_from_book(book_data)
 
-        # Resolve author name to OpenLibrary author so we can link to the author page.
-        # Always set details.authors when we have a name so the template can render
-        # either a person_detail link (if OL resolves) or an OpenLibrary search fallback.
-        authors_for_details = None
-        author_name = book_data.get("cached_contributors")
-        if author_name and isinstance(author_name, str) and author_name.strip():
-            from app.providers import openlibrary
-            an = author_name.strip()
-            ol = openlibrary.search_author_by_name(an)
-            if ol:
-                authors_for_details = [{
-                    "name": ol.get("name") or an,
-                    "person_id": ol["person_id"],
-                    "source": Sources.OPENLIBRARY.value,
-                }]
-            else:
-                authors_for_details = [{"name": an}]
+        authors_for_details = get_authors(book_data)
 
         # Prefer release_date from default_cover_edition if available, otherwise use book's release_date
         default_edition = book_data.get("default_cover_edition")
@@ -506,6 +497,129 @@ def get_featured_series(series_data):
         return None
 
     return {"id": series["id"], "name": name}
+
+
+def get_authors(book_data):
+    """Return Hardcover author refs for a book detail payload."""
+    authors = []
+    seen = set()
+    for contribution in book_data.get("contributions") or []:
+        if contribution.get("contribution") != "Author":
+            continue
+        author = contribution.get("author") or {}
+        author_id = author.get("id")
+        name = author.get("name")
+        if not name:
+            continue
+        key = author_id or name
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {"name": name}
+        if author_id:
+            item["person_id"] = str(author_id)
+            item["source"] = Sources.HARDCOVER.value
+        authors.append(item)
+
+    if authors:
+        return authors
+
+    author_name = book_data.get("cached_contributors")
+    if isinstance(author_name, str) and author_name.strip():
+        return [{"name": author_name.strip()}]
+    return None
+
+
+def person_page(person_id):
+    """Return Hardcover author details and book credits for the person page."""
+    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v1"
+    data = cache.get(cache_key)
+
+    if data is None:
+        query = """
+        query GetAuthor($author_id: Int!) {
+          authors(where: {id: {_eq: $author_id}}, limit: 1) {
+            id
+            name
+            bio
+            born_date
+            born_year
+            death_date
+            death_year
+            slug
+            books_count
+            cached_image(path: "url")
+            contributions(where: {contributable_type: {_eq: "Book"}}) {
+              contribution
+              book {
+                id
+                title
+                cached_image(path: "url")
+                release_year
+                release_date
+                rating
+                ratings_count
+                users_count
+              }
+            }
+          }
+        }
+        """
+        try:
+            response = services.api_request(
+                Sources.HARDCOVER.value,
+                "POST",
+                base_url,
+                params={"query": query, "variables": {"author_id": int(person_id)}},
+                headers={"Authorization": settings.HARDCOVER_API},
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        author = (response.get("data", {}).get("authors") or [None])[0]
+        if not author:
+            services.raise_not_found_error(Sources.HARDCOVER.value, person_id, "person")
+
+        credits = []
+        seen = set()
+        for contribution in author.get("contributions") or []:
+            book_data = contribution.get("book") or {}
+            book_id = book_data.get("id")
+            if not book_id or book_id in seen:
+                continue
+            seen.add(book_id)
+            year = book_data.get("release_year")
+            credits.append({
+                "media_type": MediaTypes.BOOK.value,
+                "source": Sources.HARDCOVER.value,
+                "media_id": str(book_id),
+                "title": book_data.get("title") or "",
+                "image": book_data.get("cached_image") or settings.IMG_NONE,
+                "roles": [contribution.get("contribution") or "Author"],
+                "year": str(year) if year else None,
+                "release_date": book_data.get("release_date"),
+                "rating": book_data.get("rating"),
+                "vote_count": book_data.get("ratings_count") or book_data.get("users_count") or 0,
+            })
+
+        credits.sort(key=lambda item: (-float(item.get("vote_count") or 0), item.get("title") or ""))
+        data = {
+            "source": Sources.HARDCOVER.value,
+            "person_id": str(author.get("id") or person_id),
+            "name": author.get("name") or "",
+            "image": author.get("cached_image") or settings.IMG_NONE,
+            "biography": (author.get("bio") or "").strip() or None,
+            "known_for_department": "Author",
+            "birth_date": author.get("born_date") or (str(author["born_year"]) if author.get("born_year") else None),
+            "death_date": author.get("death_date") or (str(author["death_year"]) if author.get("death_year") else None),
+            "place_of_birth": None,
+            "popularity": author.get("books_count"),
+            "credits": credits,
+        }
+
+        cache.set(cache_key, data)
+
+    return data
 
 
 def get_series_books(series_id):

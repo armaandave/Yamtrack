@@ -1071,7 +1071,7 @@ private struct ProfileListDetailView: View {
                 .padding(.bottom, 20)
                 .padding(.top, backdropURL == nil ? 18 : topSafeAreaInset + 112)
         }
-        .frame(maxWidth: .infinity, minHeight: backdropURL == nil ? nil : topSafeAreaInset + 340, alignment: .bottomLeading)
+        .frame(maxWidth: .infinity, minHeight: backdropURL == nil ? nil : topSafeAreaInset + 408, alignment: .bottomLeading)
     }
 
     private func listHeaderText(_ list: CustomListDetail) -> some View {

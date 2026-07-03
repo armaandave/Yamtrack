@@ -81,27 +81,9 @@ struct MediaLensPicker: View {
         .frame(maxWidth: .infinity)
         .background {
             Capsule()
-                .fill(.ultraThinMaterial)
+                .fill(.black.opacity(0.74))
                 .overlay {
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [currentTheme.accentColor.opacity(0.16), .white.opacity(0.035)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-                .overlay {
-                    Capsule()
-                        .stroke(
-                            LinearGradient(
-                                colors: [currentTheme.accentColor.opacity(0.38), .white.opacity(0.10)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
+                    Capsule().stroke(.white.opacity(0.06), lineWidth: 1)
                 }
         }
         .padding(.horizontal, 12)
@@ -141,27 +123,23 @@ private struct MediaLensOrb: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 5) {
+            VStack(spacing: 6) {
                 Circle()
-                    .fill(.white.opacity(isSelected ? 0.12 : 0.07))
-                    .overlay {
-                        Circle()
-                            .stroke(isSelected ? .white.opacity(0.42) : .white.opacity(0.13), lineWidth: 1)
-                    }
+                    .fill(.clear)
+                    .modifier(MediaLensCircleStyle(isSelected: isSelected))
                     .overlay {
                         MediaTypeGlyph(theme: theme, size: isSelected ? 21 : 18)
                     }
                     .frame(width: 48, height: 48)
 
                 Capsule()
-                    .fill(.white.opacity(isSelected ? 0.70 : 0))
-                    .frame(width: 14, height: 2)
+                    .fill(.white.opacity(isSelected ? 0.58 : 0))
+                    .frame(width: 12, height: 2)
             }
             .frame(width: 52, height: 58)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .scaleEffect(isSelected ? 1.02 : 0.98)
         .accessibilityLabel(theme.displayName)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }

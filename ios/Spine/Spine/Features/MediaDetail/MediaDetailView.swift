@@ -1257,6 +1257,9 @@ struct MediaDetailView: View {
     }
 
     private func bylinePersonRef(_ detail: MediaDetail) -> PersonRef? {
+        if detail.ref.mediaType == "book" {
+            return bookAuthorCredits(detail).first?.personRef
+        }
         guard detail.ref.source == "tmdb" else { return nil }
         let key = detail.ref.mediaType == "movie" ? "director_id" : detail.ref.mediaType == "tv" ? "creator_id" : nil
         guard let key,
@@ -1368,7 +1371,7 @@ struct MediaDetailView: View {
 
     private func castCredits(_ detail: MediaDetail) -> [CreditDisplay] {
         if detail.ref.mediaType == "book" {
-            return authors(detail).map { CreditDisplay(name: $0, subtitle: "Author", imageUrl: nil, personRef: nil) }
+            return bookAuthorCredits(detail)
         }
         let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
         let credits = (detail.cast ?? []).map {
@@ -1415,6 +1418,27 @@ struct MediaDetailView: View {
 
     private func authors(_ detail: MediaDetail) -> [String] {
         detailArray(detail, "authors")
+    }
+
+    private func bookAuthorCredits(_ detail: MediaDetail) -> [CreditDisplay] {
+        guard detail.ref.mediaType == "book" else { return [] }
+        let rawAuthors = detail.details?["authors"]?.arrayValue ?? []
+        let credits = rawAuthors.compactMap { value -> CreditDisplay? in
+            if let object = value.objectValue {
+                guard let name = object["name"]?.displayString, !name.isEmpty else { return nil }
+                let source = object["source"]?.displayString
+                let personId = object["person_id"]?.displayString
+                let ref = source.flatMap { source in
+                    personId.flatMap { personId in
+                        personId.isEmpty ? nil : PersonRef(source: source, id: personId)
+                    }
+                }
+                return CreditDisplay(name: name, subtitle: "Author", imageUrl: nil, personRef: ref)
+            }
+            guard let name = value.displayString, !name.isEmpty else { return nil }
+            return CreditDisplay(name: name, subtitle: "Author", imageUrl: nil, personRef: nil)
+        }
+        return credits.isEmpty ? authors(detail).map { CreditDisplay(name: $0, subtitle: "Author", imageUrl: nil, personRef: nil) } : credits
     }
 
     private func releaseDate(_ detail: MediaDetail) -> String? {

@@ -1384,6 +1384,71 @@ class ApiV1FoundationTests(TestCase):
         )
         self.assertEqual(response["results"][0]["media_id"], 123)
 
+    @patch("app.providers.hardcover.services.api_request")
+    def test_hardcover_person_page_returns_author_profile_and_books(self, api_request_mock):
+        from app.providers import hardcover
+
+        api_request_mock.return_value = {
+            "data": {
+                "authors": [
+                    {
+                        "id": 80626,
+                        "name": "Dan Wells",
+                        "bio": "Author biography.",
+                        "born_date": "1977-03-04",
+                        "born_year": 1977,
+                        "death_date": None,
+                        "death_year": None,
+                        "books_count": 12,
+                        "cached_image": "https://example.com/dan.jpg",
+                        "contributions": [
+                            {
+                                "contribution": "Author",
+                                "book": {
+                                    "id": 328491,
+                                    "title": "I Am Not a Serial Killer",
+                                    "cached_image": "https://example.com/book.jpg",
+                                    "release_year": 2009,
+                                    "release_date": "2009-03-30",
+                                    "rating": 3.8,
+                                    "ratings_count": 1000,
+                                    "users_count": 2000,
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+
+        response = hardcover.person_page("80626")
+
+        self.assertEqual(response["source"], Sources.HARDCOVER.value)
+        self.assertEqual(response["person_id"], "80626")
+        self.assertEqual(response["name"], "Dan Wells")
+        self.assertEqual(response["image"], "https://example.com/dan.jpg")
+        self.assertEqual(response["biography"], "Author biography.")
+        self.assertEqual(response["known_for_department"], "Author")
+        self.assertEqual(response["birth_date"], "1977-03-04")
+        self.assertEqual(response["credits"][0]["media_type"], MediaTypes.BOOK.value)
+        self.assertEqual(response["credits"][0]["media_id"], "328491")
+
+    def test_hardcover_get_authors_returns_native_author_refs(self):
+        from app.providers import hardcover
+
+        authors = hardcover.get_authors({
+            "cached_contributors": "Fallback Name",
+            "contributions": [
+                {"contribution": "Illustrator", "author": {"id": 1, "name": "Artist"}},
+                {"contribution": "Author", "author": {"id": 80626, "name": "Dan Wells"}},
+            ],
+        })
+
+        self.assertEqual(
+            authors,
+            [{"name": "Dan Wells", "person_id": "80626", "source": Sources.HARDCOVER.value}],
+        )
+
     def test_media_discover_validation_errors(self):
         user = get_user_model().objects.create_user(username="discover-errors", password="strong-password-123")
         self.client.force_authenticate(user)
@@ -1592,11 +1657,50 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["credits"]["cast"][0]["subtitle"], "1999")
         self.assertEqual(response.data["credits"]["cast"][0]["poster_url"], "https://example.com/fight-club.jpg")
 
-    def test_person_detail_rejects_non_tmdb_source_for_v1(self):
-        response = self.client.get("/api/v1/people/openlibrary/OL23919A/")
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_returns_hardcover_author_books(self, person_mock):
+        person_mock.return_value = {
+            "source": Sources.HARDCOVER.value,
+            "person_id": "80626",
+            "name": "Dan Wells",
+            "image": "https://example.com/dan.jpg",
+            "biography": "Author biography.",
+            "known_for_department": "Author",
+            "birth_date": "1977-03-04",
+            "death_date": None,
+            "place_of_birth": None,
+            "popularity": 12,
+            "credits": [
+                {
+                    "media_type": MediaTypes.BOOK.value,
+                    "source": Sources.HARDCOVER.value,
+                    "media_id": "328491",
+                    "title": "I Am Not a Serial Killer",
+                    "image": "https://example.com/book.jpg",
+                    "year": "2009",
+                    "vote_count": 1000,
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/people/hardcover/80626/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        person_mock.assert_called_once_with(Sources.HARDCOVER.value, "80626")
+        self.assertEqual(response.data["source"], Sources.HARDCOVER.value)
+        self.assertEqual(response.data["known_for_department"], "Author")
+        self.assertEqual(response.data["credits"]["cast"][0]["ref"]["media_type"], MediaTypes.BOOK.value)
+        self.assertEqual(response.data["credits"]["cast"][0]["ref"]["source"], Sources.HARDCOVER.value)
+        self.assertEqual(response.data["credits"]["cast"][0]["title"], "I Am Not a Serial Killer")
+
+    def test_person_detail_rejects_unsupported_source_for_v1(self):
+        response = self.client.get("/api/v1/people/manual/author-1/")
 
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
-        self.assertEqual(response.data["detail"], "People pages are only supported for TMDB in v1.")
+        self.assertEqual(
+            response.data["detail"],
+            "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1.",
+        )
 
     @patch("app.providers.tmdb.get_title_logo", return_value=None)
     @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
