@@ -14,9 +14,11 @@ jobs:
     name: Deploy backend
     runs-on: [self-hosted, spine-backend]
     steps:
+      - name: Checkout deploy workflow branch
+        uses: actions/checkout@v4
+
       - name: Deploy requested branch
         run: |
-          cd /Users/armaandave/projects/spine
           requested_branch="${{ inputs.branch }}"
           branch="${requested_branch:-$GITHUB_REF_NAME}"
           ./scripts/codex-mobile-deploy-backend.sh "$branch"
