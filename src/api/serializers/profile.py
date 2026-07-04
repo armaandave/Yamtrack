@@ -56,6 +56,12 @@ def profile_payload(user, request=None, viewer=None):
         "pronouns": user.pronouns,
         "location": user.location,
         "avatar_url": image_url(request, user.profile_picture) if user.profile_picture else None,
+        "profile_backdrop_url": user.profile_backdrop_url or None,
+        "profile_backdrop_item": (
+            media_summary_from_item(user.profile_backdrop_item, request=request, user=user)
+            if user.profile_backdrop_item
+            else None
+        ),
         "is_private": user.profile_private,
         "viewer_relationship": {
             "following": following,

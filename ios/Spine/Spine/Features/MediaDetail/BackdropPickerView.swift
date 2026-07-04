@@ -13,18 +13,21 @@ final class BackdropPickerViewModel {
     private let ref: MediaRef
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
-    private let onSaved: (BackdropSaveResponse) -> Void
+    private let currentBackdropURL: String?
+    private let saveAction: (MediaRef, String) async throws -> Void
 
     init(
         ref: MediaRef,
         mediaRepository: MediaRepository,
+        currentBackdropURL: String? = nil,
         onUnauthorized: @escaping () -> Void,
-        onSaved: @escaping (BackdropSaveResponse) -> Void
+        saveAction: @escaping (MediaRef, String) async throws -> Void
     ) {
         self.ref = ref
         self.mediaRepository = mediaRepository
+        self.currentBackdropURL = currentBackdropURL
         self.onUnauthorized = onUnauthorized
-        self.onSaved = onSaved
+        self.saveAction = saveAction
     }
 
     var languageOptions: [PosterLanguageOption] {
@@ -65,6 +68,10 @@ final class BackdropPickerViewModel {
         selectedBackdropURL != nil && !isSaving
     }
 
+    func isCurrent(_ backdrop: PosterOption) -> Bool {
+        currentBackdropURL.map { $0 == backdrop.url } ?? backdrop.isSelected
+    }
+
     func load() async {
         guard backdrops.isEmpty else { return }
         isLoading = true
@@ -73,7 +80,10 @@ final class BackdropPickerViewModel {
 
         do {
             backdrops = try await mediaRepository.backdrops(ref: ref).pinningCurrentFirst()
-            selectedBackdropURL = backdrops.first(where: \.isSelected)?.url ?? backdrops.first?.url
+            let currentInOptions = currentBackdropURL.flatMap { current in
+                backdrops.contains { $0.url == current } ? current : nil
+            }
+            selectedBackdropURL = currentInOptions ?? backdrops.first(where: \.isSelected)?.url ?? backdrops.first?.url
             selectedLanguage = backdrops.contains(where: { $0.language == nil }) ? "none" : "all"
         } catch {
             errorMessage = error.localizedDescription
@@ -90,8 +100,7 @@ final class BackdropPickerViewModel {
         defer { isSaving = false }
 
         do {
-            let response = try await mediaRepository.saveBackdrop(ref: ref, backdropURL: selectedBackdropURL)
-            onSaved(response)
+            try await saveAction(ref, selectedBackdropURL)
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -125,7 +134,30 @@ struct BackdropPickerView: View {
             ref: ref,
             mediaRepository: mediaRepository,
             onUnauthorized: onUnauthorized,
-            onSaved: onSaved
+            saveAction: { ref, backdropURL in
+                let response = try await mediaRepository.saveBackdrop(ref: ref, backdropURL: backdropURL)
+                onSaved(response)
+            }
+        ))
+    }
+
+    init(
+        ref: MediaRef,
+        currentBackdropURL: String?,
+        mediaRepository: MediaRepository,
+        profileRepository: ProfileRepository,
+        onUnauthorized: @escaping () -> Void,
+        onSaved: @escaping (ProfileBackdropSaveResponse) -> Void
+    ) {
+        _viewModel = State(initialValue: BackdropPickerViewModel(
+            ref: ref,
+            mediaRepository: mediaRepository,
+            currentBackdropURL: currentBackdropURL,
+            onUnauthorized: onUnauthorized,
+            saveAction: { ref, backdropURL in
+                let response = try await profileRepository.saveProfileBackdrop(ref: ref, backdropURL: backdropURL)
+                onSaved(response)
+            }
         ))
     }
 
@@ -205,7 +237,8 @@ struct BackdropPickerView: View {
                     ForEach(viewModel.filteredBackdrops) { backdrop in
                         BackdropOptionCell(
                             backdrop: backdrop,
-                            isSelected: viewModel.selectedBackdropURL == backdrop.url
+                            isSelected: viewModel.selectedBackdropURL == backdrop.url,
+                            isCurrent: viewModel.isCurrent(backdrop)
                         ) {
                             viewModel.selectedBackdropURL = backdrop.url
                         }
@@ -222,6 +255,7 @@ struct BackdropPickerView: View {
 private struct BackdropOptionCell: View {
     let backdrop: PosterOption
     let isSelected: Bool
+    let isCurrent: Bool
     let action: () -> Void
 
     var body: some View {
@@ -229,7 +263,7 @@ private struct BackdropOptionCell: View {
             ZStack(alignment: .topLeading) {
                 backdropImage
 
-                if backdrop.isSelected {
+                if isCurrent {
                     Text("Current")
                         .font(.caption2.weight(.heavy))
                         .foregroundStyle(.white)

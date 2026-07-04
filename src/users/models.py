@@ -434,6 +434,22 @@ class User(AbstractUser):
         help_text="User profile picture",
     )
 
+    profile_backdrop_url = models.URLField(
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text="Selected profile backdrop image URL",
+    )
+
+    profile_backdrop_item = models.ForeignKey(
+        'app.Item',
+        null=True,
+        blank=True,
+        related_name='+',
+        on_delete=models.SET_NULL,
+        help_text="Media item used for the selected profile backdrop",
+    )
+
     # Hall of Fame - one favorite item per media type
     hof_tv = models.ForeignKey(
         'app.Item',

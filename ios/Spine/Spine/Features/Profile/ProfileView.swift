@@ -454,6 +454,8 @@ struct ProfileView: View {
     @State private var hofPickerSlot: FavoriteSlot?
     @State private var heroCollapseProgress: CGFloat = 0
     @State private var topSafeAreaInset: CGFloat = 0
+    @State private var isProfileBackdropSearchPresented = false
+    @State private var profileBackdropPickerRef: MediaRef?
 
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
@@ -591,6 +593,27 @@ struct ProfileView: View {
                     onUnauthorized: onUnauthorized
                 )
             }
+            .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
+                ProfileBackdropSearchView(
+                    mediaRepository: mediaRepository,
+                    profileRepository: profileRepository,
+                    currentBackdropURL: viewModel.profile?.profileBackdropUrl,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    applyProfileBackdrop(response)
+                }
+            }
+            .fullScreenCover(item: $profileBackdropPickerRef, onDismiss: { profileBackdropPickerRef = nil }) { ref in
+                BackdropPickerView(
+                    ref: ref,
+                    currentBackdropURL: viewModel.profile?.profileBackdropUrl,
+                    mediaRepository: mediaRepository,
+                    profileRepository: profileRepository,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    applyProfileBackdrop(response)
+                }
+            }
             .alert("Hall of Fame Update Failed", isPresented: hofErrorBinding) {
                 Button("OK") {
                     viewModel.hofErrorMessage = nil
@@ -715,6 +738,14 @@ struct ProfileView: View {
             if let backdropURL {
                 ProfileBackdropArtwork(urlString: backdropURL)
                     .frame(height: topSafeAreaInset + ProfileHeroBackdropLayout.backdropHeight)
+                    .onLongPressGesture {
+                        guard isOwnProfile else { return }
+                        if let ref = profileBackdropRef(from: profile) {
+                            profileBackdropPickerRef = ref
+                        } else {
+                            isProfileBackdropSearchPresented = true
+                        }
+                    }
             }
 
             VStack(spacing: 6) {
@@ -803,8 +834,20 @@ struct ProfileView: View {
     }
 
     private func profileBackdropURL(from profile: UserProfile) -> String? {
+        if let profileBackdropUrl = profile.profileBackdropUrl?.trimmedNonEmpty {
+            return profileBackdropUrl
+        }
         guard let movie = profile.hof["movie"] ?? nil else { return nil }
         return movie.displayBackdropURL
+    }
+
+    private func profileBackdropRef(from profile: UserProfile) -> MediaRef? {
+        profile.profileBackdropItem?.ref ?? (profile.hof["movie"] ?? nil)?.ref
+    }
+
+    private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
+        guard let updated = viewModel.profile?.replacingProfileBackdrop(response) else { return }
+        viewModel.profile = updated
     }
 
     private func avatar(_ profile: UserProfile) -> some View {
@@ -1747,12 +1790,16 @@ private struct ProfileSettingsSheet: View {
     @State private var viewModel: ProfileSettingsViewModel
     @State private var importStatusSource: ImportStatusSource?
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isProfileBackdropSearchPresented = false
 
     let profile: UserProfile?
     let onProfileUpdated: (UserProfile) -> Void
     let importCoordinator: LetterboxdImportCoordinator
     let storygraphImportCoordinator: StoryGraphImportCoordinator
     let onLogout: () -> Void
+    private let profileRepository: ProfileRepository
+    private let mediaRepository: MediaRepository
+    private let onUnauthorized: () -> Void
 
     init(
         profile: UserProfile?,
@@ -1769,6 +1816,9 @@ private struct ProfileSettingsSheet: View {
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
         self.onLogout = onLogout
+        self.profileRepository = profileRepository
+        self.mediaRepository = mediaRepository
+        self.onUnauthorized = onUnauthorized
         _viewModel = State(initialValue: ProfileSettingsViewModel(
             profileRepository: profileRepository,
             mediaRepository: mediaRepository,
@@ -1836,6 +1886,16 @@ private struct ProfileSettingsSheet: View {
                     )
                 }
             }
+            .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
+                ProfileBackdropSearchView(
+                    mediaRepository: mediaRepository,
+                    profileRepository: profileRepository,
+                    currentBackdropURL: viewModel.profile?.profileBackdropUrl ?? profile?.profileBackdropUrl,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    applyProfileBackdrop(response)
+                }
+            }
         }
     }
 
@@ -1866,15 +1926,34 @@ private struct ProfileSettingsSheet: View {
 
                 Spacer()
 
-                if avatarUrl != nil {
-                    Button("Remove", role: .destructive) {
-                        Swift.Task<Void, Never> {
+            if avatarUrl != nil {
+                Button("Remove", role: .destructive) {
+                    Swift.Task<Void, Never> {
                             if let updated = await viewModel.removeAvatar() {
                                 onProfileUpdated(updated)
                             }
                         }
                     }
                     .disabled(isSavingAvatar)
+                }
+            }
+
+            Button {
+                isProfileBackdropSearchPresented = true
+            } label: {
+                Label("Choose Profile Backdrop", systemImage: "photo.on.rectangle")
+            }
+
+            if (viewModel.profile?.profileBackdropUrl ?? profile.profileBackdropUrl) != nil {
+                Button("Remove Profile Backdrop", role: .destructive) {
+                    Swift.Task<Void, Never> {
+                        do {
+                            let response = try await profileRepository.clearProfileBackdrop()
+                            applyProfileBackdrop(response)
+                        } catch {
+                            viewModel.errorMessage = error.localizedDescription
+                        }
+                    }
                 }
             }
 
@@ -1897,6 +1976,13 @@ private struct ProfileSettingsSheet: View {
             Toggle("Private account", isOn: $viewModel.isPrivate)
             fieldError("is_private", "profile_private")
         }
+    }
+
+    private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
+        guard let base = viewModel.profile ?? profile else { return }
+        let updated = base.replacingProfileBackdrop(response)
+        viewModel.load(profile: updated)
+        onProfileUpdated(updated)
     }
 
     private var profileSaveSection: some View {

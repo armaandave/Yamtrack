@@ -161,7 +161,7 @@ private struct SearchViewContainer: View {
             mediaRepository: mediaRepository,
             mediaLensStore: mediaLensStore,
             onUnauthorized: onUnauthorized,
-            onSelect: { selectedRef = $0 }
+            onSelect: { selectedRef = $0.ref }
         )
         .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
             MediaDetailCover(
@@ -206,6 +206,60 @@ private struct MediaDetailCover: View {
     }
 }
 
+struct ProfileBackdropSearchView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedMedia: MediaSummary?
+    @State private var mediaLensStore: MediaLensStore
+
+    private let mediaRepository: MediaRepository
+    private let profileRepository: ProfileRepository
+    private let currentBackdropURL: String?
+    private let onUnauthorized: () -> Void
+    private let onSaved: (ProfileBackdropSaveResponse) -> Void
+
+    private let supportedTypes = ["movie", "tv", "game"]
+
+    init(
+        mediaRepository: MediaRepository,
+        profileRepository: ProfileRepository,
+        currentBackdropURL: String?,
+        onUnauthorized: @escaping () -> Void,
+        onSaved: @escaping (ProfileBackdropSaveResponse) -> Void
+    ) {
+        self.mediaRepository = mediaRepository
+        self.profileRepository = profileRepository
+        self.currentBackdropURL = currentBackdropURL
+        self.onUnauthorized = onUnauthorized
+        self.onSaved = onSaved
+        _mediaLensStore = State(initialValue: MediaLensStore(
+            defaults: UserDefaults(suiteName: "ProfileBackdropSearch") ?? .standard
+        ))
+    }
+
+    var body: some View {
+        SearchViewContent(
+            mediaRepository: mediaRepository,
+            mediaLensStore: mediaLensStore,
+            supportedMediaTypes: supportedTypes,
+            title: "Profile Backdrop",
+            onUnauthorized: onUnauthorized,
+            onSelect: { selectedMedia = $0 }
+        )
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { media in
+            BackdropPickerView(
+                ref: media.ref,
+                currentBackdropURL: currentBackdropURL,
+                mediaRepository: mediaRepository,
+                profileRepository: profileRepository,
+                onUnauthorized: onUnauthorized
+            ) { response in
+                onSaved(response)
+                dismiss()
+            }
+        }
+    }
+}
+
 private struct SearchViewContent: View {
     @State private var viewModel: SearchViewModel
     @State private var isMediaLensExpanded = false
@@ -213,11 +267,22 @@ private struct SearchViewContent: View {
     @AppStorage("recentMedia") private var recentMediaData = "[]"
 
     let mediaLensStore: MediaLensStore
-    let onSelect: (MediaRef) -> Void
+    let supportedMediaTypes: [String]?
+    let title: String
+    let onSelect: (MediaSummary) -> Void
 
-    init(mediaRepository: MediaRepository, mediaLensStore: MediaLensStore, onUnauthorized: @escaping () -> Void, onSelect: @escaping (MediaRef) -> Void) {
+    init(
+        mediaRepository: MediaRepository,
+        mediaLensStore: MediaLensStore,
+        supportedMediaTypes: [String]? = nil,
+        title: String = "Search",
+        onUnauthorized: @escaping () -> Void,
+        onSelect: @escaping (MediaSummary) -> Void
+    ) {
         _viewModel = State(initialValue: SearchViewModel(mediaRepository: mediaRepository, onUnauthorized: onUnauthorized))
         self.mediaLensStore = mediaLensStore
+        self.supportedMediaTypes = supportedMediaTypes
+        self.title = title
         self.onSelect = onSelect
     }
 
@@ -255,11 +320,11 @@ private struct SearchViewContent: View {
                         recentMedia: recentMedia,
                         onRecentMedia: { media in
                             saveRecentMedia(media)
-                            onSelect(media.ref)
+                            onSelect(media)
                         },
                         onSelect: { media in
                             saveRecentMedia(media)
-                            onSelect(media.ref)
+                            onSelect(media)
                         }
                     )
                     .blur(radius: isMediaLensExpanded ? 8 : 0)
@@ -276,12 +341,16 @@ private struct SearchViewContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
                 .mediaLensAtmosphere(theme: currentTheme)
-                .navigationTitle("Search")
+                .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
                 .task {
-                    await viewModel.loadMeta()
+                    if let supportedMediaTypes {
+                        viewModel.mediaTypes = supportedMediaTypes
+                    } else {
+                        await viewModel.loadMeta()
+                    }
                     validateSelectedMediaType()
                 }
                 .task(id: draftText) {
@@ -295,7 +364,9 @@ private struct SearchViewContent: View {
     }
 
     private var recentMedia: [MediaSummary] {
-        RecentMedia.decodeList(from: recentMediaData)
+        let media = RecentMedia.decodeList(from: recentMediaData)
+        guard let supportedMediaTypes else { return media }
+        return media.filter { supportedMediaTypes.contains($0.ref.mediaType) }
     }
 
     private var currentTheme: MediaTypeTheme {

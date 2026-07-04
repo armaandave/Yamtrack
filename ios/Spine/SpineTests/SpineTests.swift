@@ -3524,7 +3524,9 @@ final class SpineTests: XCTestCase {
             ref: TestFixtures.movieDetail.ref,
             mediaRepository: PosterFixtureRepository(),
             onUnauthorized: {},
-            onSaved: { savedResponse = $0 }
+            saveAction: { _, backdropURL in
+                savedResponse = BackdropSaveResponse(backdropUrl: backdropURL, customBackdropUrl: backdropURL)
+            }
         )
 
         await viewModel.load()
@@ -3754,6 +3756,8 @@ final class SpineTests: XCTestCase {
             pronouns: nil,
             location: nil,
             avatarUrl: nil,
+            profileBackdropUrl: nil,
+            profileBackdropItem: nil,
             isPrivate: false,
             viewerRelationship: ViewerRelationship(following: false, followedBy: false, requested: false, blocked: false),
             counts: ProfileCounts(followers: 0, following: 0, diaryEntries: 0, lists: 0),
@@ -4168,6 +4172,8 @@ private struct FakeProfileRepository: ProfileRepository {
             pronouns: nil,
             location: nil,
             avatarUrl: nil,
+            profileBackdropUrl: nil,
+            profileBackdropItem: nil,
             isPrivate: false,
             viewerRelationship: ViewerRelationship(following: false, followedBy: false, requested: false, blocked: false),
             counts: ProfileCounts(followers: 0, following: 0, diaryEntries: 0, lists: 0, reviews: 0, tags: 0),
@@ -4186,6 +4192,8 @@ private struct FakeProfileRepository: ProfileRepository {
     func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile { fatalError("Not used") }
     func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String? { fatalError("Not used") }
     func deleteAvatar() async throws -> String? { fatalError("Not used") }
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences { fatalError("Not used") }
     func changePassword(_ request: PasswordChangeRequest) async throws { fatalError("Not used") }
     func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?] { fatalError("Not used") }
@@ -4219,6 +4227,8 @@ private final class RecordingProfileRepository: ProfileRepository {
             pronouns: request.pronouns ?? profile.pronouns,
             location: request.location ?? profile.location,
             avatarUrl: profile.avatarUrl,
+            profileBackdropUrl: profile.profileBackdropUrl,
+            profileBackdropItem: profile.profileBackdropItem,
             isPrivate: request.isPrivate ?? profile.isPrivate,
             viewerRelationship: profile.viewerRelationship,
             counts: profile.counts,
@@ -4236,6 +4246,14 @@ private final class RecordingProfileRepository: ProfileRepository {
     func deleteAvatar() async throws -> String? {
         didDeleteAvatar = true
         return nil
+    }
+
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse {
+        ProfileBackdropSaveResponse(profileBackdropUrl: backdropURL, profileBackdropItem: profile.profileBackdropItem)
+    }
+
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse {
+        ProfileBackdropSaveResponse(profileBackdropUrl: nil, profileBackdropItem: nil)
     }
 
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences {
@@ -4304,6 +4322,14 @@ private final class HallOfFameProfileRepository: ProfileRepository {
     }
 
     func deleteAvatar() async throws -> String? {
+        fatalError("Not used")
+    }
+
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse {
+        fatalError("Not used")
+    }
+
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse {
         fatalError("Not used")
     }
 

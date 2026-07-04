@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from app.models import Item, MediaTypes, Sources
 from social.models import SocialAuditLog
 from users.models import DateFormatChoices, QuickWatchDateChoices
 
@@ -120,6 +121,79 @@ class ApiProfileSettingsTests(TestCase):
         self.assertEqual(missing.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(bad_type.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(large.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_profile_backdrop_put_delete_and_read_back(self):
+        backdrop_url = "https://example.com/backdrop.jpg"
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+        )
+
+        saved = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "550",
+                },
+                "backdrop_url": backdrop_url,
+            },
+            format="json",
+        )
+
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
+        self.assertEqual(saved.data["profile_backdrop_url"], backdrop_url)
+        self.assertEqual(saved.data["profile_backdrop_item"]["ref"]["media_id"], item.media_id)
+        read_back = self.client.get("/api/v1/me/")
+        self.assertEqual(read_back.data["profile_backdrop_url"], backdrop_url)
+        self.assertEqual(read_back.data["profile_backdrop_item"]["ref"]["media_id"], item.media_id)
+
+        deleted = self.client.delete("/api/v1/me/profile-backdrop/")
+
+        self.assertEqual(deleted.status_code, status.HTTP_200_OK)
+        self.assertIsNone(deleted.data["profile_backdrop_url"])
+        self.assertIsNone(deleted.data["profile_backdrop_item"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile_backdrop_url, "")
+        self.assertIsNone(self.user.profile_backdrop_item)
+
+    def test_profile_backdrop_rejects_bad_url(self):
+        response = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "550",
+                },
+                "backdrop_url": "not-a-url",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("backdrop_url", response.data["error"]["fields"])
+
+    def test_profile_backdrop_rejects_unsupported_media_type(self):
+        response = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.SEASON.value,
+                    "media_id": "1399",
+                    "season_number": 1,
+                },
+                "backdrop_url": "https://example.com/backdrop.jpg",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ref", response.data)
 
     def test_preferences_patch_valid_and_invalid_enum_values(self):
         valid = self.client.patch(

@@ -160,6 +160,8 @@ protocol ProfileRepository {
     func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile
     func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String?
     func deleteAvatar() async throws -> String?
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences
     func changePassword(_ request: PasswordChangeRequest) async throws
     func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?]
@@ -667,6 +669,18 @@ struct APIProfileRepository: ProfileRepository {
     func deleteAvatar() async throws -> String? {
         let response: AvatarUploadResponse = try await client.delete("/me/avatar/", authenticated: true)
         return response.avatarUrl
+    }
+
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse {
+        try await client.put(
+            "/me/profile-backdrop/",
+            body: ProfileBackdropSaveRequest(ref: ref, backdropUrl: backdropURL),
+            authenticated: true
+        )
+    }
+
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse {
+        try await client.delete("/me/profile-backdrop/", authenticated: true)
     }
 
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences {

@@ -44,11 +44,24 @@ HOF_MEDIA_TYPES = {
     MediaTypes.COMIC.value,
 }
 
+PROFILE_BACKDROP_MEDIA_TYPES = {
+    MediaTypes.MOVIE.value,
+    MediaTypes.TV.value,
+    MediaTypes.GAME.value,
+}
+
 
 class HOFItemWriteSerializer(serializers.Serializer):
     """Validate Hall of Fame item writes."""
 
     ref = MediaRefSerializer()
+
+
+class ProfileBackdropSerializer(serializers.Serializer):
+    """Validate profile backdrop writes."""
+
+    ref = MediaRefSerializer()
+    backdrop_url = serializers.URLField(max_length=1000)
 
 
 class MeView(APIView):
@@ -160,6 +173,44 @@ class AvatarView(APIView):
             except OSError:
                 logger.warning("Failed to delete avatar for user: %s", request.user.username)
         return Response({"avatar_url": None})
+
+
+class ProfileBackdropView(APIView):
+    """Save or clear the current user's profile backdrop."""
+
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        serializer = ProfileBackdropSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ref = serializer.validated_data["ref"]
+        if ref["media_type"] not in PROFILE_BACKDROP_MEDIA_TYPES:
+            return Response({"ref": ["Unsupported profile backdrop media type."]}, status=status.HTTP_400_BAD_REQUEST)
+        item = find_item(ref)
+        if item is None:
+            metadata = provider_services.get_media_metadata(
+                ref["media_type"],
+                ref["media_id"],
+                ref["source"],
+                [ref.get("season_number")] if ref.get("season_number") is not None else None,
+                ref.get("episode_number"),
+            )
+            item = get_or_create_item_from_metadata(ref, metadata)
+        request.user.profile_backdrop_url = serializer.validated_data["backdrop_url"]
+        request.user.profile_backdrop_item = item
+        request.user.save(update_fields=["profile_backdrop_url", "profile_backdrop_item"])
+        return Response(
+            {
+                "profile_backdrop_url": request.user.profile_backdrop_url,
+                "profile_backdrop_item": media_summary_from_item(item, request=request, user=request.user),
+            }
+        )
+
+    def delete(self, request):
+        request.user.profile_backdrop_url = ""
+        request.user.profile_backdrop_item = None
+        request.user.save(update_fields=["profile_backdrop_url", "profile_backdrop_item"])
+        return Response({"profile_backdrop_url": None, "profile_backdrop_item": None})
 
 
 class PreferencesView(APIView):
