@@ -55,10 +55,12 @@ final class PersonDetailViewModel {
             guard let releaseDate = item.releaseDate, releaseDate.count >= 4 else { return nil }
             return Int(releaseDate.prefix(4))
         })
+        let genres = Set(media.flatMap(\.genres)).sorted()
+        let languages = Set(media.flatMap(\.languages)).sorted()
         return MediaFilterOptionsResponse(
             sorts: [],
-            genres: [],
-            languages: [],
+            genres: genres.map { FilterChoice(value: $0, label: $0) },
+            languages: languages.map { FilterChoice(value: $0, label: $0) },
             years: years.sorted(by: >)
         )
     }

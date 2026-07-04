@@ -45,8 +45,7 @@ final class TaggedDiaryViewModel {
 
         do {
             filter.tag = tag
-            let response = try await diaryRepository.page(filter: filter, page: nil)
-            entries = response.results
+            entries = try await diaryRepository.list(filter: filter)
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {

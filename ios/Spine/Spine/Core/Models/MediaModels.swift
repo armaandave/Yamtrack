@@ -44,6 +44,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
     let logoHeight: Int?
     let logoAspectRatio: Double?
     let releaseDate: String?
+    let genres: [String]
+    let languages: [String]
     let defaultSource: String?
     let position: Int?
     var userState: UserMediaState?
@@ -82,6 +84,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         case logoHeight
         case logoAspectRatio
         case releaseDate
+        case genres
+        case languages
         case defaultSource
         case position
         case userState
@@ -107,6 +111,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         logoHeight: Int? = nil,
         logoAspectRatio: Double? = nil,
         releaseDate: String? = nil,
+        genres: [String] = [],
+        languages: [String] = [],
         defaultSource: String? = nil,
         position: Int? = nil,
         userState: UserMediaState? = nil
@@ -130,6 +136,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         self.logoHeight = logoHeight
         self.logoAspectRatio = logoAspectRatio
         self.releaseDate = releaseDate
+        self.genres = genres
+        self.languages = languages
         self.defaultSource = defaultSource
         self.position = position
         self.userState = userState
@@ -158,6 +166,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
             logoHeight: try container.decodeIfPresent(Int.self, forKey: .logoHeight),
             logoAspectRatio: try container.decodeIfPresent(Double.self, forKey: .logoAspectRatio),
             releaseDate: try container.decodeIfPresent(String.self, forKey: .releaseDate),
+            genres: try container.decodeIfPresent([String].self, forKey: .genres) ?? [],
+            languages: try container.decodeIfPresent([String].self, forKey: .languages) ?? [],
             defaultSource: try container.decodeIfPresent(String.self, forKey: .defaultSource),
             position: try container.decodeIfPresent(Int.self, forKey: .position),
             userState: try container.decodeIfPresent(UserMediaState.self, forKey: .userState)

@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
+from django.utils.translation import get_language_info
 
 from app import helpers
 from app.models import MediaTypes, Sources
@@ -143,6 +144,34 @@ def _genre_map(media_type):
         data = {_normalize_name(genre["name"]): genre["id"] for genre in response.get("genres", [])}
         cache.set(cache_key, data, 60 * 60 * 24 * 7)
     return data
+
+
+def _genre_name_map(media_type):
+    cache_key = f"{Sources.TMDB.value}_{media_type}_genre_name_map"
+    data = cache.get(cache_key)
+    if data is None:
+        url = f"{base_url}/genre/{media_type}/list"
+        try:
+            response = services.api_request(Sources.TMDB.value, "GET", url, params=base_params)
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+        data = {genre["id"]: genre["name"] for genre in response.get("genres", [])}
+        cache.set(cache_key, data, 60 * 60 * 24 * 7)
+    return data
+
+
+def _genre_names_from_ids(media_type, genre_ids):
+    genre_names = _genre_name_map(media_type)
+    return [genre_names[genre_id] for genre_id in genre_ids or [] if genre_id in genre_names]
+
+
+def _language_name(code):
+    if not code:
+        return None
+    try:
+        return get_language_info(code).get("name") or code.upper()
+    except KeyError:
+        return code.upper()
 
 
 TV_GENRE_ALIASES = {
@@ -1048,7 +1077,7 @@ def get_tv_rating(content_ratings):
 
 def person_page(person_id):
     """Return person details and credits for the person page."""
-    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v7"
+    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v8"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1087,6 +1116,8 @@ def person_page(person_id):
                 "role": item.get("character"),
                 "release_date": item.get("release_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1110,6 +1141,8 @@ def person_page(person_id):
                 "role": item.get("job"),
                 "release_date": item.get("release_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1133,6 +1166,8 @@ def person_page(person_id):
                 "role": item.get("character"),
                 "release_date": item.get("first_air_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1156,6 +1191,8 @@ def person_page(person_id):
                 "role": item.get("job"),
                 "release_date": item.get("first_air_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1175,6 +1212,8 @@ def person_page(person_id):
                     "image": c["image"],
                     "release_date": c.get("release_date"),
                     "year": c["year"],
+                    "genres": c.get("genres") or [],
+                    "languages": c.get("languages") or [],
                     "url": c["url"],
                     "popularity": c.get("popularity"),
                     "vote_average": c.get("vote_average"),

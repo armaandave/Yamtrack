@@ -416,6 +416,8 @@ def apply_person_credit_filters(credit_list, params):
         "year_max",
         "release_status",
         "length",
+        "genre",
+        "language",
         "sort",
         "ordering",
         "direction",
@@ -429,6 +431,8 @@ def apply_person_credit_filters(credit_list, params):
     year_max = int_param(params, "year_max")
     release_status = params.get("release_status")
     length = params.get("length")
+    genres = set(values(params, "genre"))
+    languages = set(values(params, "language"))
 
     if length in {"feature", "short"}:
         credit_list = [_credit_with_runtime(credit) for credit in credit_list]
@@ -436,7 +440,17 @@ def apply_person_credit_filters(credit_list, params):
     filtered = [
         credit
         for credit in credit_list
-        if _person_credit_matches(credit, media_types, years, year_min, year_max, release_status, length)
+        if _person_credit_matches(
+            credit,
+            media_types,
+            years,
+            year_min,
+            year_max,
+            release_status,
+            length,
+            genres,
+            languages,
+        )
     ]
 
     sort = params.get("sort") or "average_rating"
@@ -460,7 +474,17 @@ def apply_person_credit_filters(credit_list, params):
     return sorted(filtered, key=key)
 
 
-def _person_credit_matches(credit, media_types, years, year_min, year_max, release_status=None, length=None):  # noqa: PLR0911
+def _person_credit_matches(  # noqa: C901, PLR0911
+    credit,
+    media_types,
+    years,
+    year_min,
+    year_max,
+    release_status=None,
+    length=None,
+    genres=None,
+    languages=None,
+):
     year = _credit_year(credit)
     if media_types and credit.get("media_type") not in media_types:
         return False
@@ -469,6 +493,10 @@ def _person_credit_matches(credit, media_types, years, year_min, year_max, relea
     if year_min is not None and (year is None or year < year_min):
         return False
     if year_max is not None and (year is None or year > year_max):
+        return False
+    if genres and genres.isdisjoint(set(credit.get("genres") or [])):
+        return False
+    if languages and languages.isdisjoint(set(credit.get("languages") or [])):
         return False
 
     release_date = _credit_release_date(credit)

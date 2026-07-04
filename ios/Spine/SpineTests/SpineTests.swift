@@ -72,6 +72,37 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testPersonFilterOptionsIncludeGenresAndLanguages() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(
+            MediaSummary.self,
+            from: Data(
+                """
+                {
+                  "ref": {"source": "tmdb", "media_type": "movie", "media_id": "1"},
+                  "title": "One",
+                  "genres": ["Drama", "Thriller"],
+                  "languages": ["English"]
+                }
+                """.utf8
+            )
+        )
+        let options = PersonDetailViewModel.options(from: [
+            decoded,
+            MediaSummary(
+                ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "2", seasonNumber: nil, episodeNumber: nil),
+                title: "Two",
+                genres: ["Drama"],
+                languages: ["French"]
+            ),
+        ])
+
+        XCTAssertEqual(options.genres.map(\.value), ["Drama", "Thriller"])
+        XCTAssertEqual(options.languages.map(\.value), ["English", "French"])
+    }
+
+    @MainActor
     func testLibraryViewModelSeparatesPlanningFromTrackedItems() async {
         let repository = ScriptedLibraryTrackingRepository(responses: [
             "movie:": PagedResponse(
@@ -2210,6 +2241,29 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(repository.requestedTags, ["comfort"])
         XCTAssertTrue(didAuthorize)
         XCTAssertNotNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testTaggedDiaryViewModelLoadsEveryPage() async throws {
+        let first = try JSONDecoder.api.decode(
+            DiaryEntry.self,
+            from: TestFixtures.diaryEntryJSON(id: 1, mediaId: "550", title: "First Log", tags: ["comfort"]).data(using: .utf8)!
+        )
+        let second = try JSONDecoder.api.decode(
+            DiaryEntry.self,
+            from: TestFixtures.diaryEntryJSON(id: 2, mediaId: "551", title: "Second Log", tags: ["comfort"]).data(using: .utf8)!
+        )
+        let repository = TaggedDiaryFixtureRepository(pages: [
+            PagedResponse(count: 2, next: "https://example.com/api/v1/diary/?tag=comfort&page=2", previous: nil, results: [first]),
+            PagedResponse(count: 2, next: nil, previous: "https://example.com/api/v1/diary/?tag=comfort", results: [second]),
+        ])
+        let viewModel = TaggedDiaryViewModel(tag: "comfort", diaryRepository: repository) {}
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2])
+        XCTAssertEqual(viewModel.media.map(\.media.ref.mediaId), ["550", "551"])
+        XCTAssertEqual(repository.requestedPages, [nil, "2"])
     }
 
     func testDiaryLogDateLabelKeepsImportedCalendarDate() {
@@ -4507,15 +4561,43 @@ private final class RecordingDiaryRepository: DiaryRepository {
 
 private final class TaggedDiaryFixtureRepository: DiaryRepository {
     let result: Result<[DiaryEntry], Error>
+    let pages: [PagedResponse<DiaryEntry>]
     var requestedTags: [String?] = []
+    var requestedPages: [String?] = []
 
     init(result: Result<[DiaryEntry], Error>) {
         self.result = result
+        self.pages = []
+    }
+
+    init(pages: [PagedResponse<DiaryEntry>]) {
+        self.result = .success([])
+        self.pages = pages
     }
 
     func list(tag: String?) async throws -> [DiaryEntry] {
         requestedTags.append(tag)
         return try result.get()
+    }
+
+    func list(filter: MediaFilterState) async throws -> [DiaryEntry] {
+        guard !pages.isEmpty else {
+            return try await list(tag: filter.tag)
+        }
+
+        var page: String?
+        var entries: [DiaryEntry] = []
+        repeat {
+            let response = try await self.page(filter: filter, page: page)
+            entries += response.results
+            page = APIPageCursor.nextPage(from: response.next)
+        } while page != nil
+        return entries
+    }
+
+    func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
+        requestedPages.append(page)
+        return pages[requestedPages.count - 1]
     }
 
     func detail(id: Int) async throws -> DiaryEntry { fatalError("Not used") }

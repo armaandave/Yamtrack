@@ -73,6 +73,7 @@ extension TrackingRepository {
 }
 
 protocol DiaryRepository {
+    func list(filter: MediaFilterState) async throws -> [DiaryEntry]
     func list(filter: DiaryFilter) async throws -> [DiaryEntry]
     func list(tag: String?) async throws -> [DiaryEntry]
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry>
@@ -92,6 +93,19 @@ protocol ActivityRepository {
 }
 
 extension DiaryRepository {
+    func list(filter: MediaFilterState) async throws -> [DiaryEntry] {
+        var page: String?
+        var entries: [DiaryEntry] = []
+
+        repeat {
+            let response = try await self.page(filter: filter, page: page)
+            entries += response.results
+            page = APIPageCursor.nextPage(from: response.next)
+        } while page != nil
+
+        return entries
+    }
+
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
         let results = try await list(filter: DiaryFilter(
             tag: filter.tag,
@@ -509,16 +523,7 @@ struct APIDiaryRepository: DiaryRepository {
         mediaFilter.itemId = filter.itemId
         mediaFilter.hasReview = filter.hasReview
         mediaFilter.liked = filter.liked
-        var page: String?
-        var entries: [DiaryEntry] = []
-
-        repeat {
-            let response = try await self.page(filter: mediaFilter, page: page)
-            entries += response.results
-            page = APIPageCursor.nextPage(from: response.next)
-        } while page != nil
-
-        return entries
+        return try await list(filter: mediaFilter)
     }
 
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {

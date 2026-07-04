@@ -442,6 +442,35 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(response.data["previous"])
         self.assertEqual(summary_mock.call_count, 25)
 
+    def test_tracking_list_defaults_to_newest_release_date(self):
+        user = get_user_model().objects.create_user(username="tracking-default-sort", password="strong-password-123")
+        older = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="older-default-sort",
+            title="Z Older",
+            release_date=datetime(1999, 1, 1, tzinfo=UTC).date(),
+        )
+        newer = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="newer-default-sort",
+            title="A Newer",
+            release_date=datetime(2024, 1, 1, tzinfo=UTC).date(),
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(user=user, item=older, status=Status.COMPLETED.value),
+                Movie(user=user, item=newer, status=Status.COMPLETED.value),
+            ]
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/tracking/?media_type=movie")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["media"]["title"] for item in response.data["results"]], ["A Newer", "Z Older"])
+
     def test_tracking_list_page_two_returns_next_movie_page(self):
         user = get_user_model().objects.create_user(username="tracking-page-two", password="strong-password-123")
         self._create_movies(user, 30)
@@ -2091,6 +2120,8 @@ class ApiV1FoundationTests(TestCase):
                     "media_id": "released-feature",
                     "title": "Released Feature",
                     "release_date": "2024-01-01",
+                    "genres": ["Science Fiction"],
+                    "languages": ["English"],
                     "vote_average": 8.0,
                 },
                 {
@@ -2099,6 +2130,8 @@ class ApiV1FoundationTests(TestCase):
                     "media_id": "released-short",
                     "title": "Released Short",
                     "release_date": "2024-06-01",
+                    "genres": ["Documentary"],
+                    "languages": ["English"],
                     "runtime_minutes": 12,
                     "vote_average": 9.0,
                 },
@@ -2108,6 +2141,8 @@ class ApiV1FoundationTests(TestCase):
                     "media_id": "future-feature",
                     "title": "Future Feature",
                     "release_date": "2099-01-01",
+                    "genres": ["Science Fiction"],
+                    "languages": ["English"],
                     "runtime_minutes": 90,
                     "vote_average": 10.0,
                 },
@@ -2124,6 +2159,8 @@ class ApiV1FoundationTests(TestCase):
                 "media_type": MediaTypes.MOVIE.value,
                 "release_status": "released",
                 "length": "feature",
+                "genre": "Science Fiction",
+                "language": "English",
                 "sort": "release_date",
                 "direction": "desc",
             },
@@ -2134,6 +2171,8 @@ class ApiV1FoundationTests(TestCase):
             [item["title"] for item in response.data["credits"]["cast"]],
             ["Released Feature"],
         )
+        self.assertEqual(response.data["credits"]["cast"][0]["genres"], ["Science Fiction"])
+        self.assertEqual(response.data["credits"]["cast"][0]["languages"], ["English"])
         metadata_mock.assert_called_once_with(MediaTypes.MOVIE.value, "released-feature", Sources.TMDB.value)
 
     @patch("api.services.media.provider_services.get_person_page")
