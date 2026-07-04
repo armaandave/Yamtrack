@@ -18,6 +18,7 @@ from app.models import (
     CustomPosterPreference,
     DiaryEntry,
     Item,
+    ItemFilterFacet,
     MediaLike,
     MediaTypes,
     Movie,
@@ -343,6 +344,89 @@ class ApiV1FoundationTests(TestCase):
             {with_item.name: True, without_item.name: False},
         )
 
+    def test_list_items_endpoint_filters_and_sorts_mixed_media(self):
+        user = get_user_model().objects.create_user(username="list-item-filters", password="strong-password-123")
+        custom_list = CustomList.objects.create(owner=user, name="Filtered List")
+        low = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="list-low",
+            title="Low Drama",
+            release_year=2001,
+        )
+        high = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="list-high",
+            title="High Drama",
+            release_year=2022,
+        )
+        other = Item.objects.create(
+            source=Sources.HARDCOVER.value,
+            media_type=MediaTypes.BOOK.value,
+            media_id="list-book",
+            title="Book",
+            release_year=2022,
+        )
+        ItemFilterFacet.objects.bulk_create(
+            [
+                ItemFilterFacet(item=low, facet_type="genre", value="Drama"),
+                ItemFilterFacet(item=high, facet_type="genre", value="Drama"),
+                ItemFilterFacet(item=other, facet_type="genre", value="Fantasy"),
+            ]
+        )
+        CustomListItem.objects.bulk_create(
+            [
+                CustomListItem(custom_list=custom_list, item=low),
+                CustomListItem(custom_list=custom_list, item=high),
+                CustomListItem(custom_list=custom_list, item=other),
+            ]
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(user=user, item=low, status=Status.COMPLETED.value, score="4.0"),
+                Movie(user=user, item=high, status=Status.COMPLETED.value, score="9.0"),
+            ]
+        )
+        Book.objects.create(user=user, item=other, status=Status.PLANNING.value)
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            f"/api/v1/lists/{custom_list.id}/items/",
+            {"genre": "Drama", "sort": "your_rating"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(
+            [result["title"] for result in response.data["results"]],
+            ["High Drama", "Low Drama"],
+        )
+        self.assertEqual(response.data["results"][0]["your_rating"], "9.0")
+
+    def test_filter_options_returns_available_facets_for_scope(self):
+        user = get_user_model().objects.create_user(username="filter-options", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="options",
+            title="Options",
+            release_year=2024,
+        )
+        ItemFilterFacet.objects.create(item=item, facet_type="language", value="English")
+        Movie.objects.bulk_create([Movie(user=user, item=item, status=Status.COMPLETED.value)])
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/filter-options/",
+            {"scope": "tracking", "media_type": MediaTypes.MOVIE.value},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn({"value": "release_date", "label": "Release Date"}, response.data["sorts"])
+        self.assertEqual(response.data["languages"], [{"value": "English", "label": "English"}])
+        self.assertEqual(response.data["years"], [2024])
+
     def test_tracking_list_paginates_before_serializing_movies(self):
         user = get_user_model().objects.create_user(username="tracking-pages", password="strong-password-123")
         self._create_movies(user, 30)
@@ -389,6 +473,108 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             {item["tracking"]["status"] for item in response.data["results"]},
             {Status.PLANNING.value},
+        )
+
+    def test_tracking_filters_cached_facets_and_sorts_without_provider_calls(self):
+        user = get_user_model().objects.create_user(username="tracking-filters", password="strong-password-123")
+        old_drama = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="old-drama",
+            title="Old Drama",
+            release_year=1999,
+            release_date=datetime(1999, 1, 1, tzinfo=UTC).date(),
+            imdb_rating="7.0",
+        )
+        new_drama = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="new-drama",
+            title="New Drama",
+            release_year=2024,
+            release_date=datetime(2024, 1, 1, tzinfo=UTC).date(),
+            imdb_rating="8.5",
+        )
+        comedy = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="comedy",
+            title="Comedy",
+            release_year=2024,
+            release_date=datetime(2024, 6, 1, tzinfo=UTC).date(),
+        )
+        ItemFilterFacet.objects.bulk_create(
+            [
+                ItemFilterFacet(item=old_drama, facet_type="genre", value="Drama"),
+                ItemFilterFacet(item=new_drama, facet_type="genre", value="Drama"),
+                ItemFilterFacet(item=comedy, facet_type="genre", value="Comedy"),
+            ]
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(user=user, item=old_drama, status=Status.COMPLETED.value, score="6.0"),
+                Movie(user=user, item=new_drama, status=Status.COMPLETED.value, score="9.0"),
+                Movie(user=user, item=comedy, status=Status.COMPLETED.value, score="8.0"),
+            ]
+        )
+        self.client.force_authenticate(user)
+
+        with patch("app.providers.services.get_media_metadata") as metadata_mock:
+            response = self.client.get(
+                "/api/v1/tracking/",
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "genre": "Drama",
+                    "year_min": "2000",
+                    "sort": "imdb_rating",
+                },
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(metadata_mock.called)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["media"]["title"], "New Drama")
+
+    def test_tracking_sorts_by_public_average_rating(self):
+        user = get_user_model().objects.create_user(username="tracking-average", password="strong-password-123")
+        low = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="avg-low",
+            title="Low",
+        )
+        high = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="avg-high",
+            title="High",
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(user=user, item=low, status=Status.COMPLETED.value),
+                Movie(user=user, item=high, status=Status.COMPLETED.value),
+            ]
+        )
+        DiaryEntry.objects.create(user=user, item=low, consumed_at=timezone.now(), rating="4.0")
+        DiaryEntry.objects.create(user=user, item=high, consumed_at=timezone.now(), rating="9.0")
+        DiaryEntry.objects.create(
+            user=user,
+            item=low,
+            consumed_at=timezone.now(),
+            rating="10.0",
+            visibility="private",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/tracking/",
+            {"media_type": MediaTypes.MOVIE.value, "sort": "average_rating"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [result["media"]["title"] for result in response.data["results"]],
+            ["High", "Low"],
         )
 
     @patch("app.models.providers.services.get_media_metadata", return_value={"max_progress": None})
@@ -1641,6 +1827,11 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["user_state"]["diary_consumed_at"], consumed_at)
         self.assertEqual(response.data["user_state"]["diary_entry_id"], diary_entry.id)
         self.assertEqual(response.data["user_state"]["diary_count"], 1)
+        item.refresh_from_db()
+        self.assertEqual(str(item.imdb_rating), "8.80")
+        self.assertEqual(str(item.letterboxd_rating), "4.30")
+        self.assertEqual(str(item.rotten_tomatoes_rating), "79.00")
+        self.assertTrue(ItemFilterFacet.objects.filter(item=item, facet_type="genre", value="Drama").exists())
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_landscape_only_artwork_marks_poster_orientation(self, metadata_mock):
@@ -1715,6 +1906,55 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["credits"]["cast"][0]["ref"]["media_type"], MediaTypes.MOVIE.value)
         self.assertEqual(response.data["credits"]["cast"][0]["subtitle"], "1999")
         self.assertEqual(response.data["credits"]["cast"][0]["poster_url"], "https://example.com/fight-club.jpg")
+
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_filters_and_sorts_credits_in_memory(self, person_mock):
+        person_mock.return_value = {
+            "source": Sources.TMDB.value,
+            "person_id": "819",
+            "name": "Edward Norton",
+            "credits": [
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "1",
+                    "title": "Older Movie",
+                    "year": "1999",
+                    "vote_average": 9.0,
+                },
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "2",
+                    "title": "Newer Movie",
+                    "year": "2024",
+                    "vote_average": 6.0,
+                },
+                {
+                    "media_type": MediaTypes.TV.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "3",
+                    "title": "TV Credit",
+                    "year": "2025",
+                    "vote_average": 10.0,
+                },
+            ],
+        }
+
+        response = self.client.get(
+            "/api/v1/people/tmdb/819/",
+            {
+                "media_type": MediaTypes.MOVIE.value,
+                "year_min": "2000",
+                "sort": "release_date",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item["title"] for item in response.data["credits"]["cast"]],
+            ["Newer Movie"],
+        )
 
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_returns_hardcover_author_books(self, person_mock):
@@ -2632,6 +2872,26 @@ class ApiV1FoundationTests(TestCase):
                 "language": "en",
             },
             {
+                "url": "https://example.com/high-en.jpg",
+                "thumbnail_url": "https://example.com/high-en-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "vote_average": 10,
+                "vote_count": 40,
+                "language": "en",
+            },
+            {
+                "url": "https://example.com/first-no-language.jpg",
+                "thumbnail_url": "https://example.com/first-no-language-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "vote_average": 9,
+                "vote_count": 30,
+                "language": None,
+            },
+            {
                 "url": "https://example.com/second.jpg",
                 "thumbnail_url": "https://example.com/second-thumb.jpg",
                 "width": 1920,
@@ -2639,7 +2899,7 @@ class ApiV1FoundationTests(TestCase):
                 "aspect_ratio": 1.778,
                 "vote_average": 8,
                 "vote_count": 20,
-                "language": "en",
+                "language": None,
             },
         ]
         self.client.force_authenticate(user)
@@ -2864,7 +3124,7 @@ class ApiV1FoundationTests(TestCase):
     @patch("app.providers.tmdb.get_backdrop_images")
     @patch("app.providers.mdblist.get_media_ratings", return_value={})
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_media_detail_uses_second_tmdb_backdrop_when_uncurated(
+    def test_media_detail_uses_second_no_language_tmdb_backdrop_when_uncurated(
         self,
         metadata_mock,
         _ratings_mock,
@@ -2880,8 +3140,9 @@ class ApiV1FoundationTests(TestCase):
             "backdrop_path": "/default-backdrop.jpg",
         }
         backdrops_mock.return_value = [
-            {"url": "https://example.com/first.jpg"},
-            {"url": "https://example.com/second.jpg"},
+            {"url": "https://example.com/high-en.jpg", "language": "en"},
+            {"url": "https://example.com/first.jpg", "language": None},
+            {"url": "https://example.com/second.jpg", "language": None},
         ]
 
         response = self.client.get("/api/v1/media/tmdb/movie/550/")

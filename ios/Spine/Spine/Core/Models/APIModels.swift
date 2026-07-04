@@ -7,6 +7,13 @@ struct PagedResponse<T: Decodable>: Decodable {
     let next: String?
     let previous: String?
     let results: [T]
+
+    init(count: Int, next: String?, previous: String?, results: [T]) {
+        self.count = count
+        self.next = next
+        self.previous = previous
+        self.results = results
+    }
 }
 
 struct MetaResponse: Decodable {

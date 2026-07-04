@@ -773,18 +773,36 @@ private struct ProfileListRow: View {
 @Observable
 private final class ProfileListDetailViewModel {
     var list: CustomListDetail?
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
+    var filteredItems: [MediaSummary] = []
     var isLoading = false
+    var isLoadingFilteredItems = false
     var isSaving = false
     var errorMessage: String?
+    var nextPageErrorMessage: String?
 
     private let listId: Int
     private let listRepository: ListRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
+    private var nextPage: String?
+    private var requestGeneration = 0
 
-    init(listId: Int, listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
+    init(
+        listId: Int,
+        listRepository: ListRepository,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
+        onUnauthorized: @escaping () -> Void
+    ) {
         self.listId = listId
         self.listRepository = listRepository
+        self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
+    }
+
+    var displayedItems: [MediaSummary] {
+        filter.isActive ? filteredItems : list?.items ?? []
     }
 
     func load() async {
@@ -794,12 +812,70 @@ private final class ProfileListDetailViewModel {
 
         do {
             list = try await listRepository.detail(id: listId)
+            await loadFilterOptions()
+            if filter.isActive {
+                await loadFilteredItems(reset: true)
+            }
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
         }
+    }
+
+    func loadFilterOptions() async {
+        do {
+            filterOptions = try await filterOptionsRepository.options(scope: .list(id: listId), filter: filter)
+        } catch {
+            filterOptions = .empty
+        }
+    }
+
+    func loadFilteredItems(reset: Bool) async {
+        guard filter.isActive else {
+            filteredItems = []
+            nextPage = nil
+            return
+        }
+        if reset {
+            requestGeneration += 1
+            filteredItems = []
+            nextPage = nil
+        }
+        let generation = requestGeneration
+        let requestFilter = filter
+        isLoadingFilteredItems = true
+        nextPageErrorMessage = nil
+        defer { isLoadingFilteredItems = false }
+
+        do {
+            let response = try await listRepository.items(listId: listId, page: reset ? nil : nextPage, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            if reset {
+                filteredItems = response.results
+            } else {
+                let existingIDs = Set(filteredItems.map(\.id))
+                filteredItems += response.results.filter { !existingIDs.contains($0.id) }
+            }
+            nextPage = APIPageCursor.nextPage(from: response.next)
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            nextPageErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadNextFilteredPageIfNeeded(currentItem: MediaSummary) async {
+        guard filter.isActive, nextPage != nil, !isLoadingFilteredItems,
+              let thresholdIndex = filteredItems.index(filteredItems.endIndex, offsetBy: -8, limitedBy: filteredItems.startIndex) ?? filteredItems.indices.first,
+              let currentIndex = filteredItems.firstIndex(where: { $0.id == currentItem.id }),
+              currentIndex >= thresholdIndex else {
+            return
+        }
+        await loadFilteredItems(reset: false)
     }
 
     func update(_ request: CustomListWriteRequest) async -> Bool {
@@ -944,11 +1020,17 @@ private struct ProfileListDetailView: View {
                     } else if let list = viewModel.list {
                         listHeader(list)
                             .padding(.top, -(topSafeAreaInset + 32))
-                        if list.items.isEmpty {
-                            DiaryStateCard(title: "No items yet", systemImage: "square.grid.2x2", message: "Add items from any media detail page.")
+                        if viewModel.displayedItems.isEmpty {
+                            DiaryStateCard(
+                                title: viewModel.filter.isActive ? "No matching items" : "No items yet",
+                                systemImage: "square.grid.2x2",
+                                message: viewModel.filter.isActive ? "Try changing or resetting the filters." : "Add items from any media detail page."
+                            )
                                 .padding(.horizontal, 14)
                         } else {
-                            mediaGrid(list.items)
+                            mediaGrid(viewModel.displayedItems)
+                                .padding(.horizontal, 14)
+                            filteredPaginationFooter
                                 .padding(.horizontal, 14)
                         }
                     }
@@ -1040,6 +1122,17 @@ private struct ProfileListDetailView: View {
             Spacer()
 
             if viewModel.list != nil {
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .list(id: viewModel.list?.id ?? 0),
+                    options: viewModel.filterOptions
+                ) {
+                    Task {
+                        await viewModel.loadFilterOptions()
+                        await viewModel.loadFilteredItems(reset: true)
+                    }
+                }
+
                 Menu {
                     Button("Edit List", systemImage: "slider.horizontal.3") {
                         if let list = viewModel.list {
@@ -1142,7 +1235,22 @@ private struct ProfileListDetailView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .task {
+                    await viewModel.loadNextFilteredPageIfNeeded(currentItem: item)
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var filteredPaginationFooter: some View {
+        if viewModel.isLoadingFilteredItems {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+        } else if let error = viewModel.nextPageErrorMessage {
+            DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
         }
     }
 }

@@ -20,6 +20,8 @@ final class LibraryViewModel {
     var mediaType = "movie"
     var mediaTypes = LibraryViewModel.libraryMediaTypes(from: APIConstants.fallbackMediaTypes)
     var query = ""
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
     var viewMode: LibraryViewMode = .grid
     var shelf: LibraryShelf = .tracked
     var items: [LibraryItem] = []
@@ -31,14 +33,21 @@ final class LibraryViewModel {
 
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
     private var didBootstrap = false
 
-    init(mediaRepository: MediaRepository, trackingRepository: TrackingRepository, onUnauthorized: @escaping () -> Void) {
+    init(
+        mediaRepository: MediaRepository,
+        trackingRepository: TrackingRepository,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
+        onUnauthorized: @escaping () -> Void
+    ) {
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
+        self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
     }
 
@@ -74,6 +83,7 @@ final class LibraryViewModel {
         guard !didBootstrap else { return }
         didBootstrap = true
         await loadMeta(selectedMediaType: selectedMediaType)
+        await loadFilterOptions()
         await reload()
     }
 
@@ -97,6 +107,12 @@ final class LibraryViewModel {
         guard mediaType != type || query != selectedQuery else { return }
         mediaType = type
         query = selectedQuery
+        filter.genres = []
+        filter.languages = []
+        filter.year = nil
+        filter.yearMin = nil
+        filter.yearMax = nil
+        await loadFilterOptions()
         await reload()
     }
 
@@ -119,7 +135,9 @@ final class LibraryViewModel {
         let selectedType = mediaType
         let selectedStatus = statusFilter
         let selectedQuery = query
-        let requestQuery = selectedQuery.isEmpty ? nil : selectedQuery
+        var requestFilter = filter
+        requestFilter.q = selectedQuery
+        requestFilter.status = selectedStatus
 
         items = []
         totalCount = 0
@@ -129,7 +147,7 @@ final class LibraryViewModel {
         isLoadingInitial = true
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: nil, status: selectedStatus, query: requestQuery)
+            let response = try await trackingRepository.list(mediaType: selectedType, page: nil, filter: requestFilter)
             guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
             apply(response, replacingItems: true)
             isLoadingInitial = false
@@ -158,12 +176,14 @@ final class LibraryViewModel {
         let selectedType = mediaType
         let selectedStatus = statusFilter
         let selectedQuery = query
-        let requestQuery = selectedQuery.isEmpty ? nil : selectedQuery
+        var requestFilter = filter
+        requestFilter.q = selectedQuery
+        requestFilter.status = selectedStatus
         isLoadingNextPage = true
         nextPageErrorMessage = nil
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: page, status: selectedStatus, query: requestQuery)
+            let response = try await trackingRepository.list(mediaType: selectedType, page: page, filter: requestFilter)
             guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
             apply(response, replacingItems: false)
             isLoadingNextPage = false
@@ -188,6 +208,20 @@ final class LibraryViewModel {
         items += response.results.filter { !existingIDs.contains($0.id) }
     }
 
+    func loadFilterOptions() async {
+        do {
+            var requestFilter = filter
+            requestFilter.q = query
+            requestFilter.status = statusFilter
+            filterOptions = try await filterOptionsRepository.options(
+                scope: .tracking(mediaType: mediaType),
+                filter: requestFilter
+            )
+        } catch {
+            filterOptions = .empty
+        }
+    }
+
     private func handleUnauthorized(_ error: Error) {
         if case APIError.unauthorized = error {
             onUnauthorized()
@@ -205,6 +239,7 @@ struct LibraryView: View {
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let mediaLensStore: MediaLensStore
     private let currentUserId: Int?
     private let selectedTab: AppTab
@@ -217,6 +252,7 @@ struct LibraryView: View {
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
         listRepository: ListRepository? = nil,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
         mediaLensStore: MediaLensStore? = nil,
         currentUserId: Int? = nil,
         requestedShelf: Binding<LibraryShelf?> = .constant(nil),
@@ -229,6 +265,7 @@ struct LibraryView: View {
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository ?? AppRepositories.current().lists
+        self.filterOptionsRepository = filterOptionsRepository ?? AppRepositories.current().filterOptions
         self.mediaLensStore = mediaLensStore ?? MediaLensStore()
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
@@ -237,6 +274,7 @@ struct LibraryView: View {
         _viewModel = State(initialValue: LibraryViewModel(
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
+            filterOptionsRepository: self.filterOptionsRepository,
             onUnauthorized: onUnauthorized
         ))
     }
@@ -275,7 +313,10 @@ struct LibraryView: View {
                 consumeRequestedShelf()
             }
             .onChange(of: viewModel.shelf) {
-                Task { await viewModel.reload() }
+                Task {
+                    await viewModel.loadFilterOptions()
+                    await viewModel.reload()
+                }
             }
             .onChange(of: mediaLensStore.selectedMediaType) {
                 Task { await viewModel.selectMediaType(mediaLensStore.selectedMediaType, searchText: searchDraftText) }
@@ -314,10 +355,6 @@ struct LibraryView: View {
                 Text("Library")
                     .font(.system(size: 32, weight: .black))
                     .foregroundStyle(.white)
-
-                Text("Your tracked media, separated from planning.")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.58))
             }
 
             MediaSearchBar(
@@ -347,6 +384,18 @@ struct LibraryView: View {
                 .pickerStyle(.segmented)
 
                 LibraryViewModeToggle(selection: $viewModel.viewMode)
+
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .tracking(mediaType: viewModel.mediaType),
+                    options: viewModel.filterOptions,
+                    mediaTypes: viewModel.mediaTypes
+                ) {
+                    Task {
+                        await viewModel.loadFilterOptions()
+                        await viewModel.reload()
+                    }
+                }
             }
         }
         .padding(.bottom, 14)

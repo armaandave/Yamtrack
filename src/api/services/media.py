@@ -23,6 +23,11 @@ from api.serializers.common import (
     seasons_from_metadata,
     synopsis_from_payload,
 )
+from api.services.filters import (
+    apply_person_credit_filters,
+    update_item_external_ratings,
+    update_item_filter_metadata,
+)
 from app import config
 from app.models import (
     CustomBackdropPreference,
@@ -150,6 +155,15 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         )
         cache.set(cache_key, metadata, DETAIL_TTL)
 
+    item = Item.objects.filter(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+    ).first()
+    update_item_filter_metadata(item, metadata)
+
     summary = media_summary_from_provider(
         {
             **metadata,
@@ -218,18 +232,19 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             source=source,
             media_type=media_type,
             media_id=media_id,
+            season_number=season_number,
         ),
     }
 
 
-def person_detail(*, source, person_id, request=None, user=None):
+def person_detail(*, source, person_id, request=None, user=None, params=None):
     """Return a provider person profile plus iOS-ready media summaries."""
     if source not in {Sources.TMDB.value, Sources.HARDCOVER.value, Sources.OPENLIBRARY.value}:
         msg = "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1."
         raise NotImplementedError(msg)
 
     person = provider_services.get_person_page(source, person_id)
-    person_credits = person.get("credits") or []
+    person_credits = apply_person_credit_filters(person.get("credits") or [], params or {})
     return {
         "id": str(person.get("person_id") or person_id),
         "source": source,
@@ -634,6 +649,7 @@ def _tmdb_vote_sorted_backdrop_url(media_id, media_type, *, raw_default_url=None
         from app.providers import tmdb
 
         tmdb_backdrops = tmdb.get_backdrop_images(media_id, media_type)
+    tmdb_backdrops = [backdrop for backdrop in tmdb_backdrops if backdrop.get("language") is None]
     if len(tmdb_backdrops) > 1:
         return tmdb_backdrops[1]["url"]
     if tmdb_backdrops:
@@ -697,7 +713,7 @@ def enrich_episodes(metadata, source, user):
     return payload
 
 
-def external_ratings(*, metadata, source, media_type, media_id):
+def external_ratings(*, metadata, source, media_type, media_id, season_number=None):
     """Normalize provider and third-party ratings for media detail."""
     ratings = []
     score = metadata.get("score")
@@ -715,7 +731,15 @@ def external_ratings(*, metadata, source, media_type, media_id):
         from app.providers import mdblist
 
         mdblist_type = MediaTypes.TV.value if media_type == MediaTypes.SEASON.value else media_type
-        for rating_source, rating in (mdblist.get_media_ratings(media_id, mdblist_type) or {}).items():
+        mdblist_ratings = mdblist.get_media_ratings(media_id, mdblist_type) or {}
+        update_item_external_ratings(
+            source=source,
+            media_type=media_type,
+            media_id=media_id,
+            season_number=season_number,
+            ratings=mdblist_ratings,
+        )
+        for rating_source, rating in mdblist_ratings.items():
             value = rating.get("value") or rating.get("score")
             if value is None:
                 continue

@@ -12,6 +12,7 @@ from app.models import (
     DiaryEntryTag,
     Episode,
     Item,
+    ItemFilterFacet,
     MediaLike,
     Tag,
     UserMessage,
@@ -67,6 +68,15 @@ class MediaLikeAdmin(admin.ModelAdmin):
     search_fields = ["item__title", "user__username"]
     list_display = ["user", "item", "created_at"]
     list_filter = ["item__media_type", "created_at"]
+
+
+@admin.register(ItemFilterFacet)
+class ItemFilterFacetAdmin(admin.ModelAdmin):
+    """Admin for cached item filter facets."""
+
+    search_fields = ["item__title", "value"]
+    list_display = ["item", "facet_type", "value"]
+    list_filter = ["facet_type"]
 
 
 class CustomPosterPreferenceAdmin(admin.ModelAdmin):
@@ -140,6 +150,7 @@ SpecialModels = [
     "DiaryEntryTag",
     "BookSession",
     "MediaLike",
+    "ItemFilterFacet",
     "UserMessage",
 ]
 for model in app_models:

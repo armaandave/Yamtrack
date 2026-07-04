@@ -6,6 +6,8 @@ import SwiftUI
 final class PersonDetailViewModel {
     var detail: PersonDetail?
     var filmography: [MediaSummary] = []
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
     var isLoading = false
     var errorMessage: String?
 
@@ -29,9 +31,10 @@ final class PersonDetailViewModel {
         defer { isLoading = false }
 
         do {
-            let loaded = try await peopleRepository.detail(ref: ref)
+            let loaded = try await peopleRepository.detail(ref: ref, filter: filter)
             detail = loaded
             filmography = Self.uniqueFilmography(from: loaded.filmography)
+            filterOptions = Self.options(from: filmography)
         } catch {
             detail = nil
             filmography = []
@@ -45,6 +48,19 @@ final class PersonDetailViewModel {
     static func uniqueFilmography(from media: [MediaSummary]) -> [MediaSummary] {
         var seen = Set<String>()
         return media.filter { seen.insert($0.id).inserted }
+    }
+
+    static func options(from media: [MediaSummary]) -> MediaFilterOptionsResponse {
+        let years = Set(media.compactMap { item -> Int? in
+            guard let releaseDate = item.releaseDate, releaseDate.count >= 4 else { return nil }
+            return Int(releaseDate.prefix(4))
+        })
+        return MediaFilterOptionsResponse(
+            sorts: [],
+            genres: [],
+            languages: [],
+            years: years.sorted(by: >)
+        )
     }
 }
 
@@ -263,6 +279,21 @@ struct PersonDetailView: View {
 
                 Spacer()
 
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .person(ref: viewModel.detail?.ref ?? PersonRef(source: "", id: "")),
+                    options: viewModel.filterOptions,
+                    mediaTypes: types.map(\.rawValue)
+                ) {
+                    Task {
+                        await viewModel.load()
+                        if let mediaType = viewModel.filter.mediaType, let selectedType = FilmographyType(rawValue: mediaType) {
+                            selectedFilmographyType = selectedType
+                        }
+                        syncSelectedFilmographyType()
+                    }
+                }
+
                 if types.count > 1 {
                     Picker("Credit type", selection: $selectedFilmographyType) {
                         ForEach(types) { type in
@@ -271,14 +302,6 @@ struct PersonDetailView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: max(75, CGFloat(types.count) * 75))
-                } else {
-                    Picker("Credit type", selection: $selectedFilmographyType) {
-                        ForEach(FilmographyType.allCases) { type in
-                            Text(type.title).tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 150)
                 }
             }
 

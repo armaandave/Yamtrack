@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.pagination import StandardResultsSetPagination
 from api.serializers.common import (
     find_item,
     get_or_create_item_from_metadata,
@@ -19,6 +20,7 @@ from api.serializers.lists import (
     ListItemsReorderSerializer,
     ListItemWriteSerializer,
 )
+from api.services import filters as filter_service
 from api.services.social import set_like
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
@@ -217,9 +219,62 @@ class ListDetailView(APIView):
 
 
 class ListItemsView(APIView):
-    """Add an item to a list."""
+    """List or add items in a custom list."""
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, list_id):
+        custom_list = get_object_or_404(
+            CustomList.objects.select_related("owner").prefetch_related("collaborators"),
+            id=list_id,
+        )
+        if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        list_items = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+        list_items = filter_service.apply_item_filters(list_items, request.query_params)
+        list_items = filter_service.apply_user_status_filter(
+            list_items,
+            request.user,
+            request.query_params.get("status"),
+        )
+        list_items = filter_service.annotate_user_rating(list_items, request.user)
+        list_items = filter_service.apply_rating_range(
+            list_items,
+            request.query_params,
+            "user_rating",
+        )
+        if request.query_params.get("sort") or request.query_params.get("ordering"):
+            list_items = filter_service.order_queryset(
+                list_items,
+                request.query_params,
+                your_rating_field="user_rating",
+                default_sort="date_added",
+                extra_sorts={
+                    "date_added": "date_added",
+                    "position": "position",
+                },
+            )
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(list_items, request, view=self)
+        return paginator.get_paginated_response(
+            [
+                {
+                    **media_summary_from_item(
+                        list_item.item,
+                        request=request,
+                        user=request.user,
+                    ),
+                    "position": list_item.position,
+                    "date_added": list_item.date_added,
+                    "your_rating": f"{list_item.user_rating:.1f}"
+                    if list_item.user_rating is not None
+                    else None,
+                }
+                for list_item in page
+            ],
+        )
 
     def post(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)

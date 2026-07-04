@@ -549,7 +549,7 @@ private struct HomeActivityItemCard: View {
         case "progress_updated":
             "updated progress"
         case "diary_created":
-            "logged media"
+            "logged \(mediaTypePhrase)"
         case "diary_updated":
             "updated a log"
         case "diary_deleted":
@@ -587,6 +587,33 @@ private struct HomeActivityItemCard: View {
 
     private var listName: String? {
         activity.object.type == "list" ? clean(activity.object.name) : nil
+    }
+
+    private var mediaTypePhrase: String {
+        switch activity.media?.ref.mediaType {
+        case "movie":
+            "a movie"
+        case "tv":
+            "a TV show"
+        case "season":
+            "a season"
+        case "episode":
+            "an episode"
+        case "anime":
+            "an anime"
+        case "manga":
+            "a manga"
+        case "game":
+            "a game"
+        case "book":
+            "a book"
+        case "comic":
+            "a comic"
+        case "boardgame":
+            "a board game"
+        default:
+            "media"
+        }
     }
 
     private func clean(_ value: String?) -> String? {

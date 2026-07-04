@@ -165,6 +165,8 @@ def find_item(ref):
 
 def get_or_create_item_from_metadata(ref, metadata):
     """Get or create an Item using provider metadata."""
+    from api.services.filters import update_item_filter_metadata
+
     defaults = {
         "title": metadata.get("title") or metadata.get("name") or ref["media_id"],
         "image": metadata.get("image") or settings.IMG_NONE,
@@ -184,10 +186,11 @@ def get_or_create_item_from_metadata(ref, metadata):
     if defaults.get("total_pages") and item.total_pages != defaults["total_pages"]:
         item.total_pages = defaults["total_pages"]
         item.save(update_fields=["total_pages"])
+    update_item_filter_metadata(item, metadata)
     return item
 
 
-def media_summary_from_item(item, request=None, user=None, include_resolved_backdrop=False):
+def media_summary_from_item(item, request=None, user=None, *, include_resolved_backdrop=False):
     """Serialize an Item into the common media summary shape."""
     artwork = artwork_from_item(item, request=request)
     if include_resolved_backdrop:

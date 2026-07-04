@@ -5,8 +5,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.pagination import StandardResultsSetPagination
 from api.serializers.diary import DiaryEntryWriteSerializer
 from api.services import diary as diary_service
+from api.services import filters as filter_service
 from api.services.social import set_like
 from app.models import DiaryEntry
 from app.services import delete_diary_entry
@@ -25,16 +27,10 @@ class DiaryListView(APIView):
             .prefetch_related("tags")
             .order_by("-consumed_at", "-id")
         )
-        media_type = request.query_params.get("media_type")
-        year = request.query_params.get("year")
         item_id = request.query_params.get("item_id")
         tag = request.query_params.get("tag", "").strip().lower()
         has_review = request.query_params.get("has_review") == "true"
         liked = request.query_params.get("liked") == "true"
-        if media_type:
-            entries = entries.filter(item__media_type=media_type)
-        if year:
-            entries = entries.filter(consumed_at__year=year)
         if item_id:
             entries = entries.filter(item_id=item_id)
         if tag:
@@ -43,16 +39,29 @@ class DiaryListView(APIView):
             entries = entries.filter(Q(review__gt="") | Q(review_title__gt=""))
         if liked:
             entries = entries.filter(liked=True)
-        return Response(
-            {
-                "count": entries.count(),
-                "next": None,
-                "previous": None,
-                "results": [
-                    diary_service.diary_payload(entry, request=request, viewer=request.user)
-                    for entry in entries
-                ],
-            },
+        entries = filter_service.apply_item_filters(entries, request.query_params)
+        entries = filter_service.apply_rating_range(entries, request.query_params, "rating")
+        entries = filter_service.apply_watched_range(entries, request.query_params, "consumed_at")
+        entries = filter_service.apply_user_status_filter(
+            entries,
+            request.user,
+            request.query_params.get("status"),
+        )
+        entries = filter_service.order_queryset(
+            entries,
+            request.query_params,
+            your_rating_field="rating",
+            default_sort="consumed_at",
+            extra_sorts={"consumed_at": "consumed_at", "created_at": "created_at"},
+        )
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(entries, request, view=self)
+        return paginator.get_paginated_response(
+            [
+                diary_service.diary_payload(entry, request=request, viewer=request.user)
+                for entry in page
+            ],
         )
 
     def post(self, request):

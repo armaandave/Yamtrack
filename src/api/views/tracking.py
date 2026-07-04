@@ -11,6 +11,7 @@ from api.serializers.tracking import (
     EpisodeWatchSerializer,
     TrackingWriteSerializer,
 )
+from api.services import filters as filter_service
 from api.services import tracking as tracking_service
 from app.models import BasicMedia, MediaTypes, Status
 
@@ -27,13 +28,30 @@ class TrackingListView(APIView):
         status_filter = request.query_params.get("status", "All")
         ordering = request.query_params.get("ordering") or request.query_params.get("sort") or "title"
         search = request.query_params.get("q")
+        manager_sort = ordering if ordering in {"score", "progress", "start_date", "end_date", "title"} else None
         queryset = BasicMedia.objects.get_media_list(
             request.user,
             media_type,
             status_filter,
-            ordering,
-            search=search,
+            manager_sort,
+            search=None,
         )
+        queryset = filter_service.apply_item_filters(queryset, request.query_params)
+        if search:
+            queryset = queryset.filter(item__title__icontains=search)
+        queryset = filter_service.apply_rating_range(queryset, request.query_params, "score")
+        queryset = filter_service.apply_watched_range(queryset, request.query_params, "end_date")
+        if manager_sort is None or request.query_params.get("direction"):
+            queryset = filter_service.order_queryset(
+                queryset,
+                request.query_params,
+                your_rating_field="score",
+                extra_sorts={
+                    "score": "score",
+                    "start_date": "start_date",
+                    "end_date": "end_date",
+                },
+            )
         paginator = StandardResultsSetPagination()
         page = list(paginator.paginate_queryset(queryset, request, view=self))
         BasicMedia.objects.annotate_max_progress(page, media_type)

@@ -23,6 +23,13 @@ protocol MediaRepository {
 
 protocol PeopleRepository {
     func detail(ref: PersonRef) async throws -> PersonDetail
+    func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail
+}
+
+extension PeopleRepository {
+    func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
+        try await detail(ref: ref)
+    }
 }
 
 extension MediaRepository {
@@ -37,6 +44,7 @@ extension MediaRepository {
 
 protocol TrackingRepository {
     func list(mediaType: String, page: String?, status: String?, query: String?) async throws -> PagedResponse<LibraryItem>
+    func list(mediaType: String, page: String?, filter: MediaFilterState) async throws -> PagedResponse<LibraryItem>
     func detail(ref: MediaRef) async throws -> TrackingState
     func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState
     func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState
@@ -46,6 +54,15 @@ protocol TrackingRepository {
 }
 
 extension TrackingRepository {
+    func list(mediaType: String, page: String?, filter: MediaFilterState) async throws -> PagedResponse<LibraryItem> {
+        try await list(
+            mediaType: mediaType,
+            page: page,
+            status: filter.status,
+            query: filter.q.isEmpty ? nil : filter.q
+        )
+    }
+
     func list(mediaType: String, page: String?, status: String?) async throws -> PagedResponse<LibraryItem> {
         try await list(mediaType: mediaType, page: page, status: status, query: nil)
     }
@@ -58,6 +75,7 @@ extension TrackingRepository {
 protocol DiaryRepository {
     func list(filter: DiaryFilter) async throws -> [DiaryEntry]
     func list(tag: String?) async throws -> [DiaryEntry]
+    func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry>
     func recent(limit: Int) async throws -> [DiaryEntry]
     func detail(id: Int) async throws -> DiaryEntry
     func create(_ request: DiaryEntryWriteRequest) async throws -> DiaryEntry
@@ -74,6 +92,16 @@ protocol ActivityRepository {
 }
 
 extension DiaryRepository {
+    func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
+        let results = try await list(filter: DiaryFilter(
+            tag: filter.tag,
+            itemId: filter.itemId,
+            hasReview: filter.hasReview,
+            liked: filter.liked
+        ))
+        return PagedResponse(count: results.count, next: nil, previous: nil, results: results)
+    }
+
     func list(filter: DiaryFilter) async throws -> [DiaryEntry] {
         try await list(tag: filter.tag)
     }
@@ -137,6 +165,7 @@ protocol ListRepository {
     func update(id: Int, _ request: CustomListWriteRequest) async throws -> CustomListDetail
     func delete(id: Int) async throws
     func addItem(listId: Int, ref: MediaRef) async throws -> MediaSummary
+    func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary>
     func removeItem(listId: Int, itemId: Int) async throws
     func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail
 }
@@ -145,6 +174,15 @@ extension ListRepository {
     func list() async throws -> [CustomListSummary] {
         try await list(membershipFor: nil)
     }
+
+    func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary> {
+        let detail = try await detail(id: listId)
+        return PagedResponse(count: detail.items.count, next: nil, previous: nil, results: detail.items)
+    }
+}
+
+protocol FilterOptionsRepository {
+    func options(scope: MediaFilterScope, filter: MediaFilterState) async throws -> MediaFilterOptionsResponse
 }
 
 protocol ImportRepository {
@@ -172,6 +210,7 @@ struct AppRepositories {
     let activity: ActivityRepository
     let profile: ProfileRepository
     let lists: ListRepository
+    let filterOptions: FilterOptionsRepository
     let imports: ImportRepository
 
     init(
@@ -183,6 +222,7 @@ struct AppRepositories {
         activity: ActivityRepository,
         profile: ProfileRepository,
         lists: ListRepository,
+        filterOptions: FilterOptionsRepository = APIFilterOptionsRepository(client: AppEnvironment.apiClient),
         imports: ImportRepository
     ) {
         self.auth = auth
@@ -193,6 +233,7 @@ struct AppRepositories {
         self.activity = activity
         self.profile = profile
         self.lists = lists
+        self.filterOptions = filterOptions
         self.imports = imports
     }
 
@@ -210,6 +251,7 @@ struct AppRepositories {
             activity: APIActivityRepository(client: client),
             profile: APIProfileRepository(client: client),
             lists: APIListRepository(client: client),
+            filterOptions: APIFilterOptionsRepository(client: client),
             imports: APIImportRepository(client: client)
         )
     }
@@ -372,8 +414,13 @@ struct APIPeopleRepository: PeopleRepository {
     let client: APIClient
 
     func detail(ref: PersonRef) async throws -> PersonDetail {
+        try await detail(ref: ref, filter: MediaFilterState())
+    }
+
+    func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
         try await client.get(
             "/people/\(ref.source)/\(ref.id)/",
+            query: filter.queryItems(),
             authenticated: client.tokenProvider.accessToken != nil
         )
     }
@@ -383,19 +430,15 @@ struct APITrackingRepository: TrackingRepository {
     let client: APIClient
 
     func list(mediaType: String, page: String?, status: String? = nil, query searchQuery: String? = nil) async throws -> PagedResponse<LibraryItem> {
-        var query = [URLQueryItem(name: "media_type", value: mediaType)]
-        if let page {
-            query.append(URLQueryItem(name: "page", value: page))
-        }
-        if let status {
-            query.append(URLQueryItem(name: "status", value: status))
-        }
-        if let searchQuery, !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            query.append(URLQueryItem(name: "q", value: searchQuery))
-        }
+        var filter = MediaFilterState(q: searchQuery ?? "")
+        filter.status = status
+        return try await list(mediaType: mediaType, page: page, filter: filter)
+    }
+
+    func list(mediaType: String, page: String?, filter: MediaFilterState) async throws -> PagedResponse<LibraryItem> {
         return try await client.get(
             "/tracking/",
-            query: query,
+            query: filter.queryItems(page: page, mediaType: mediaType),
             authenticated: true
         )
     }
@@ -456,32 +499,25 @@ struct APIDiaryRepository: DiaryRepository {
     }
 
     func list(filter: DiaryFilter) async throws -> [DiaryEntry] {
-        let tag = filter.tag?.trimmingCharacters(in: .whitespacesAndNewlines)
-        var baseQuery = tag.map { $0.isEmpty ? [] : [URLQueryItem(name: "tag", value: $0)] } ?? []
-        if let itemId = filter.itemId {
-            baseQuery.append(URLQueryItem(name: "item_id", value: String(itemId)))
-        }
-        if filter.hasReview {
-            baseQuery.append(URLQueryItem(name: "has_review", value: "true"))
-        }
-        if filter.liked {
-            baseQuery.append(URLQueryItem(name: "liked", value: "true"))
-        }
+        var mediaFilter = MediaFilterState()
+        mediaFilter.tag = filter.tag
+        mediaFilter.itemId = filter.itemId
+        mediaFilter.hasReview = filter.hasReview
+        mediaFilter.liked = filter.liked
         var page: String?
         var entries: [DiaryEntry] = []
 
         repeat {
-            var query = baseQuery
-            if let page {
-                query.append(URLQueryItem(name: "page", value: page))
-            }
-
-            let response: PagedResponse<DiaryEntry> = try await client.get("/diary/", query: query, authenticated: true)
+            let response = try await self.page(filter: mediaFilter, page: page)
             entries += response.results
             page = APIPageCursor.nextPage(from: response.next)
         } while page != nil
 
         return entries
+    }
+
+    func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
+        try await client.get("/diary/", query: filter.queryItems(page: page), authenticated: true)
     }
 
     func recent(limit: Int) async throws -> [DiaryEntry] {
@@ -693,6 +729,14 @@ struct APIListRepository: ListRepository {
         return response.item
     }
 
+    func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary> {
+        try await client.get(
+            "/lists/\(listId)/items/",
+            query: filter.queryItems(page: page),
+            authenticated: true
+        )
+    }
+
     func removeItem(listId: Int, itemId: Int) async throws {
         let _: EmptyResponse = try await client.delete("/lists/\(listId)/items/\(itemId)/", authenticated: true)
     }
@@ -703,6 +747,18 @@ struct APIListRepository: ListRepository {
             body: ListItemsReorderRequest(itemIds: itemIds),
             authenticated: true
         )
+    }
+}
+
+struct APIFilterOptionsRepository: FilterOptionsRepository {
+    let client: APIClient
+
+    func options(scope: MediaFilterScope, filter: MediaFilterState) async throws -> MediaFilterOptionsResponse {
+        guard var query = scope.optionsQueryItems else {
+            return .empty
+        }
+        query += filter.queryItems()
+        return try await client.get("/filter-options/", query: query, authenticated: true)
     }
 }
 

@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.shortcuts import get_object_or_404
 from django.utils.http import urlencode
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -7,10 +8,13 @@ from rest_framework.views import APIView
 
 from api.pagination import StandardResultsSetPagination
 from api.services import diary as diary_service
+from api.services import filters as filter_service
 from api.services import media as media_service
 from api.throttling import SearchRateThrottle
 from app import config
 from app.forms import ManualItemForm
+from app.models import BasicMedia, DiaryEntry
+from lists.models import CustomList, CustomListItem
 
 
 class MediaSearchView(APIView):
@@ -51,6 +55,43 @@ class MediaSourcesView(APIView):
                 for media_type in config.MEDIA_TYPE_CONFIG
             },
         )
+
+
+class FilterOptionsView(APIView):
+    """Return available reusable filter values for a collection scope."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        scope = request.query_params.get("scope")
+        if scope == "tracking":
+            media_type = request.query_params.get("media_type")
+            if not media_type:
+                return Response({"media_type": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+            queryset = BasicMedia.objects.get_media_list(
+                request.user,
+                media_type,
+                request.query_params.get("status", "All"),
+                None,
+            )
+            queryset = filter_service.apply_item_filters(queryset, request.query_params)
+            return Response(filter_service.filter_options_for_items(queryset))
+
+        if scope == "diary":
+            queryset = DiaryEntry.objects.filter(user=request.user).select_related("item")
+            queryset = filter_service.apply_item_filters(queryset, request.query_params)
+            return Response(filter_service.filter_options_for_items(queryset))
+
+        if scope == "list":
+            list_id = request.query_params.get("list_id")
+            custom_list = get_object_or_404(CustomList, id=list_id)
+            if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            queryset = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+            queryset = filter_service.apply_item_filters(queryset, request.query_params)
+            return Response(filter_service.filter_options_for_items(queryset))
+
+        return Response({"scope": ["Use tracking, diary, or list."]}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class MediaDiscoverView(APIView):
@@ -186,6 +227,7 @@ class PersonDetailView(APIView):
                     person_id=person_id,
                     request=request,
                     user=request.user if request.user.is_authenticated else None,
+                    params=request.query_params,
                 ),
             )
         except NotImplementedError as error:

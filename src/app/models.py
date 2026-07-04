@@ -84,6 +84,27 @@ class Item(CalendarTriggerMixin, models.Model):
     episode_number = models.PositiveIntegerField(null=True, blank=True)
     poster_accent_color = models.CharField(max_length=8, blank=True, default="")
     total_pages = models.PositiveIntegerField(null=True, blank=True)  # For books
+    release_date = models.DateField(null=True, blank=True)
+    release_year = models.PositiveIntegerField(null=True, blank=True)
+    letterboxd_rating = models.DecimalField(
+        null=True,
+        blank=True,
+        max_digits=4,
+        decimal_places=2,
+    )
+    imdb_rating = models.DecimalField(
+        null=True,
+        blank=True,
+        max_digits=4,
+        decimal_places=2,
+    )
+    rotten_tomatoes_rating = models.DecimalField(
+        null=True,
+        blank=True,
+        max_digits=5,
+        decimal_places=2,
+    )
+    filter_metadata_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         """Meta options for the model."""
@@ -160,6 +181,13 @@ class Item(CalendarTriggerMixin, models.Model):
             ),
         ]
         ordering = ["media_id"]
+        indexes = [
+            models.Index(fields=["media_type", "release_year"]),
+            models.Index(fields=["media_type", "release_date"]),
+            models.Index(fields=["media_type", "letterboxd_rating"]),
+            models.Index(fields=["media_type", "imdb_rating"]),
+            models.Index(fields=["media_type", "rotten_tomatoes_rating"]),
+        ]
 
     def __str__(self):
         """Return the name of the item."""
@@ -216,6 +244,39 @@ class Item(CalendarTriggerMixin, models.Model):
             events.tasks.reload_calendar.delay(items_to_process=items_to_process)
         else:
             events.tasks.reload_calendar(items_to_process=items_to_process)
+
+
+class ItemFilterFacet(models.Model):
+    """Indexed multi-value filter facets for stored media items."""
+
+    class FacetType(models.TextChoices):
+        GENRE = "genre", "Genre"
+        LANGUAGE = "language", "Language"
+
+    item = models.ForeignKey(
+        Item,
+        on_delete=models.CASCADE,
+        related_name="filter_facets",
+    )
+    facet_type = models.CharField(max_length=20, choices=FacetType.choices)
+    value = models.CharField(max_length=100)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["item", "facet_type", "value"],
+                name="app_itemfilterfacet_unique_item_type_value",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["facet_type", "value"]),
+            models.Index(fields=["item", "facet_type"]),
+        ]
+        ordering = ["facet_type", "value"]
+
+    def __str__(self):
+        """Return a readable facet label."""
+        return f"{self.facet_type}: {self.value}"
 
 
 class MediaLike(models.Model):

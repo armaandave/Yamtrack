@@ -36,6 +36,7 @@ struct HallOfFameCrownView: View {
                             onTap(slot)
                         }
                         .onLongPressGesture {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                             onFilledLongPress(slot)
                         }
                         .accessibilityLabel("Hall of Fame, \(item.title)")

@@ -30,6 +30,7 @@ from api.views.lists import (
 )
 from api.views.media import (
     CommunityStatsView,
+    FilterOptionsView,
     ManualMediaView,
     MediaBackdropPreferenceView,
     MediaBackdropsView,
@@ -97,6 +98,7 @@ urlpatterns = [
     path("me/hof/", MeHOFView.as_view(), name="api-me-hof"),
     path("me/hof/<str:media_type>/", HOFItemView.as_view(), name="api-me-hof-item"),
     path("media/search/", MediaSearchView.as_view(), name="api-media-search"),
+    path("filter-options/", FilterOptionsView.as_view(), name="api-filter-options"),
     path("media/discover/", MediaDiscoverView.as_view(), name="api-media-discover"),
     path("media/sources/", MediaSourcesView.as_view(), name="api-media-sources"),
     path("media/manual/", ManualMediaView.as_view(), name="api-media-manual"),

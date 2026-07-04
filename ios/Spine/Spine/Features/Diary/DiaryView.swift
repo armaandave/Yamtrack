@@ -4,35 +4,101 @@ import SwiftUI
 @Observable
 final class DiaryViewModel {
     var entries: [DiaryEntry] = []
+    var filter: MediaFilterState
+    var filterOptions: MediaFilterOptionsResponse = .empty
     var isLoading = false
+    var isLoadingNextPage = false
     var errorMessage: String?
+    var nextPageErrorMessage: String?
 
     private let diaryRepository: DiaryRepository
-    private let filter: DiaryFilter?
+    private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
+    private var nextPage: String?
+    private var requestGeneration = 0
 
-    init(diaryRepository: DiaryRepository, filter: DiaryFilter? = nil, onUnauthorized: @escaping () -> Void) {
+    init(
+        diaryRepository: DiaryRepository,
+        filter: DiaryFilter? = nil,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
+        onUnauthorized: @escaping () -> Void
+    ) {
         self.diaryRepository = diaryRepository
-        self.filter = filter
+        self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
+        var mediaFilter = MediaFilterState()
+        mediaFilter.tag = filter?.tag
+        mediaFilter.itemId = filter?.itemId
+        mediaFilter.hasReview = filter?.hasReview ?? false
+        mediaFilter.liked = filter?.liked ?? false
+        self.filter = mediaFilter
         self.onUnauthorized = onUnauthorized
     }
 
     func load() async {
+        requestGeneration += 1
+        let generation = requestGeneration
+        let requestFilter = filter
+        entries = []
+        nextPage = nil
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        nextPageErrorMessage = nil
 
         do {
-            if let filter {
-                entries = try await diaryRepository.list(filter: filter)
-            } else {
-                entries = try await diaryRepository.list()
-            }
+            let response = try await diaryRepository.page(filter: requestFilter, page: nil)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            entries = response.results
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            isLoading = false
         } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
             errorMessage = error.localizedDescription
+            isLoading = false
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
+        }
+    }
+
+    func loadNextPageIfNeeded(currentEntry: DiaryEntry) async {
+        guard let thresholdIndex = entries.index(entries.endIndex, offsetBy: -6, limitedBy: entries.startIndex) ?? entries.indices.first,
+              let currentIndex = entries.firstIndex(where: { $0.id == currentEntry.id }),
+              currentIndex >= thresholdIndex else {
+            return
+        }
+        await loadNextPage()
+    }
+
+    func loadNextPage() async {
+        guard !isLoading, !isLoadingNextPage, let page = nextPage else { return }
+        let generation = requestGeneration
+        let requestFilter = filter
+        isLoadingNextPage = true
+        nextPageErrorMessage = nil
+
+        do {
+            let response = try await diaryRepository.page(filter: requestFilter, page: page)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            let existingIDs = Set(entries.map(\.id))
+            entries += response.results.filter { !existingIDs.contains($0.id) }
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            isLoadingNextPage = false
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            nextPageErrorMessage = error.localizedDescription
+            isLoadingNextPage = false
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadFilterOptions() async {
+        guard filter.itemId == nil else { return }
+        do {
+            filterOptions = try await filterOptionsRepository.options(scope: .diary, filter: filter)
+        } catch {
+            filterOptions = .empty
         }
     }
 }
@@ -119,6 +185,7 @@ struct MediaDiaryView: View {
                                     onUnauthorized: onUnauthorized
                                 )
                             }
+                            paginationFooter
                         }
                     }
                     .padding(.horizontal, 14)
@@ -199,6 +266,22 @@ struct MediaDiaryView: View {
         }
         .padding(.bottom, 14)
     }
+
+    @ViewBuilder
+    private var paginationFooter: some View {
+        if viewModel.isLoadingNextPage {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+        } else if let last = viewModel.entries.last {
+            Color.clear
+                .frame(height: 1)
+                .task {
+                    await viewModel.loadNextPageIfNeeded(currentEntry: last)
+                }
+        }
+    }
 }
 
 struct DiaryView: View {
@@ -269,6 +352,7 @@ struct DiaryView: View {
                                     onUnauthorized: onUnauthorized
                                 )
                             }
+                            paginationFooter
                         }
                     }
                     .padding(.horizontal, 14)
@@ -285,6 +369,7 @@ struct DiaryView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .task {
+                await viewModel.loadFilterOptions()
                 await viewModel.load()
             }
             .onReceive(NotificationCenter.default.publisher(for: .letterboxdImportDidSucceed)) { _ in
@@ -300,20 +385,47 @@ struct DiaryView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        HStack(alignment: .center) {
             Text("Diary")
                 .font(.system(size: 32, weight: .black))
                 .foregroundStyle(.white)
 
-            Text("Your logged watches, reads, plays, and reviews.")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.58))
+            Spacer()
+
+            MediaFilterButton(
+                filter: $viewModel.filter,
+                scope: .diary,
+                options: viewModel.filterOptions
+            ) {
+                Task {
+                    await viewModel.loadFilterOptions()
+                    await viewModel.load()
+                }
+            }
         }
         .padding(.bottom, 14)
     }
+
+    @ViewBuilder
+    private var paginationFooter: some View {
+        if viewModel.isLoadingNextPage {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+        } else if let error = viewModel.nextPageErrorMessage {
+            DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+        } else if let last = viewModel.entries.last {
+            Color.clear
+                .frame(height: 1)
+                .task {
+                    await viewModel.loadNextPageIfNeeded(currentEntry: last)
+                }
+        }
+    }
 }
 
-private struct DiaryTopSafeAreaScrim: View {
+struct DiaryTopSafeAreaScrim: View {
     var body: some View {
         GeometryReader { proxy in
             Color(red: 0.07, green: 0.07, blue: 0.065)

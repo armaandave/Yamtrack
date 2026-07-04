@@ -742,6 +742,18 @@ struct MediaDetailView: View {
         progressUpdateDetail = detail
     }
 
+    private func openPosterPicker(for detail: MediaDetail) {
+        guard canCustomizePoster(detail) else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        isPosterPickerPresented = true
+    }
+
+    private func openBackdropPicker(for detail: MediaDetail) {
+        guard canCustomizeBackdrop(detail) else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        isBackdropPickerPresented = true
+    }
+
     private func navigateToTab(_ tab: AppTab) {
         onSelectTab(tab)
         if !dismissPresentedViewControllerStack() {
@@ -761,6 +773,9 @@ struct MediaDetailView: View {
             if let backdropURL = backdropURLString(for: detail) {
                 BackdropArtwork(urlString: backdropURL)
                     .frame(height: topSafeAreaInset + MediaDetailLayout.backdropHeight)
+                    .onLongPressGesture {
+                        openBackdropPicker(for: detail)
+                    }
             }
 
             heroHeader(detail)
@@ -828,6 +843,9 @@ struct MediaDetailView: View {
                         orientation: detail.posterOrientation
                     )
                         .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
+                        .onLongPressGesture {
+                            openPosterPicker(for: detail)
+                        }
 
                     ActionRail(
                         isTracked: currentStatus(detail) != nil,
@@ -854,6 +872,9 @@ struct MediaDetailView: View {
                     orientation: detail.posterOrientation
                 )
                     .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
+                    .onLongPressGesture {
+                        openPosterPicker(for: detail)
+                    }
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 16)
 
@@ -2154,14 +2175,12 @@ private struct ActionRail: View {
                 railButton(
                     systemName: "plus",
                     label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                    filled: true,
                     usesLargePlus: true,
                     action: onTrack
                 )
                 railButton(
                     systemName: isLiked ? "heart.fill" : "heart",
                     label: isLiked ? "Unlike" : "Like",
-                    filled: true,
                     usesLargePlus: false,
                     isLoading: isLikeLoading,
                     action: onLike
@@ -2169,7 +2188,6 @@ private struct ActionRail: View {
                 railButton(
                     systemName: "eye",
                     label: eyeLabel ?? "Mark as watched",
-                    filled: true,
                     usesLargePlus: false,
                     isLoading: isEyeLoading,
                     action: onEye
@@ -2180,7 +2198,6 @@ private struct ActionRail: View {
                 railButton(
                     systemName: isLiked ? "heart.fill" : "heart",
                     label: isLiked ? "Unlike" : "Like",
-                    filled: true,
                     usesLargePlus: false,
                     isLoading: isLikeLoading,
                     action: onLike
@@ -2188,7 +2205,6 @@ private struct ActionRail: View {
                 railButton(
                     systemName: "eye",
                     label: eyeLabel ?? "Mark as watched",
-                    filled: true,
                     usesLargePlus: false,
                     isLoading: isEyeLoading,
                     action: onEye
@@ -2196,7 +2212,6 @@ private struct ActionRail: View {
                 railButton(
                     systemName: "plus",
                     label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                    filled: true,
                     usesLargePlus: false,
                     action: onTrack
                 )
@@ -2207,36 +2222,37 @@ private struct ActionRail: View {
     private func railButton(
         systemName: String,
         label: String,
-        filled: Bool,
         usesLargePlus: Bool,
         isLoading: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             ZStack {
-                Circle()
-                    .fill(filled ? .white.opacity(0.92) : .black.opacity(0.34))
                 if isLoading {
                     ProgressView()
-                        .tint(.black)
+                        .tint(.white)
                 } else {
                     Image(systemName: systemName)
                         .font(.system(size: usesLargePlus ? 25 : 17, weight: usesLargePlus ? .semibold : .bold))
-                        .foregroundStyle(railIconColor(systemName: systemName, filled: filled))
+                        .foregroundStyle(railIconColor(systemName: systemName))
                 }
             }
             .frame(width: Self.buttonSize, height: Self.buttonSize)
-            .shadow(color: usesLargePlus ? .white.opacity(0.22) : .clear, radius: 10, y: 2)
+            .background(.black.opacity(0.28), in: Circle())
+            .glassEffect(.regular.tint(.white.opacity(0.045)).interactive(), in: Circle())
+            .overlay {
+                Circle().stroke(.white.opacity(0.1), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.34), radius: 12, y: 6)
         }
         .buttonStyle(.plain)
         .disabled(isLoading)
         .accessibilityLabel(label)
     }
 
-    private func railIconColor(systemName: String, filled: Bool) -> Color {
-        guard filled else { return .white }
+    private func railIconColor(systemName: String) -> Color {
         if systemName == "heart.fill" { return .pink }
-        return Color.black.opacity(0.82)
+        return .white.opacity(0.88)
     }
 }
 
@@ -3043,7 +3059,7 @@ private struct MediaDetailBottomBar: View {
                 BottomBarItem(title: "Library", systemName: "books.vertical.fill", isSelected: selectedTab == .library) {
                     onSelectTab(.library)
                 }
-                BottomBarItem(title: "Community", systemName: "person.2.fill", isSelected: selectedTab == .profile) {
+                BottomBarItem(title: "Profile", systemName: "person.2.fill", isSelected: selectedTab == .profile) {
                     onSelectTab(.profile)
                 }
             }

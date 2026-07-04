@@ -18,6 +18,7 @@ struct TaggedDiaryMedia: Identifiable {
 @Observable
 final class TaggedDiaryViewModel {
     var entries: [DiaryEntry] = []
+    var filter = MediaFilterState()
     var isLoading = false
     var errorMessage: String?
     var selectedTab: TaggedDiaryTab = .diary
@@ -30,6 +31,7 @@ final class TaggedDiaryViewModel {
         self.tag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         self.diaryRepository = diaryRepository
         self.onUnauthorized = onUnauthorized
+        filter.tag = self.tag
     }
 
     var media: [TaggedDiaryMedia] {
@@ -42,7 +44,9 @@ final class TaggedDiaryViewModel {
         defer { isLoading = false }
 
         do {
-            entries = try await diaryRepository.list(tag: tag)
+            filter.tag = tag
+            let response = try await diaryRepository.page(filter: filter, page: nil)
+            entries = response.results
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -103,13 +107,14 @@ struct TaggedDiaryView: View {
             SpinePageBackground()
 
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Picker("View", selection: $viewModel.selectedTab) {
                         ForEach(TaggedDiaryTab.allCases) { tab in
                             Text(tab.rawValue).tag(tab)
                         }
                     }
                     .pickerStyle(.segmented)
+                    .padding(.bottom, 16)
 
                     content
                 }
@@ -121,10 +126,24 @@ struct TaggedDiaryView: View {
                 await viewModel.load()
             }
         }
+        .overlay(alignment: .top) {
+            DiaryTopSafeAreaScrim()
+        }
         .navigationTitle(tag)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .diary
+                ) {
+                    viewModel.filter.tag = tag
+                    Task { await viewModel.load() }
+                }
+            }
+        }
         .toolbar(.hidden, for: .tabBar)
         .task {
             if viewModel.entries.isEmpty {

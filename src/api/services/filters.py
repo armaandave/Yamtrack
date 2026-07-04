@@ -1,0 +1,510 @@
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
+from django.apps import apps
+from django.db import models
+from django.db.models import Avg, Case, OuterRef, Q, Subquery, Value, When
+from django.db.models.functions import Lower
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+
+from app.models import Item, ItemFilterFacet, MediaTypes
+
+RATING_SORTS = {
+    "letterboxd_rating": "letterboxd_rating",
+    "imdb_rating": "imdb_rating",
+    "rotten_tomatoes_rating": "rotten_tomatoes_rating",
+}
+
+API_SORTS = [
+    {"value": "title", "label": "Title"},
+    {"value": "release_date", "label": "Release Date"},
+    {"value": "your_rating", "label": "Your Rating"},
+    {"value": "average_rating", "label": "Average Rating"},
+    {"value": "letterboxd_rating", "label": "Letterboxd Rating"},
+    {"value": "imdb_rating", "label": "IMDb Rating"},
+    {"value": "rotten_tomatoes_rating", "label": "Rotten Tomatoes"},
+]
+
+DESC_SORTS = {
+    "release_date",
+    "your_rating",
+    "average_rating",
+    "letterboxd_rating",
+    "imdb_rating",
+    "rotten_tomatoes_rating",
+    "consumed_at",
+    "date_added",
+}
+
+
+def values(params, key):
+    """Return non-empty repeated query values."""
+    if not hasattr(params, "getlist"):
+        value = params.get(key)
+        return [value] if value not in (None, "") else []
+    return [value for value in params.getlist(key) if value not in (None, "")]
+
+
+def bool_param(params, key):
+    """Return a boolean query parameter when present."""
+    value = params.get(key)
+    if value is None:
+        return None
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def decimal_param(params, key):
+    """Return a decimal query parameter when valid."""
+    value = params.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def int_param(params, key):
+    """Return an integer query parameter when valid."""
+    value = params.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def date_param(params, key):
+    """Return an ISO date query parameter when valid."""
+    value = params.get(key)
+    if not value:
+        return None
+    return parse_date(value)
+
+
+def update_item_filter_metadata(item, metadata, ratings=None):
+    """Cache provider fields needed for fast collection filtering."""
+    if not item or not metadata:
+        return
+
+    release_date = _release_date(metadata)
+    release_year = _release_year(metadata, release_date)
+    updates = {
+        "release_date": release_date,
+        "release_year": release_year,
+        "filter_metadata_updated_at": timezone.now(),
+    }
+    for source, field in {
+        "letterboxd": "letterboxd_rating",
+        "imdb": "imdb_rating",
+        "tomatoes": "rotten_tomatoes_rating",
+    }.items():
+        rating = (ratings or {}).get(source)
+        if rating:
+            updates[field] = _rating_decimal(rating.get("value") or rating.get("score"))
+
+    changed = []
+    for field, value in updates.items():
+        if getattr(item, field) != value:
+            setattr(item, field, value)
+            changed.append(field)
+    if changed:
+        item.save(update_fields=changed)
+
+    _replace_facets(item, ItemFilterFacet.FacetType.GENRE, _metadata_list(metadata, "genres"))
+    _replace_facets(
+        item,
+        ItemFilterFacet.FacetType.LANGUAGE,
+        _metadata_list(metadata, "languages"),
+    )
+
+
+def update_item_external_ratings(*, source, media_type, media_id, ratings, season_number=None):
+    """Cache MDBList ratings for an already materialized item."""
+    if not ratings:
+        return
+    item = Item.objects.filter(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+    ).first()
+    if item is None:
+        return
+    updates = {"filter_metadata_updated_at": timezone.now()}
+    for source_key, field in {
+        "letterboxd": "letterboxd_rating",
+        "imdb": "imdb_rating",
+        "tomatoes": "rotten_tomatoes_rating",
+    }.items():
+        rating = ratings.get(source_key)
+        if rating:
+            updates[field] = _rating_decimal(rating.get("value") or rating.get("score"))
+
+    changed = []
+    for field, value in updates.items():
+        if getattr(item, field) != value:
+            setattr(item, field, value)
+            changed.append(field)
+    if changed:
+        item.save(update_fields=changed)
+
+
+def apply_item_filters(queryset, params, *, item_path="item__"):
+    """Apply shared Item-backed filters to a queryset."""
+    query = params.get("q", "").strip()
+    if query:
+        queryset = queryset.filter(**{f"{item_path}title__icontains": query})
+
+    media_types = values(params, "media_type")
+    if media_types:
+        queryset = queryset.filter(**{f"{item_path}media_type__in": media_types})
+
+    year_values = values(params, "year")
+    if year_values:
+        queryset = queryset.filter(**{f"{item_path}release_year__in": year_values})
+
+    year_min = int_param(params, "year_min")
+    if year_min is not None:
+        queryset = queryset.filter(**{f"{item_path}release_year__gte": year_min})
+
+    year_max = int_param(params, "year_max")
+    if year_max is not None:
+        queryset = queryset.filter(**{f"{item_path}release_year__lte": year_max})
+
+    queryset = _apply_facet_filter(queryset, params, item_path, "genre")
+    queryset = _apply_facet_filter(queryset, params, item_path, "language")
+    return queryset
+
+
+def apply_rating_range(queryset, params, field):
+    """Apply rating_min/rating_max to a numeric field."""
+    rating_min = decimal_param(params, "rating_min")
+    if rating_min is not None:
+        queryset = queryset.filter(**{f"{field}__gte": rating_min})
+    rating_max = decimal_param(params, "rating_max")
+    if rating_max is not None:
+        queryset = queryset.filter(**{f"{field}__lte": rating_max})
+    return queryset
+
+
+def apply_watched_range(queryset, params, field):
+    """Apply watched_from/watched_to to a DateTimeField."""
+    watched_from = date_param(params, "watched_from")
+    if watched_from:
+        queryset = queryset.filter(**{f"{field}__date__gte": watched_from})
+    watched_to = date_param(params, "watched_to")
+    if watched_to:
+        queryset = queryset.filter(**{f"{field}__date__lte": watched_to})
+    return queryset
+
+
+def apply_user_status_filter(queryset, user, status, *, item_id_field="item_id"):
+    """Filter an Item-bearing queryset by the viewer's tracking status."""
+    if not status or status == "All":
+        return queryset
+
+    status_query = Q()
+    for media_type in [
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+        MediaTypes.MOVIE.value,
+        MediaTypes.ANIME.value,
+        MediaTypes.MANGA.value,
+        MediaTypes.GAME.value,
+        MediaTypes.BOOK.value,
+        MediaTypes.COMIC.value,
+    ]:
+        model = apps.get_model("app", media_type)
+        status_query |= Q(
+            **{
+                "item__media_type": media_type,
+                f"{item_id_field}__in": model.objects.filter(
+                    user=user,
+                    status=status,
+                ).values("item_id"),
+            },
+        )
+    return queryset.filter(status_query)
+
+
+def annotate_user_rating(queryset, user, *, item_id_field="item_id", annotation="user_rating"):
+    """Annotate mixed Item querysets with the current user's tracking score."""
+    cases = []
+    for media_type in [
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+        MediaTypes.MOVIE.value,
+        MediaTypes.ANIME.value,
+        MediaTypes.MANGA.value,
+        MediaTypes.GAME.value,
+        MediaTypes.BOOK.value,
+        MediaTypes.COMIC.value,
+    ]:
+        model = apps.get_model("app", media_type)
+        cases.append(
+            When(
+                item__media_type=media_type,
+                then=Subquery(
+                    model.objects.filter(
+                        user=user,
+                        item_id=OuterRef(item_id_field),
+                    ).values("score")[:1],
+                ),
+            ),
+        )
+    return queryset.annotate(
+        **{
+            annotation: Case(
+                *cases,
+                default=Value(None),
+                output_field=models.DecimalField(max_digits=3, decimal_places=1),
+            ),
+        },
+    )
+
+
+def order_queryset(
+    queryset,
+    params,
+    *,
+    item_path="item__",
+    your_rating_field=None,
+    default_sort="title",
+    extra_sorts=None,
+):
+    """Apply shared sort options with stable null handling."""
+    sort = params.get("sort") or params.get("ordering") or default_sort
+    direction = params.get("direction")
+    if direction not in {"asc", "desc"}:
+        direction = "desc" if sort in DESC_SORTS else "asc"
+    descending = direction == "desc"
+
+    sort_fields = {
+        "title": f"{item_path}title",
+        "release_date": f"{item_path}release_date",
+        **{key: f"{item_path}{field}" for key, field in RATING_SORTS.items()},
+        **(extra_sorts or {}),
+    }
+
+    if sort == "average_rating":
+        queryset = queryset.annotate(
+            average_rating=Avg(
+                f"{item_path}diaryentry__rating",
+                filter=~Q(**{f"{item_path}diaryentry__visibility": "private"}),
+            ),
+        )
+        return _order_by_field(queryset, "average_rating", descending, item_path)
+
+    if sort == "your_rating" and your_rating_field:
+        return _order_by_field(queryset, your_rating_field, descending, item_path)
+
+    field = sort_fields.get(sort)
+    if field is None:
+        field = sort_fields[default_sort]
+
+    if sort == "title":
+        title_order = Lower(field).desc() if descending else Lower(field).asc()
+        return queryset.order_by(title_order, "-id" if descending else "id")
+
+    return _order_by_field(queryset, field, descending, item_path)
+
+
+def filter_options_for_items(queryset, *, item_path="item__"):
+    """Return available facet values for an Item-backed queryset."""
+    item_ids = queryset.values_list(f"{item_path}id", flat=True)
+    facets = ItemFilterFacet.objects.filter(item_id__in=item_ids)
+    return {
+        "sorts": API_SORTS,
+        "genres": _facet_values(facets, ItemFilterFacet.FacetType.GENRE),
+        "languages": _facet_values(facets, ItemFilterFacet.FacetType.LANGUAGE),
+        "years": list(
+            Item.objects.filter(id__in=item_ids, release_year__isnull=False)
+            .order_by("-release_year")
+            .values_list("release_year", flat=True)
+            .distinct(),
+        ),
+    }
+
+
+def apply_person_credit_filters(credit_list, params):
+    """Apply in-memory filters to provider person credits."""
+    active_keys = {
+        "media_type",
+        "year",
+        "year_min",
+        "year_max",
+        "sort",
+        "ordering",
+        "direction",
+    }
+    if not any(values(params, key) for key in active_keys):
+        return credit_list
+
+    media_types = set(values(params, "media_type"))
+    years = set(values(params, "year"))
+    year_min = int_param(params, "year_min")
+    year_max = int_param(params, "year_max")
+
+    filtered = [
+        credit
+        for credit in credit_list
+        if _person_credit_matches(credit, media_types, years, year_min, year_max)
+    ]
+
+    sort = params.get("sort") or "average_rating"
+    direction = params.get("direction")
+    if direction not in {"asc", "desc"}:
+        direction = "desc" if sort in DESC_SORTS else "asc"
+    reverse = direction == "desc"
+
+    if sort == "release_date":
+        def key(credit):
+            year = _credit_year(credit)
+            return (year is None, year or 0)
+    elif sort in {"average_rating", "your_rating"}:
+        def key(credit):
+            rating = _credit_number(credit, "vote_average")
+            return (rating is None, rating or 0)
+    else:
+        def key(credit):
+            return (credit.get("title") or "").lower()
+    return sorted(filtered, key=key, reverse=reverse)
+
+
+def _person_credit_matches(credit, media_types, years, year_min, year_max):
+    year = _credit_year(credit)
+    if media_types and credit.get("media_type") not in media_types:
+        return False
+    if years and str(year) not in years:
+        return False
+    if year_min is not None and (year is None or year < year_min):
+        return False
+    return not (year_max is not None and (year is None or year > year_max))
+
+
+def _replace_facets(item, facet_type, facet_values):
+    wanted = {value.strip() for value in facet_values if value and value.strip()}
+    existing = set(
+        ItemFilterFacet.objects.filter(item=item, facet_type=facet_type).values_list(
+            "value",
+            flat=True,
+        ),
+    )
+    if existing == wanted:
+        return
+    ItemFilterFacet.objects.filter(item=item, facet_type=facet_type).delete()
+    ItemFilterFacet.objects.bulk_create(
+        [
+            ItemFilterFacet(item=item, facet_type=facet_type, value=value)
+            for value in sorted(wanted)
+        ],
+        ignore_conflicts=True,
+    )
+
+
+def _metadata_list(metadata, key):
+    details = metadata.get("details") or {}
+    values_list = metadata.get(key) or details.get(key) or []
+    normalized = []
+    for raw_value in values_list or []:
+        value = raw_value
+        if isinstance(raw_value, dict):
+            value = raw_value.get("name") or raw_value.get("english_name") or raw_value.get("tag")
+        if value:
+            normalized.append(str(value))
+    return normalized
+
+
+def _release_date(metadata):
+    details = metadata.get("details") or {}
+    value = (
+        metadata.get("release_date")
+        or metadata.get("first_air_date")
+        or metadata.get("start_date")
+        or metadata.get("end_date")
+        or details.get("release_date")
+        or details.get("first_air_date")
+        or details.get("publish_date")
+        or details.get("published_date")
+    )
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+    value = str(value)
+    if len(value) == 4 and value.isdigit():
+        return date(int(value), 1, 1)
+    if len(value) == 7:
+        value = f"{value}-01"
+    return parse_date(value)
+
+
+def _release_year(metadata, release_date):
+    if release_date:
+        return release_date.year
+    for value in (metadata.get("year"), (metadata.get("details") or {}).get("year")):
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _rating_decimal(value):
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value).replace("%", ""))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _apply_facet_filter(queryset, params, item_path, facet_type):
+    facet_values = values(params, facet_type)
+    if not facet_values:
+        return queryset
+    path = f"{item_path}filter_facets__"
+    return queryset.filter(
+        **{
+            f"{path}facet_type": facet_type,
+            f"{path}value__in": facet_values,
+        },
+    ).distinct()
+
+
+def _order_by_field(queryset, field, descending, item_path):
+    order = (
+        models.F(field).desc(nulls_last=True)
+        if descending
+        else models.F(field).asc(nulls_last=True)
+    )
+    return queryset.order_by(order, Lower(f"{item_path}title"))
+
+
+def _facet_values(facets, facet_type):
+    return [
+        {"value": value, "label": value}
+        for value in facets.filter(facet_type=facet_type)
+        .order_by("value")
+        .values_list("value", flat=True)
+        .distinct()
+    ]
+
+
+def _credit_year(credit):
+    year = credit.get("year") or (credit.get("release_date") or "")[:4]
+    try:
+        return int(year)
+    except (TypeError, ValueError):
+        return None
+
+
+def _credit_number(credit, field):
+    try:
+        return float(credit.get(field))
+    except (TypeError, ValueError):
+        return None

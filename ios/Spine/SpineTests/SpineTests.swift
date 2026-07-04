@@ -392,6 +392,28 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(request.title, "PlayStation 5 · Games")
     }
 
+    func testMediaFilterStateBuildsRepeatedQueryItems() {
+        var filter = MediaFilterState()
+        filter.sort = .releaseDate
+        filter.direction = .desc
+        filter.q = " dune "
+        filter.year = 2024
+        filter.genres = ["Drama", "Comedy"]
+        filter.languages = ["English"]
+        filter.hasReview = true
+
+        let query = filter.queryItems(page: "3", mediaType: "movie")
+
+        XCTAssertEqual(query.first { $0.name == "media_type" }?.value, "movie")
+        XCTAssertEqual(query.first { $0.name == "q" }?.value, "dune")
+        XCTAssertEqual(query.first { $0.name == "sort" }?.value, "release_date")
+        XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+        XCTAssertEqual(query.filter { $0.name == "genre" }.map(\.value), ["Drama", "Comedy"])
+        XCTAssertEqual(query.first { $0.name == "language" }?.value, "English")
+        XCTAssertEqual(query.first { $0.name == "has_review" }?.value, "true")
+        XCTAssertEqual(query.first { $0.name == "page" }?.value, "3")
+    }
+
     func testMediaDiscoverRequestBuildsBookDetailPillRequests() {
         let ref = MediaRef(itemId: nil, source: "openlibrary", mediaType: "book", mediaId: "OL27448M", seasonNumber: nil, episodeNumber: nil)
         let genre = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .genre("Fiction"))
