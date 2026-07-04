@@ -31,7 +31,6 @@ final class TaggedDiaryViewModel {
         self.tag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         self.diaryRepository = diaryRepository
         self.onUnauthorized = onUnauthorized
-        filter.tag = self.tag
     }
 
     var media: [TaggedDiaryMedia] {
@@ -44,8 +43,9 @@ final class TaggedDiaryViewModel {
         defer { isLoading = false }
 
         do {
-            filter.tag = tag
-            entries = try await diaryRepository.list(filter: filter)
+            var requestFilter = filter
+            requestFilter.tag = tag
+            entries = try await diaryRepository.list(filter: requestFilter)
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -107,15 +107,11 @@ struct TaggedDiaryView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Picker("View", selection: $viewModel.selectedTab) {
-                        ForEach(TaggedDiaryTab.allCases) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
+                    Section {
+                        content
+                    } header: {
+                        viewToggle
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.bottom, 16)
-
-                    content
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -136,9 +132,9 @@ struct TaggedDiaryView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 MediaFilterButton(
                     filter: $viewModel.filter,
-                    scope: .diary
+                    scope: .diary,
+                    showsTagFilter: false
                 ) {
-                    viewModel.filter.tag = tag
                     Task { await viewModel.load() }
                 }
             }
@@ -158,6 +154,17 @@ struct TaggedDiaryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .diaryEntriesDidChange)) { _ in
             Task { await viewModel.load() }
         }
+    }
+
+    private var viewToggle: some View {
+        Picker("View", selection: $viewModel.selectedTab) {
+            ForEach(TaggedDiaryTab.allCases) { tab in
+                Text(tab.rawValue).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.bottom, 16)
+        .background(Color(red: 0.07, green: 0.07, blue: 0.065))
     }
 
     @ViewBuilder

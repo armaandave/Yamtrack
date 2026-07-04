@@ -82,6 +82,8 @@ struct MediaFilterState: Equatable {
     var length: String?
     var genres: [String] = []
     var languages: [String] = []
+    var excludedGenres: [String] = []
+    var excludedLanguages: [String] = []
     var ratingMin: Decimal?
     var ratingMax: Decimal?
     var watchedFrom: Date?
@@ -104,8 +106,8 @@ struct MediaFilterState: Equatable {
         if year != nil || yearMin != nil || yearMax != nil { count += 1 }
         if releaseStatus != nil { count += 1 }
         if length != nil { count += 1 }
-        if !genres.isEmpty { count += 1 }
-        if !languages.isEmpty { count += 1 }
+        if !genres.isEmpty || !excludedGenres.isEmpty { count += 1 }
+        if !languages.isEmpty || !excludedLanguages.isEmpty { count += 1 }
         if ratingMin != nil || ratingMax != nil { count += 1 }
         if watchedFrom != nil || watchedTo != nil { count += 1 }
         if tag?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { count += 1 }
@@ -134,6 +136,8 @@ struct MediaFilterState: Equatable {
         append("length", length, to: &items)
         genres.forEach { append("genre", $0, to: &items) }
         languages.forEach { append("language", $0, to: &items) }
+        excludedGenres.forEach { append("exclude_genre", $0, to: &items) }
+        excludedLanguages.forEach { append("exclude_language", $0, to: &items) }
         append("rating_min", ratingMin.map(Self.string), to: &items)
         append("rating_max", ratingMax.map(Self.string), to: &items)
         append("watched_from", watchedFrom.map(Self.dateString), to: &items)
@@ -158,6 +162,23 @@ struct MediaFilterState: Equatable {
             self[keyPath: keyPath].removeAll { $0 == trimmed }
         } else {
             self[keyPath: keyPath].append(trimmed)
+        }
+    }
+
+    mutating func cycleFacet(
+        _ value: String,
+        include includeKeyPath: WritableKeyPath<MediaFilterState, [String]>,
+        exclude excludeKeyPath: WritableKeyPath<MediaFilterState, [String]>
+    ) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if self[keyPath: includeKeyPath].contains(trimmed) {
+            self[keyPath: includeKeyPath].removeAll { $0 == trimmed }
+            self[keyPath: excludeKeyPath].append(trimmed)
+        } else if self[keyPath: excludeKeyPath].contains(trimmed) {
+            self[keyPath: excludeKeyPath].removeAll { $0 == trimmed }
+        } else {
+            self[keyPath: includeKeyPath].append(trimmed)
         }
     }
 

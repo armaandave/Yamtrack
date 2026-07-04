@@ -50,6 +50,7 @@ class TrackingListView(APIView):
                 queryset,
                 request.query_params,
                 your_rating_field="score",
+                default_sort="release_date",
                 extra_sorts={
                     "score": "score",
                     "start_date": "start_date",

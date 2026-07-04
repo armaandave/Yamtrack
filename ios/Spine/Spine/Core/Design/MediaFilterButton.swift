@@ -5,6 +5,7 @@ struct MediaFilterButton: View {
     let scope: MediaFilterScope
     var options: MediaFilterOptionsResponse = .empty
     var mediaTypes: [String] = APIConstants.fallbackMediaTypes
+    var showsTagFilter = true
     var onApply: () -> Void
 
     @State private var isPresented = false
@@ -39,6 +40,7 @@ struct MediaFilterButton: View {
                 scope: scope,
                 options: options,
                 mediaTypes: mediaTypes,
+                showsTagFilter: showsTagFilter,
                 onApply: onApply
             )
         }

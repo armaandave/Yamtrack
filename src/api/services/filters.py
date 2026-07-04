@@ -196,6 +196,8 @@ def apply_item_filters(queryset, params, *, item_path="item__"):
 
     queryset = _apply_facet_filter(queryset, params, item_path, "genre")
     queryset = _apply_facet_filter(queryset, params, item_path, "language")
+    queryset = _apply_facet_exclude(queryset, params, item_path, "genre")
+    queryset = _apply_facet_exclude(queryset, params, item_path, "language")
     return queryset
 
 
@@ -209,9 +211,9 @@ def ensure_filter_metadata(queryset, params, *, item_path="item__", force=False,
         or params.get("release_status") in {"released", "unreleased"}
     )
     needs_runtime = force or params.get("length") in {"feature", "short"}
-    if force or values(params, "genre"):
+    if force or values(params, "genre") or values(params, "exclude_genre"):
         needed_facets.add(ItemFilterFacet.FacetType.GENRE)
-    if force or values(params, "language"):
+    if force or values(params, "language") or values(params, "exclude_language"):
         needed_facets.add(ItemFilterFacet.FacetType.LANGUAGE)
     if not (needs_year or needs_release_date or needs_runtime or needed_facets):
         return
@@ -418,6 +420,8 @@ def apply_person_credit_filters(credit_list, params):
         "length",
         "genre",
         "language",
+        "exclude_genre",
+        "exclude_language",
         "sort",
         "ordering",
         "direction",
@@ -433,6 +437,8 @@ def apply_person_credit_filters(credit_list, params):
     length = params.get("length")
     genres = set(values(params, "genre"))
     languages = set(values(params, "language"))
+    excluded_genres = set(values(params, "exclude_genre"))
+    excluded_languages = set(values(params, "exclude_language"))
 
     if length in {"feature", "short"}:
         credit_list = [_credit_with_runtime(credit) for credit in credit_list]
@@ -450,6 +456,8 @@ def apply_person_credit_filters(credit_list, params):
             length,
             genres,
             languages,
+            excluded_genres,
+            excluded_languages,
         )
     ]
 
@@ -484,6 +492,8 @@ def _person_credit_matches(  # noqa: C901, PLR0911
     length=None,
     genres=None,
     languages=None,
+    excluded_genres=None,
+    excluded_languages=None,
 ):
     year = _credit_year(credit)
     if media_types and credit.get("media_type") not in media_types:
@@ -497,6 +507,10 @@ def _person_credit_matches(  # noqa: C901, PLR0911
     if genres and genres.isdisjoint(set(credit.get("genres") or [])):
         return False
     if languages and languages.isdisjoint(set(credit.get("languages") or [])):
+        return False
+    if excluded_genres and not excluded_genres.isdisjoint(set(credit.get("genres") or [])):
+        return False
+    if excluded_languages and not excluded_languages.isdisjoint(set(credit.get("languages") or [])):
         return False
 
     release_date = _credit_release_date(credit)
@@ -626,6 +640,19 @@ def _apply_facet_filter(queryset, params, item_path, facet_type):
         return queryset
     path = f"{item_path}filter_facets__"
     return queryset.filter(
+        **{
+            f"{path}facet_type": facet_type,
+            f"{path}value__in": facet_values,
+        },
+    ).distinct()
+
+
+def _apply_facet_exclude(queryset, params, item_path, facet_type):
+    facet_values = values(params, f"exclude_{facet_type}")
+    if not facet_values:
+        return queryset
+    path = f"{item_path}filter_facets__"
+    return queryset.exclude(
         **{
             f"{path}facet_type": facet_type,
             f"{path}value__in": facet_values,

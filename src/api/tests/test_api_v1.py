@@ -372,6 +372,7 @@ class ApiV1FoundationTests(TestCase):
             [
                 ItemFilterFacet(item=low, facet_type="genre", value="Drama"),
                 ItemFilterFacet(item=high, facet_type="genre", value="Drama"),
+                ItemFilterFacet(item=high, facet_type="genre", value="Comedy"),
                 ItemFilterFacet(item=other, facet_type="genre", value="Fantasy"),
             ]
         )
@@ -403,6 +404,17 @@ class ApiV1FoundationTests(TestCase):
             ["High Drama", "Low Drama"],
         )
         self.assertEqual(response.data["results"][0]["your_rating"], "9.0")
+
+        response = self.client.get(
+            f"/api/v1/lists/{custom_list.id}/items/",
+            {"genre": "Drama", "exclude_genre": "Comedy", "sort": "your_rating"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [result["title"] for result in response.data["results"]],
+            ["Low Drama"],
+        )
 
     def test_filter_options_returns_available_facets_for_scope(self):
         user = get_user_model().objects.create_user(username="filter-options", password="strong-password-123")
@@ -448,14 +460,14 @@ class ApiV1FoundationTests(TestCase):
             source=Sources.TMDB.value,
             media_type=MediaTypes.MOVIE.value,
             media_id="older-default-sort",
-            title="Z Older",
+            title="A Older",
             release_date=datetime(1999, 1, 1, tzinfo=UTC).date(),
         )
         newer = Item.objects.create(
             source=Sources.TMDB.value,
             media_type=MediaTypes.MOVIE.value,
             media_id="newer-default-sort",
-            title="A Newer",
+            title="Z Newer",
             release_date=datetime(2024, 1, 1, tzinfo=UTC).date(),
         )
         Movie.objects.bulk_create(
@@ -469,7 +481,7 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/tracking/?media_type=movie")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([item["media"]["title"] for item in response.data["results"]], ["A Newer", "Z Older"])
+        self.assertEqual([item["media"]["title"] for item in response.data["results"]], ["Z Newer", "A Older"])
 
     def test_tracking_list_page_two_returns_next_movie_page(self):
         user = get_user_model().objects.create_user(username="tracking-page-two", password="strong-password-123")

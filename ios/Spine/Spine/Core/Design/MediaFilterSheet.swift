@@ -6,6 +6,7 @@ struct MediaFilterSheet: View {
     let scope: MediaFilterScope
     let options: MediaFilterOptionsResponse
     let mediaTypes: [String]
+    let showsTagFilter: Bool
     let onApply: () -> Void
 
     @State private var draft: MediaFilterState
@@ -17,12 +18,14 @@ struct MediaFilterSheet: View {
         scope: MediaFilterScope,
         options: MediaFilterOptionsResponse,
         mediaTypes: [String],
+        showsTagFilter: Bool = true,
         onApply: @escaping () -> Void
     ) {
         _filter = filter
         self.scope = scope
         self.options = options
         self.mediaTypes = mediaTypes
+        self.showsTagFilter = showsTagFilter
         self.onApply = onApply
         _draft = State(initialValue: filter.wrappedValue)
     }
@@ -34,8 +37,8 @@ struct MediaFilterSheet: View {
                 contextSection
                 yearSection
                 releaseSection
-                choiceSection("Genre", choices: options.genres, keyPath: \.genres)
-                choiceSection("Language", choices: options.languages, keyPath: \.languages)
+                choiceSection("Genre", choices: options.genres, include: \.genres, exclude: \.excludedGenres)
+                choiceSection("Language", choices: options.languages, include: \.languages, exclude: \.excludedLanguages)
                 ratingSection
                 diarySection
             }
@@ -141,7 +144,8 @@ struct MediaFilterSheet: View {
     private func choiceSection(
         _ title: String,
         choices: [FilterChoice],
-        keyPath: WritableKeyPath<MediaFilterState, [String]>
+        include includeKeyPath: WritableKeyPath<MediaFilterState, [String]>,
+        exclude excludeKeyPath: WritableKeyPath<MediaFilterState, [String]>
     ) -> some View {
         Section(title) {
             DisclosureGroup(isExpanded: expandedBinding(for: title)) {
@@ -151,13 +155,16 @@ struct MediaFilterSheet: View {
                 } else {
                     ForEach(choices) { choice in
                         Button {
-                            draft.toggle(choice.value, in: keyPath)
+                            draft.cycleFacet(choice.value, include: includeKeyPath, exclude: excludeKeyPath)
                         } label: {
                             HStack {
                                 Text(choice.label)
                                 Spacer()
-                                if draft[keyPath: keyPath].contains(choice.value) {
+                                if draft[keyPath: includeKeyPath].contains(choice.value) {
                                     Image(systemName: "checkmark")
+                                        .font(.body.weight(.semibold))
+                                } else if draft[keyPath: excludeKeyPath].contains(choice.value) {
+                                    Image(systemName: "nosign")
                                         .font(.body.weight(.semibold))
                                 }
                             }
@@ -166,7 +173,11 @@ struct MediaFilterSheet: View {
                     }
                 }
             } label: {
-                Text(compactTitle(title, count: draft[keyPath: keyPath].count))
+                Text(compactTitle(
+                    title,
+                    includeCount: draft[keyPath: includeKeyPath].count,
+                    excludeCount: draft[keyPath: excludeKeyPath].count
+                ))
             }
         }
     }
@@ -184,9 +195,11 @@ struct MediaFilterSheet: View {
     private var diarySection: some View {
         if showsDiaryFilters {
             Section("Diary") {
-                TextField("Tag", text: tagBinding)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                if showsTagFilter {
+                    TextField("Tag", text: tagBinding)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
                 Toggle("Has Review", isOn: $draft.hasReview)
                 Toggle("Liked", isOn: $draft.liked)
                 OptionalDatePicker("Watched From", date: $draft.watchedFrom)
@@ -316,8 +329,10 @@ struct MediaFilterSheet: View {
         title == "Genre" ? $isGenreExpanded : $isLanguageExpanded
     }
 
-    private func compactTitle(_ title: String, count: Int) -> String {
-        count == 0 ? title : "\(title) (\(count))"
+    private func compactTitle(_ title: String, includeCount: Int, excludeCount: Int) -> String {
+        let count = includeCount + excludeCount
+        guard count > 0 else { return title }
+        return excludeCount > 0 ? "\(title) (-\(excludeCount))" : "\(title) (\(count))"
     }
 }
 

@@ -433,6 +433,8 @@ final class SpineTests: XCTestCase {
         filter.length = "feature"
         filter.genres = ["Drama", "Comedy"]
         filter.languages = ["English"]
+        filter.excludedGenres = ["Horror"]
+        filter.excludedLanguages = ["French"]
         filter.hasReview = true
 
         let query = filter.queryItems(page: "3", mediaType: "movie")
@@ -445,8 +447,26 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(query.first { $0.name == "length" }?.value, "feature")
         XCTAssertEqual(query.filter { $0.name == "genre" }.map(\.value), ["Drama", "Comedy"])
         XCTAssertEqual(query.first { $0.name == "language" }?.value, "English")
+        XCTAssertEqual(query.first { $0.name == "exclude_genre" }?.value, "Horror")
+        XCTAssertEqual(query.first { $0.name == "exclude_language" }?.value, "French")
         XCTAssertEqual(query.first { $0.name == "has_review" }?.value, "true")
         XCTAssertEqual(query.first { $0.name == "page" }?.value, "3")
+    }
+
+    func testMediaFilterStateCyclesFacetSelection() {
+        var filter = MediaFilterState()
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertEqual(filter.genres, ["Drama"])
+        XCTAssertTrue(filter.excludedGenres.isEmpty)
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertTrue(filter.genres.isEmpty)
+        XCTAssertEqual(filter.excludedGenres, ["Drama"])
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertTrue(filter.genres.isEmpty)
+        XCTAssertTrue(filter.excludedGenres.isEmpty)
     }
 
     func testMediaDiscoverRequestBuildsBookDetailPillRequests() {
@@ -2236,6 +2256,7 @@ final class SpineTests: XCTestCase {
             didAuthorize = true
         }
 
+        XCTAssertEqual(viewModel.filter.activeCount, 0)
         await viewModel.load()
 
         XCTAssertEqual(repository.requestedTags, ["comfort"])
