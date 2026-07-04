@@ -73,6 +73,12 @@ session.mount(
     "https://api.hardcover.app/v1/graphql",
     LimiterAdapter(per_minute=50),
 )
+session.mount(
+    "https://www.steamgriddb.com/api/v2",
+    LimiterAdapter(per_second=3),
+)
+
+
 class ProviderAPIError(Exception):
     """Exception raised when a provider API fails to respond."""
 

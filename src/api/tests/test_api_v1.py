@@ -3024,8 +3024,9 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("app.providers.steamgriddb.get_game_posters")
     @patch("app.providers.igdb.get_game_covers")
-    def test_media_game_posters_endpoint_returns_original_and_alternates(self, covers_mock):
+    def test_media_game_posters_endpoint_returns_original_and_alternates(self, covers_mock, steamgriddb_posters_mock):
         user = get_user_model().objects.create_user(username="gameposter", password="strong-password-123")
         item = Item.objects.create(
             source=Sources.IGDB.value,
@@ -3049,6 +3050,16 @@ class ApiV1FoundationTests(TestCase):
                 "language": None,
             },
         ]
+        steamgriddb_posters_mock.return_value = [
+            {
+                "url": "https://example.com/steamgrid-game.jpg",
+                "thumbnail_url": "https://example.com/steamgrid-game-thumb.jpg",
+                "width": 600,
+                "height": 900,
+                "aspect_ratio": 0.667,
+                "language": None,
+            },
+        ]
         self.client.force_authenticate(user)
 
         response = self.client.get("/api/v1/media/igdb/game/1020/posters/")
@@ -3056,10 +3067,14 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
             [poster["url"] for poster in response.data["posters"]],
-            ["https://example.com/original-game.jpg", "https://example.com/alt-game.jpg"],
+            [
+                "https://example.com/original-game.jpg",
+                "https://example.com/steamgrid-game.jpg",
+                "https://example.com/alt-game.jpg",
+            ],
         )
         self.assertTrue(response.data["posters"][0]["is_original"])
-        self.assertTrue(response.data["posters"][1]["is_selected"])
+        self.assertTrue(response.data["posters"][2]["is_selected"])
 
     @patch("api.services.media.build_accent_palette", return_value={"accent": "#123456", "contrast": "#ffffff"})
     @patch("api.services.media.compute_and_store_poster_accent", return_value="#123456")
@@ -3365,9 +3380,41 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("app.providers.steamgriddb.get_game_logo")
     @patch("api.services.media.provider_services.get_media_metadata")
+    def test_media_detail_includes_steamgriddb_logo_fields(self, metadata_mock, logo_mock):
+        metadata_mock.return_value = {
+            "media_id": "1020",
+            "media_type": "game",
+            "source": "igdb",
+            "title": "Space Game",
+            "image": "https://example.com/space-game.jpg",
+        }
+        logo_mock.return_value = {
+            "url": "https://cdn2.steamgriddb.com/logo/space.png",
+            "width": 600,
+            "height": 215,
+            "aspect_ratio": 2.791,
+        }
+
+        response = self.client.get("/api/v1/media/igdb/game/1020/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["logo_url"], "https://cdn2.steamgriddb.com/logo/space.png")
+        self.assertEqual(response.data["logo_width"], 600)
+        self.assertEqual(response.data["logo_height"], 215)
+        self.assertEqual(response.data["logo_aspect_ratio"], 2.791)
+        logo_mock.assert_called_once_with("1020")
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.providers.steamgriddb.get_game_backdrops")
     @patch("app.providers.igdb.get_game_backdrops")
-    def test_media_game_backdrops_endpoint_returns_artworks(self, backdrops_mock, metadata_mock):
+    def test_media_game_backdrops_endpoint_returns_artworks(
+        self,
+        backdrops_mock,
+        steamgriddb_backdrops_mock,
+        metadata_mock,
+    ):
         user = get_user_model().objects.create_user(username="gamebackdrop", password="strong-password-123")
         item = Item.objects.create(
             source=Sources.IGDB.value,
@@ -3396,6 +3443,16 @@ class ApiV1FoundationTests(TestCase):
                 "language": None,
             },
         ]
+        steamgriddb_backdrops_mock.return_value = [
+            {
+                "url": "https://example.com/steamgrid-hero.jpg",
+                "thumbnail_url": "https://example.com/steamgrid-hero-thumb.jpg",
+                "width": 1920,
+                "height": 620,
+                "aspect_ratio": 3.097,
+                "language": None,
+            },
+        ]
         self.client.force_authenticate(user)
 
         response = self.client.get("/api/v1/media/igdb/game/1020/backdrops/")
@@ -3405,11 +3462,12 @@ class ApiV1FoundationTests(TestCase):
             [backdrop["url"] for backdrop in response.data["backdrops"]],
             [
                 "https://images.igdb.com/igdb/image/upload/t_original/original-art.jpg",
+                "https://example.com/steamgrid-hero.jpg",
                 "https://example.com/alt-art.jpg",
             ],
         )
         self.assertTrue(response.data["backdrops"][0]["is_original"])
-        self.assertTrue(response.data["backdrops"][1]["is_selected"])
+        self.assertTrue(response.data["backdrops"][2]["is_selected"])
 
     def test_media_backdrop_save_updates_preference_without_changing_item_image(self):
         user = get_user_model().objects.create_user(username="backdrop3", password="strong-password-123")

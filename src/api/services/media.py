@@ -42,7 +42,7 @@ from app.utils.color import build_accent_palette, compute_and_store_poster_accen
 SEARCH_TTL = 60 * 60 * 6
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
-DETAIL_CACHE_VERSION = "v8"
+DETAIL_CACHE_VERSION = "v9"
 POSTER_UNSUPPORTED_MESSAGE = (
     "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
 )
@@ -404,11 +404,15 @@ def game_cover_options(*, source, media_id, request=None, user=None):
     current = CustomPosterPreference.objects.filter(user=user, item=item).first()
     selected_url = current.custom_image_url if current else item.image
     selected_absolute = absolute_poster_url(request, selected_url)
-    from app.providers import igdb
+    from app.providers import igdb, steamgriddb
 
     posters = []
     seen = set()
-    covers = [{"url": item.image, "thumbnail_url": item.image, "is_original": True}, *igdb.get_game_covers(media_id)]
+    covers = [
+        {"url": item.image, "thumbnail_url": item.image, "is_original": True},
+        *steamgriddb.get_game_posters(media_id),
+        *igdb.get_game_covers(media_id),
+    ]
     for cover in covers:
         url = cover.get("url")
         if not url or url in seen:
@@ -509,9 +513,10 @@ def game_backdrop_options(*, source, media_id, request=None, user=None):
     item = _customizable_item(source=source, media_type=MediaTypes.GAME.value, media_id=media_id)
     metadata = provider_services.get_media_metadata(MediaTypes.GAME.value, media_id, source)
     raw_default_url = backdrop_url(metadata)
-    from app.providers import igdb
+    from app.providers import igdb, steamgriddb
 
     igdb_backdrops = igdb.get_game_backdrops(media_id)
+    steamgriddb_backdrops = steamgriddb.get_game_backdrops(media_id)
     default_url, custom_url = resolved_backdrop_urls(
         source=source,
         media_type=MediaTypes.GAME.value,
@@ -536,6 +541,7 @@ def game_backdrop_options(*, source, media_id, request=None, user=None):
             "language": None,
             "is_original": True,
         },
+        *steamgriddb_backdrops,
         *igdb_backdrops,
     ]
     for candidate in candidates:
@@ -766,12 +772,16 @@ def _tmdb_vote_sorted_backdrop_url(media_id, media_type, *, raw_default_url=None
 
 
 def title_logo(*, source, media_type, media_id):
-    """Return TMDB title logo metadata for supported detail responses."""
-    if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
-        return None
-    from app.providers import tmdb
+    """Return title logo metadata for supported detail responses."""
+    if source == Sources.TMDB.value and media_type in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
+        from app.providers import tmdb
 
-    return tmdb.get_title_logo(media_id, media_type)
+        return tmdb.get_title_logo(media_id, media_type)
+    if source == Sources.IGDB.value and media_type == MediaTypes.GAME.value:
+        from app.providers import steamgriddb
+
+        return steamgriddb.get_game_logo(media_id)
+    return None
 
 
 def poster_accent_color(metadata, ref):

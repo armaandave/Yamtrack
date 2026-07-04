@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import requests
 from django.conf import settings
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from app.models import Episode, Item, MediaTypes, Sources
 from app.providers import (
@@ -20,6 +20,7 @@ from app.providers import (
     manual,
     openlibrary,
     services,
+    steamgriddb,
     tmdb,
 )
 
@@ -565,6 +566,73 @@ class Metadata(TestCase):
         igdb_game_id = igdb.external_game("999999999", igdb.ExternalGameSource.STEAM)
 
         self.assertIsNone(igdb_game_id)
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_posters_use_steam_external_id(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB poster normalization."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {
+                    "id": 207777,
+                    "score": 12,
+                    "style": "alternate",
+                    "width": 600,
+                    "height": 900,
+                    "url": "https://cdn2.steamgriddb.com/grid/poster.png",
+                    "thumb": "https://cdn2.steamgriddb.com/thumb/poster.jpg",
+                },
+            ],
+        }
+
+        posters = steamgriddb.get_game_posters("1020")
+
+        self.assertEqual(posters[0]["url"], "https://cdn2.steamgriddb.com/grid/poster.png")
+        self.assertEqual(posters[0]["thumbnail_url"], "https://cdn2.steamgriddb.com/thumb/poster.jpg")
+        self.assertEqual(posters[0]["width"], 600)
+        self.assertEqual(posters[0]["height"], 900)
+        self.assertEqual(posters[0]["aspect_ratio"], 0.667)
+        self.assertEqual(posters[0]["source"], "steamgriddb")
+        api_request_mock.assert_called_once()
+        self.assertIn("/grids/steam/1245620", api_request_mock.call_args.args[2])
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_logo_prefers_official(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB logo selection."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {
+                    "id": 2,
+                    "score": 100,
+                    "style": "white",
+                    "width": 1000,
+                    "height": 250,
+                    "url": "https://cdn2.steamgriddb.com/logo/plain.png",
+                },
+                {
+                    "id": 1,
+                    "score": 1,
+                    "style": "official",
+                    "width": 600,
+                    "height": 215,
+                    "url": "https://cdn2.steamgriddb.com/logo/official.png",
+                },
+            ],
+        }
+
+        logo = steamgriddb.get_game_logo("1020")
+
+        self.assertEqual(logo["url"], "https://cdn2.steamgriddb.com/logo/official.png")
+        self.assertEqual(logo["aspect_ratio"], 2.791)
+        api_request_mock.assert_called_once()
+        self.assertIn("/logos/steam/1245620", api_request_mock.call_args.args[2])
 
     @requires_provider_network
     def test_book(self):

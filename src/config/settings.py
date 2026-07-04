@@ -427,6 +427,14 @@ STEAM_API_KEY = config(
     ),  # Generate default key https://steamcommunity.com/dev/apikey
 )
 
+STEAMGRIDDB_API_KEY = config(
+    "STEAMGRIDDB_API_KEY",
+    default=secret(
+        "STEAMGRIDDB_API_KEY_FILE",
+        "",
+    ),
+)
+
 HARDCOVER_API = config(
     "HARDCOVER_API",
     default=secret(

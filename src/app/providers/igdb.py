@@ -178,6 +178,27 @@ def external_game(external_id, source=ExternalGameSource.STEAM):
     return data
 
 
+def external_game_uid(media_id, source=ExternalGameSource.STEAM):
+    """Return an external platform UID for an IGDB game."""
+    missing = object()
+    cache_key = f"{Sources.IGDB.value}_external_game_uid_{source}_{media_id}"
+    data = cache.get(cache_key, missing)
+    if data is missing:
+        response = _post_igdb(
+            f"{base_url}/external_games",
+            f"fields uid; where game = {media_id} & external_game_source = {source}; limit 1;",
+            _api_headers(),
+        )
+        data = response[0].get("uid") if response else None
+        cache.set(cache_key, data, 86400)
+    return data
+
+
+def steam_app_id(media_id):
+    """Return the Steam app ID linked to an IGDB game, when IGDB has one."""
+    return external_game_uid(media_id, ExternalGameSource.STEAM)
+
+
 def search(query, page):
     """Search for games on IGDB."""
     cache_key = f"search_{Sources.IGDB.value}_{MediaTypes.GAME.value}_v2_{query}_{page}"
