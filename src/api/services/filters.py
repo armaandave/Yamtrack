@@ -440,9 +440,6 @@ def apply_person_credit_filters(credit_list, params):
     excluded_genres = set(values(params, "exclude_genre"))
     excluded_languages = set(values(params, "exclude_language"))
 
-    if length in {"feature", "short"}:
-        credit_list = [_credit_with_runtime(credit) for credit in credit_list]
-
     filtered = [
         credit
         for credit in credit_list
@@ -453,13 +450,31 @@ def apply_person_credit_filters(credit_list, params):
             year_min,
             year_max,
             release_status,
-            length,
+            None,
             genres,
             languages,
             excluded_genres,
             excluded_languages,
         )
     ]
+    if length in {"feature", "short"}:
+        filtered = [
+            credit
+            for credit in _credits_with_cached_runtime(filtered)
+            if _person_credit_matches(
+                credit,
+                media_types,
+                years,
+                year_min,
+                year_max,
+                release_status,
+                length,
+                genres,
+                languages,
+                excluded_genres,
+                excluded_languages,
+            )
+        ]
 
     sort = params.get("sort") or "average_rating"
     direction = params.get("direction")
@@ -711,52 +726,32 @@ def _credit_date_text(credit):
     return credit.get("release_date") or credit.get("first_air_date") or credit.get("publish_date")
 
 
-def _credit_with_runtime(credit):
-    if _credit_runtime_minutes(credit) is not None or credit.get("media_type") != MediaTypes.MOVIE.value:
-        return credit
+def _credits_with_cached_runtime(credit_list):
+    missing = [
+        credit
+        for credit in credit_list
+        if credit.get("media_type") == MediaTypes.MOVIE.value and _credit_runtime_minutes(credit) is None
+    ]
+    if not missing:
+        return credit_list
 
-    item = Item.objects.filter(
-        source=credit.get("source"),
-        media_type=credit.get("media_type"),
-        media_id=str(credit.get("media_id") or ""),
-    ).first()
-    if item and item.runtime_minutes is not None:
-        return {**credit, "runtime_minutes": item.runtime_minutes}
-
-    from app.providers import services as provider_services
-
-    try:
-        metadata = provider_services.get_media_metadata(
-            credit.get("media_type"),
-            str(credit.get("media_id") or ""),
-            credit.get("source"),
+    ids = [str(credit.get("media_id") or "") for credit in missing]
+    sources = {credit.get("source") for credit in missing if credit.get("source")}
+    cached = {
+        (item.source, item.media_id): item.runtime_minutes
+        for item in Item.objects.filter(
+            source__in=sources,
+            media_type=MediaTypes.MOVIE.value,
+            media_id__in=ids,
+            runtime_minutes__isnull=False,
         )
-    except (
-        provider_services.ProviderAPIError,
-        RequestException,
-        NotImplementedError,
-        TypeError,
-        ValueError,
-    ) as error:
-        logger.debug(
-            "Skipping person credit runtime backfill for %s:%s:%s: %s",
-            credit.get("source"),
-            credit.get("media_type"),
-            credit.get("media_id"),
-            error,
-        )
-        return credit
-
-    if item:
-        update_item_filter_metadata(item, metadata)
-    runtime = _runtime_minutes(metadata)
-    release_date = _release_date(metadata)
-    return {
-        **credit,
-        "runtime_minutes": runtime,
-        "release_date": credit.get("release_date") or release_date,
-        "year": credit.get("year") or (release_date.year if release_date else None),
     }
+    return [
+        {**credit, "runtime_minutes": cached[(credit.get("source"), str(credit.get("media_id") or ""))]}
+        if (credit.get("source"), str(credit.get("media_id") or "")) in cached
+        else credit
+        for credit in credit_list
+    ]
 
 
 def _credit_runtime_minutes(credit):

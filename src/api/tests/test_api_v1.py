@@ -2121,6 +2121,13 @@ class ApiV1FoundationTests(TestCase):
     @patch("app.providers.services.get_media_metadata")
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_filters_released_feature_films(self, person_mock, metadata_mock):
+        Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="released-feature",
+            title="Released Feature",
+            runtime_minutes=90,
+        )
         person_mock.return_value = {
             "source": Sources.TMDB.value,
             "person_id": "525",
@@ -2160,10 +2167,6 @@ class ApiV1FoundationTests(TestCase):
                 },
             ],
         }
-        metadata_mock.return_value = {
-            "release_date": "2024-01-01",
-            "details": {"runtime": "1h 30m"},
-        }
 
         response = self.client.get(
             "/api/v1/people/tmdb/525/",
@@ -2185,7 +2188,7 @@ class ApiV1FoundationTests(TestCase):
         )
         self.assertEqual(response.data["credits"]["cast"][0]["genres"], ["Science Fiction"])
         self.assertEqual(response.data["credits"]["cast"][0]["languages"], ["English"])
-        metadata_mock.assert_called_once_with(MediaTypes.MOVIE.value, "released-feature", Sources.TMDB.value)
+        metadata_mock.assert_not_called()
 
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_returns_hardcover_author_books(self, person_mock):
