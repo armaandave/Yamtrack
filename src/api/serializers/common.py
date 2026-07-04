@@ -440,6 +440,7 @@ def related_sections_from_payload(related, media_type, source, request=None, use
         candidates = [
             (key, key.replace("_", " ").title(), related.get(key) or [])
             for key in (
+                "collection",
                 "dlcs",
                 "expansions",
                 "standalone_expansions",
@@ -447,7 +448,6 @@ def related_sections_from_payload(related, media_type, source, request=None, use
                 "remakes",
                 "expanded_games",
                 "recommendations",
-                "all_related",
             )
         ]
     else:

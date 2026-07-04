@@ -2614,7 +2614,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(rating["vote_count"], 1234)
 
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_game_detail_exposes_all_related_as_related_section(self, metadata_mock):
+    def test_game_detail_exposes_collection_before_other_related_sections(self, metadata_mock):
         metadata_mock.return_value = {
             "media_id": "1020",
             "media_type": "game",
@@ -2633,6 +2633,22 @@ class ApiV1FoundationTests(TestCase):
                 "collection": "Space Collection",
             },
             "related": {
+                "collection": [
+                    {
+                        "media_id": "1020",
+                        "media_type": "game",
+                        "source": "igdb",
+                        "title": "Space Game",
+                        "image": "https://example.com/space.jpg",
+                    },
+                    {
+                        "media_id": "1021",
+                        "media_type": "game",
+                        "source": "igdb",
+                        "title": "Space Game 2",
+                        "image": "https://example.com/space2.jpg",
+                    },
+                ],
                 "dlcs": [
                     {
                         "media_id": "1022",
@@ -2643,11 +2659,10 @@ class ApiV1FoundationTests(TestCase):
                 ],
                 "all_related": [
                     {
-                        "media_id": "1021",
+                        "media_id": "9999",
                         "media_type": "game",
                         "source": "igdb",
-                        "title": "Space Game 2",
-                        "image": "https://example.com/space2.jpg",
+                        "title": "Random Related Game",
                     },
                 ],
             },
@@ -2656,8 +2671,8 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/media/igdb/game/1020/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["related_sections"][0]["id"], "dlcs")
-        self.assertEqual(response.data["related_sections"][1]["id"], "all_related")
+        self.assertEqual([section["id"] for section in response.data["related_sections"]], ["collection", "dlcs"])
+        self.assertEqual(response.data["related_sections"][0]["items"][1]["title"], "Space Game 2")
         self.assertEqual(response.data["external_ratings"][0]["source"], "IGDB")
         self.assertEqual(response.data["external_ratings"][0]["value"], "92.7")
         self.assertEqual(response.data["external_ratings"][0]["max_value"], "100")

@@ -382,7 +382,7 @@ def discover(*, page=1, page_size=None, genre=None, year=None, platform=None):
 
 def game(media_id):
     """Return the metadata for the selected game from IGDB."""
-    cache_key = f"{Sources.IGDB.value}_{MediaTypes.GAME.value}_{media_id}_v2"
+    cache_key = f"{Sources.IGDB.value}_{MediaTypes.GAME.value}_{media_id}_v3"
     data = cache.get(cache_key)
     if data is None:
         access_token = get_access_token()
@@ -392,7 +392,9 @@ def game(media_id):
             "fields name,cover.image_id,artworks.image_id,artworks.width,artworks.height,"
             "url,summary,game_type,first_release_date,total_rating,total_rating_count,"
             "genres.name,themes.name,platforms.name,age_ratings.category,age_ratings.rating,"
-            "franchises.name,collection.name,"
+            "franchises.name,collection.name,collections.name,"
+            "collections.games.name,collections.games.cover.image_id,"
+            "collections.games.game_type,collections.games.first_release_date,"
             "involved_companies.company.name,involved_companies.developer,"
             "parent_game.name,parent_game.cover.image_id,"
             "remasters.name,remasters.cover.image_id,"
@@ -464,17 +466,8 @@ def game(media_id):
         )
         expanded_games = get_related(game_response.get("expanded_games"))
         recommendations = get_related(game_response.get("similar_games"))
-        
-        # Combine all related items (excluding parent_game) and limit to 7 total
-        all_related = (
-            remasters
-            + remakes
-            + expansions
-            + dlcs
-            + standalone_expansions
-            + expanded_games
-            + recommendations
-        )[:7]
+        collection_games = get_collection_games(game_response.get("collections"))
+        collection_name = get_list(game_response, "collections", first=True) or get_name(game_response.get("collection"))
 
         data = {
             "media_id": game_response["id"],
@@ -496,7 +489,7 @@ def game(media_id):
                 "age_ratings": get_age_ratings(game_response),
                 "franchise": get_list(game_response, "franchises", first=True),
                 "franchises": get_list(game_response, "franchises"),
-                "collection": get_name(game_response.get("collection")),
+                "collection": collection_name,
                 "themes": get_list(game_response, "themes"),
                 "platforms": get_list(game_response, "platforms"),
                 "companies": get_companies(game_response),
@@ -504,6 +497,7 @@ def game(media_id):
             },
             "related": {
                 "parent_game": get_parent(game_response.get("parent_game")),
+                "collection": collection_games,
                 "remasters": remasters,
                 "remakes": remakes,
                 "expansions": expansions,
@@ -511,7 +505,6 @@ def game(media_id):
                 "standalone_expansions": standalone_expansions,
                 "expanded_games": expanded_games,
                 "recommendations": recommendations,
-                "all_related": all_related,
             },
             "time_to_beat": time_to_beat,
         }
@@ -815,3 +808,20 @@ def get_related(related_medias):
             for game in related_medias
         ]
     return []
+
+
+def get_collection_games(collections):
+    games = {}
+    for collection in collections or []:
+        for game in collection.get("games") or []:
+            if game.get("game_type") != 0:
+                continue
+            games[game["id"]] = {
+                "source": Sources.IGDB.value,
+                "media_id": game["id"],
+                "media_type": MediaTypes.GAME.value,
+                "title": game["name"],
+                "image": get_image_url(game),
+                "release_date": get_start_date(game),
+            }
+    return sorted(games.values(), key=lambda game: game.get("release_date") or "")

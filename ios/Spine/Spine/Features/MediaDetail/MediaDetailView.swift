@@ -1566,8 +1566,7 @@ struct MediaDetailView: View {
                 guard key != "seasons", let values = value.arrayValue else { return nil }
                 let items = values.compactMap { rawRelatedSummary($0, parent: detail) }
                 guard !items.isEmpty else { return nil }
-                let isCollection = (detail.ref.mediaType == "movie" && key != "recommendations")
-                    || (detail.ref.mediaType == "game" && key == "all_related")
+                let isCollection = detail.ref.mediaType == "movie" && key != "recommendations"
                 let id = isCollection ? "collection" : key
                 let title = isCollection ? "Collection" : key.replacingOccurrences(of: "_", with: " ").capitalized
                 return RelatedMediaSection(id: id, title: title, items: items)
@@ -1575,12 +1574,16 @@ struct MediaDetailView: View {
         } else {
             return []
         }
-        return sections.compactMap { section in
+        let normalized: [RelatedMediaSection] = sections.compactMap { section -> RelatedMediaSection? in
             if section.id == "all_related" {
-                guard detail.ref.mediaType == "game" else { return nil }
-                return RelatedMediaSection(id: "collection", title: "Collection", items: section.items)
+                return nil
             }
             return section
+        }
+        return normalized.sorted { lhs, rhs in
+            if lhs.id == "collection", rhs.id != "collection" { return true }
+            if rhs.id == "collection", lhs.id != "collection" { return false }
+            return false
         }
     }
 

@@ -502,7 +502,33 @@ class Metadata(TestCase):
                         "platforms": [{"name": "PC"}],
                         "age_ratings": [{"category": 1, "rating": 11}],
                         "franchises": [{"name": "Space Franchise"}],
-                        "collection": {"name": "Space Collection"},
+                        "collections": [
+                            {
+                                "name": "Space Collection",
+                                "games": [
+                                    {
+                                        "id": 1021,
+                                        "name": "Space Game 2",
+                                        "cover": {"image_id": "cover-2"},
+                                        "game_type": 0,
+                                        "first_release_date": int(datetime(2022, 5, 6, tzinfo=UTC).timestamp()),
+                                    },
+                                    {
+                                        "id": 1022,
+                                        "name": "Space Game DLC",
+                                        "cover": {"image_id": "cover-dlc"},
+                                        "game_type": 1,
+                                    },
+                                    {
+                                        "id": 1020,
+                                        "name": "Space Game",
+                                        "cover": {"image_id": "cover"},
+                                        "game_type": 0,
+                                        "first_release_date": int(datetime(2020, 9, 17, tzinfo=UTC).timestamp()),
+                                    },
+                                ],
+                            },
+                        ],
                         "involved_companies": [
                             {"developer": True, "company": {"name": "Space Studio"}},
                         ],
@@ -521,6 +547,10 @@ class Metadata(TestCase):
         self.assertEqual(response["details"]["franchise"], "Space Franchise")
         self.assertEqual(response["details"]["franchises"], ["Space Franchise"])
         self.assertEqual(response["details"]["collection"], "Space Collection")
+        self.assertEqual(
+            [game["title"] for game in response["related"]["collection"]],
+            ["Space Game", "Space Game 2"],
+        )
 
     @requires_provider_network
     def test_external_game_steam(self):
