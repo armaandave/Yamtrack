@@ -63,7 +63,7 @@ class TrackingListView(APIView):
         return paginator.get_paginated_response(
             [
                 {
-                    "media": media_summary_from_item(media.item, request=request),
+                    "media": media_summary_from_item(media.item, request=request, user=request.user),
                     "tracking": tracking_service.serialize_tracking(media),
                 }
                 for media in page

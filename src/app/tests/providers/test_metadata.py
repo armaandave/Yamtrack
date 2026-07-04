@@ -98,6 +98,11 @@ class Metadata(TestCase):
 
         self.assertEqual(crew[0]["image"], "https://image.tmdb.org/t/p/w500/denis.jpg")
 
+    def test_tmdb_person_credit_role_groups_common_jobs(self):
+        self.assertEqual(tmdb._person_credit_role("Screenplay", "Writing"), "Writer")
+        self.assertEqual(tmdb._person_credit_role("Executive Producer", "Production"), "Producer")
+        self.assertEqual(tmdb._person_credit_role("Director", "Directing"), "Director")
+
     @patch("app.providers.tmdb.tv_with_seasons")
     @patch("app.providers.tmdb.services.api_request")
     def test_tmdb_season_backdrops_use_episode_stills(self, mock_api_request, mock_tv_with_seasons):

@@ -71,6 +71,7 @@ struct PersonDetailView: View {
     @State private var viewModel: PersonDetailViewModel
     @State private var selectedRef: MediaRef?
     @State private var selectedFilmographyType: FilmographyType = .movie
+    @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
 
     private let peopleRepository: PeopleRepository
@@ -274,6 +275,9 @@ struct PersonDetailView: View {
         let types = FilmographyType.available(in: viewModel.filmography)
         let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
         let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
+        let groups = FilmographyCreditGroup.groups(from: filmography)
+        let primaryGroup = groups.first
+        let secondaryGroups = Array(groups.dropFirst())
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -316,27 +320,85 @@ struct PersonDetailView: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 220)
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-                    ForEach(filmography) { media in
-                        Button {
-                            selectedRef = media.ref
-                        } label: {
-                            MediaArtwork(
-                                url: media.displayPosterURL,
-                                title: media.title,
-                                slot: .tagGrid,
-                                mediaType: media.ref.mediaType,
-                                orientation: media.posterOrientation
-                            )
-                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("View \(media.title)")
+                VStack(alignment: .leading, spacing: 14) {
+                    if let primaryGroup {
+                        filmographyGroup(primaryGroup, type: selectedType, isPrimary: true)
+                    }
+
+                    ForEach(secondaryGroups) { group in
+                        roleDisclosureRow(group, type: selectedType)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private func roleDisclosureRow(_ group: FilmographyCreditGroup, type: FilmographyType) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedCreditRoles.contains(group.id) {
+                        expandedCreditRoles.remove(group.id)
+                    } else {
+                        expandedCreditRoles.insert(group.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text(group.compactTitle(for: type))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.74))
+
+                    Spacer()
+
+                    Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 42)
+                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            if expandedCreditRoles.contains(group.id) {
+                filmographyGrid(group.media)
+            }
+        }
+    }
+
+    private func filmographyGroup(_ group: FilmographyCreditGroup, type: FilmographyType, isPrimary: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(isPrimary ? group.title(for: type) : group.compactTitle(for: type))
+                .font(.system(size: isPrimary ? 13 : 12, weight: .heavy))
+                .foregroundStyle(.white.opacity(isPrimary ? 0.62 : 0.5))
+                .textCase(.uppercase)
+                .tracking(2)
+
+            filmographyGrid(group.media)
+        }
+    }
+
+    private func filmographyGrid(_ media: [MediaSummary]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
+            ForEach(media) { media in
+                Button {
+                    selectedRef = media.ref
+                } label: {
+                    MediaArtwork(
+                        url: media.displayPosterURL,
+                        title: media.title,
+                        slot: .tagGrid,
+                        mediaType: media.ref.mediaType,
+                        orientation: media.posterOrientation
+                    )
+                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View \(media.title)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func metadataChips(_ detail: PersonDetail) -> [String] {
@@ -405,6 +467,77 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
     static func available(in media: [MediaSummary]) -> [FilmographyType] {
         allCases.filter { type in
             media.contains { $0.ref.mediaType == type.rawValue }
+        }
+    }
+}
+
+private struct FilmographyCreditGroup: Identifiable {
+    let role: String
+    let media: [MediaSummary]
+
+    var id: String { role }
+
+    static func groups(from media: [MediaSummary]) -> [FilmographyCreditGroup] {
+        var grouped: [String: [MediaSummary]] = [:]
+
+        for item in media {
+            let roles = cleanRoles(item.creditRoles)
+            for role in roles.isEmpty ? ["Credits"] : roles {
+                grouped[role, default: []].append(item)
+            }
+        }
+
+        return grouped
+            .map { FilmographyCreditGroup(role: $0.key, media: $0.value) }
+            .sorted {
+                if $0.media.count != $1.media.count {
+                    return $0.media.count > $1.media.count
+                }
+                return $0.role < $1.role
+            }
+    }
+
+    func title(for type: FilmographyType) -> String {
+        if role == "Credits" {
+            return compactTitle(for: type)
+        }
+        return "\(role) \(connector) \(media.count) \(type.creditNoun(count: media.count))"
+    }
+
+    func compactTitle(for type: FilmographyType) -> String {
+        "\(role) · \(media.count) \(type.creditNoun(count: media.count))"
+    }
+
+    private var connector: String {
+        switch role.lowercased() {
+        case "actor", "actress":
+            "in"
+        case "author":
+            "of"
+        default:
+            "of"
+        }
+    }
+
+    private static func cleanRoles(_ roles: [String]) -> [String] {
+        var seen = Set<String>()
+        return roles.compactMap { role in
+            let clean = role.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
+            return clean
+        }
+    }
+}
+
+private extension FilmographyType {
+    func creditNoun(count: Int) -> String {
+        switch self {
+        case .movie:
+            count == 1 ? "film" : "films"
+        case .tv:
+            count == 1 ? "show" : "shows"
+        case .book:
+            count == 1 ? "book" : "books"
         }
     }
 }

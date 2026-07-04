@@ -1075,9 +1075,22 @@ def get_tv_rating(content_ratings):
     return None
 
 
+def _person_credit_role(job, department):
+    job = (job or "").strip()
+    department = (department or "").strip()
+    value = job.lower()
+    if department.lower() == "writing" or value in {"screenplay", "story", "writer"}:
+        return "Writer"
+    if "producer" in value:
+        return "Producer"
+    if value == "director":
+        return "Director"
+    return job or department or None
+
+
 def person_page(person_id):
     """Return person details and credits for the person page."""
-    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v8"
+    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v9"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1114,6 +1127,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "credit_role": "Actor",
                 "release_date": item.get("release_date"),
                 "year": year,
                 "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
@@ -1139,6 +1153,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "credit_role": _person_credit_role(item.get("job"), item.get("department")),
                 "release_date": item.get("release_date"),
                 "year": year,
                 "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
@@ -1164,6 +1179,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "credit_role": "Actor",
                 "release_date": item.get("first_air_date"),
                 "year": year,
                 "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
@@ -1189,6 +1205,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "credit_role": _person_credit_role(item.get("job"), item.get("department")),
                 "release_date": item.get("first_air_date"),
                 "year": year,
                 "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
@@ -1219,10 +1236,14 @@ def person_page(person_id):
                     "vote_average": c.get("vote_average"),
                     "vote_count": c.get("vote_count"),
                     "roles": [],
+                    "credit_roles": [],
                 }
             role = c.get("role")
             if role and role not in by_key[key]["roles"]:
                 by_key[key]["roles"].append(role)
+            credit_role = c.get("credit_role")
+            if credit_role and credit_role not in by_key[key]["credit_roles"]:
+                by_key[key]["credit_roles"].append(credit_role)
         credits = list(by_key.values())
 
         # Sort by vote_count (desc), then title; uses only TMDB data from person credits

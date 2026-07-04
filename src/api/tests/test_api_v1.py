@@ -483,6 +483,35 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([item["media"]["title"] for item in response.data["results"]], ["Z Newer", "A Older"])
 
+    def test_tracking_list_includes_viewer_custom_posters(self):
+        user = get_user_model().objects.create_user(username="tracking-custom-posters", password="strong-password-123")
+        cases = [
+            (MediaTypes.MOVIE.value, Sources.TMDB.value, Movie, "custom-movie"),
+            (MediaTypes.TV.value, Sources.TMDB.value, TV, "custom-tv"),
+            (MediaTypes.BOOK.value, Sources.OPENLIBRARY.value, Book, "custom-book"),
+        ]
+        for media_type, source, model, media_id in cases:
+            item = Item.objects.create(
+                source=source,
+                media_type=media_type,
+                media_id=media_id,
+                title=f"{media_type} custom poster",
+                image=f"https://example.com/{media_id}-original.jpg",
+            )
+            model.objects.bulk_create([model(user=user, item=item, status=Status.COMPLETED.value)])
+            CustomPosterPreference.objects.create(
+                user=user,
+                item=item,
+                custom_image_url=f"https://example.com/{media_id}-custom.jpg",
+            )
+        self.client.force_authenticate(user)
+
+        for media_type, _source, _model, media_id in cases:
+            response = self.client.get("/api/v1/tracking/", {"media_type": media_type})
+
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response.data["results"][0]["media"]["custom_poster_url"], f"https://example.com/{media_id}-custom.jpg")
+
     def test_tracking_list_page_two_returns_next_movie_page(self):
         user = get_user_model().objects.create_user(username="tracking-page-two", password="strong-password-123")
         self._create_movies(user, 30)
@@ -2037,6 +2066,8 @@ class ApiV1FoundationTests(TestCase):
                     "title": "Fight Club",
                     "image": "https://example.com/fight-club.jpg",
                     "year": "1999",
+                    "roles": ["Narrator"],
+                    "credit_roles": ["Actor"],
                     "popularity": 20.5,
                     "vote_count": 2000,
                 },
@@ -2047,6 +2078,8 @@ class ApiV1FoundationTests(TestCase):
                     "title": "Game of Thrones",
                     "image": "https://example.com/got.jpg",
                     "year": "2011",
+                    "roles": ["Director"],
+                    "credit_roles": ["Director"],
                     "popularity": 80.2,
                     "vote_count": 100,
                 },
@@ -2068,6 +2101,8 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["credits"]["cast"][0]["ref"]["media_type"], MediaTypes.MOVIE.value)
         self.assertEqual(response.data["credits"]["cast"][0]["subtitle"], "1999")
         self.assertEqual(response.data["credits"]["cast"][0]["poster_url"], "https://example.com/fight-club.jpg")
+        self.assertEqual(response.data["credits"]["cast"][0]["roles"], ["Narrator"])
+        self.assertEqual(response.data["credits"]["cast"][0]["credit_roles"], ["Actor"])
 
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_filters_and_sorts_credits_in_memory(self, person_mock):

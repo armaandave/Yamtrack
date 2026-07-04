@@ -78,11 +78,6 @@ struct DiaryMonthHeader: View {
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
             .background(Color(red: 0.115, green: 0.108, blue: 0.095))
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(Color(red: 0.72, green: 0.74, blue: 0.76).opacity(0.68))
-                    .frame(width: 3)
-            }
             .overlay(alignment: .bottom) {
                 Rectangle()
                     .fill(.white.opacity(0.08))

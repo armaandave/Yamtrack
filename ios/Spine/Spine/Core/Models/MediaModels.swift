@@ -46,6 +46,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
     let releaseDate: String?
     let genres: [String]
     let languages: [String]
+    let roles: [String]
+    let creditRoles: [String]
     let defaultSource: String?
     let position: Int?
     var userState: UserMediaState?
@@ -86,6 +88,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         case releaseDate
         case genres
         case languages
+        case roles
+        case creditRoles
         case defaultSource
         case position
         case userState
@@ -113,6 +117,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         releaseDate: String? = nil,
         genres: [String] = [],
         languages: [String] = [],
+        roles: [String] = [],
+        creditRoles: [String] = [],
         defaultSource: String? = nil,
         position: Int? = nil,
         userState: UserMediaState? = nil
@@ -138,6 +144,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         self.releaseDate = releaseDate
         self.genres = genres
         self.languages = languages
+        self.roles = roles
+        self.creditRoles = creditRoles
         self.defaultSource = defaultSource
         self.position = position
         self.userState = userState
@@ -168,6 +176,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
             releaseDate: try container.decodeIfPresent(String.self, forKey: .releaseDate),
             genres: try container.decodeIfPresent([String].self, forKey: .genres) ?? [],
             languages: try container.decodeIfPresent([String].self, forKey: .languages) ?? [],
+            roles: try container.decodeIfPresent([String].self, forKey: .roles) ?? [],
+            creditRoles: try container.decodeIfPresent([String].self, forKey: .creditRoles) ?? [],
             defaultSource: try container.decodeIfPresent(String.self, forKey: .defaultSource),
             position: try container.decodeIfPresent(Int.self, forKey: .position),
             userState: try container.decodeIfPresent(UserMediaState.self, forKey: .userState)
