@@ -37,7 +37,7 @@ final class DiaryViewModel {
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
-        let requestFilter = filter
+        let requestFilter = diaryRequestFilter
         entries = []
         nextPage = nil
         isLoading = true
@@ -46,12 +46,12 @@ final class DiaryViewModel {
 
         do {
             let response = try await diaryRepository.page(filter: requestFilter, page: nil)
-            guard generation == requestGeneration, requestFilter == filter else { return }
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             entries = response.results
             nextPage = APIPageCursor.nextPage(from: response.next)
             isLoading = false
         } catch {
-            guard generation == requestGeneration, requestFilter == filter else { return }
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             errorMessage = error.localizedDescription
             isLoading = false
             if case APIError.unauthorized = error {
@@ -72,19 +72,19 @@ final class DiaryViewModel {
     func loadNextPage() async {
         guard !isLoading, !isLoadingNextPage, let page = nextPage else { return }
         let generation = requestGeneration
-        let requestFilter = filter
+        let requestFilter = diaryRequestFilter
         isLoadingNextPage = true
         nextPageErrorMessage = nil
 
         do {
             let response = try await diaryRepository.page(filter: requestFilter, page: page)
-            guard generation == requestGeneration, requestFilter == filter else { return }
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             let existingIDs = Set(entries.map(\.id))
             entries += response.results.filter { !existingIDs.contains($0.id) }
             nextPage = APIPageCursor.nextPage(from: response.next)
             isLoadingNextPage = false
         } catch {
-            guard generation == requestGeneration, requestFilter == filter else { return }
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             nextPageErrorMessage = error.localizedDescription
             isLoadingNextPage = false
             if case APIError.unauthorized = error {
@@ -96,10 +96,19 @@ final class DiaryViewModel {
     func loadFilterOptions() async {
         guard filter.itemId == nil else { return }
         do {
-            filterOptions = try await filterOptionsRepository.options(scope: .diary, filter: filter)
+            filterOptions = try await filterOptionsRepository.options(scope: .diary, filter: diaryRequestFilter)
         } catch {
             filterOptions = .empty
         }
+    }
+
+    private var diaryRequestFilter: MediaFilterState {
+        var requestFilter = filter
+        if filter.mediaType == "tv" {
+            requestFilter.mediaType = nil
+            requestFilter.mediaTypes = ["tv", "season"]
+        }
+        return requestFilter
     }
 }
 
@@ -322,6 +331,7 @@ struct DiaryView: View {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         header
+                        mediaPicker
 
                         if viewModel.isLoading {
                             ProgressView()
@@ -404,6 +414,31 @@ struct DiaryView: View {
             }
         }
         .padding(.bottom, 14)
+    }
+
+    private var mediaPicker: some View {
+        MediaSearchLensPicker(
+            selectedType: selectedMediaTypeBinding,
+            availableTypes: APIConstants.fallbackMediaTypes,
+            horizontalPadding: 0,
+            fitsAllTypes: true,
+            allowsEmptySelection: true,
+            isCompact: true
+        ) { selectedType in
+            viewModel.filter.mediaType = selectedType.isEmpty ? nil : selectedType
+            Task {
+                await viewModel.loadFilterOptions()
+                await viewModel.load()
+            }
+        }
+        .padding(.bottom, 14)
+    }
+
+    private var selectedMediaTypeBinding: Binding<String> {
+        Binding(
+            get: { viewModel.filter.mediaType ?? "" },
+            set: { viewModel.filter.mediaType = $0.isEmpty ? nil : $0 }
+        )
     }
 
     @ViewBuilder

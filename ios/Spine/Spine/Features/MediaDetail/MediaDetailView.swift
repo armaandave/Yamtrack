@@ -276,11 +276,17 @@ enum MediaArtworkCustomization {
         if source == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
             return true
         }
+        if source == "igdb", mediaType == "game" {
+            return true
+        }
         return mediaType == "book" && ["openlibrary", "hardcover"].contains(source)
     }
 
     static func supportsBackdrop(source: String, mediaType: String) -> Bool {
-        source == "tmdb" && ["movie", "tv", "season"].contains(mediaType)
+        if source == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
+            return true
+        }
+        return source == "igdb" && mediaType == "game"
     }
 }
 
@@ -537,7 +543,7 @@ struct MediaDetailView: View {
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
                     title: "Customize Poster",
-                    showsLanguageFilter: !isBook(detail),
+                    showsLanguageFilter: !isBook(detail) && detail.ref.mediaType != "game",
                     contentMode: isBook(detail) ? .fit : .fill,
                     onUnauthorized: onUnauthorized
                 ) { response in
@@ -1178,6 +1184,9 @@ struct MediaDetailView: View {
     }
 
     private func contentRating(_ detail: MediaDetail) -> String? {
+        if detail.ref.mediaType == "game" {
+            return detailString(detail, "age_rating") ?? detailArray(detail, "age_ratings").first
+        }
         guard ["movie", "tv"].contains(detail.ref.mediaType) else { return nil }
         guard let rating = detailString(detail, "rating"), !rating.isEmpty else { return nil }
         return rating
@@ -1336,6 +1345,10 @@ struct MediaDetailView: View {
             ]
         case "game":
             rows += [
+                DetailFactRow(label: "Release Date", value: formattedReleaseDate(detail)),
+                DetailFactRow(label: "Age Rating", value: detailString(detail, "age_rating") ?? detailArray(detail, "age_ratings").joinedOrNil),
+                DetailFactRow(label: "Collection", value: detailString(detail, "collection")),
+                DetailFactRow(label: "Franchise", value: detailString(detail, "franchise") ?? detailArray(detail, "franchises").joinedOrNil),
                 DetailFactRow(label: "Developer", value: detailString(detail, "developer")),
                 DetailFactRow(label: "Themes", value: detailArray(detail, "themes").joinedOrNil),
                 DetailFactRow(label: "Time to Beat", value: timeToBeatString(detail)),
@@ -1550,18 +1563,25 @@ struct MediaDetailView: View {
             sections = relatedSections
         } else if let related = detail.related {
             sections = related.compactMap { key, value in
-                guard key != "seasons", key != "all_related",
-                      let values = value.arrayValue else { return nil }
+                guard key != "seasons", let values = value.arrayValue else { return nil }
                 let items = values.compactMap { rawRelatedSummary($0, parent: detail) }
                 guard !items.isEmpty else { return nil }
-                let id = detail.ref.mediaType == "movie" && key != "recommendations" ? "collection" : key
-                let title = key.replacingOccurrences(of: "_", with: " ").capitalized
+                let isCollection = (detail.ref.mediaType == "movie" && key != "recommendations")
+                    || (detail.ref.mediaType == "game" && key == "all_related")
+                let id = isCollection ? "collection" : key
+                let title = isCollection ? "Collection" : key.replacingOccurrences(of: "_", with: " ").capitalized
                 return RelatedMediaSection(id: id, title: title, items: items)
             }
         } else {
             return []
         }
-        return sections.filter { $0.id != "all_related" }
+        return sections.compactMap { section in
+            if section.id == "all_related" {
+                guard detail.ref.mediaType == "game" else { return nil }
+                return RelatedMediaSection(id: "collection", title: "Collection", items: section.items)
+            }
+            return section
+        }
     }
 
     private func rawRelatedSummary(_ value: JSONValue, parent: MediaDetail) -> MediaSummary? {

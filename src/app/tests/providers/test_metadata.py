@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -477,6 +477,50 @@ class Metadata(TestCase):
             list(response["time_to_beat"].keys()),
             ["hastily", "normally", "completely"],
         )
+
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb.services.api_request")
+    def test_game_metadata_keeps_artwork_age_rating_and_franchise(self, mock_api_request, _token_mock):
+        cache.clear()
+        mock_api_request.return_value = [
+            {
+                "name": "GameData",
+                "result": [
+                    {
+                        "id": 1020,
+                        "name": "Space Game",
+                        "url": "https://www.igdb.com/games/space-game",
+                        "cover": {"image_id": "cover"},
+                        "artworks": [{"image_id": "wide-art", "width": 1920, "height": 1080}],
+                        "summary": "Fly through space.",
+                        "game_type": 0,
+                        "first_release_date": int(datetime(2020, 9, 17, 12, tzinfo=UTC).timestamp()),
+                        "total_rating": 92.68,
+                        "total_rating_count": 5000,
+                        "genres": [{"name": "Adventure"}],
+                        "themes": [{"name": "Sci-Fi"}],
+                        "platforms": [{"name": "PC"}],
+                        "age_ratings": [{"category": 1, "rating": 11}],
+                        "franchises": [{"name": "Space Franchise"}],
+                        "collection": {"name": "Space Collection"},
+                        "involved_companies": [
+                            {"developer": True, "company": {"name": "Space Studio"}},
+                        ],
+                    },
+                ],
+            },
+            {"name": "TTBData", "result": [{"id": 1, "normally": 3600}]},
+        ]
+
+        response = igdb.game("1020")
+
+        self.assertEqual(response["artworks"], [{"image_id": "wide-art", "width": 1920, "height": 1080}])
+        self.assertEqual(response["details"]["release_date"], "2020-09-17")
+        self.assertEqual(response["details"]["age_rating"], "ESRB M")
+        self.assertEqual(response["details"]["age_ratings"], ["ESRB M"])
+        self.assertEqual(response["details"]["franchise"], "Space Franchise")
+        self.assertEqual(response["details"]["franchises"], ["Space Franchise"])
+        self.assertEqual(response["details"]["collection"], "Space Collection")
 
     @requires_provider_network
     def test_external_game_steam(self):

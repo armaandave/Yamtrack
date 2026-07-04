@@ -1304,9 +1304,11 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "tmdb", mediaType: "tv"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "hardcover", mediaType: "book"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "igdb", mediaType: "game"))
         XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "anime"))
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "movie"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
     }
 
     func testTrackingDiaryAndProfileDecoding() throws {

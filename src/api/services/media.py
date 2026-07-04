@@ -42,9 +42,12 @@ from app.utils.color import build_accent_palette, compute_and_store_poster_accen
 SEARCH_TTL = 60 * 60 * 6
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
-DETAIL_CACHE_VERSION = "v7"
+DETAIL_CACHE_VERSION = "v8"
 POSTER_UNSUPPORTED_MESSAGE = (
-    "Poster customization is only available for TMDB movies/TV shows/seasons and Open Library/Hardcover books."
+    "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
+)
+BACKDROP_UNSUPPORTED_MESSAGE = (
+    "Backdrop customization is only available for TMDB movies/TV shows/seasons and IGDB games."
 )
 logger = logging.getLogger(__name__)
 
@@ -282,6 +285,9 @@ def poster_options(*, source, media_type, media_id, season_number=None, request=
             user=user,
         )
         return {"posters": options["posters"]}
+    if _supports_game_posters(source, media_type):
+        options = game_cover_options(source=source, media_id=media_id, request=request, user=user)
+        return {"posters": options["posters"]}
     if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.SEASON.value]:
         raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
@@ -324,7 +330,7 @@ def save_poster_preference(*, source, media_type, media_id, poster_url, user, se
     if (
         source != Sources.TMDB.value
         or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.SEASON.value]
-    ) and not _supports_book_posters(source, media_type):
+    ) and not _supports_book_posters(source, media_type) and not _supports_game_posters(source, media_type):
         raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
     if not poster_url:
@@ -389,14 +395,53 @@ def book_cover_options(*, source, media_id, request=None, user=None):
     return {"item": item, "posters": posters, "current_poster": selected_url}
 
 
+def game_cover_options(*, source, media_id, request=None, user=None):
+    """Return selectable covers for IGDB games."""
+    if not _supports_game_posters(source, MediaTypes.GAME.value):
+        raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(source=source, media_type=MediaTypes.GAME.value, media_id=media_id)
+    current = CustomPosterPreference.objects.filter(user=user, item=item).first()
+    selected_url = current.custom_image_url if current else item.image
+    selected_absolute = absolute_poster_url(request, selected_url)
+    from app.providers import igdb
+
+    posters = []
+    seen = set()
+    covers = [{"url": item.image, "thumbnail_url": item.image, "is_original": True}, *igdb.get_game_covers(media_id)]
+    for cover in covers:
+        url = cover.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        absolute_url = absolute_poster_url(request, url)
+        posters.append(
+            {
+                "url": absolute_url,
+                "thumbnail_url": absolute_poster_url(request, cover.get("thumbnail_url") or url),
+                "width": cover.get("width") or 0,
+                "height": cover.get("height") or 0,
+                "aspect_ratio": cover.get("aspect_ratio") or 0.667,
+                "vote_average": cover.get("vote_average") or 0,
+                "vote_count": cover.get("vote_count") or 0,
+                "language": cover.get("language"),
+                "is_original": bool(cover.get("is_original")),
+                "is_selected": absolute_url == selected_absolute,
+            },
+        )
+    return {"item": item, "posters": posters, "current_poster": selected_url}
+
+
 def backdrop_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
-    """Return selectable backdrops for TMDB movie/TV/season media."""
+    """Return selectable backdrops for supported media."""
+    if _supports_game_backdrops(source, media_type):
+        return game_backdrop_options(source=source, media_id=media_id, request=request, user=user)
     if source != Sources.TMDB.value or media_type not in [
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,
         MediaTypes.SEASON.value,
     ]:
-        raise ValueError("Backdrop customization is only available for TMDB movies, TV shows, and seasons.")
+        raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
 
     item = _customizable_item(source=source, media_type=media_type, media_id=media_id, season_number=season_number)
@@ -456,14 +501,69 @@ def backdrop_options(*, source, media_type, media_id, season_number=None, reques
     return {"backdrops": backdrops}
 
 
+def game_backdrop_options(*, source, media_id, request=None, user=None):
+    """Return selectable IGDB artwork images for game backdrops."""
+    if not _supports_game_backdrops(source, MediaTypes.GAME.value):
+        raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(source=source, media_type=MediaTypes.GAME.value, media_id=media_id)
+    metadata = provider_services.get_media_metadata(MediaTypes.GAME.value, media_id, source)
+    raw_default_url = backdrop_url(metadata)
+    from app.providers import igdb
+
+    igdb_backdrops = igdb.get_game_backdrops(media_id)
+    default_url, custom_url = resolved_backdrop_urls(
+        source=source,
+        media_type=MediaTypes.GAME.value,
+        media_id=media_id,
+        metadata=metadata,
+        request=request,
+        user=user,
+        item=item,
+    )
+    selected_url = custom_url or default_url
+    backdrops = []
+    seen = set()
+    candidates = [
+        {
+            "url": raw_default_url,
+            "thumbnail_url": raw_default_url,
+            "width": 0,
+            "height": 0,
+            "aspect_ratio": 1.778,
+            "vote_average": 0,
+            "vote_count": 0,
+            "language": None,
+            "is_original": True,
+        },
+        *igdb_backdrops,
+    ]
+    for candidate in candidates:
+        url = candidate.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        backdrops.append(
+            {
+                **candidate,
+                "language": candidate.get("language"),
+                "is_original": bool(candidate.get("is_original")),
+                "is_selected": url == selected_url,
+            },
+        )
+    return {"backdrops": backdrops}
+
+
 def save_backdrop_preference(*, source, media_type, media_id, backdrop_url, user, season_number=None):
     """Save a user's backdrop preference without mutating the item poster."""
-    if source != Sources.TMDB.value or media_type not in [
-        MediaTypes.MOVIE.value,
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-    ]:
-        raise ValueError("Backdrop customization is only available for TMDB movies, TV shows, and seasons.")
+    if (
+        source != Sources.TMDB.value or media_type not in [
+            MediaTypes.MOVIE.value,
+            MediaTypes.TV.value,
+            MediaTypes.SEASON.value,
+        ]
+    ) and not _supports_game_backdrops(source, media_type):
+        raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
     if not backdrop_url:
         raise ValueError("backdrop_url is required.")
@@ -520,6 +620,14 @@ def _supports_book_posters(source, media_type):
         Sources.OPENLIBRARY.value,
         Sources.HARDCOVER.value,
     ]
+
+
+def _supports_game_posters(source, media_type):
+    return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
+
+
+def _supports_game_backdrops(source, media_type):
+    return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
 
 
 def _book_isbns(source, media_id):

@@ -389,9 +389,11 @@ def game(media_id):
         url = f"{base_url}/multiquery"
         multiquery = (
             'query games "GameData" {'
-            "fields name,cover.image_id,artworks.image_id,"
+            "fields name,cover.image_id,artworks.image_id,artworks.width,artworks.height,"
             "url,summary,game_type,first_release_date,total_rating,total_rating_count,"
-            "genres.name,themes.name,platforms.name,involved_companies.company.name,involved_companies.developer,"
+            "genres.name,themes.name,platforms.name,age_ratings.category,age_ratings.rating,"
+            "franchises.name,collection.name,"
+            "involved_companies.company.name,involved_companies.developer,"
             "parent_game.name,parent_game.cover.image_id,"
             "remasters.name,remasters.cover.image_id,"
             "remakes.name,remakes.cover.image_id,"
@@ -482,6 +484,7 @@ def game(media_id):
             "title": game_response["name"],
             "max_progress": None,
             "image": get_image_url(game_response),
+            "artworks": game_response.get("artworks") or [],
             "synopsis": game_response.get("summary", "No synopsis available."),
             "genres": get_list(game_response, "genres"),
             "score": get_score(game_response),
@@ -489,6 +492,11 @@ def game(media_id):
             "details": {
                 "format": get_game_type(game_response["game_type"]),
                 "release_date": get_start_date(game_response),
+                "age_rating": get_primary_age_rating(game_response),
+                "age_ratings": get_age_ratings(game_response),
+                "franchise": get_list(game_response, "franchises", first=True),
+                "franchises": get_list(game_response, "franchises"),
+                "collection": get_name(game_response.get("collection")),
                 "themes": get_list(game_response, "themes"),
                 "platforms": get_list(game_response, "platforms"),
                 "companies": get_companies(game_response),
@@ -556,14 +564,87 @@ def get_start_date(response):
         return None
 
 
-def get_list(response, field):
+def get_list(response, field, first=False):
     """Return the list of names from a list of dictionaries."""
     # when no data of field, field is not present in the response
     # e.g game: 25222
     try:
-        return [item["name"] for item in response[field]]
+        values = [item["name"] for item in response[field]]
+        return values[0] if values and first else values
     except KeyError:
         return None
+
+
+def get_name(value):
+    return value.get("name") if isinstance(value, dict) else None
+
+
+AGE_RATING_CATEGORY = {
+    1: "ESRB",
+    2: "PEGI",
+    3: "CERO",
+    4: "USK",
+    5: "GRAC",
+    6: "ClassInd",
+    7: "ACB",
+}
+
+AGE_RATING_VALUE = {
+    1: "3",
+    2: "7",
+    3: "12",
+    4: "16",
+    5: "18",
+    6: "RP",
+    7: "EC",
+    8: "E",
+    9: "E10+",
+    10: "T",
+    11: "M",
+    12: "AO",
+    13: "A",
+    14: "B",
+    15: "C",
+    16: "D",
+    17: "Z",
+    18: "0",
+    19: "6",
+    20: "12",
+    21: "16",
+    22: "18",
+    23: "All",
+    24: "12",
+    25: "15",
+    26: "18",
+    27: "Testing",
+    28: "L",
+    29: "10",
+    30: "12",
+    31: "14",
+    32: "16",
+    33: "18",
+    34: "G",
+    35: "PG",
+    36: "M",
+    37: "MA15+",
+    38: "R18+",
+    39: "RC",
+}
+
+
+def get_age_ratings(response):
+    ratings = []
+    for rating in response.get("age_ratings", []):
+        category = AGE_RATING_CATEGORY.get(rating.get("category"))
+        value = AGE_RATING_VALUE.get(rating.get("rating"), str(rating.get("rating") or ""))
+        if category and value:
+            ratings.append(f"{category} {value}")
+    return ratings or None
+
+
+def get_primary_age_rating(response):
+    ratings = get_age_ratings(response) or []
+    return next((rating for rating in ratings if rating.startswith("ESRB ")), ratings[0] if ratings else None)
 
 
 def get_companies(response):
@@ -657,6 +738,42 @@ def get_game_covers(media_id):
         data = images
     
     return data
+
+
+def get_game_backdrops(media_id):
+    """Get available IGDB artwork images for game backdrops."""
+    cache_key = f"{Sources.IGDB.value}_game_backdrops_{media_id}"
+    data = cache.get(cache_key)
+    if data is None:
+        response = _post_igdb(
+            f"{base_url}/artworks",
+            f"fields image_id,game,width,height; where game = {media_id};",
+            _api_headers(),
+        )
+        data = [
+            igdb_image_option(artwork, thumbnail_size="t_screenshot_big", fallback_aspect_ratio=1.778)
+            for artwork in response or []
+            if artwork.get("image_id")
+        ]
+        cache.set(cache_key, data, 86400)
+    return data
+
+
+def igdb_image_option(image, thumbnail_size="t_cover_big", fallback_aspect_ratio=0.667):
+    image_id = image["image_id"]
+    width = image.get("width") or 0
+    height = image.get("height") or 0
+    return {
+        "url": f"https://images.igdb.com/igdb/image/upload/t_original/{image_id}.jpg",
+        "thumbnail_url": f"https://images.igdb.com/igdb/image/upload/{thumbnail_size}/{image_id}.jpg",
+        "width": width,
+        "height": height,
+        "aspect_ratio": round(width / height, 3) if width and height else fallback_aspect_ratio,
+        "vote_average": 0,
+        "vote_count": 0,
+        "language": None,
+        "image_id": image_id,
+    }
 
 
 def get_score(response):

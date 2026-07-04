@@ -1455,7 +1455,7 @@ private struct RecentActivityRail: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let itemWidth = PosterSlot.diaryRow.size.width
+            let itemWidth = PosterSlot.profileRail.size.width
             let minimumSpacing: CGFloat = 4
             let maximumVisibleCount = min(6, visibleItems.count)
             let visibleCount = max(1, min(maximumVisibleCount, Int((proxy.size.width + minimumSpacing) / (itemWidth + minimumSpacing))))
@@ -1472,7 +1472,7 @@ private struct RecentActivityRail: View {
                 Spacer(minLength: 0)
             }
         }
-        .frame(height: 104)
+        .frame(height: 125)
     }
 }
 
@@ -1483,7 +1483,7 @@ private struct InProgressRail: View {
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 10
-            let itemWidth: CGFloat = 62
+            let itemWidth = PosterSlot.profileRail.size.width
             let visibleCount = max(3, min(5, Int((proxy.size.width + spacing) / (itemWidth + spacing))))
             HStack(alignment: .top, spacing: spacing) {
                 ForEach(Array(items.prefix(visibleCount))) { item in
@@ -1495,7 +1495,7 @@ private struct InProgressRail: View {
                 Spacer(minLength: 0)
             }
         }
-        .frame(height: 104)
+        .frame(height: 125)
     }
 }
 
@@ -1508,7 +1508,7 @@ private struct InProgressPoster: View {
             MediaArtwork(
                 url: item.media.displayPosterURL,
                 title: item.media.title,
-                slot: .diaryRow,
+                slot: .profileRail,
                 mediaType: item.media.ref.mediaType,
                 orientation: item.media.posterOrientation
             )
@@ -1524,7 +1524,7 @@ private struct ProfileRailLoadingView: View {
             ForEach(0..<5, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(.white.opacity(0.08))
-                    .frame(width: 62, height: 94)
+                    .frame(width: PosterSlot.profileRail.size.width, height: PosterSlot.profileRail.size.height)
             }
             Spacer(minLength: 0)
         }
@@ -1542,7 +1542,7 @@ private struct RecentActivityPoster: View {
                 MediaArtwork(
                     url: item.media.displayPosterURL,
                     title: item.media.title,
-                    slot: .diaryRow,
+                    slot: .profileRail,
                     mediaType: item.media.ref.mediaType,
                     orientation: item.media.posterOrientation
                 )
@@ -1558,11 +1558,11 @@ private struct RecentActivityPoster: View {
     private var metadataLine: some View {
         if let progressDeltaText = ProfileRecentActivityRailModel.progressDeltaText(for: item.activity, media: item.media) {
             Text(progressDeltaText)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: 12.5, weight: .bold))
                 .foregroundStyle(.white.opacity(0.54))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+                .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         } else if ProfileRecentActivityRailModel.isDiary(item.activity),
                   ProfileRecentActivityRailModel.rating(for: item.activity) != nil || ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
             HStack(spacing: 5) {
@@ -1572,19 +1572,19 @@ private struct RecentActivityPoster: View {
 
                 if ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
                     Image(systemName: "heart.fill")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 11.25, weight: .bold))
                         .foregroundStyle(.pink)
                         .accessibilityLabel("Liked")
                 }
             }
-            .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+            .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         } else if let label = ProfileRecentActivityRailModel.fallbackLabel(for: item.activity) {
             Text(label)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: 12.5, weight: .bold))
                 .foregroundStyle(.white.opacity(0.54))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+                .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         }
     }
 }
@@ -1597,11 +1597,11 @@ private struct ProfileStarRating: View {
         HStack(spacing: 1) {
             ForEach(Array(symbolNames.enumerated()), id: \.offset) { _, symbolName in
                 Image(systemName: symbolName)
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.yellow.opacity(0.92))
             }
         }
-        .frame(width: reservesWidth ? 56 : nil, height: 10, alignment: .leading)
+        .frame(width: reservesWidth ? PosterSlot.profileRail.size.width : nil, height: 12.5, alignment: .leading)
         .accessibilityHidden(value == nil)
         .accessibilityLabel(value.map { "Rating \($0) out of 5 stars" } ?? "")
     }

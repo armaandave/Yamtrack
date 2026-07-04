@@ -227,22 +227,7 @@ private struct BackdropOptionCell: View {
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .topLeading) {
-                AsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
-                    switch phase {
-                    case let .success(image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        Color.gray.opacity(0.18)
-                    }
-                }
-                .aspectRatio(16.0 / 9.0, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? .white : .clear, lineWidth: 3)
-                }
+                backdropImage
 
                 if backdrop.isSelected {
                     Text("Current")
@@ -266,5 +251,25 @@ private struct BackdropOptionCell: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(backdrop.isSelected ? "Current backdrop" : "Backdrop option")
+    }
+
+    private var backdropImage: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.gray.opacity(0.18))
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay {
+                AsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
+                    if case let .success(image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? .white : .clear, lineWidth: 3)
+            }
     }
 }

@@ -73,6 +73,7 @@ struct MediaFilterState: Equatable {
     var direction: MediaFilterDirection?
     var q = ""
     var mediaType: String?
+    var mediaTypes: [String] = []
     var status: String?
     var itemId: Int?
     var year: Int?
@@ -100,7 +101,7 @@ struct MediaFilterState: Equatable {
         var count = 0
         if sort != nil { count += 1 }
         if !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { count += 1 }
-        if mediaType != nil { count += 1 }
+        if mediaType != nil || !mediaTypes.isEmpty { count += 1 }
         if status != nil { count += 1 }
         if itemId != nil { count += 1 }
         if year != nil || yearMin != nil || yearMax != nil { count += 1 }
@@ -119,7 +120,9 @@ struct MediaFilterState: Equatable {
     func queryItems(page: String? = nil, mediaType fallbackMediaType: String? = nil) -> [URLQueryItem] {
         var items: [URLQueryItem] = []
 
-        if let fallbackMediaType {
+        if !mediaTypes.isEmpty {
+            mediaTypes.forEach { items.append(URLQueryItem(name: "media_type", value: $0)) }
+        } else if let fallbackMediaType {
             items.append(URLQueryItem(name: "media_type", value: fallbackMediaType))
         } else if let mediaType {
             items.append(URLQueryItem(name: "media_type", value: mediaType))

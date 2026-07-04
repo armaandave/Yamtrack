@@ -17,28 +17,19 @@ struct MediaSearchBar: View {
     var body: some View {
         ZStack {
             if isLensExpanded {
-                MediaSearchLensRail(
+                MediaSearchLensPicker(
                     selectedType: $selectedMediaType,
                     availableTypes: availableTypes,
+                    horizontalPadding: horizontalPadding,
                     onSelect: selectLens
                 )
                 .transition(.opacity)
             } else {
                 searchControls
+                    .modifier(MediaSearchChrome(isLensExpanded: false, horizontalPadding: horizontalPadding))
                     .transition(.opacity)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, isLensExpanded ? 12 : 3)
-        .frame(minHeight: isLensExpanded ? 92 : 44)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(.white.opacity(0.10), lineWidth: 1)
-        }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.top, 2)
-        .padding(.bottom, 5)
         .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.84), value: isLensExpanded)
         .onChange(of: isLensExpanded) {
             if isLensExpanded {
@@ -98,13 +89,89 @@ struct MediaSearchBar: View {
     }
 }
 
+struct MediaSearchLensPicker: View {
+    @Binding var selectedType: String
+    let availableTypes: [String]
+    var horizontalPadding: CGFloat = 16
+    var fitsAllTypes = false
+    var allowsEmptySelection = false
+    var isCompact = false
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        MediaSearchLensRail(
+            selectedType: $selectedType,
+            availableTypes: availableTypes,
+            fitsAllTypes: fitsAllTypes,
+            isCompact: isCompact,
+            allowsEmptySelection: allowsEmptySelection,
+            onSelect: onSelect
+        )
+        .modifier(MediaSearchChrome(isLensExpanded: true, horizontalPadding: horizontalPadding, isCompact: isCompact))
+    }
+}
+
+private struct MediaSearchChrome: ViewModifier {
+    let isLensExpanded: Bool
+    let horizontalPadding: CGFloat
+    var isCompact = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 14)
+            .padding(.vertical, isCompact ? 5 : (isLensExpanded ? 12 : 3))
+            .frame(minHeight: isCompact ? 52 : (isLensExpanded ? 92 : 44))
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(0.10), lineWidth: 1)
+            }
+            .padding(.horizontal, horizontalPadding)
+            .padding(.top, 2)
+            .padding(.bottom, 5)
+    }
+}
+
 private struct MediaSearchLensRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selectedType: String
     let availableTypes: [String]
+    let fitsAllTypes: Bool
+    let isCompact: Bool
+    let allowsEmptySelection: Bool
     let onSelect: (String) -> Void
 
     var body: some View {
+        if fitsAllTypes {
+            GeometryReader { proxy in
+                let spacing: CGFloat = 6
+                let width = max(30, (proxy.size.width - spacing * CGFloat(max(availableTypes.count - 1, 0))) / CGFloat(max(availableTypes.count, 1)))
+                let diameter = min(isCompact ? 34 : 38, width)
+
+                HStack(spacing: spacing) {
+                    ForEach(availableTypes, id: \.self) { type in
+                        MediaSearchLensOrb(
+                            type: type,
+                            isSelected: selectedType == type,
+                            diameter: diameter,
+                            itemWidth: width,
+                            showsSelectionIndicator: !isCompact,
+                            onTap: {
+                                select(type)
+                            }
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: isCompact ? 42 : 68)
+            }
+            .frame(height: isCompact ? 42 : 68)
+            .accessibilityLabel("Media type picker")
+        } else {
+            scrollingRail
+        }
+    }
+
+    private var scrollingRail: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
@@ -113,7 +180,7 @@ private struct MediaSearchLensRail: View {
                             type: type,
                             isSelected: selectedType == type,
                             onTap: {
-                                onSelect(type)
+                                select(type)
                             }
                         )
                         .id(type)
@@ -137,11 +204,24 @@ private struct MediaSearchLensRail: View {
         }
         .accessibilityLabel("Media type picker")
     }
+
+    private func select(_ type: String) {
+        if allowsEmptySelection, selectedType == type {
+            selectedType = ""
+            onSelect("")
+        } else {
+            selectedType = type
+            onSelect(type)
+        }
+    }
 }
 
 private struct MediaSearchLensOrb: View {
     let type: String
     let isSelected: Bool
+    var diameter: CGFloat = 48
+    var itemWidth: CGFloat = 52
+    var showsSelectionIndicator = true
     let onTap: () -> Void
 
     private var theme: MediaTypeTheme {
@@ -155,15 +235,17 @@ private struct MediaSearchLensOrb: View {
                     .fill(.clear)
                     .modifier(MediaLensCircleStyle(isSelected: isSelected))
                     .overlay {
-                        MediaTypeGlyph(theme: theme, size: isSelected ? 21 : 18)
+                        MediaTypeGlyph(theme: theme, size: diameter * (isSelected ? 0.44 : 0.38))
                     }
-                    .frame(width: 48, height: 48)
+                    .frame(width: diameter, height: diameter)
 
-                Capsule()
-                    .fill(.white.opacity(isSelected ? 0.58 : 0))
-                    .frame(width: 12, height: 2)
+                if showsSelectionIndicator {
+                    Capsule()
+                        .fill(.white.opacity(isSelected ? 0.58 : 0))
+                        .frame(width: 12, height: 2)
+                }
             }
-            .frame(width: 52, height: 58)
+            .frame(width: itemWidth, height: showsSelectionIndicator ? 58 : diameter)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

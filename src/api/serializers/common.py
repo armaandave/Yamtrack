@@ -219,7 +219,7 @@ def resolved_item_backdrop_urls(item, request=None, user=None):
     if custom_backdrop_url:
         return None, custom_backdrop_url
 
-    if item.media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
+    if item.media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.GAME.value]:
         return None, custom_backdrop_url
 
     from api.services.media import resolved_backdrop_urls
@@ -281,6 +281,7 @@ def media_summary_from_provider(payload, media_type, source, request=None, user=
             or payload.get("first_air_date")
             or payload.get("publish_date")
             or payload.get("end_date")
+            or (payload.get("details") or {}).get("release_date")
         ),
         "genres": payload.get("genres") or [],
         "languages": payload.get("languages") or [],

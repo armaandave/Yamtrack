@@ -2624,6 +2624,14 @@ class ApiV1FoundationTests(TestCase):
             "artworks": [{"image_id": "wide-art"}],
             "score": "92.7",
             "score_count": 5000,
+            "details": {
+                "release_date": "2020-09-17",
+                "age_rating": "ESRB M",
+                "age_ratings": ["ESRB M", "PEGI 18"],
+                "franchise": "Space Franchise",
+                "franchises": ["Space Franchise"],
+                "collection": "Space Collection",
+            },
             "related": {
                 "dlcs": [
                     {
@@ -2654,6 +2662,12 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_ratings"][0]["value"], "92.7")
         self.assertEqual(response.data["external_ratings"][0]["max_value"], "100")
         self.assertEqual(response.data["external_ratings"][0]["vote_count"], 5000)
+        self.assertEqual(response.data["release_date"], "2020-09-17")
+        self.assertEqual(response.data["details"]["age_rating"], "ESRB M")
+        self.assertEqual(response.data["details"]["age_ratings"], ["ESRB M", "PEGI 18"])
+        self.assertEqual(response.data["details"]["franchise"], "Space Franchise")
+        self.assertEqual(response.data["details"]["franchises"], ["Space Franchise"])
+        self.assertEqual(response.data["details"]["collection"], "Space Collection")
         self.assertEqual(
             response.data["backdrop_url"],
             "https://images.igdb.com/igdb/image/upload/t_original/wide-art.jpg",
@@ -2995,6 +3009,43 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("app.providers.igdb.get_game_covers")
+    def test_media_game_posters_endpoint_returns_original_and_alternates(self, covers_mock):
+        user = get_user_model().objects.create_user(username="gameposter", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/original-game.jpg",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/alt-game.jpg",
+        )
+        covers_mock.return_value = [
+            {
+                "url": "https://example.com/alt-game.jpg",
+                "thumbnail_url": "https://example.com/alt-game-thumb.jpg",
+                "width": 1000,
+                "height": 1500,
+                "aspect_ratio": 0.667,
+                "language": None,
+            },
+        ]
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/igdb/game/1020/posters/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [poster["url"] for poster in response.data["posters"]],
+            ["https://example.com/original-game.jpg", "https://example.com/alt-game.jpg"],
+        )
+        self.assertTrue(response.data["posters"][0]["is_original"])
+        self.assertTrue(response.data["posters"][1]["is_selected"])
+
     @patch("api.services.media.build_accent_palette", return_value={"accent": "#123456", "contrast": "#ffffff"})
     @patch("api.services.media.compute_and_store_poster_accent", return_value="#123456")
     def test_media_poster_save_updates_preference_and_item(self, _accent_mock, _palette_mock):
@@ -3052,6 +3103,31 @@ class ApiV1FoundationTests(TestCase):
             CustomPosterPreference.objects.get(user=user, item=item).custom_image_url,
             "https://example.com/new-book.jpg",
         )
+
+    @patch("api.services.media.build_accent_palette", return_value={"accent": "#aabbcc", "contrast": "#000000"})
+    @patch("api.services.media.compute_and_store_poster_accent", return_value="#aabbcc")
+    def test_media_game_poster_save_updates_preference_and_item(self, _accent_mock, _palette_mock):
+        user = get_user_model().objects.create_user(username="gameposter2", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/original-game.jpg",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.put(
+            "/api/v1/media/igdb/game/1020/poster/",
+            {"poster_url": "https://example.com/new-game.jpg"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["custom_poster_url"], "https://example.com/new-game.jpg")
+        item.refresh_from_db()
+        self.assertEqual(item.image, "https://example.com/new-game.jpg")
+        self.assertEqual(item.poster_accent_color, "#aabbcc")
 
     @patch("api.services.media.build_accent_palette", return_value={"accent": "#abcdef", "contrast": "#000000"})
     @patch("api.services.media.compute_and_store_poster_accent", return_value="#abcdef")
@@ -3274,6 +3350,52 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.providers.igdb.get_game_backdrops")
+    def test_media_game_backdrops_endpoint_returns_artworks(self, backdrops_mock, metadata_mock):
+        user = get_user_model().objects.create_user(username="gamebackdrop", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/poster.jpg",
+        )
+        CustomBackdropPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/alt-art.jpg",
+        )
+        metadata_mock.return_value = {
+            "title": "Space Game",
+            "image": "https://example.com/poster.jpg",
+            "artworks": [{"image_id": "original-art"}],
+        }
+        backdrops_mock.return_value = [
+            {
+                "url": "https://example.com/alt-art.jpg",
+                "thumbnail_url": "https://example.com/alt-art-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "language": None,
+            },
+        ]
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/igdb/game/1020/backdrops/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [backdrop["url"] for backdrop in response.data["backdrops"]],
+            [
+                "https://images.igdb.com/igdb/image/upload/t_original/original-art.jpg",
+                "https://example.com/alt-art.jpg",
+            ],
+        )
+        self.assertTrue(response.data["backdrops"][0]["is_original"])
+        self.assertTrue(response.data["backdrops"][1]["is_selected"])
+
     def test_media_backdrop_save_updates_preference_without_changing_item_image(self):
         user = get_user_model().objects.create_user(username="backdrop3", password="strong-password-123")
         item = Item.objects.create(
@@ -3298,6 +3420,32 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             CustomBackdropPreference.objects.get(user=user, item=item).custom_image_url,
             "https://example.com/new-backdrop.jpg",
+        )
+
+    def test_media_game_backdrop_save_updates_preference_without_changing_item_image(self):
+        user = get_user_model().objects.create_user(username="gamebackdrop2", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/original-game.jpg",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.put(
+            "/api/v1/media/igdb/game/1020/backdrop/",
+            {"backdrop_url": "https://example.com/new-game-backdrop.jpg"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["custom_backdrop_url"], "https://example.com/new-game-backdrop.jpg")
+        item.refresh_from_db()
+        self.assertEqual(item.image, "https://example.com/original-game.jpg")
+        self.assertEqual(
+            CustomBackdropPreference.objects.get(user=user, item=item).custom_image_url,
+            "https://example.com/new-game-backdrop.jpg",
         )
 
     def test_media_season_backdrop_save_updates_preference_without_changing_item_image(self):
