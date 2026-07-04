@@ -834,20 +834,25 @@ private final class ProfileListDetailViewModel {
     }
 
     var displayedItems: [MediaSummary] {
-        filter.isActive ? filteredItems : list?.items ?? []
+        filteredItems
     }
 
     func load() async {
         isLoading = true
         errorMessage = nil
+        requestGeneration += 1
+        let generation = requestGeneration
+        let requestFilter = filter
         defer { isLoading = false }
 
         do {
-            list = try await listRepository.detail(id: listId)
-            await loadFilterOptions()
-            if filter.isActive {
-                await loadFilteredItems(reset: true)
-            }
+            let detail = try await listRepository.detail(id: listId)
+            let response = try await listRepository.items(listId: listId, page: nil, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            filteredItems = response.results
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            list = detail.withItems(response.results)
+            Task { await loadFilterOptions() }
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -865,11 +870,6 @@ private final class ProfileListDetailViewModel {
     }
 
     func loadFilteredItems(reset: Bool) async {
-        guard filter.isActive else {
-            filteredItems = []
-            nextPage = nil
-            return
-        }
         if reset {
             requestGeneration += 1
             filteredItems = []
@@ -891,6 +891,9 @@ private final class ProfileListDetailViewModel {
                 filteredItems += response.results.filter { !existingIDs.contains($0.id) }
             }
             nextPage = APIPageCursor.nextPage(from: response.next)
+            if !requestFilter.isActive || list?.items.isEmpty == true {
+                list = list?.withItems(filteredItems)
+            }
         } catch {
             guard generation == requestGeneration, requestFilter == filter else { return }
             nextPageErrorMessage = error.localizedDescription
@@ -901,7 +904,7 @@ private final class ProfileListDetailViewModel {
     }
 
     func loadNextFilteredPageIfNeeded(currentItem: MediaSummary) async {
-        guard filter.isActive, nextPage != nil, !isLoadingFilteredItems,
+        guard nextPage != nil, !isLoadingFilteredItems,
               let thresholdIndex = filteredItems.index(filteredItems.endIndex, offsetBy: -8, limitedBy: filteredItems.startIndex) ?? filteredItems.indices.first,
               let currentIndex = filteredItems.firstIndex(where: { $0.id == currentItem.id }),
               currentIndex >= thresholdIndex else {
@@ -910,13 +913,46 @@ private final class ProfileListDetailViewModel {
         await loadFilteredItems(reset: false)
     }
 
+    func loadAllItemsForEditing() async {
+        guard let currentList = list, currentList.items.count < currentList.itemsCount else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            var items: [MediaSummary] = []
+            var page: String?
+            repeat {
+                let response = try await listRepository.items(listId: listId, page: page, filter: MediaFilterState())
+                let existingIDs = Set(items.map(\.id))
+                items += response.results.filter { !existingIDs.contains($0.id) }
+                page = APIPageCursor.nextPage(from: response.next)
+            } while page != nil
+            list = currentList.withItems(items)
+            if !filter.isActive {
+                filteredItems = items
+                nextPage = nil
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
     func update(_ request: CustomListWriteRequest) async -> Bool {
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
 
         do {
-            list = try await listRepository.update(id: listId, request)
+            let updatedList = try await listRepository.update(id: listId, request)
+            list = updatedList
+            if !filter.isActive {
+                filteredItems = updatedList.items
+                nextPage = nil
+            }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -965,28 +1001,21 @@ private final class ProfileListDetailViewModel {
         guard var items = list?.items else { return }
         items.move(fromOffsets: source, toOffset: destination)
         guard items.allSatisfy({ $0.ref.itemId != nil }) else { return }
-        list = list.map { current in
-            CustomListDetail(
-                id: current.id,
-                name: current.name,
-                slug: current.slug,
-                description: current.description,
-                visibility: current.visibility,
-                isRanked: current.isRanked,
-                owner: current.owner,
-                imageUrl: current.imageUrl,
-                itemsCount: current.itemsCount,
-                updatedAt: current.updatedAt,
-                likeCount: current.likeCount,
-                items: items
-            )
+        list = list?.withItems(items)
+        if !filter.isActive {
+            filteredItems = items
+            nextPage = nil
         }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
 
         do {
-            list = try await listRepository.reorderItems(listId: listId, itemIds: items.compactMap(\.ref.itemId))
+            let updatedList = try await listRepository.reorderItems(listId: listId, itemIds: items.compactMap(\.ref.itemId))
+            list = updatedList
+            if !filter.isActive {
+                filteredItems = updatedList.items
+            }
         } catch {
             errorMessage = error.localizedDescription
             await load()
@@ -994,6 +1023,25 @@ private final class ProfileListDetailViewModel {
                 onUnauthorized()
             }
         }
+    }
+}
+
+private extension CustomListDetail {
+    func withItems(_ items: [MediaSummary]) -> CustomListDetail {
+        CustomListDetail(
+            id: id,
+            name: name,
+            slug: slug,
+            description: description,
+            visibility: visibility,
+            isRanked: isRanked,
+            owner: owner,
+            imageUrl: imageUrl,
+            itemsCount: itemsCount,
+            updatedAt: updatedAt,
+            likeCount: likeCount,
+            items: items
+        )
     }
 }
 
@@ -1191,8 +1239,11 @@ private struct ProfileListDetailView: View {
 
                 Menu {
                     Button("Edit List", systemImage: "slider.horizontal.3") {
-                        if let list = viewModel.list {
-                            presentedForm = .edit(list)
+                        Task {
+                            await viewModel.loadAllItemsForEditing()
+                            if let list = viewModel.list {
+                                presentedForm = .edit(list)
+                            }
                         }
                     }
                     Button("Delete List", systemImage: "trash", role: .destructive) {

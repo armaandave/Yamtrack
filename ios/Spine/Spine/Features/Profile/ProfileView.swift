@@ -455,7 +455,6 @@ struct ProfileView: View {
     @State private var heroCollapseProgress: CGFloat = 0
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var isProfileBackdropSearchPresented = false
-    @State private var profileBackdropPickerRef: MediaRef?
 
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
@@ -603,17 +602,6 @@ struct ProfileView: View {
                     applyProfileBackdrop(response)
                 }
             }
-            .fullScreenCover(item: $profileBackdropPickerRef, onDismiss: { profileBackdropPickerRef = nil }) { ref in
-                BackdropPickerView(
-                    ref: ref,
-                    currentBackdropURL: viewModel.profile?.profileBackdropUrl,
-                    mediaRepository: mediaRepository,
-                    profileRepository: profileRepository,
-                    onUnauthorized: onUnauthorized
-                ) { response in
-                    applyProfileBackdrop(response)
-                }
-            }
             .alert("Hall of Fame Update Failed", isPresented: hofErrorBinding) {
                 Button("OK") {
                     viewModel.hofErrorMessage = nil
@@ -733,6 +721,8 @@ struct ProfileView: View {
         let backdropURL = profileBackdropURL(from: profile)
         let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress)
         let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress)
+        let crownNameSpacing = ProfileHeroBackdropLayout.crownNameSpacing(for: collapseProgress)
+        let backdropContentOffset = backdropURL == nil ? 0 : ProfileHeroBackdropLayout.contentTopOffset
 
         return ZStack(alignment: .top) {
             if let backdropURL {
@@ -740,15 +730,11 @@ struct ProfileView: View {
                     .frame(height: topSafeAreaInset + ProfileHeroBackdropLayout.backdropHeight)
                     .onLongPressGesture {
                         guard isOwnProfile else { return }
-                        if let ref = profileBackdropRef(from: profile) {
-                            profileBackdropPickerRef = ref
-                        } else {
-                            isProfileBackdropSearchPresented = true
-                        }
+                        isProfileBackdropSearchPresented = true
                     }
             }
 
-            VStack(spacing: 6) {
+            VStack(spacing: crownNameSpacing) {
                 VStack(spacing: 8) {
                     ZStack(alignment: .top) {
                         HallOfFameCrownView(
@@ -826,11 +812,11 @@ struct ProfileView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 20)
-            .padding(.top, backdropURL == nil ? topSafeAreaInset + 28 : topSafeAreaInset + 74)
+            .padding(.top, backdropURL == nil ? topSafeAreaInset + 28 : topSafeAreaInset + 74 + backdropContentOffset)
             .padding(.bottom, backdropURL == nil ? 12 : 22)
         }
         .frame(maxWidth: .infinity)
-        .frame(minHeight: backdropURL == nil ? nil : topSafeAreaInset + heroMinHeight, alignment: .top)
+        .frame(minHeight: backdropURL == nil ? nil : topSafeAreaInset + heroMinHeight + backdropContentOffset, alignment: .top)
     }
 
     private func profileBackdropURL(from profile: UserProfile) -> String? {
@@ -839,10 +825,6 @@ struct ProfileView: View {
         }
         guard let movie = profile.hof["movie"] ?? nil else { return nil }
         return movie.displayBackdropURL
-    }
-
-    private func profileBackdropRef(from profile: UserProfile) -> MediaRef? {
-        profile.profileBackdropItem?.ref ?? (profile.hof["movie"] ?? nil)?.ref
     }
 
     private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
@@ -922,13 +904,18 @@ struct ProfileView: View {
 
     private enum ProfileHeroBackdropLayout {
         static let backdropHeight: CGFloat = 352.34375
+        static let contentTopOffset: CGFloat = 44
 
         static func crownHeight(for collapseProgress: CGFloat) -> CGFloat {
-            286 - 138 * collapseProgress
+            286 - 158 * collapseProgress
+        }
+
+        static func crownNameSpacing(for collapseProgress: CGFloat) -> CGFloat {
+            14 - 10 * collapseProgress
         }
 
         static func heroMinHeight(for collapseProgress: CGFloat) -> CGFloat {
-            520 - 104 * collapseProgress
+            520 - 124 * collapseProgress
         }
     }
 

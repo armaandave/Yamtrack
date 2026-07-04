@@ -171,6 +171,33 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(response.data["results"][0]["preview_items"][0]["backdrop_url"])
         metadata_mock.assert_not_called()
 
+    def test_list_detail_can_skip_items_for_fast_mobile_load(self):
+        user = get_user_model().objects.create_user(username="list-detail-fast", password="strong-password-123")
+        custom_list = CustomList.objects.create(owner=user, name="Watchlist")
+        item = self._create_movie_items(1, title_prefix="Fast", media_id_prefix="fast-list")[0]
+        CustomListItem.objects.create(custom_list=custom_list, item=item)
+        self.client.force_authenticate(user)
+
+        response = self.client.get(f"/api/v1/lists/{custom_list.id}/", {"include_items": "false"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["items_count"], 1)
+        self.assertNotIn("items", response.data)
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_list_detail_items_do_not_resolve_provider_backdrops(self, metadata_mock):
+        user = get_user_model().objects.create_user(username="list-detail-no-provider", password="strong-password-123")
+        custom_list = CustomList.objects.create(owner=user, name="Watchlist")
+        item = self._create_movie_items(1, title_prefix="Backdrop", media_id_prefix="no-provider-backdrop")[0]
+        CustomListItem.objects.create(custom_list=custom_list, item=item)
+        self.client.force_authenticate(user)
+
+        response = self.client.get(f"/api/v1/lists/{custom_list.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["items"][0]["backdrop_url"])
+        metadata_mock.assert_not_called()
+
     @patch("app.providers.services.get_media_metadata")
     def test_list_items_include_same_user_backdrop_as_media_detail(self, metadata_mock):
         user = get_user_model().objects.create_user(username="list-backdrop", password="strong-password-123")

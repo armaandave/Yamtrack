@@ -1023,6 +1023,28 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(preview.posterOrientation, .portrait)
     }
 
+    func testCustomListDetailDecodesWithoutItems() throws {
+        let data = """
+        {
+          "id": 7,
+          "name": "Weekend Watchlist",
+          "slug": "weekend-watchlist",
+          "description": "",
+          "visibility": "public",
+          "owner": { "id": 1, "username": "mika", "display_name": "Mika", "avatar_url": null },
+          "image_url": null,
+          "items_count": 3,
+          "updated_at": "2026-06-24T12:00:00Z",
+          "like_count": 5
+        }
+        """.data(using: .utf8)!
+
+        let list = try JSONDecoder.api.decode(CustomListDetail.self, from: data)
+
+        XCTAssertEqual(list.name, "Weekend Watchlist")
+        XCTAssertEqual(list.items, [])
+    }
+
     func testCustomListRankedMembershipAndPositionDecoding() throws {
         let data = """
         {
@@ -2036,6 +2058,14 @@ final class SpineTests: XCTestCase {
 
             let method = request.httpMethod ?? ""
             let path = request.url!.path
+            if method == "GET", path.hasSuffix("/lists/9/") || path.hasSuffix("/lists/9") {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                XCTAssertEqual(query.first { $0.name == "include_items" }?.value, "false")
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    TestFixtures.customListDetailJSON(id: 9, name: "Watch").data(using: .utf8)!
+                )
+            }
             if method == "GET", path.hasSuffix("/lists/") || path.hasSuffix("/lists") {
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 XCTAssertEqual(query.first { $0.name == "ref[source]" }?.value, "tmdb")
@@ -2086,12 +2116,13 @@ final class SpineTests: XCTestCase {
         }
 
         _ = try await repository.list(membershipFor: ref)
+        _ = try await repository.detail(id: 9)
         _ = try await repository.create(CustomListWriteRequest(name: "Watch", description: "", visibility: "private", isRanked: true))
         _ = try await repository.addItem(listId: 9, ref: ref)
         _ = try await repository.reorderItems(listId: 9, itemIds: [42, 17])
         try await repository.delete(id: 9)
 
-        XCTAssertEqual(requests.map(\.method), ["GET", "POST", "POST", "PATCH", "DELETE"])
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "POST", "POST", "PATCH", "DELETE"])
         client.tokenProvider.clear()
     }
 

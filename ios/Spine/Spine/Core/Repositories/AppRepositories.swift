@@ -734,7 +734,11 @@ struct APIListRepository: ListRepository {
     }
 
     func detail(id: Int) async throws -> CustomListDetail {
-        try await client.get("/lists/\(id)/", authenticated: true)
+        try await client.get(
+            "/lists/\(id)/",
+            query: [URLQueryItem(name: "include_items", value: "false")],
+            authenticated: true
+        )
     }
 
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary {

@@ -60,7 +60,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
                 list_item.item,
                 request=request,
                 user=request.user,
-                include_resolved_backdrop=include_items,
+                include_user_state=False,
             )
             item["position"] = list_item.position
             items.append(item)
@@ -122,7 +122,12 @@ class ListsView(APIView):
                 _item_from_ref(serializer.validated_data["ref"]),
             )
         else:
-            lists = CustomList.objects.get_user_lists(request.user)
+            lists = (
+                CustomList.objects.filter(Q(owner=request.user) | Q(collaborators=request.user))
+                .select_related("owner")
+                .prefetch_related("collaborators")
+                .distinct()
+            )
         query = request.query_params.get("q", "")
         if query:
             lists = lists.filter(Q(name__icontains=query) | Q(description__icontains=query))
@@ -172,12 +177,12 @@ class ListDetailView(APIView):
 
     permission_classes = [IsAuthenticated]
 
-    def get_object(self, request, list_id):
+    def get_object(self, request, list_id, *, include_items=True):
+        queryset = CustomList.objects.select_related("owner").prefetch_related("collaborators")
+        if include_items:
+            queryset = queryset.prefetch_related("customlistitem_set__item")
         custom_list = get_object_or_404(
-            CustomList.objects.select_related("owner").prefetch_related(
-                "collaborators",
-                "customlistitem_set__item",
-            ),
+            queryset,
             id=list_id,
         )
         if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
@@ -185,10 +190,11 @@ class ListDetailView(APIView):
         return custom_list
 
     def get(self, request, list_id):
-        custom_list = self.get_object(request, list_id)
+        include_items = request.query_params.get("include_items") != "false"
+        custom_list = self.get_object(request, list_id, include_items=include_items)
         if custom_list is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        return Response(list_payload(custom_list, request=request, include_items=True))
+        return Response(list_payload(custom_list, request=request, include_items=include_items))
 
     def patch(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)
@@ -266,6 +272,7 @@ class ListItemsView(APIView):
                         list_item.item,
                         request=request,
                         user=request.user,
+                        include_user_state=False,
                     ),
                     "position": list_item.position,
                     "date_added": list_item.date_added,

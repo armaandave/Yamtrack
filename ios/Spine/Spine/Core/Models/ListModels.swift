@@ -149,7 +149,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         itemsCount = try container.decode(Int.self, forKey: .itemsCount)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         likeCount = try container.decode(Int.self, forKey: .likeCount)
-        items = try container.decode([MediaSummary].self, forKey: .items)
+        items = try container.decodeIfPresent([MediaSummary].self, forKey: .items) ?? []
     }
 }
 

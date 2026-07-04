@@ -190,7 +190,14 @@ def get_or_create_item_from_metadata(ref, metadata):
     return item
 
 
-def media_summary_from_item(item, request=None, user=None, *, include_resolved_backdrop=False):
+def media_summary_from_item(
+    item,
+    request=None,
+    user=None,
+    *,
+    include_resolved_backdrop=False,
+    include_user_state=True,
+):
     """Serialize an Item into the common media summary shape."""
     artwork = artwork_from_item(item, request=request)
     if include_resolved_backdrop:
@@ -209,7 +216,7 @@ def media_summary_from_item(item, request=None, user=None, *, include_resolved_b
         "default_source": item.source,
         "custom_poster_url": custom_poster_url_for_user(user, media_ref_from_item(item), request=request) if user else None,
         "custom_backdrop_url": custom_backdrop_url,
-        "user_state": user_state_for_item(user, item) if user else None,
+        "user_state": user_state_for_item(user, item) if user and include_user_state else None,
     }
 
 
