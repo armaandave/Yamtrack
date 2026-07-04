@@ -26,16 +26,20 @@ class TrackingListView(APIView):
         if not media_type:
             return Response({"media_type": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
         status_filter = request.query_params.get("status", "All")
+        manager_status_filter = "All" if str(status_filter).lower() == "tracked" else status_filter
         ordering = request.query_params.get("ordering") or request.query_params.get("sort") or "title"
         search = request.query_params.get("q")
         manager_sort = ordering if ordering in {"score", "progress", "start_date", "end_date", "title"} else None
         queryset = BasicMedia.objects.get_media_list(
             request.user,
             media_type,
-            status_filter,
+            manager_status_filter,
             manager_sort,
             search=None,
         )
+        if str(status_filter).lower() == "tracked":
+            queryset = queryset.exclude(status=Status.PLANNING.value)
+        filter_service.ensure_filter_metadata(queryset, request.query_params)
         queryset = filter_service.apply_item_filters(queryset, request.query_params)
         if search:
             queryset = queryset.filter(item__title__icontains=search)

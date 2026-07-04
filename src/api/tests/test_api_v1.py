@@ -535,6 +535,69 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["media"]["title"], "New Drama")
 
+    @patch("app.providers.services.get_media_metadata")
+    def test_tracking_backfills_filter_metadata_before_sorting_full_collection(self, metadata_mock):
+        user = get_user_model().objects.create_user(username="tracking-backfill", password="strong-password-123")
+        items = self._create_movie_items(30, title_prefix="Backfill", media_id_prefix="backfill")
+        Movie.objects.bulk_create(
+            [Movie(user=user, item=item, status=Status.COMPLETED.value) for item in items],
+        )
+        newest = items[-1]
+
+        def metadata_for(_media_type, media_id, _source, **_kwargs):
+            release_date = "2030-01-01" if media_id == newest.media_id else "1990-01-01"
+            return {
+                "title": media_id,
+                "release_date": release_date,
+                "genres": [{"name": "Drama"}],
+                "languages": [{"english_name": "English"}],
+            }
+
+        metadata_mock.side_effect = metadata_for
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/tracking/",
+            {
+                "media_type": MediaTypes.MOVIE.value,
+                "sort": "release_date",
+                "direction": "desc",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 30)
+        self.assertEqual(response.data["results"][0]["media"]["title"], newest.title)
+        newest.refresh_from_db()
+        self.assertEqual(newest.release_year, 2030)
+
+    def test_tracking_status_tracked_excludes_planning_before_pagination(self):
+        user = get_user_model().objects.create_user(username="tracking-status-tracked", password="strong-password-123")
+        planned_items = self._create_movie_items(10, title_prefix="A Planned", media_id_prefix="planned-status")
+        completed_items = self._create_movie_items(30, title_prefix="B Completed", media_id_prefix="completed-status")
+        Movie.objects.bulk_create(
+            [Movie(user=user, item=item, status=Status.PLANNING.value) for item in planned_items]
+            + [Movie(user=user, item=item, status=Status.COMPLETED.value) for item in completed_items],
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/tracking/",
+            {
+                "media_type": MediaTypes.MOVIE.value,
+                "status": "tracked",
+                "sort": "title",
+                "direction": "asc",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 30)
+        self.assertEqual(len(response.data["results"]), 25)
+        self.assertTrue(
+            all(result["tracking"]["status"] != Status.PLANNING.value for result in response.data["results"]),
+        )
+
     def test_tracking_sorts_by_public_average_rating(self):
         user = get_user_model().objects.create_user(username="tracking-average", password="strong-password-123")
         low = Item.objects.create(

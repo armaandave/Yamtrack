@@ -74,6 +74,7 @@ final class BackdropPickerViewModel {
         do {
             backdrops = try await mediaRepository.backdrops(ref: ref).pinningCurrentFirst()
             selectedBackdropURL = backdrops.first(where: \.isSelected)?.url ?? backdrops.first?.url
+            selectedLanguage = backdrops.contains(where: { $0.language == nil }) ? "none" : "all"
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {

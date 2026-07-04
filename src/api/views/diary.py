@@ -39,6 +39,7 @@ class DiaryListView(APIView):
             entries = entries.filter(Q(review__gt="") | Q(review_title__gt=""))
         if liked:
             entries = entries.filter(liked=True)
+        filter_service.ensure_filter_metadata(entries, request.query_params)
         entries = filter_service.apply_item_filters(entries, request.query_params)
         entries = filter_service.apply_rating_range(entries, request.query_params, "rating")
         entries = filter_service.apply_watched_range(entries, request.query_params, "consumed_at")

@@ -13,7 +13,7 @@ from api.services import media as media_service
 from api.throttling import SearchRateThrottle
 from app import config
 from app.forms import ManualItemForm
-from app.models import BasicMedia, DiaryEntry
+from app.models import BasicMedia, DiaryEntry, Status
 from lists.models import CustomList, CustomListItem
 
 
@@ -68,17 +68,23 @@ class FilterOptionsView(APIView):
             media_type = request.query_params.get("media_type")
             if not media_type:
                 return Response({"media_type": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+            status_filter = request.query_params.get("status", "All")
+            manager_status_filter = "All" if str(status_filter).lower() == "tracked" else status_filter
             queryset = BasicMedia.objects.get_media_list(
                 request.user,
                 media_type,
-                request.query_params.get("status", "All"),
+                manager_status_filter,
                 None,
             )
+            if str(status_filter).lower() == "tracked":
+                queryset = queryset.exclude(status=Status.PLANNING.value)
+            filter_service.ensure_filter_metadata(queryset, request.query_params)
             queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 
         if scope == "diary":
             queryset = DiaryEntry.objects.filter(user=request.user).select_related("item")
+            filter_service.ensure_filter_metadata(queryset, request.query_params)
             queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 
@@ -88,6 +94,7 @@ class FilterOptionsView(APIView):
             if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
                 return Response(status=status.HTTP_404_NOT_FOUND)
             queryset = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+            filter_service.ensure_filter_metadata(queryset, request.query_params)
             queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 

@@ -3396,10 +3396,9 @@ final class SpineTests: XCTestCase {
 
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.selectedLanguage, "all")
+        XCTAssertEqual(viewModel.selectedLanguage, "none")
         XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), [
             "https://example.com/backdrop-fr.jpg",
-            "https://example.com/backdrop-en.jpg",
             "https://example.com/backdrop-no-language.jpg",
         ])
         XCTAssertEqual(viewModel.selectedBackdropURL, "https://example.com/backdrop-fr.jpg")

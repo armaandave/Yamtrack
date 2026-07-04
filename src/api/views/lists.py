@@ -232,6 +232,7 @@ class ListItemsView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         list_items = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+        filter_service.ensure_filter_metadata(list_items, request.query_params)
         list_items = filter_service.apply_item_filters(list_items, request.query_params)
         list_items = filter_service.apply_user_status_filter(
             list_items,

@@ -3059,7 +3059,7 @@ private struct MediaDetailBottomBar: View {
                 BottomBarItem(title: "Library", systemName: "books.vertical.fill", isSelected: selectedTab == .library) {
                     onSelectTab(.library)
                 }
-                BottomBarItem(title: "Profile", systemName: "person.2.fill", isSelected: selectedTab == .profile) {
+                BottomBarItem(title: "Profile", systemName: "person.fill", isSelected: selectedTab == .profile) {
                     onSelectTab(.profile)
                 }
             }

@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -7,8 +8,11 @@ from django.db.models import Avg, Case, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from requests import RequestException
 
-from app.models import Item, ItemFilterFacet, MediaTypes
+from app.models import Item, ItemFilterFacet, MediaTypes, Status
+
+logger = logging.getLogger(__name__)
 
 RATING_SORTS = {
     "letterboxd_rating": "letterboxd_rating",
@@ -36,6 +40,8 @@ DESC_SORTS = {
     "consumed_at",
     "date_added",
 }
+
+METADATA_SORTS = {"release_date"}
 
 
 def values(params, key):
@@ -179,6 +185,55 @@ def apply_item_filters(queryset, params, *, item_path="item__"):
     return queryset
 
 
+def ensure_filter_metadata(queryset, params, *, item_path="item__", force=False, limit=1000):
+    """Populate missing Item filter metadata before DB filtering/sorting."""
+    needed_facets = set()
+    needs_year = force or bool(values(params, "year")) or params.get("year_min") or params.get("year_max")
+    needs_release_date = force or (params.get("sort") or params.get("ordering")) in METADATA_SORTS
+    if force or values(params, "genre"):
+        needed_facets.add(ItemFilterFacet.FacetType.GENRE)
+    if force or values(params, "language"):
+        needed_facets.add(ItemFilterFacet.FacetType.LANGUAGE)
+    if not (needs_year or needs_release_date or needed_facets):
+        return
+
+    from app.providers import services as provider_services
+
+    item_ids = queryset.values_list(f"{item_path}id", flat=True)
+    candidates = Item.objects.filter(id__in=item_ids).prefetch_related("filter_facets")[:limit]
+    for item in candidates:
+        facets = {facet.facet_type for facet in item.filter_facets.all()}
+        has_needed_values = (
+            (not needs_year or item.release_year is not None)
+            and (not needs_release_date or item.release_date is not None)
+            and needed_facets.issubset(facets)
+        )
+        if has_needed_values:
+            continue
+        try:
+            metadata = provider_services.get_media_metadata(
+                item.media_type,
+                item.media_id,
+                item.source,
+                season_numbers=[item.season_number] if item.season_number else None,
+                episode_number=item.episode_number,
+            )
+        except (
+            provider_services.ProviderAPIError,
+            RequestException,
+            NotImplementedError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logger.debug(
+                "Skipping filter metadata backfill for item %s: %s",
+                item.id,
+                error,
+            )
+            continue
+        update_item_filter_metadata(item, metadata)
+
+
 def apply_rating_range(queryset, params, field):
     """Apply rating_min/rating_max to a numeric field."""
     rating_min = decimal_param(params, "rating_min")
@@ -205,6 +260,7 @@ def apply_user_status_filter(queryset, user, status, *, item_id_field="item_id")
     """Filter an Item-bearing queryset by the viewer's tracking status."""
     if not status or status == "All":
         return queryset
+    tracked_only = str(status).lower() == "tracked"
 
     status_query = Q()
     for media_type in [
@@ -218,13 +274,15 @@ def apply_user_status_filter(queryset, user, status, *, item_id_field="item_id")
         MediaTypes.COMIC.value,
     ]:
         model = apps.get_model("app", media_type)
+        media_queryset = model.objects.filter(user=user)
+        if tracked_only:
+            media_queryset = media_queryset.exclude(status=Status.PLANNING.value)
+        else:
+            media_queryset = media_queryset.filter(status=status)
         status_query |= Q(
             **{
                 "item__media_type": media_type,
-                f"{item_id_field}__in": model.objects.filter(
-                    user=user,
-                    status=status,
-                ).values("item_id"),
+                f"{item_id_field}__in": media_queryset.values("item_id"),
             },
         )
     return queryset.filter(status_query)

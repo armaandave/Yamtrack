@@ -76,7 +76,7 @@ final class LibraryViewModel {
     }
 
     private var statusFilter: String? {
-        shelf == .planning ? "Planning" : nil
+        shelf == .planning ? "Planning" : "tracked"
     }
 
     func bootstrap(selectedMediaType: String? = nil) async {
