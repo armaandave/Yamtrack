@@ -680,6 +680,17 @@ def backdrop_url(metadata):
     return value
 
 
+def _game_default_backdrop_url(media_id, raw_default_url=None):
+    if raw_default_url:
+        return raw_default_url
+    from app.providers import igdb, steamgriddb
+
+    for backdrop in [*steamgriddb.get_game_backdrops(media_id), *igdb.get_game_backdrops(media_id)]:
+        if backdrop.get("url"):
+            return backdrop["url"]
+    return None
+
+
 def resolved_backdrop_urls(
     *,
     source,
@@ -694,6 +705,8 @@ def resolved_backdrop_urls(
 ):
     """Return the resolved default backdrop and viewer custom backdrop."""
     raw_default_url = backdrop_url(metadata)
+    if _supports_game_backdrops(source, media_type):
+        raw_default_url = _game_default_backdrop_url(media_id, raw_default_url)
     if source != Sources.TMDB.value or media_type not in [
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,

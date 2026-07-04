@@ -1,8 +1,10 @@
 import logging
+from urllib.parse import quote
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
+from django.utils.text import slugify
 
 from app.providers import igdb, services
 
@@ -78,23 +80,42 @@ def get_game_logo(media_id):
 
 
 def _cached_assets(kind, media_id, endpoint, params, fallback_aspect_ratio):
-    cache_key = f"{PROVIDER}_{kind}_{media_id}_v1"
+    cache_key = f"{PROVIDER}_{kind}_{media_id}_v2"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     steam_id = _steam_app_id(media_id)
-    if not steam_id:
-        cache.set(cache_key, [], CACHE_TTL)
-        return []
+    assets = []
+    if steam_id:
+        assets = _assets_for_path(
+            f"{endpoint}/steam/{steam_id}",
+            params=params,
+            fallback_aspect_ratio=fallback_aspect_ratio,
+        )
 
-    response = _get(f"{endpoint}/steam/{steam_id}", params=params)
+    if not assets:
+        steamgriddb_game_id = _steamgriddb_game_id(media_id)
+        if steamgriddb_game_id:
+            assets = _assets_for_path(
+                f"{endpoint}/game/{steamgriddb_game_id}",
+                params=params,
+                fallback_aspect_ratio=fallback_aspect_ratio,
+            )
+
+    cache.set(cache_key, assets, CACHE_TTL)
+    return assets
+
+
+def _assets_for_path(path, *, params, fallback_aspect_ratio):
+    response = _get(path, params=params)
+    if not response:
+        return []
     assets = [
         _asset_option(asset, fallback_aspect_ratio=fallback_aspect_ratio)
         for asset in (response or {}).get("data", [])
         if asset.get("url")
     ]
-    cache.set(cache_key, assets, CACHE_TTL)
     return assets
 
 
@@ -104,6 +125,40 @@ def _steam_app_id(media_id):
     except (requests.exceptions.RequestException, services.ProviderAPIError) as error:
         logger.warning("SteamGridDB Steam app ID lookup failed for IGDB game %s: %s", media_id, error)
     return None
+
+
+def _steamgriddb_game_id(media_id):
+    cache_key = f"{PROVIDER}_game_id_{media_id}_v1"
+    missing = object()
+    cached = cache.get(cache_key, missing)
+    if cached is not missing:
+        return cached
+
+    title = _igdb_title(media_id)
+    game_id = _search_game_id(title) if title else None
+    cache.set(cache_key, game_id, CACHE_TTL)
+    return game_id
+
+
+def _igdb_title(media_id):
+    try:
+        return igdb.game(media_id).get("title")
+    except (requests.exceptions.RequestException, services.ProviderAPIError) as error:
+        logger.warning("SteamGridDB IGDB title lookup failed for game %s: %s", media_id, error)
+    return None
+
+
+def _search_game_id(title):
+    response = _get(f"search/autocomplete/{quote(title, safe='')}")
+    wanted = _normalize_title(title)
+    for game in (response or {}).get("data", []):
+        if _normalize_title(game.get("name")) == wanted:
+            return game.get("id")
+    return None
+
+
+def _normalize_title(title):
+    return slugify(title or "").casefold()
 
 
 def _get(path, params=None):

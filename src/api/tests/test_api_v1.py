@@ -2730,6 +2730,46 @@ class ApiV1FoundationTests(TestCase):
             "https://images.igdb.com/igdb/image/upload/t_original/wide-art.jpg",
         )
 
+    @patch("app.providers.steam.get_metacritic_rating", return_value=None)
+    @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
+    @patch("app.providers.steamgriddb.get_game_backdrops", return_value=[])
+    @patch(
+        "app.providers.igdb.get_game_backdrops",
+        return_value=[
+            {
+                "url": "https://example.com/game-backdrop.jpg",
+                "thumbnail_url": "https://example.com/game-backdrop-thumb.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "language": None,
+            },
+        ],
+    )
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_game_detail_uses_available_backdrop_when_metadata_has_none(
+        self,
+        metadata_mock,
+        _igdb_backdrops_mock,
+        _steamgriddb_backdrops_mock,
+        _logo_mock,
+        _metacritic_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "1020",
+            "media_type": "game",
+            "source": "igdb",
+            "title": "Space Game",
+            "image": "https://example.com/space.jpg",
+            "details": {},
+            "related": {},
+        }
+
+        response = self.client.get("/api/v1/media/igdb/game/1020/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["backdrop_url"], "https://example.com/game-backdrop.jpg")
+
     def test_community_stats_include_truthful_rating_distribution(self):
         user = get_user_model().objects.create_user(username="rater", password="strong-password-123")
         other = get_user_model().objects.create_user(username="other", password="strong-password-123")

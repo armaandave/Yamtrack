@@ -635,6 +635,53 @@ class Metadata(TestCase):
         api_request_mock.assert_called_once()
         self.assertIn("/logos/steam/1245620", api_request_mock.call_args.args[2])
 
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.game", return_value={"title": "Ghost of Tsushima"})
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value=None)
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_backdrops_fallback_to_exact_title_search(
+        self,
+        api_request_mock,
+        _steam_id_mock,
+        _game_mock,
+    ):
+        """Test SteamGridDB title search fallback for games without Steam IDs."""
+        cache.clear()
+
+        def api_request_side_effect(_provider, _method, url, **_kwargs):
+            if "/search/autocomplete/Ghost%20of%20Tsushima" in url:
+                return {
+                    "success": True,
+                    "data": [
+                        {"id": 111, "name": "Ghost of a Tale"},
+                        {"id": 222, "name": "Ghost of Tsushima"},
+                    ],
+                }
+            if "/heroes/game/222" in url:
+                return {
+                    "success": True,
+                    "data": [
+                        {
+                            "id": 333,
+                            "score": 42,
+                            "width": 3840,
+                            "height": 1240,
+                            "url": "https://cdn2.steamgriddb.com/hero/ghost.jpg",
+                        },
+                    ],
+                }
+            return {"success": True, "data": []}
+
+        api_request_mock.side_effect = api_request_side_effect
+
+        backdrops = steamgriddb.get_game_backdrops("75235")
+
+        self.assertEqual(backdrops[0]["url"], "https://cdn2.steamgriddb.com/hero/ghost.jpg")
+        self.assertEqual(backdrops[0]["aspect_ratio"], 3.097)
+        requested_urls = [call.args[2] for call in api_request_mock.call_args_list]
+        self.assertIn("https://www.steamgriddb.com/api/v2/search/autocomplete/Ghost%20of%20Tsushima", requested_urls)
+        self.assertIn("https://www.steamgriddb.com/api/v2/heroes/game/222", requested_urls)
+
     @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
     @patch("app.providers.steam.services.api_request")
     def test_steam_metacritic_rating_uses_steam_external_id(self, api_request_mock, _steam_id_mock):
