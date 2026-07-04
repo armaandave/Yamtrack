@@ -1048,7 +1048,7 @@ def get_tv_rating(content_ratings):
 
 def person_page(person_id):
     """Return person details and credits for the person page."""
-    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v6"
+    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v7"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1085,6 +1085,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "release_date": item.get("release_date"),
                 "year": year,
                 "url": url_path,
                 "popularity": item.get("popularity"),
@@ -1107,6 +1108,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "release_date": item.get("release_date"),
                 "year": year,
                 "url": url_path,
                 "popularity": item.get("popularity"),
@@ -1129,6 +1131,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "release_date": item.get("first_air_date"),
                 "year": year,
                 "url": url_path,
                 "popularity": item.get("popularity"),
@@ -1151,6 +1154,7 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "release_date": item.get("first_air_date"),
                 "year": year,
                 "url": url_path,
                 "popularity": item.get("popularity"),
@@ -1169,6 +1173,7 @@ def person_page(person_id):
                     "media_id": c["media_id"],
                     "title": c["title"],
                     "image": c["image"],
+                    "release_date": c.get("release_date"),
                     "year": c["year"],
                     "url": c["url"],
                     "popularity": c.get("popularity"),

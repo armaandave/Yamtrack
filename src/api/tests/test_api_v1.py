@@ -2077,6 +2077,65 @@ class ApiV1FoundationTests(TestCase):
             ["Newer Movie"],
         )
 
+    @patch("app.providers.services.get_media_metadata")
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_filters_released_feature_films(self, person_mock, metadata_mock):
+        person_mock.return_value = {
+            "source": Sources.TMDB.value,
+            "person_id": "525",
+            "name": "Director",
+            "credits": [
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "released-feature",
+                    "title": "Released Feature",
+                    "release_date": "2024-01-01",
+                    "vote_average": 8.0,
+                },
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "released-short",
+                    "title": "Released Short",
+                    "release_date": "2024-06-01",
+                    "runtime_minutes": 12,
+                    "vote_average": 9.0,
+                },
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "future-feature",
+                    "title": "Future Feature",
+                    "release_date": "2099-01-01",
+                    "runtime_minutes": 90,
+                    "vote_average": 10.0,
+                },
+            ],
+        }
+        metadata_mock.return_value = {
+            "release_date": "2024-01-01",
+            "details": {"runtime": "1h 30m"},
+        }
+
+        response = self.client.get(
+            "/api/v1/people/tmdb/525/",
+            {
+                "media_type": MediaTypes.MOVIE.value,
+                "release_status": "released",
+                "length": "feature",
+                "sort": "release_date",
+                "direction": "desc",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item["title"] for item in response.data["credits"]["cast"]],
+            ["Released Feature"],
+        )
+        metadata_mock.assert_called_once_with(MediaTypes.MOVIE.value, "released-feature", Sources.TMDB.value)
+
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_returns_hardcover_author_books(self, person_mock):
         person_mock.return_value = {

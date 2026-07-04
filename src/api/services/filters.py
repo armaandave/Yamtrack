@@ -414,6 +414,8 @@ def apply_person_credit_filters(credit_list, params):
         "year",
         "year_min",
         "year_max",
+        "release_status",
+        "length",
         "sort",
         "ordering",
         "direction",
@@ -425,34 +427,40 @@ def apply_person_credit_filters(credit_list, params):
     years = set(values(params, "year"))
     year_min = int_param(params, "year_min")
     year_max = int_param(params, "year_max")
+    release_status = params.get("release_status")
+    length = params.get("length")
+
+    if length in {"feature", "short"}:
+        credit_list = [_credit_with_runtime(credit) for credit in credit_list]
 
     filtered = [
         credit
         for credit in credit_list
-        if _person_credit_matches(credit, media_types, years, year_min, year_max)
+        if _person_credit_matches(credit, media_types, years, year_min, year_max, release_status, length)
     ]
 
     sort = params.get("sort") or "average_rating"
     direction = params.get("direction")
     if direction not in {"asc", "desc"}:
         direction = "desc" if sort in DESC_SORTS else "asc"
-    reverse = direction == "desc"
+    descending = direction == "desc"
 
     if sort == "release_date":
         def key(credit):
-            year = _credit_year(credit)
-            return (year is None, year or 0)
+            release_date = _credit_release_date(credit)
+            ordinal = release_date.toordinal() if release_date else 0
+            return (release_date is None, -ordinal if descending else ordinal)
     elif sort in {"average_rating", "your_rating"}:
         def key(credit):
             rating = _credit_number(credit, "vote_average")
-            return (rating is None, rating or 0)
+            value = float(rating or 0)
+            return (rating is None, -value if descending else value)
     else:
-        def key(credit):
-            return (credit.get("title") or "").lower()
-    return sorted(filtered, key=key, reverse=reverse)
+        return sorted(filtered, key=lambda credit: (credit.get("title") or "").lower(), reverse=descending)
+    return sorted(filtered, key=key)
 
 
-def _person_credit_matches(credit, media_types, years, year_min, year_max):
+def _person_credit_matches(credit, media_types, years, year_min, year_max, release_status=None, length=None):  # noqa: PLR0911
     year = _credit_year(credit)
     if media_types and credit.get("media_type") not in media_types:
         return False
@@ -460,7 +468,22 @@ def _person_credit_matches(credit, media_types, years, year_min, year_max):
         return False
     if year_min is not None and (year is None or year < year_min):
         return False
-    return not (year_max is not None and (year is None or year > year_max))
+    if year_max is not None and (year is None or year > year_max):
+        return False
+
+    release_date = _credit_release_date(credit)
+    today = timezone.localdate()
+    if release_status == "released" and (release_date is None or release_date > today):
+        return False
+    if release_status == "unreleased" and (release_date is None or release_date <= today):
+        return False
+
+    runtime = _credit_runtime_minutes(credit)
+    if length == "feature":
+        return credit.get("media_type") == MediaTypes.MOVIE.value and runtime is not None and runtime >= SHORT_FILM_MINUTES
+    if length == "short":
+        return credit.get("media_type") == MediaTypes.MOVIE.value and runtime is not None and runtime < SHORT_FILM_MINUTES
+    return True
 
 
 def _replace_facets(item, facet_type, facet_values):
@@ -543,7 +566,10 @@ def _rating_decimal(value):
 
 def _runtime_minutes(metadata):
     details = metadata.get("details") or {}
-    value = metadata.get("runtime") or details.get("runtime")
+    return _runtime_value_minutes(metadata.get("runtime") or details.get("runtime"))
+
+
+def _runtime_value_minutes(value):
     if value in (None, ""):
         return None
     if isinstance(value, int | float):
@@ -599,11 +625,93 @@ def _facet_values(facets, facet_type):
 
 
 def _credit_year(credit):
-    year = credit.get("year") or (credit.get("release_date") or "")[:4]
+    year = credit.get("year") or (_credit_date_text(credit) or "")[:4]
     try:
         return int(year)
     except (TypeError, ValueError):
         return None
+
+
+def _credit_release_date(credit):
+    value = _credit_date_text(credit)
+    if isinstance(value, date):
+        return value
+    if value:
+        value = str(value)
+        if len(value) == 4 and value.isdigit():
+            return date(int(value), 1, 1)
+        parsed = parse_date(value)
+        if parsed:
+            return parsed
+    year = credit.get("year")
+    if year:
+        try:
+            return date(int(year), 1, 1)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _credit_date_text(credit):
+    return credit.get("release_date") or credit.get("first_air_date") or credit.get("publish_date")
+
+
+def _credit_with_runtime(credit):
+    if _credit_runtime_minutes(credit) is not None or credit.get("media_type") != MediaTypes.MOVIE.value:
+        return credit
+
+    item = Item.objects.filter(
+        source=credit.get("source"),
+        media_type=credit.get("media_type"),
+        media_id=str(credit.get("media_id") or ""),
+    ).first()
+    if item and item.runtime_minutes is not None:
+        return {**credit, "runtime_minutes": item.runtime_minutes}
+
+    from app.providers import services as provider_services
+
+    try:
+        metadata = provider_services.get_media_metadata(
+            credit.get("media_type"),
+            str(credit.get("media_id") or ""),
+            credit.get("source"),
+        )
+    except (
+        provider_services.ProviderAPIError,
+        RequestException,
+        NotImplementedError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.debug(
+            "Skipping person credit runtime backfill for %s:%s:%s: %s",
+            credit.get("source"),
+            credit.get("media_type"),
+            credit.get("media_id"),
+            error,
+        )
+        return credit
+
+    if item:
+        update_item_filter_metadata(item, metadata)
+    runtime = _runtime_minutes(metadata)
+    release_date = _release_date(metadata)
+    return {
+        **credit,
+        "runtime_minutes": runtime,
+        "release_date": credit.get("release_date") or release_date,
+        "year": credit.get("year") or (release_date.year if release_date else None),
+    }
+
+
+def _credit_runtime_minutes(credit):
+    runtime = credit.get("runtime_minutes")
+    if runtime is not None:
+        try:
+            return int(runtime)
+        except (TypeError, ValueError):
+            return None
+    return _runtime_value_minutes(credit.get("runtime"))
 
 
 def _credit_number(credit, field):
