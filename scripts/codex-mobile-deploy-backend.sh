@@ -22,6 +22,11 @@ if [[ ! -f "$env_file" ]]; then
   exit 1
 fi
 
+if ! grep -q '^STEAMGRIDDB_API_KEY=' "$env_file"; then
+  echo "Missing STEAMGRIDDB_API_KEY in production env file: $env_file" >&2
+  exit 1
+fi
+
 if [[ -z "$repo_url" ]]; then
   if [[ -d "$source_repo_dir/.git" ]]; then
     repo_url="$(git -C "$source_repo_dir" remote get-url origin)"

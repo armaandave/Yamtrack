@@ -6,6 +6,7 @@ struct HallOfFameCrownView: View {
     let slots: [FavoriteSlot]
     var savingSlotIDs: Set<String> = []
     var collapseProgress: CGFloat = 0
+    var position: HallOfFameCrownPosition = .aboveAvatar
     let onTap: (FavoriteSlot) -> Void
     var onEmptyTap: (FavoriteSlot) -> Void = { _ in }
     var onFilledLongPress: (FavoriteSlot) -> Void = { _ in }
@@ -21,7 +22,8 @@ struct HallOfFameCrownView: View {
             count: slots.count,
             cardSize: cardSize,
             avatarDiameter: avatarDiameter,
-            collapseProgress: collapseProgress
+            collapseProgress: collapseProgress,
+            position: position
         )
 
         ZStack {
@@ -61,11 +63,11 @@ struct HallOfFameCrownView: View {
                             }
                     }
                 }
-                .scaleEffect(placement.scale, anchor: .bottom)
-                .rotationEffect(crownRevealed ? placement.rotation : .zero, anchor: .bottom)
+                .scaleEffect(placement.scale, anchor: position.transformAnchor)
+                .rotationEffect(crownRevealed ? placement.rotation : .zero, anchor: position.transformAnchor)
                 .offset(
                     x: placement.x,
-                    y: crownRevealed ? placement.y : placement.y + 20
+                    y: crownRevealed ? placement.y : placement.y + position.revealYOffset
                 )
                 .opacity(crownRevealed ? 1 - collapseProgress * 0.45 : 0)
                 .zIndex(placement.zIndex)

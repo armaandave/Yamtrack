@@ -114,6 +114,28 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertLessThan(placements[3].y, -96)
     }
 
+    func testBelowAvatarCrownMirrorsExpandedArcVertically() {
+        let above = HallOfFameCrownLayout.placements(
+            count: 7,
+            cardSize: CGSize(width: 54, height: 81),
+            avatarDiameter: 128
+        )
+        let below = HallOfFameCrownLayout.placements(
+            count: 7,
+            cardSize: CGSize(width: 54, height: 81),
+            avatarDiameter: 128,
+            position: .belowAvatar
+        )
+
+        XCTAssertEqual(below.count, above.count)
+        for index in below.indices {
+            XCTAssertEqual(below[index].x, above[index].x, accuracy: 0.001)
+            XCTAssertEqual(below[index].y, -above[index].y, accuracy: 0.001)
+            XCTAssertEqual(below[index].rotation.degrees, -above[index].rotation.degrees, accuracy: 0.001)
+            XCTAssertEqual(below[index].scale, above[index].scale, accuracy: 0.001)
+        }
+    }
+
     func testCollapsedCrownProgressZeroMatchesExpandedLayout() {
         let expanded = HallOfFameCrownLayout.placements(
             count: 7,
@@ -145,6 +167,22 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
             XCTAssertEqual(placement.rotation.degrees, 0, accuracy: 0.001)
             XCTAssertEqual(placement.scale, 0.28, accuracy: 0.001)
             XCTAssertEqual(placement.zIndex, 0, accuracy: 0.001)
+        }
+    }
+
+    func testBelowAvatarCrownProgressOneConvergesAtAvatarCenter() {
+        let placements = HallOfFameCrownLayout.placements(
+            count: 7,
+            cardSize: CGSize(width: 54, height: 81),
+            avatarDiameter: 128,
+            collapseProgress: 1,
+            position: .belowAvatar
+        )
+
+        for placement in placements {
+            XCTAssertEqual(placement.x, 0, accuracy: 0.001)
+            XCTAssertEqual(placement.y, 0, accuracy: 0.001)
+            XCTAssertEqual(placement.rotation.degrees, 0, accuracy: 0.001)
         }
     }
 

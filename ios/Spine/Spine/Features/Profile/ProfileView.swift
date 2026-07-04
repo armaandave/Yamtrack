@@ -436,6 +436,14 @@ enum APIValidationMessages {
     }
 }
 
+private struct ProfileTopSafeAreaInsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -445,6 +453,7 @@ struct ProfileView: View {
     @State private var isSettingsPresented = false
     @State private var hofPickerSlot: FavoriteSlot?
     @State private var heroCollapseProgress: CGFloat = 0
+    @State private var topSafeAreaInset: CGFloat = 0
 
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
@@ -610,18 +619,21 @@ struct ProfileView: View {
                             hero(profile, collapseProgress: reduceMotion ? 0 : heroCollapseProgress)
                             if isOwnProfile {
                                 inProgressSection
+                                    .padding(.horizontal, 16)
                             }
                             activitySection
+                                .padding(.horizontal, 16)
                             if isOwnProfile {
                                 profileMenuSection(profile.counts)
+                                    .padding(.horizontal, 16)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 28)
                         .padding(.bottom, 100)
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .ignoresSafeArea(edges: .top)
             .refreshable {
                 await viewModel.reload()
             }
@@ -643,20 +655,26 @@ struct ProfileView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back")
-                .padding(.top, 16)
+                .padding(.top, topSafeAreaInset + 6)
                 .padding(.leading, 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
             if isOwnProfile {
                 settingsButton
-                    .padding(.top, 16)
+                    .padding(.top, topSafeAreaInset + 6)
                     .padding(.trailing, 16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             } else if !isPushedProfile {
                 EmptyView()
             }
         }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: ProfileTopSafeAreaInsetKey.self, value: proxy.safeAreaInsets.top)
+            }
+        }
+        .onPreferenceChange(ProfileTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
     }
 
     private func clearHallOfFameAction(for slot: FavoriteSlot) -> (() async -> Bool)? {
@@ -689,84 +707,104 @@ struct ProfileView: View {
 
     private func hero(_ profile: UserProfile, collapseProgress: CGFloat) -> some View {
         let allSlots = favoriteSlots(from: profile)
-        let crownHeight = 210 - 74 * collapseProgress
+        let backdropURL = profileBackdropURL(from: profile)
+        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress)
+        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress)
 
-        return VStack(spacing: 6) {
-            VStack(spacing: 8) {
-                ZStack(alignment: .bottom) {
-                    HallOfFameCrownView(
-                        slots: allSlots,
-                        savingSlotIDs: viewModel.savingHallOfFameSlots,
-                        collapseProgress: collapseProgress
-                    ) { slot in
-                        if let item = slot.item {
-                            selectedRef = item.ref
-                        }
-                    } onEmptyTap: { slot in
-                        if isOwnProfile {
-                            hofPickerSlot = slot
-                        }
-                    } onFilledLongPress: { slot in
-                        if isOwnProfile {
-                            hofPickerSlot = slot
-                        }
-                    }
-                    .offset(y: 27 * collapseProgress)
-                    .zIndex(0)
-
-                    avatar(profile)
-                        .offset(y: -14)
-                        .zIndex(1)
-                }
-                .frame(height: crownHeight)
-                .padding(.top, 8)
-
-                if allSlots.isEmpty {
-                    Text("No favorites yet")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
+        return ZStack(alignment: .top) {
+            if let backdropURL {
+                ProfileBackdropArtwork(urlString: backdropURL)
+                    .frame(height: topSafeAreaInset + ProfileHeroBackdropLayout.backdropHeight)
             }
 
             VStack(spacing: 6) {
-                Text(profile.displayName)
-                    .font(.system(size: 34, weight: .black))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.72)
+                VStack(spacing: 8) {
+                    ZStack(alignment: .top) {
+                        HallOfFameCrownView(
+                            slots: allSlots,
+                            savingSlotIDs: viewModel.savingHallOfFameSlots,
+                            collapseProgress: collapseProgress,
+                            position: .belowAvatar
+                        ) { slot in
+                            if let item = slot.item {
+                                selectedRef = item.ref
+                            }
+                        } onEmptyTap: { slot in
+                            if isOwnProfile {
+                                hofPickerSlot = slot
+                            }
+                        } onFilledLongPress: { slot in
+                            if isOwnProfile {
+                                hofPickerSlot = slot
+                            }
+                        }
+                        .offset(y: -21 * collapseProgress)
+                        .zIndex(0)
 
-                HStack(spacing: 8) {
-                    Text("@\(profile.username)")
-                    if profile.isPrivate {
-                        Label("Private", systemImage: "lock.fill")
-                            .labelStyle(.titleAndIcon)
+                        avatar(profile)
+                            .zIndex(1)
+                    }
+                    .frame(height: crownHeight)
+
+                    if allSlots.isEmpty {
+                        Text("No favorites yet")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
                     }
                 }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.62))
-            }
 
-            if let bio = profile.bio?.trimmedNonEmpty {
-                Text(bio)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(4)
-                    .padding(.horizontal, 10)
-            }
+                VStack(spacing: 6) {
+                    Text(profile.displayName)
+                        .font(.system(size: 34, weight: .black))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.32), radius: 12, y: 6)
 
-            if let location = profile.location?.trimmedNonEmpty {
-                Label(location, systemImage: "mappin.and.ellipse")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.56))
-            }
+                    HStack(spacing: 8) {
+                        Text("@\(profile.username)")
+                        if profile.isPrivate {
+                            Label("Private", systemImage: "lock.fill")
+                                .labelStyle(.titleAndIcon)
+                        }
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.26), radius: 8, y: 4)
+                }
 
-            statsGrid(profile.counts)
+                if let bio = profile.bio?.trimmedNonEmpty {
+                    Text(bio)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .padding(.horizontal, 10)
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.22), radius: 8, y: 4)
+                }
+
+                if let location = profile.location?.trimmedNonEmpty {
+                    Label(location, systemImage: "mappin.and.ellipse")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.56))
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.22), radius: 8, y: 4)
+                }
+
+                statsGrid(profile.counts)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.top, backdropURL == nil ? topSafeAreaInset + 28 : topSafeAreaInset + 74)
+            .padding(.bottom, backdropURL == nil ? 12 : 22)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 12)
+        .frame(minHeight: backdropURL == nil ? nil : topSafeAreaInset + heroMinHeight, alignment: .top)
+    }
+
+    private func profileBackdropURL(from profile: UserProfile) -> String? {
+        guard let movie = profile.hof["movie"] ?? nil else { return nil }
+        return movie.displayBackdropURL
     }
 
     private func avatar(_ profile: UserProfile) -> some View {
@@ -791,6 +829,64 @@ struct ProfileView: View {
         }
         .shadow(color: .black.opacity(0.44), radius: 22, y: 12)
         .accessibilityLabel(profile.displayName)
+    }
+
+    private struct ProfileBackdropArtwork: View {
+        let urlString: String
+
+        var body: some View {
+            GeometryReader { proxy in
+                ZStack {
+                    AsyncImage(url: URL(string: urlString)) { phase in
+                        switch phase {
+                        case let .success(image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .clipped()
+                        default:
+                            Color.clear
+                        }
+                    }
+
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.42), location: 0),
+                            .init(color: .black.opacity(0.18), location: 0.36),
+                            .init(color: .clear, location: 0.72),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: 0),
+                            .init(color: .white, location: 0.52),
+                            .init(color: .white.opacity(0.35), location: 0.78),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
+            .clipped()
+        }
+    }
+
+    private enum ProfileHeroBackdropLayout {
+        static let backdropHeight: CGFloat = 352.34375
+
+        static func crownHeight(for collapseProgress: CGFloat) -> CGFloat {
+            286 - 138 * collapseProgress
+        }
+
+        static func heroMinHeight(for collapseProgress: CGFloat) -> CGFloat {
+            520 - 104 * collapseProgress
+        }
     }
 
     private func statsGrid(_ counts: ProfileCounts) -> some View {

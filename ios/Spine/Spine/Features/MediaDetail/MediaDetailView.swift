@@ -3208,7 +3208,10 @@ private extension Color {
 }
 
 func supportsTitleLogo(_ detail: MediaDetail) -> Bool {
-    detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType) && detail.logoUrl != nil
+    detail.logoUrl != nil && (
+        detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
+            || detail.ref.source == "igdb" && detail.ref.mediaType == "game"
+    )
 }
 
 private struct MediaTitleDisplay: View {

@@ -9,8 +9,33 @@ struct HallOfFameCrownPlacement: Equatable {
     let zIndex: Double
 }
 
+enum HallOfFameCrownPosition {
+    case aboveAvatar
+    case belowAvatar
+
+    var transformAnchor: UnitPoint {
+        switch self {
+        case .aboveAvatar: .bottom
+        case .belowAvatar: .top
+        }
+    }
+
+    var revealYOffset: CGFloat {
+        switch self {
+        case .aboveAvatar: 20
+        case .belowAvatar: -20
+        }
+    }
+}
+
 struct HallOfFameCrownLayout {
-    static func placements(count: Int, cardSize: CGSize, avatarDiameter: CGFloat, collapseProgress: CGFloat = 0) -> [HallOfFameCrownPlacement] {
+    static func placements(
+        count: Int,
+        cardSize: CGSize,
+        avatarDiameter: CGFloat,
+        collapseProgress: CGFloat = 0,
+        position: HallOfFameCrownPosition = .aboveAvatar
+    ) -> [HallOfFameCrownPlacement] {
         let count = max(count, 0)
         guard count > 0 else { return [] }
 
@@ -38,14 +63,16 @@ struct HallOfFameCrownLayout {
             let normalizedDistance = count == 1 ? 0 : distanceFromCenter / (Double(count - 1) / 2)
             let scale = 1.04 - CGFloat(normalizedDistance) * 0.10
             let x = sin(radians) * radiusX
-            let y = baseY - cos(radians) * radiusY
+            let aboveY = baseY - cos(radians) * radiusY
+            let y = position == .aboveAvatar ? aboveY : -aboveY
+            let rotationDirection: Double = position == .aboveAvatar ? 1 : -1
             let zIndex = 10 - normalizedDistance
 
             return HallOfFameCrownPlacement(
                 index: index,
                 x: x * horizontalRemaining,
                 y: y * verticalRemaining,
-                rotation: .degrees(degrees * 0.58 * Double(1 - collapseProgress)),
+                rotation: .degrees(degrees * 0.58 * rotationDirection * Double(1 - collapseProgress)),
                 scale: scale + (collapsedScale - scale) * collapseProgress,
                 zIndex: zIndex * Double(1 - collapseProgress)
             )
