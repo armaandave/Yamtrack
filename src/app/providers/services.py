@@ -77,6 +77,10 @@ session.mount(
     "https://www.steamgriddb.com/api/v2",
     LimiterAdapter(per_second=3),
 )
+session.mount(
+    "https://store.steampowered.com/api",
+    LimiterAdapter(per_second=3),
+)
 
 
 class ProviderAPIError(Exception):

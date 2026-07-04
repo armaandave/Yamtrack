@@ -2640,8 +2640,19 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(rating["max_value"], "5")
         self.assertEqual(rating["vote_count"], 1234)
 
+    @patch("app.providers.steam.get_metacritic_rating")
+    @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_game_detail_exposes_collection_before_other_related_sections(self, metadata_mock):
+    def test_game_detail_exposes_collection_before_other_related_sections(
+        self,
+        metadata_mock,
+        _logo_mock,
+        metacritic_mock,
+    ):
+        metacritic_mock.return_value = {
+            "value": 94,
+            "url": "https://www.metacritic.com/game/pc/space-game",
+        }
         metadata_mock.return_value = {
             "media_id": "1020",
             "media_type": "game",
@@ -2704,6 +2715,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_ratings"][0]["value"], "92.7")
         self.assertEqual(response.data["external_ratings"][0]["max_value"], "100")
         self.assertEqual(response.data["external_ratings"][0]["vote_count"], 5000)
+        self.assertEqual(response.data["external_ratings"][1]["source"], "Metacritic")
+        self.assertEqual(response.data["external_ratings"][1]["value"], "94")
+        self.assertEqual(response.data["external_ratings"][1]["max_value"], "100")
+        self.assertEqual(response.data["external_ratings"][1]["url"], "https://www.metacritic.com/game/pc/space-game")
         self.assertEqual(response.data["release_date"], "2020-09-17")
         self.assertEqual(response.data["details"]["age_rating"], "ESRB M")
         self.assertEqual(response.data["details"]["age_ratings"], ["ESRB M", "PEGI 18"])
@@ -3407,9 +3422,10 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    @patch("app.providers.steam.get_metacritic_rating", return_value=None)
     @patch("app.providers.steamgriddb.get_game_logo")
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_media_detail_includes_steamgriddb_logo_fields(self, metadata_mock, logo_mock):
+    def test_media_detail_includes_steamgriddb_logo_fields(self, metadata_mock, logo_mock, _metacritic_mock):
         metadata_mock.return_value = {
             "media_id": "1020",
             "media_type": "game",

@@ -20,6 +20,7 @@ from app.providers import (
     manual,
     openlibrary,
     services,
+    steam,
     steamgriddb,
     tmdb,
 )
@@ -633,6 +634,31 @@ class Metadata(TestCase):
         self.assertEqual(logo["aspect_ratio"], 2.791)
         api_request_mock.assert_called_once()
         self.assertIn("/logos/steam/1245620", api_request_mock.call_args.args[2])
+
+    @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steam.services.api_request")
+    def test_steam_metacritic_rating_uses_steam_external_id(self, api_request_mock, _steam_id_mock):
+        """Test Steam Metacritic rating normalization."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "1245620": {
+                "success": True,
+                "data": {
+                    "metacritic": {
+                        "score": 94,
+                        "url": "https://www.metacritic.com/game/pc/elden-ring",
+                    },
+                },
+            },
+        }
+
+        rating = steam.get_metacritic_rating("119133")
+
+        self.assertEqual(rating["value"], 94)
+        self.assertEqual(rating["url"], "https://www.metacritic.com/game/pc/elden-ring")
+        api_request_mock.assert_called_once()
+        self.assertIn("/appdetails", api_request_mock.call_args.args[2])
+        self.assertEqual(api_request_mock.call_args.kwargs["params"]["appids"], "1245620")
 
     @requires_provider_network
     def test_book(self):

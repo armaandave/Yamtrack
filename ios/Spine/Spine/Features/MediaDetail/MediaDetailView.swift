@@ -1267,7 +1267,9 @@ struct MediaDetailView: View {
         case "letterboxd": 0
         case "rotten tomatoes": 1
         case "imdb": 2
-        default: 3
+        case "metacritic": 3
+        case "igdb": 4
+        default: 5
         }
     }
 
@@ -2365,7 +2367,7 @@ private struct RatingSourceBadge: View {
             }
         }
         .frame(width: MediaDetailLayout.ratingBadgeSize, height: MediaDetailLayout.ratingBadgeSize)
-        .background(chip.assetName == "RatingMAL" ? .clear : .white, in: Circle())
+        .background(["RatingMAL", "RatingMetacritic"].contains(chip.assetName) ? .clear : .white, in: Circle())
         .clipShape(Circle())
     }
 
@@ -2389,6 +2391,12 @@ private struct RatingSourceBadge: View {
                 .frame(width: 24, height: 24)
                 .clipped()
         case "RatingMAL":
+            Image(assetName)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 24, height: 24)
+                .clipped()
+        case "RatingMetacritic":
             Image(assetName)
                 .resizable()
                 .scaledToFill()
@@ -3427,6 +3435,8 @@ private extension ExternalRating {
             "RatingMAL"
         case "hardcover":
             "RatingHardcover"
+        case "metacritic":
+            "RatingMetacritic"
         case "igdb":
             "RatingIGDB"
         default:
@@ -3476,6 +3486,8 @@ private extension String {
             "HC"
         case "igdb":
             "IG"
+        case "metacritic":
+            "MC"
         case "mal":
             "MA"
         case "mangaupdates":

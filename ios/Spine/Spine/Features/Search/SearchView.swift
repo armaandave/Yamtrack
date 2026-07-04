@@ -242,6 +242,7 @@ struct ProfileBackdropSearchView: View {
             mediaLensStore: mediaLensStore,
             supportedMediaTypes: supportedTypes,
             title: "Profile Backdrop",
+            onCancel: { dismiss() },
             onUnauthorized: onUnauthorized,
             onSelect: { selectedMedia = $0 }
         )
@@ -269,6 +270,7 @@ private struct SearchViewContent: View {
     let mediaLensStore: MediaLensStore
     let supportedMediaTypes: [String]?
     let title: String
+    let onCancel: (() -> Void)?
     let onSelect: (MediaSummary) -> Void
 
     init(
@@ -276,6 +278,7 @@ private struct SearchViewContent: View {
         mediaLensStore: MediaLensStore,
         supportedMediaTypes: [String]? = nil,
         title: String = "Search",
+        onCancel: (() -> Void)? = nil,
         onUnauthorized: @escaping () -> Void,
         onSelect: @escaping (MediaSummary) -> Void
     ) {
@@ -283,6 +286,7 @@ private struct SearchViewContent: View {
         self.mediaLensStore = mediaLensStore
         self.supportedMediaTypes = supportedMediaTypes
         self.title = title
+        self.onCancel = onCancel
         self.onSelect = onSelect
     }
 
@@ -345,6 +349,13 @@ private struct SearchViewContent: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbar {
+                    if let onCancel {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel", action: onCancel)
+                        }
+                    }
+                }
                 .task {
                     if let supportedMediaTypes {
                         viewModel.mediaTypes = supportedMediaTypes

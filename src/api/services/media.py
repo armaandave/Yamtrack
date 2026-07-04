@@ -870,6 +870,21 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
                 },
             )
 
+    if source == Sources.IGDB.value and media_type == MediaTypes.GAME.value:
+        from app.providers import steam
+
+        metacritic = steam.get_metacritic_rating(media_id)
+        if metacritic:
+            ratings.append(
+                {
+                    "source": source_label("metacritic"),
+                    "value": str(metacritic["value"]),
+                    "vote_count": None,
+                    "max_value": max_rating_value("metacritic"),
+                    "url": metacritic.get("url"),
+                },
+            )
+
     return ratings
 
 
@@ -883,6 +898,7 @@ def source_label(source):
         "mangaupdates": "MangaUpdates",
         "openlibrary": "OpenLibrary",
         "hardcover": "Hardcover",
+        "metacritic": "Metacritic",
         "tmdb": "TMDB",
         "tomatoes": "Rotten Tomatoes",
     }.get(source, source.title())
@@ -894,6 +910,7 @@ def max_rating_value(source):
         "hardcover": "5",
         "igdb": "100",
         "letterboxd": "5",
+        "metacritic": "100",
         "openlibrary": "5",
         "tomatoes": "100%",
     }.get(source, "10")

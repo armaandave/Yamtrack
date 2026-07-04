@@ -734,7 +734,7 @@ struct ProfileView: View {
                     }
             }
 
-            VStack(spacing: crownNameSpacing) {
+            VStack(spacing: ProfileHeroBackdropLayout.heroContentSpacing) {
                 VStack(spacing: 8) {
                     ZStack(alignment: .top) {
                         HallOfFameCrownView(
@@ -790,6 +790,7 @@ struct ProfileView: View {
                     .foregroundStyle(.white.opacity(0.62))
                     .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.26), radius: 8, y: 4)
                 }
+                .padding(.top, crownNameSpacing - ProfileHeroBackdropLayout.heroContentSpacing)
 
                 if let bio = profile.bio?.trimmedNonEmpty {
                     Text(bio)
@@ -905,17 +906,18 @@ struct ProfileView: View {
     private enum ProfileHeroBackdropLayout {
         static let backdropHeight: CGFloat = 352.34375
         static let contentTopOffset: CGFloat = 44
+        static let heroContentSpacing: CGFloat = 12
 
         static func crownHeight(for collapseProgress: CGFloat) -> CGFloat {
-            286 - 158 * collapseProgress
+            286 - 178 * collapseProgress
         }
 
         static func crownNameSpacing(for collapseProgress: CGFloat) -> CGFloat {
-            14 - 10 * collapseProgress
+            14 - 26 * collapseProgress
         }
 
         static func heroMinHeight(for collapseProgress: CGFloat) -> CGFloat {
-            520 - 124 * collapseProgress
+            520 - 156 * collapseProgress
         }
     }
 
