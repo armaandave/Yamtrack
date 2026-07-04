@@ -79,13 +79,11 @@ class FilterOptionsView(APIView):
             if str(status_filter).lower() == "tracked":
                 queryset = queryset.exclude(status=Status.PLANNING.value)
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 
         if scope == "diary":
             queryset = DiaryEntry.objects.filter(user=request.user).select_related("item")
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 
         if scope == "list":
@@ -95,7 +93,6 @@ class FilterOptionsView(APIView):
                 return Response(status=status.HTTP_404_NOT_FOUND)
             queryset = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            queryset = filter_service.apply_item_filters(queryset, request.query_params)
             return Response(filter_service.filter_options_for_items(queryset))
 
         return Response({"scope": ["Use tracking, diary, or list."]}, status=status.HTTP_400_BAD_REQUEST)

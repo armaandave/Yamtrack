@@ -425,19 +425,33 @@ class ApiV1FoundationTests(TestCase):
             title="Options",
             release_year=2024,
         )
+        excluded = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="excluded-options",
+            title="Excluded Options",
+            release_year=2023,
+        )
         ItemFilterFacet.objects.create(item=item, facet_type="language", value="English")
-        Movie.objects.bulk_create([Movie(user=user, item=item, status=Status.COMPLETED.value)])
+        ItemFilterFacet.objects.create(item=excluded, facet_type="language", value="French")
+        Movie.objects.bulk_create([
+            Movie(user=user, item=item, status=Status.COMPLETED.value),
+            Movie(user=user, item=excluded, status=Status.COMPLETED.value),
+        ])
         self.client.force_authenticate(user)
 
         response = self.client.get(
             "/api/v1/filter-options/",
-            {"scope": "tracking", "media_type": MediaTypes.MOVIE.value},
+            {"scope": "tracking", "media_type": MediaTypes.MOVIE.value, "exclude_language": "French"},
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn({"value": "release_date", "label": "Release Date"}, response.data["sorts"])
-        self.assertEqual(response.data["languages"], [{"value": "English", "label": "English"}])
-        self.assertEqual(response.data["years"], [2024])
+        self.assertEqual(
+            response.data["languages"],
+            [{"value": "English", "label": "English"}, {"value": "French", "label": "French"}],
+        )
+        self.assertEqual(response.data["years"], [2024, 2023])
 
     def test_tracking_list_paginates_before_serializing_movies(self):
         user = get_user_model().objects.create_user(username="tracking-pages", password="strong-password-123")
@@ -2181,6 +2195,16 @@ class ApiV1FoundationTests(TestCase):
                 {
                     "media_type": MediaTypes.MOVIE.value,
                     "source": Sources.TMDB.value,
+                    "media_id": "released-uncached-runtime",
+                    "title": "Released Uncached Runtime",
+                    "release_date": "2023-01-01",
+                    "genres": ["Science Fiction"],
+                    "languages": ["English"],
+                    "vote_average": 7.0,
+                },
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
                     "media_id": "released-short",
                     "title": "Released Short",
                     "release_date": "2024-06-01",
@@ -2219,7 +2243,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
             [item["title"] for item in response.data["credits"]["cast"]],
-            ["Released Feature"],
+            ["Released Feature", "Released Uncached Runtime"],
         )
         self.assertEqual(response.data["credits"]["cast"][0]["genres"], ["Science Fiction"])
         self.assertEqual(response.data["credits"]["cast"][0]["languages"], ["English"])

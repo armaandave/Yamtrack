@@ -115,6 +115,28 @@ final class PersonDetailTests: XCTestCase {
     }
 
     @MainActor
+    func testPersonDetailViewModelKeepsFilterOptionsAfterFilteredReload() async {
+        let ref = PersonRef(source: "tmdb", id: "819")
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(filmography: [
+                mediaSummary(id: "1", title: "Drama", genres: ["Drama"]),
+                mediaSummary(id: "2", title: "Comedy", genres: ["Comedy"]),
+            ])),
+            .success(personDetail(filmography: [
+                mediaSummary(id: "1", title: "Drama", genres: ["Drama"]),
+            ])),
+        ])
+        let viewModel = PersonDetailViewModel(ref: ref, peopleRepository: repository, onUnauthorized: {})
+
+        await viewModel.load()
+        viewModel.filter.excludedGenres = ["Comedy"]
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["Drama"])
+        XCTAssertEqual(viewModel.filterOptions.genres.map(\.value), ["Comedy", "Drama"])
+    }
+
+    @MainActor
     func testPersonDetailViewModelSupportsEmptyFilmography() async {
         let repository = ScriptedPeopleRepository(result: .success(personDetail(filmography: [])))
         let viewModel = PersonDetailViewModel(
@@ -179,7 +201,7 @@ final class PersonDetailTests: XCTestCase {
         )
     }
 
-    private func mediaSummary(id: String, title: String) -> MediaSummary {
+    private func mediaSummary(id: String, title: String, genres: [String] = []) -> MediaSummary {
         MediaSummary(
             ref: MediaRef(
                 itemId: nil,
@@ -191,21 +213,26 @@ final class PersonDetailTests: XCTestCase {
             ),
             title: title,
             posterUrl: "https://example.com/\(id).jpg",
+            genres: genres,
             defaultSource: "tmdb"
         )
     }
 }
 
 private final class ScriptedPeopleRepository: PeopleRepository {
-    let result: Result<PersonDetail, Error>
+    let results: [Result<PersonDetail, Error>]
     var requests: [PersonRef] = []
 
     init(result: Result<PersonDetail, Error>) {
-        self.result = result
+        self.results = [result]
+    }
+
+    init(results: [Result<PersonDetail, Error>]) {
+        self.results = results
     }
 
     func detail(ref: PersonRef) async throws -> PersonDetail {
         requests.append(ref)
-        return try result.get()
+        return try results[min(requests.count - 1, results.count - 1)].get()
     }
 }

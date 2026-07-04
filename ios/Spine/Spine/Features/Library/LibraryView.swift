@@ -109,6 +109,8 @@ final class LibraryViewModel {
         query = selectedQuery
         filter.genres = []
         filter.languages = []
+        filter.excludedGenres = []
+        filter.excludedLanguages = []
         filter.year = nil
         filter.yearMin = nil
         filter.yearMax = nil

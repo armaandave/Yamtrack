@@ -537,7 +537,7 @@ def _person_credit_matches(  # noqa: C901, PLR0911
 
     runtime = _credit_runtime_minutes(credit)
     if length == "feature":
-        return credit.get("media_type") == MediaTypes.MOVIE.value and runtime is not None and runtime >= SHORT_FILM_MINUTES
+        return credit.get("media_type") == MediaTypes.MOVIE.value and (runtime is None or runtime >= SHORT_FILM_MINUTES)
     if length == "short":
         return credit.get("media_type") == MediaTypes.MOVIE.value and runtime is not None and runtime < SHORT_FILM_MINUTES
     return True

@@ -32,9 +32,12 @@ final class PersonDetailViewModel {
 
         do {
             let loaded = try await peopleRepository.detail(ref: ref, filter: filter)
+            let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
             detail = loaded
-            filmography = Self.uniqueFilmography(from: loaded.filmography)
-            filterOptions = Self.options(from: filmography)
+            filmography = loadedFilmography
+            if !filter.isActive || filterOptions == .empty {
+                filterOptions = Self.options(from: loadedFilmography)
+            }
         } catch {
             detail = nil
             filmography = []
@@ -151,7 +154,11 @@ struct PersonDetailView: View {
             if viewModel.detail == nil {
                 await viewModel.load()
                 syncSelectedFilmographyType()
+                expandPrimaryCreditRole()
             }
+        }
+        .onChange(of: selectedFilmographyType) { _, _ in
+            expandPrimaryCreditRole()
         }
     }
 
@@ -276,8 +283,6 @@ struct PersonDetailView: View {
         let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
         let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
         let groups = FilmographyCreditGroup.groups(from: filmography)
-        let primaryGroup = groups.first
-        let secondaryGroups = Array(groups.dropFirst())
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -297,6 +302,7 @@ struct PersonDetailView: View {
                             selectedFilmographyType = selectedType
                         }
                         syncSelectedFilmographyType()
+                        expandPrimaryCreditRole()
                     }
                 }
 
@@ -321,11 +327,7 @@ struct PersonDetailView: View {
                 .frame(maxWidth: .infinity, minHeight: 220)
             } else {
                 VStack(alignment: .leading, spacing: 14) {
-                    if let primaryGroup {
-                        filmographyGroup(primaryGroup, type: selectedType, isPrimary: true)
-                    }
-
-                    ForEach(secondaryGroups) { group in
+                    ForEach(groups) { group in
                         roleDisclosureRow(group, type: selectedType)
                     }
                 }
@@ -364,18 +366,6 @@ struct PersonDetailView: View {
             if expandedCreditRoles.contains(group.id) {
                 filmographyGrid(group.media)
             }
-        }
-    }
-
-    private func filmographyGroup(_ group: FilmographyCreditGroup, type: FilmographyType, isPrimary: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(isPrimary ? group.title(for: type) : group.compactTitle(for: type))
-                .font(.system(size: isPrimary ? 13 : 12, weight: .heavy))
-                .foregroundStyle(.white.opacity(isPrimary ? 0.62 : 0.5))
-                .textCase(.uppercase)
-                .tracking(2)
-
-            filmographyGrid(group.media)
         }
     }
 
@@ -422,6 +412,17 @@ struct PersonDetailView: View {
         let types = FilmographyType.available(in: viewModel.filmography)
         if let first = types.first, !types.contains(selectedFilmographyType) {
             selectedFilmographyType = first
+        }
+    }
+
+    private func expandPrimaryCreditRole() {
+        let types = FilmographyType.available(in: viewModel.filmography)
+        let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
+        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
+        if let primaryGroup = FilmographyCreditGroup.groups(from: filmography).first {
+            expandedCreditRoles = [primaryGroup.id]
+        } else {
+            expandedCreditRoles = []
         }
     }
 
