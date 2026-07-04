@@ -141,6 +141,7 @@ struct DiaryFilter: Equatable {
 
 protocol ProfileRepository {
     func me() async throws -> UserProfile
+    func profile(username: String) async throws -> UserProfile
     func likedMedia() async throws -> [MediaSummary]
     func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile
     func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String?
@@ -152,6 +153,10 @@ protocol ProfileRepository {
 }
 
 extension ProfileRepository {
+    func profile(username: String) async throws -> UserProfile {
+        fatalError("Not implemented")
+    }
+
     func likedMedia() async throws -> [MediaSummary] {
         fatalError("Not implemented")
     }
@@ -612,6 +617,11 @@ struct APIProfileRepository: ProfileRepository {
 
     func me() async throws -> UserProfile {
         try await client.get("/me/", authenticated: true)
+    }
+
+    func profile(username: String) async throws -> UserProfile {
+        let escapedUsername = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
+        return try await client.get("/users/\(escapedUsername)/", authenticated: true)
     }
 
     func likedMedia() async throws -> [MediaSummary] {

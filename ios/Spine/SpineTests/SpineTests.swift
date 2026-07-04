@@ -97,7 +97,7 @@ final class SpineTests: XCTestCase {
         await viewModel.reload()
         XCTAssertEqual(viewModel.displayedItems.map(\.media.title), ["Planned"])
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked"),
             LibraryTrackingRequest(mediaType: "movie", page: nil, status: "Planning")
         ])
     }
@@ -137,8 +137,8 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.totalCount, 3)
         XCTAssertFalse(viewModel.hasMorePages)
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil),
-            LibraryTrackingRequest(mediaType: "movie", page: "2")
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked"),
+            LibraryTrackingRequest(mediaType: "movie", page: "2", status: "tracked")
         ])
     }
 
@@ -184,7 +184,7 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(viewModel.query, "Dune")
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Dune")
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Dune")
         ])
     }
 
@@ -202,8 +202,8 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(viewModel.query, "")
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Dune"),
-            LibraryTrackingRequest(mediaType: "movie", page: nil)
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Dune"),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked")
         ])
     }
 
@@ -222,8 +222,8 @@ final class SpineTests: XCTestCase {
         await viewModel.reload()
 
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Halo"),
-            LibraryTrackingRequest(mediaType: "game", page: nil, query: "Halo"),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Halo"),
+            LibraryTrackingRequest(mediaType: "game", page: nil, status: "tracked", query: "Halo"),
             LibraryTrackingRequest(mediaType: "game", page: nil, status: "Planning", query: "Halo")
         ])
     }
@@ -398,6 +398,8 @@ final class SpineTests: XCTestCase {
         filter.direction = .desc
         filter.q = " dune "
         filter.year = 2024
+        filter.releaseStatus = "released"
+        filter.length = "feature"
         filter.genres = ["Drama", "Comedy"]
         filter.languages = ["English"]
         filter.hasReview = true
@@ -408,6 +410,8 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(query.first { $0.name == "q" }?.value, "dune")
         XCTAssertEqual(query.first { $0.name == "sort" }?.value, "release_date")
         XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+        XCTAssertEqual(query.first { $0.name == "release_status" }?.value, "released")
+        XCTAssertEqual(query.first { $0.name == "length" }?.value, "feature")
         XCTAssertEqual(query.filter { $0.name == "genre" }.map(\.value), ["Drama", "Comedy"])
         XCTAssertEqual(query.first { $0.name == "language" }?.value, "English")
         XCTAssertEqual(query.first { $0.name == "has_review" }?.value, "true")
@@ -1904,6 +1908,58 @@ final class SpineTests: XCTestCase {
             "https://example.com/api/v1/me/liked-media/",
             "https://example.com/api/v1/me/liked-media/?page=2",
         ])
+        client.tokenProvider.clear()
+    }
+
+    func testProfileRepositoryLoadsPublicProfileByUsername() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APIProfileRepository(client: client)
+
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            XCTAssertEqual(request.url?.path, "/api/v1/users/mika")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "id": 2,
+                  "username": "mika",
+                  "display_name": "Mika",
+                  "email": null,
+                  "bio": "",
+                  "pronouns": "",
+                  "location": "",
+                  "avatar_url": null,
+                  "is_private": false,
+                  "viewer_relationship": { "following": false, "followed_by": false, "requested": false, "blocked": false },
+                  "counts": { "followers": 0, "following": 0, "diary_entries": 0, "lists": 0 },
+                  "hof": {},
+                  "preferences": {
+                    "enabled_media_types": ["movie"],
+                    "date_format": "Y-m-d",
+                    "time_format": "H:i",
+                    "week_start_day": "monday",
+                    "quick_watch_date": "current_date",
+                    "release_notifications_enabled": false,
+                    "daily_digest_enabled": false
+                  }
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let profile = try await repository.profile(username: "mika")
+
+        XCTAssertEqual(profile.username, "mika")
         client.tokenProvider.clear()
     }
 

@@ -579,26 +579,50 @@ struct ProfileListsView: View {
     @State private var presentedForm: CustomListFormMode?
 
     private let listRepository: ListRepository
+    private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
+    private let activityRepository: ActivityRepository
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let currentUserId: Int?
+    private let onLogout: () -> Void
+    private let onOpenDiary: () -> Void
+    private let onOpenLibrary: (LibraryShelf) -> Void
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
 
     init(
+        profileRepository: ProfileRepository,
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        activityRepository: ActivityRepository,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        currentUserId: Int? = nil,
+        onLogout: @escaping () -> Void = {},
+        onOpenDiary: @escaping () -> Void = {},
+        onOpenLibrary: @escaping (LibraryShelf) -> Void = { _ in },
         selectedTab: AppTab,
         onSelectTab: @escaping (AppTab) -> Void,
         onUnauthorized: @escaping () -> Void
     ) {
+        self.profileRepository = profileRepository
         self.listRepository = listRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
+        self.activityRepository = activityRepository
+        self.importCoordinator = importCoordinator
+        self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.currentUserId = currentUserId
+        self.onLogout = onLogout
+        self.onOpenDiary = onOpenDiary
+        self.onOpenLibrary = onOpenLibrary
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
@@ -672,10 +696,18 @@ struct ProfileListsView: View {
                 NavigationLink {
                     ProfileListDetailView(
                         listId: list.id,
+                        profileRepository: profileRepository,
                         listRepository: listRepository,
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,
+                        activityRepository: activityRepository,
+                        importCoordinator: importCoordinator,
+                        storygraphImportCoordinator: storygraphImportCoordinator,
+                        currentUserId: currentUserId,
+                        onLogout: onLogout,
+                        onOpenDiary: onOpenDiary,
+                        onOpenLibrary: onOpenLibrary,
                         selectedTab: selectedTab,
                         onSelectTab: onSelectTab,
                         onUnauthorized: onUnauthorized
@@ -974,27 +1006,51 @@ private struct ProfileListDetailView: View {
     @State private var edgeDragOffset: CGFloat = 0
 
     private let listRepository: ListRepository
+    private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
+    private let activityRepository: ActivityRepository
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let currentUserId: Int?
+    private let onLogout: () -> Void
+    private let onOpenDiary: () -> Void
+    private let onOpenLibrary: (LibraryShelf) -> Void
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
 
     init(
         listId: Int,
+        profileRepository: ProfileRepository,
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        activityRepository: ActivityRepository,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        currentUserId: Int? = nil,
+        onLogout: @escaping () -> Void = {},
+        onOpenDiary: @escaping () -> Void = {},
+        onOpenLibrary: @escaping (LibraryShelf) -> Void = { _ in },
         selectedTab: AppTab,
         onSelectTab: @escaping (AppTab) -> Void,
         onUnauthorized: @escaping () -> Void
     ) {
+        self.profileRepository = profileRepository
         self.listRepository = listRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
+        self.activityRepository = activityRepository
+        self.importCoordinator = importCoordinator
+        self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.currentUserId = currentUserId
+        self.onLogout = onLogout
+        self.onOpenDiary = onOpenDiary
+        self.onOpenLibrary = onOpenLibrary
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
@@ -1168,7 +1224,55 @@ private struct ProfileListDetailView: View {
     }
 
     private func listHeaderText(_ list: CustomListDetail) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let isOwnerCurrentUser = list.owner.id == currentUserId
+
+        return VStack(alignment: .leading, spacing: 7) {
+            NavigationLink {
+                ProfileView(
+                    profileRepository: profileRepository,
+                    diaryRepository: diaryRepository,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    activityRepository: activityRepository,
+                    listRepository: listRepository,
+                    importCoordinator: importCoordinator,
+                    storygraphImportCoordinator: storygraphImportCoordinator,
+                    currentUserId: currentUserId,
+                    onLogout: onLogout,
+                    onOpenDiary: onOpenDiary,
+                    onOpenLibrary: onOpenLibrary,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    username: isOwnerCurrentUser ? nil : list.owner.username,
+                    isPushedProfile: true,
+                    onUnauthorized: onUnauthorized
+                )
+            } label: {
+                HStack(spacing: 9) {
+                    AsyncImage(url: URL(string: list.owner.avatarUrl ?? "")) { phase in
+                        if case let .success(image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.54))
+                        }
+                    }
+                    .frame(width: 21, height: 21)
+                    .background(.white.opacity(0.12), in: Circle())
+                    .clipShape(Circle())
+
+                    Text(list.owner.username)
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+
             Text(list.name)
                 .font(.system(size: 34, weight: .black))
                 .foregroundStyle(.white)

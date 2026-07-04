@@ -20,16 +20,19 @@ final class ProfileViewModel {
     private let trackingRepository: TrackingRepository
     private let activityRepository: ActivityRepository
     private let onUnauthorized: () -> Void
+    private let username: String?
 
     init(
         profileRepository: ProfileRepository,
         trackingRepository: TrackingRepository,
         activityRepository: ActivityRepository,
+        username: String? = nil,
         onUnauthorized: @escaping () -> Void
     ) {
         self.profileRepository = profileRepository
         self.trackingRepository = trackingRepository
         self.activityRepository = activityRepository
+        self.username = username
         self.onUnauthorized = onUnauthorized
     }
 
@@ -42,7 +45,11 @@ final class ProfileViewModel {
         defer { isLoading = false }
 
         do {
-            profile = try await profileRepository.me()
+            if let username {
+                profile = try await profileRepository.profile(username: username)
+            } else {
+                profile = try await profileRepository.me()
+            }
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -51,7 +58,9 @@ final class ProfileViewModel {
             return
         }
 
-        await loadInProgressItems()
+        if username == nil {
+            await loadInProgressItems()
+        }
         await loadRecentActivity()
     }
 
@@ -428,6 +437,7 @@ enum APIValidationMessages {
 }
 
 struct ProfileView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var viewModel: ProfileViewModel
@@ -439,10 +449,11 @@ struct ProfileView: View {
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
+    private let activityRepository: ActivityRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
-    private let importCoordinator: LetterboxdImportCoordinator
-    private let storygraphImportCoordinator: StoryGraphImportCoordinator
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
     private let currentUserId: Int?
     private let onLogout: () -> Void
     private let onOpenDiary: () -> Void
@@ -450,6 +461,12 @@ struct ProfileView: View {
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
+    private let username: String?
+    private let isPushedProfile: Bool
+
+    private var isOwnProfile: Bool {
+        username == nil
+    }
 
     init(
         profileRepository: ProfileRepository,
@@ -458,25 +475,29 @@ struct ProfileView: View {
         trackingRepository: TrackingRepository,
         activityRepository: ActivityRepository,
         listRepository: ListRepository,
-        importCoordinator: LetterboxdImportCoordinator,
-        storygraphImportCoordinator: StoryGraphImportCoordinator,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
         currentUserId: Int? = nil,
         onLogout: @escaping () -> Void,
         onOpenDiary: @escaping () -> Void,
         onOpenLibrary: @escaping (LibraryShelf) -> Void,
         selectedTab: AppTab = .profile,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
+        username: String? = nil,
+        isPushedProfile: Bool = false,
         onUnauthorized: @escaping () -> Void = {}
     ) {
         _viewModel = State(initialValue: ProfileViewModel(
             profileRepository: profileRepository,
             trackingRepository: trackingRepository,
             activityRepository: activityRepository,
+            username: username,
             onUnauthorized: onUnauthorized
         ))
         self.profileRepository = profileRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
+        self.activityRepository = activityRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
         self.importCoordinator = importCoordinator
@@ -488,11 +509,22 @@ struct ProfileView: View {
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
+        self.username = username
+        self.isPushedProfile = isPushedProfile
     }
 
     var body: some View {
-        NavigationStack {
-            profileContent
+        if isOwnProfile && !isPushedProfile {
+            NavigationStack {
+                profileScreen
+            }
+        } else {
+            profileScreen
+        }
+    }
+
+    private var profileScreen: some View {
+        profileContent
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -521,19 +553,21 @@ struct ProfileView: View {
                 )
             }
             .sheet(isPresented: $isSettingsPresented) {
-                ProfileSettingsSheet(
-                    profile: viewModel.profile,
-                    profileRepository: profileRepository,
-                    mediaRepository: mediaRepository,
-                    onProfileUpdated: { updated in
-                        viewModel.profile = updated
-                        Swift.Task<Void, Never> { await viewModel.reload() }
-                    },
-                    onUnauthorized: onUnauthorized,
-                    importCoordinator: importCoordinator,
-                    storygraphImportCoordinator: storygraphImportCoordinator,
-                    onLogout: onLogout
-                )
+                if let importCoordinator, let storygraphImportCoordinator {
+                    ProfileSettingsSheet(
+                        profile: viewModel.profile,
+                        profileRepository: profileRepository,
+                        mediaRepository: mediaRepository,
+                        onProfileUpdated: { updated in
+                            viewModel.profile = updated
+                            Swift.Task<Void, Never> { await viewModel.reload() }
+                        },
+                        onUnauthorized: onUnauthorized,
+                        importCoordinator: importCoordinator,
+                        storygraphImportCoordinator: storygraphImportCoordinator,
+                        onLogout: onLogout
+                    )
+                }
             }
             .sheet(item: $hofPickerSlot) { slot in
                 HallOfFamePickerSheet(
@@ -555,7 +589,6 @@ struct ProfileView: View {
             } message: {
                 Text(viewModel.hofErrorMessage ?? "")
             }
-        }
     }
 
     private var profileContent: some View {
@@ -575,9 +608,13 @@ struct ProfileView: View {
                     } else if let profile = viewModel.profile {
                         VStack(alignment: .leading, spacing: 24) {
                             hero(profile, collapseProgress: reduceMotion ? 0 : heroCollapseProgress)
-                            inProgressSection
+                            if isOwnProfile {
+                                inProgressSection
+                            }
                             activitySection
-                            profileMenuSection(profile.counts)
+                            if isOwnProfile {
+                                profileMenuSection(profile.counts)
+                            }
                         }
                         .padding(.horizontal, 16)
                         .padding(.top, 28)
@@ -594,10 +631,31 @@ struct ProfileView: View {
                 heroCollapseProgress = ProfileHeroCollapse.progress(for: offset)
             }
 
-            settingsButton
+            if isPushedProfile {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .background(.black.opacity(0.34), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
                 .padding(.top, 16)
-                .padding(.trailing, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.leading, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+
+            if isOwnProfile {
+                settingsButton
+                    .padding(.top, 16)
+                    .padding(.trailing, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else if !isPushedProfile {
+                EmptyView()
+            }
         }
     }
 
@@ -645,9 +703,13 @@ struct ProfileView: View {
                             selectedRef = item.ref
                         }
                     } onEmptyTap: { slot in
-                        hofPickerSlot = slot
+                        if isOwnProfile {
+                            hofPickerSlot = slot
+                        }
                     } onFilledLongPress: { slot in
-                        hofPickerSlot = slot
+                        if isOwnProfile {
+                            hofPickerSlot = slot
+                        }
                     }
                     .offset(y: 27 * collapseProgress)
                     .zIndex(0)
@@ -736,20 +798,32 @@ struct ProfileView: View {
             ProfileStatChip(value: counts.diaryEntries, title: "Logs", systemName: "calendar")
             ProfileStatChip(value: counts.followers, title: "Followers", systemName: "person.2")
             ProfileStatChip(value: counts.following, title: "Following", systemName: "person.crop.circle.badge.checkmark")
-            NavigationLink {
-                ProfileListsView(
-                    listRepository: listRepository,
-                    mediaRepository: mediaRepository,
-                    trackingRepository: trackingRepository,
-                    diaryRepository: diaryRepository,
-                    selectedTab: selectedTab,
-                    onSelectTab: onSelectTab,
-                    onUnauthorized: onUnauthorized
-                )
-            } label: {
+            if isOwnProfile {
+                NavigationLink {
+                    ProfileListsView(
+                        profileRepository: profileRepository,
+                        listRepository: listRepository,
+                        mediaRepository: mediaRepository,
+                        trackingRepository: trackingRepository,
+                        diaryRepository: diaryRepository,
+                        activityRepository: activityRepository,
+                        importCoordinator: importCoordinator,
+                        storygraphImportCoordinator: storygraphImportCoordinator,
+                        currentUserId: currentUserId ?? viewModel.profile?.id,
+                        onLogout: onLogout,
+                        onOpenDiary: onOpenDiary,
+                        onOpenLibrary: onOpenLibrary,
+                        selectedTab: selectedTab,
+                        onSelectTab: onSelectTab,
+                        onUnauthorized: onUnauthorized
+                    )
+                } label: {
+                    ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
+                }
+                .buttonStyle(.plain)
+            } else {
                 ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
             }
-            .buttonStyle(.plain)
         }
     }
 
@@ -819,10 +893,18 @@ struct ProfileView: View {
         case .lists:
             NavigationLink {
                 ProfileListsView(
+                    profileRepository: profileRepository,
                     listRepository: listRepository,
                     mediaRepository: mediaRepository,
                     trackingRepository: trackingRepository,
                     diaryRepository: diaryRepository,
+                    activityRepository: activityRepository,
+                    importCoordinator: importCoordinator,
+                    storygraphImportCoordinator: storygraphImportCoordinator,
+                    currentUserId: currentUserId ?? viewModel.profile?.id,
+                    onLogout: onLogout,
+                    onOpenDiary: onOpenDiary,
+                    onOpenLibrary: onOpenLibrary,
                     selectedTab: selectedTab,
                     onSelectTab: onSelectTab,
                     onUnauthorized: onUnauthorized

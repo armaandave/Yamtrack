@@ -86,6 +86,7 @@ class Item(CalendarTriggerMixin, models.Model):
     total_pages = models.PositiveIntegerField(null=True, blank=True)  # For books
     release_date = models.DateField(null=True, blank=True)
     release_year = models.PositiveIntegerField(null=True, blank=True)
+    runtime_minutes = models.PositiveIntegerField(null=True, blank=True)
     letterboxd_rating = models.DecimalField(
         null=True,
         blank=True,
@@ -184,6 +185,7 @@ class Item(CalendarTriggerMixin, models.Model):
         indexes = [
             models.Index(fields=["media_type", "release_year"]),
             models.Index(fields=["media_type", "release_date"]),
+            models.Index(fields=["media_type", "runtime_minutes"]),
             models.Index(fields=["media_type", "letterboxd_rating"]),
             models.Index(fields=["media_type", "imdb_rating"]),
             models.Index(fields=["media_type", "rotten_tomatoes_rating"]),

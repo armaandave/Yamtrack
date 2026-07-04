@@ -78,6 +78,8 @@ struct MediaFilterState: Equatable {
     var year: Int?
     var yearMin: Int?
     var yearMax: Int?
+    var releaseStatus: String?
+    var length: String?
     var genres: [String] = []
     var languages: [String] = []
     var ratingMin: Decimal?
@@ -100,6 +102,8 @@ struct MediaFilterState: Equatable {
         if status != nil { count += 1 }
         if itemId != nil { count += 1 }
         if year != nil || yearMin != nil || yearMax != nil { count += 1 }
+        if releaseStatus != nil { count += 1 }
+        if length != nil { count += 1 }
         if !genres.isEmpty { count += 1 }
         if !languages.isEmpty { count += 1 }
         if ratingMin != nil || ratingMax != nil { count += 1 }
@@ -126,6 +130,8 @@ struct MediaFilterState: Equatable {
         append("year", year.map(String.init), to: &items)
         append("year_min", yearMin.map(String.init), to: &items)
         append("year_max", yearMax.map(String.init), to: &items)
+        append("release_status", releaseStatus, to: &items)
+        append("length", length, to: &items)
         genres.forEach { append("genre", $0, to: &items) }
         languages.forEach { append("language", $0, to: &items) }
         append("rating_min", ratingMin.map(Self.string), to: &items)

@@ -42,6 +42,7 @@ DESC_SORTS = {
 }
 
 METADATA_SORTS = {"release_date"}
+SHORT_FILM_MINUTES = 40
 
 
 def values(params, key):
@@ -100,6 +101,7 @@ def update_item_filter_metadata(item, metadata, ratings=None):
     updates = {
         "release_date": release_date,
         "release_year": release_year,
+        "runtime_minutes": _runtime_minutes(metadata),
         "filter_metadata_updated_at": timezone.now(),
     }
     for source, field in {
@@ -180,6 +182,18 @@ def apply_item_filters(queryset, params, *, item_path="item__"):
     if year_max is not None:
         queryset = queryset.filter(**{f"{item_path}release_year__lte": year_max})
 
+    release_status = params.get("release_status")
+    if release_status == "released":
+        queryset = queryset.filter(**{f"{item_path}release_date__lte": timezone.localdate()})
+    elif release_status == "unreleased":
+        queryset = queryset.filter(**{f"{item_path}release_date__gt": timezone.localdate()})
+
+    length = params.get("length")
+    if length == "feature":
+        queryset = queryset.filter(**{f"{item_path}runtime_minutes__gte": SHORT_FILM_MINUTES})
+    elif length == "short":
+        queryset = queryset.filter(**{f"{item_path}runtime_minutes__lt": SHORT_FILM_MINUTES})
+
     queryset = _apply_facet_filter(queryset, params, item_path, "genre")
     queryset = _apply_facet_filter(queryset, params, item_path, "language")
     return queryset
@@ -189,12 +203,17 @@ def ensure_filter_metadata(queryset, params, *, item_path="item__", force=False,
     """Populate missing Item filter metadata before DB filtering/sorting."""
     needed_facets = set()
     needs_year = force or bool(values(params, "year")) or params.get("year_min") or params.get("year_max")
-    needs_release_date = force or (params.get("sort") or params.get("ordering")) in METADATA_SORTS
+    needs_release_date = (
+        force
+        or (params.get("sort") or params.get("ordering")) in METADATA_SORTS
+        or params.get("release_status") in {"released", "unreleased"}
+    )
+    needs_runtime = force or params.get("length") in {"feature", "short"}
     if force or values(params, "genre"):
         needed_facets.add(ItemFilterFacet.FacetType.GENRE)
     if force or values(params, "language"):
         needed_facets.add(ItemFilterFacet.FacetType.LANGUAGE)
-    if not (needs_year or needs_release_date or needed_facets):
+    if not (needs_year or needs_release_date or needs_runtime or needed_facets):
         return
 
     from app.providers import services as provider_services
@@ -206,6 +225,7 @@ def ensure_filter_metadata(queryset, params, *, item_path="item__", force=False,
         has_needed_values = (
             (not needs_year or item.release_year is not None)
             and (not needs_release_date or item.release_date is not None)
+            and (not needs_runtime or item.runtime_minutes is not None)
             and needed_facets.issubset(facets)
         )
         if has_needed_values:
@@ -518,6 +538,31 @@ def _rating_decimal(value):
     try:
         return Decimal(str(value).replace("%", ""))
     except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _runtime_minutes(metadata):
+    details = metadata.get("details") or {}
+    value = metadata.get("runtime") or details.get("runtime")
+    if value in (None, ""):
+        return None
+    if isinstance(value, int | float):
+        return int(value) or None
+    text = str(value).strip().lower()
+    total = 0
+    for part in text.split():
+        number = part[:-1]
+        if not number.isdigit():
+            continue
+        if part.endswith("h"):
+            total += int(number) * 60
+        elif part.endswith("m"):
+            total += int(number)
+    if total:
+        return total
+    try:
+        return int(text)
+    except ValueError:
         return None
 
 

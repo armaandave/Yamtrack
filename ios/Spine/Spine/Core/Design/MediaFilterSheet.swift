@@ -9,6 +9,8 @@ struct MediaFilterSheet: View {
     let onApply: () -> Void
 
     @State private var draft: MediaFilterState
+    @State private var isGenreExpanded = false
+    @State private var isLanguageExpanded = false
 
     init(
         filter: Binding<MediaFilterState>,
@@ -31,6 +33,7 @@ struct MediaFilterSheet: View {
                 sortSection
                 contextSection
                 yearSection
+                releaseSection
                 choiceSection("Genre", choices: options.genres, keyPath: \.genres)
                 choiceSection("Language", choices: options.languages, keyPath: \.languages)
                 ratingSection
@@ -65,13 +68,6 @@ struct MediaFilterSheet: View {
 
     private var sortSection: some View {
         Section("Sort") {
-            Picker("Sort by", selection: sortBinding) {
-                Text("Default").tag(String?.none)
-                ForEach(sortChoices) { choice in
-                    Text(choice.label).tag(Optional(choice.value))
-                }
-            }
-
             Picker("Direction", selection: directionBinding) {
                 ForEach(MediaFilterDirection.allCases) { direction in
                     Text(direction.label).tag(direction)
@@ -79,6 +75,13 @@ struct MediaFilterSheet: View {
             }
             .pickerStyle(.segmented)
             .disabled(draft.sort == nil)
+
+            Picker("Sort by", selection: sortBinding) {
+                Text("Default").tag(String?.none)
+                ForEach(sortChoices) { choice in
+                    Text(choice.label).tag(Optional(choice.value))
+                }
+            }
         }
     }
 
@@ -116,11 +119,22 @@ struct MediaFilterSheet: View {
                 }
             }
             .disabled(options.years.isEmpty)
+        }
+    }
 
-            TextField("From", value: $draft.yearMin, format: .number)
-                .keyboardType(.numberPad)
-            TextField("To", value: $draft.yearMax, format: .number)
-                .keyboardType(.numberPad)
+    private var releaseSection: some View {
+        Section("Release") {
+            Picker("Status", selection: releaseStatusBinding) {
+                Text("Any").tag(String?.none)
+                Text("Released").tag(Optional("released"))
+                Text("Unreleased").tag(Optional("unreleased"))
+            }
+
+            Picker("Length", selection: lengthBinding) {
+                Text("Any").tag(String?.none)
+                Text("Feature Length").tag(Optional("feature"))
+                Text("Short Film").tag(Optional("short"))
+            }
         }
     }
 
@@ -130,25 +144,29 @@ struct MediaFilterSheet: View {
         keyPath: WritableKeyPath<MediaFilterState, [String]>
     ) -> some View {
         Section(title) {
-            if choices.isEmpty {
-                Text("No options")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(choices) { choice in
-                    Button {
-                        draft.toggle(choice.value, in: keyPath)
-                    } label: {
-                        HStack {
-                            Text(choice.label)
-                            Spacer()
-                            if draft[keyPath: keyPath].contains(choice.value) {
-                                Image(systemName: "checkmark")
-                                    .font(.body.weight(.semibold))
+            DisclosureGroup(isExpanded: expandedBinding(for: title)) {
+                if choices.isEmpty {
+                    Text("No options")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(choices) { choice in
+                        Button {
+                            draft.toggle(choice.value, in: keyPath)
+                        } label: {
+                            HStack {
+                                Text(choice.label)
+                                Spacer()
+                                if draft[keyPath: keyPath].contains(choice.value) {
+                                    Image(systemName: "checkmark")
+                                        .font(.body.weight(.semibold))
+                                }
                             }
                         }
+                        .foregroundStyle(.primary)
                     }
-                    .foregroundStyle(.primary)
                 }
+            } label: {
+                Text(compactTitle(title, count: draft[keyPath: keyPath].count))
             }
         }
     }
@@ -267,6 +285,14 @@ struct MediaFilterSheet: View {
         Binding(get: { draft.year }, set: { draft.year = $0 })
     }
 
+    private var releaseStatusBinding: Binding<String?> {
+        Binding(get: { draft.releaseStatus }, set: { draft.releaseStatus = $0 })
+    }
+
+    private var lengthBinding: Binding<String?> {
+        Binding(get: { draft.length }, set: { draft.length = $0 })
+    }
+
     private var tagBinding: Binding<String> {
         Binding(
             get: { draft.tag ?? "" },
@@ -284,6 +310,14 @@ struct MediaFilterSheet: View {
                 draft[keyPath: keyPath] = trimmed.isEmpty ? nil : Decimal(string: trimmed)
             }
         )
+    }
+
+    private func expandedBinding(for title: String) -> Binding<Bool> {
+        title == "Genre" ? $isGenreExpanded : $isLanguageExpanded
+    }
+
+    private func compactTitle(_ title: String, count: Int) -> String {
+        count == 0 ? title : "\(title) (\(count))"
     }
 }
 

@@ -549,6 +549,7 @@ class ApiV1FoundationTests(TestCase):
             return {
                 "title": media_id,
                 "release_date": release_date,
+                "details": {"runtime": "1h 30m"},
                 "genres": [{"name": "Drama"}],
                 "languages": [{"english_name": "English"}],
             }
@@ -570,6 +571,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["results"][0]["media"]["title"], newest.title)
         newest.refresh_from_db()
         self.assertEqual(newest.release_year, 2030)
+        self.assertEqual(newest.runtime_minutes, 90)
 
     def test_tracking_status_tracked_excludes_planning_before_pagination(self):
         user = get_user_model().objects.create_user(username="tracking-status-tracked", password="strong-password-123")
@@ -597,6 +599,62 @@ class ApiV1FoundationTests(TestCase):
         self.assertTrue(
             all(result["tracking"]["status"] != Status.PLANNING.value for result in response.data["results"]),
         )
+
+    def test_tracking_filters_release_status_and_movie_length(self):
+        user = get_user_model().objects.create_user(username="tracking-release-length", password="strong-password-123")
+        released_feature = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="released-feature",
+            title="Released Feature",
+            release_date=datetime(2024, 1, 1, tzinfo=UTC).date(),
+            release_year=2024,
+            runtime_minutes=90,
+        )
+        released_short = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="released-short",
+            title="Released Short",
+            release_date=datetime(2024, 1, 1, tzinfo=UTC).date(),
+            release_year=2024,
+            runtime_minutes=12,
+        )
+        unreleased_feature = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="unreleased-feature",
+            title="Unreleased Feature",
+            release_date=datetime(2099, 1, 1, tzinfo=UTC).date(),
+            release_year=2099,
+            runtime_minutes=90,
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(user=user, item=released_feature, status=Status.COMPLETED.value),
+                Movie(user=user, item=released_short, status=Status.COMPLETED.value),
+                Movie(user=user, item=unreleased_feature, status=Status.PLANNING.value),
+            ],
+        )
+        self.client.force_authenticate(user)
+
+        released = self.client.get(
+            "/api/v1/tracking/",
+            {"media_type": MediaTypes.MOVIE.value, "release_status": "released", "length": "feature"},
+        )
+        short = self.client.get(
+            "/api/v1/tracking/",
+            {"media_type": MediaTypes.MOVIE.value, "length": "short"},
+        )
+        unreleased = self.client.get(
+            "/api/v1/tracking/",
+            {"media_type": MediaTypes.MOVIE.value, "release_status": "unreleased"},
+        )
+
+        self.assertEqual(released.status_code, status.HTTP_200_OK)
+        self.assertEqual([result["media"]["title"] for result in released.data["results"]], ["Released Feature"])
+        self.assertEqual([result["media"]["title"] for result in short.data["results"]], ["Released Short"])
+        self.assertEqual([result["media"]["title"] for result in unreleased.data["results"]], ["Unreleased Feature"])
 
     def test_tracking_sorts_by_public_average_rating(self):
         user = get_user_model().objects.create_user(username="tracking-average", password="strong-password-123")
