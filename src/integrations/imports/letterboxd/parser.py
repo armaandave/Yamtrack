@@ -28,6 +28,7 @@ LIST_HEADER = ["Position", "Name", "Year", "URL", "Description"]
 class LetterboxdList:
     name: str
     description: str
+    tags: list[str] = field(default_factory=list)
     rows: list[dict] = field(default_factory=list)
 
 
@@ -111,15 +112,20 @@ def _read_list(archive, member, path):
         raise MediaImportError(f"{path}: Unsupported Letterboxd list CSV format.")
 
     metadata = {
-        row[0].strip().lower(): row[1].strip()
+        row[0].strip().lower(): ",".join(row[1:]).strip()
         for row in rows[:header_index]
         if len(row) > 1 and row[0].strip()
     }
-    name = metadata.get("name") or PurePosixPath(path).stem
+    name = metadata.get("name") or _display_name_from_path(path)
     description = metadata.get("description", "")
+    tags = _tags(metadata.get("tags") or metadata.get("tag") or "")
     headers = rows[header_index]
     items = [_normalize_row(dict(zip(headers, row, strict=False))) for row in rows[header_index + 1 :] if row]
-    return LetterboxdList(name=name, description=description, rows=items)
+    return LetterboxdList(name=name, description=description, tags=tags, rows=items)
+
+
+def _display_name_from_path(path):
+    return PurePosixPath(path).stem.replace("-", " ").replace("_", " ").title()
 
 
 def _normalize_row(row):
@@ -130,10 +136,14 @@ def _normalize_row(row):
     row["rating"] = _rating(row.get("Rating"))
     row["date"] = _date(row.get("Watched Date") or row.get("Date"))
     row["rewatch"] = row.get("Rewatch") == "Yes"
-    row["tags"] = [tag.strip() for tag in row.get("Tags", "").split(",") if tag.strip()]
+    row["tags"] = _tags(row.get("Tags", ""))
     row["review"] = row.get("Review", "")
     row["position"] = _int_or_none(row.get("Position"))
     return row
+
+
+def _tags(value):
+    return [tag.strip() for tag in value.split(",") if tag.strip()]
 
 
 def _int_or_none(value):

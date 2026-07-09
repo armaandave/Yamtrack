@@ -2378,6 +2378,48 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(reviews.results.last?.containsSpoilers, true)
     }
 
+    func testMediaCreditPresentationUsesPluralCreditsAndLegacyFallback() throws {
+        let movie = try JSONDecoder.api.decode(MediaDetail.self, from: TestFixtures.richMediaDetailJSON.data(using: .utf8)!)
+        let tv = try JSONDecoder.api.decode(MediaDetail.self, from: TestFixtures.tvDetailJSON.data(using: .utf8)!)
+        let legacy = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "1", seasonNumber: nil, episodeNumber: nil),
+            title: "Legacy",
+            details: ["director": .string("Legacy Director"), "director_id": .number(7)]
+        )
+        let malformed = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "tv", mediaId: "2", seasonNumber: nil, episodeNumber: nil),
+            title: "Malformed",
+            details: [
+                "creators": .array([
+                    .object(["id": .string("1"), "name": .string("Creator One")]),
+                    .object(["id": .string("1"), "name": .string("Creator One")]),
+                    .object(["name": .string(" ")]),
+                    .string("not a person"),
+                ]),
+            ]
+        )
+
+        let movieCredits = try XCTUnwrap(MediaCreditPresentation.make(for: movie))
+        XCTAssertEqual(movieCredits.label, "Directors")
+        XCTAssertEqual(movieCredits.people.map(\.name), ["The Alchemist", "Mica Levi", "Jordan Peele"])
+        XCTAssertEqual(movieCredits.heroPeople.map(\.name), ["The Alchemist", "Mica Levi"])
+        XCTAssertEqual(movieCredits.heroMoreCount, 1)
+        XCTAssertEqual(movieCredits.people.first?.personRef?.id, "c1")
+
+        let tvCredits = try XCTUnwrap(MediaCreditPresentation.make(for: tv))
+        XCTAssertEqual(tvCredits.label, "Creators")
+        XCTAssertEqual(tvCredits.people.count, 5)
+        XCTAssertEqual(tvCredits.heroPeople.count, 2)
+        XCTAssertEqual(tvCredits.heroMoreCount, 3)
+
+        let legacyCredits = try XCTUnwrap(MediaCreditPresentation.make(for: legacy))
+        XCTAssertEqual(legacyCredits.label, "Director")
+        XCTAssertEqual(legacyCredits.people.map(\.name), ["Legacy Director"])
+        XCTAssertEqual(legacyCredits.people.first?.personRef?.id, "7")
+
+        XCTAssertEqual(MediaCreditPresentation.make(for: malformed)?.people.map(\.name), ["Creator One"])
+    }
+
     func testHallOfFameItemsResponseDecodesMediaSummaryMap() throws {
         let data = """
         {
@@ -3598,6 +3640,54 @@ final class SpineTests: XCTestCase {
 
         viewModel.setRating(locationX: 25, width: 100)
         XCTAssertEqual(viewModel.ratingSteps, 3)
+
+        viewModel.setRating(locationX: 0, width: 100)
+        XCTAssertEqual(viewModel.ratingSteps, 0)
+        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: viewModel.ratingSteps))
+    }
+
+    @MainActor
+    func testMediaLogUsesMediaSpecificActionTitles() {
+        let movieLog = MediaLogViewModel(
+            detail: TestFixtures.movieDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let bookLog = MediaLogViewModel(
+            detail: TestFixtures.logDetail(mediaType: "book"),
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        XCTAssertEqual(movieLog.primaryActionTitle, "Log Movie")
+        XCTAssertEqual(bookLog.primaryActionTitle, "Log Book")
+    }
+
+    @MainActor
+    func testMediaLogTagsLoadOnlyForTypedQueries() async {
+        let diary = RecordingDiaryRepository()
+        let viewModel = MediaLogViewModel(
+            detail: TestFixtures.movieDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        await viewModel.loadTags()
+
+        XCTAssertTrue(diary.tagQueries.isEmpty)
+        XCTAssertTrue(viewModel.tagSuggestions.isEmpty)
+
+        viewModel.tagQuery = "net"
+        await viewModel.loadTags()
+
+        XCTAssertEqual(diary.tagQueries, ["net"])
+        XCTAssertEqual(viewModel.tagSuggestions.map(\.name), ["netflix"])
     }
 
     @MainActor
@@ -4615,6 +4705,7 @@ private final class DiaryLogFixtureMediaRepository: MediaRepository {
 
 private final class RecordingDiaryRepository: DiaryRepository {
     var createdRequests: [DiaryEntryWriteRequest] = []
+    var tagQueries: [String] = []
     let error: Error?
 
     init(error: Error? = nil) {
@@ -4635,7 +4726,8 @@ private final class RecordingDiaryRepository: DiaryRepository {
     func setLike(entryId: Int, liked: Bool) async throws -> LikeState { fatalError("Not used") }
 
     func tags(query: String) async throws -> [DiaryTagSuggestion] {
-        [DiaryTagSuggestion(name: "netflix", usageCount: 12)]
+        tagQueries.append(query)
+        return [DiaryTagSuggestion(name: "netflix", usageCount: 12)]
     }
 }
 
@@ -5023,6 +5115,12 @@ private enum TestFixtures {
       "backdrop_url": "https://image.tmdb.org/t/p/original/rr7E0NoGKxvbkb89eR1GwfoYjpA.jpg",
       "details": {
         "director": "The Alchemist",
+        "director_id": "c1",
+        "directors": [
+          { "id": "c1", "name": "The Alchemist" },
+          { "id": "c2", "name": "Mica Levi" },
+          { "id": "c3", "name": "Jordan Peele" }
+        ],
         "runtime": "2h 7m",
         "rating": "R",
         "release_date": "2026-06-19",
@@ -5088,6 +5186,14 @@ private enum TestFixtures {
       "backdrop_url": "https://image.tmdb.org/t/p/original/9xxLWtnFxkpJ2h1uthpvCRK6vta.jpg",
       "details": {
         "creator": "Lena Okafor",
+        "creator_id": "creator-1",
+        "creators": [
+          { "id": "creator-1", "name": "Lena Okafor" },
+          { "id": "creator-2", "name": "Ravi Shah" },
+          { "id": "creator-3", "name": "Mina Park" },
+          { "id": "creator-4", "name": "Noah King" },
+          { "id": "creator-5", "name": "Ana Torres" }
+        ],
         "format": "TV",
         "first_air_date": "2024-01-14",
         "last_air_date": "2025-03-02",

@@ -1972,7 +1972,15 @@ class ApiV1FoundationTests(TestCase):
             "score": "8.4",
             "score_count": 1000,
             "genres": [{"name": "Drama"}, "Thriller"],
-            "details": {"runtime": "2h 19m"},
+            "details": {
+                "runtime": "2h 19m",
+                "director": "David Fincher",
+                "director_id": 7467,
+                "directors": [
+                    {"id": "7467", "name": "David Fincher"},
+                    {"id": "9123", "name": "Jane Director"},
+                ],
+            },
             "cast": [{"person_id": 819, "name": "Edward Norton", "character": "Narrator", "image": "/ed.jpg"}],
             "crew": [{"person_id": 7467, "name": "David Fincher", "roles": ["Director"], "job": "Director", "image": "/fincher.jpg"}],
             "related": {
@@ -2044,6 +2052,15 @@ class ApiV1FoundationTests(TestCase):
             [("TMDB", "8.4"), ("IMDb", "8.8"), ("Letterboxd", "4.3"), ("Rotten Tomatoes", "79%")],
         )
         self.assertEqual(response.data["details"]["genres"], ["Drama", "Thriller"])
+        self.assertEqual(response.data["details"]["director"], "David Fincher")
+        self.assertEqual(response.data["details"]["director_id"], 7467)
+        self.assertEqual(
+            response.data["details"]["directors"],
+            [
+                {"id": "7467", "name": "David Fincher"},
+                {"id": "9123", "name": "Jane Director"},
+            ],
+        )
         self.assertEqual(response.data["cast"][0]["name"], "Edward Norton")
         self.assertEqual(response.data["crew"][0]["role"], "Director")
         self.assertEqual(response.data["crew"][0]["image_url"], "http://testserver/fincher.jpg")

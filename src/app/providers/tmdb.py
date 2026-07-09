@@ -17,7 +17,7 @@ from app.providers.search_rank import rank_results
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
 NO_LOGO = "__no_logo__"
-DETAIL_CACHE_VERSION = "v2"
+DETAIL_CACHE_VERSION = "v3"
 base_params = {
     "api_key": settings.TMDB_API,
     "language": settings.TMDB_LANG,
@@ -387,6 +387,44 @@ def get_director_id(credits):
     return directors[0].get("id") if directors else None
 
 
+def _people_details(people):
+    """Return ordered, de-duplicated person details for media metadata."""
+    result = []
+    seen = set()
+    for person in people or []:
+        if not isinstance(person, dict):
+            continue
+        name = (person.get("name") or "").strip()
+        if not name:
+            continue
+        person_id = person.get("id")
+        key = ("id", str(person_id)) if person_id is not None else ("name", name.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        detail = {"name": name}
+        if person_id is not None:
+            detail["id"] = str(person_id)
+        result.append(detail)
+    return result
+
+
+def get_directors(credits):
+    """Return all directors from movie credits in TMDB's supplied order."""
+    if not credits or "crew" not in credits:
+        return []
+    return _people_details(
+        crew
+        for crew in credits["crew"]
+        if (crew.get("job") or "").strip().lower() == "director"
+    )
+
+
+def get_creators(creators):
+    """Return all TV creators in TMDB's supplied order."""
+    return _people_details(creators)
+
+
 def get_creator_id(created_by):
     """Return the creator's person ID from created_by."""
     if not created_by:
@@ -467,6 +505,7 @@ def movie(media_id):
                 "languages": get_languages(response["spoken_languages"]),
                 "director": get_director(response.get("credits")),
                 "director_id": get_director_id(response.get("credits")),
+                "directors": get_directors(response.get("credits")),
             },
             "cast": get_cast(response.get("credits")),
             "crew": get_crew(response.get("credits")),
@@ -682,6 +721,7 @@ def process_tv(response):
             "languages": get_languages(response["spoken_languages"]),
             "creator": get_creator(response.get("created_by")),
             "creator_id": get_creator_id(response.get("created_by")),
+            "creators": get_creators(response.get("created_by")),
         },
         "cast": get_cast(response.get("credits")),
         "crew": get_crew(response.get("credits")),

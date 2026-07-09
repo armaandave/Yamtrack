@@ -1033,6 +1033,7 @@ private extension CustomListDetail {
             name: name,
             slug: slug,
             description: description,
+            tags: tags,
             visibility: visibility,
             isRanked: isRanked,
             owner: owner,
@@ -1346,6 +1347,10 @@ private struct ProfileListDetailView: View {
                 }
             }
 
+            if !list.tags.isEmpty {
+                tagRow(list.tags)
+            }
+
             let description = list.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !description.isEmpty {
                 Text(description)
@@ -1353,6 +1358,21 @@ private struct ProfileListDetailView: View {
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(4)
                     .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+            }
+        }
+    }
+
+    private func tagRow(_ tags: [String]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(tags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(.white.opacity(0.13), in: Capsule())
+                }
             }
         }
     }

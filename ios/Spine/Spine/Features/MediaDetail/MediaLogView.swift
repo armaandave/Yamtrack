@@ -85,29 +85,26 @@ final class MediaLogViewModel {
 
     var primaryActionTitle: String {
         switch selectedRef.mediaType {
-        case "book", "manga", "comic":
-            "Log Read"
-        case "game", "boardgame":
-            "Log Play"
+        case "movie":
+            "Log Movie"
+        case "tv":
+            "Log TV Show"
         case "season":
             "Log Season"
-        case "tv":
-            "Log Show"
+        case "anime":
+            "Log Anime"
+        case "manga":
+            "Log Manga"
+        case "comic":
+            "Log Comic"
+        case "game":
+            "Log Game"
+        case "boardgame":
+            "Log Board Game"
+        case "book":
+            "Log Book"
         default:
-            "Log Watched"
-        }
-    }
-
-    var markOnlyTitle: String {
-        switch selectedRef.mediaType {
-        case "book", "manga", "comic":
-            "Mark Read"
-        case "game", "boardgame":
-            "Mark Played"
-        case "season":
-            "Mark Season Watched"
-        default:
-            "Mark Watched"
+            "Log Entry"
         }
     }
 
@@ -166,15 +163,26 @@ final class MediaLogViewModel {
     func setRating(locationX: CGFloat, width: CGFloat) {
         guard width > 0 else { return }
         let clamped = min(max(locationX, 0), width)
-        let next = max(1, min(10, Int(ceil((clamped / width) * 10))))
-        ratingSteps = next
+        ratingSteps = min(10, Int(ceil((clamped / width) * 10)))
     }
 
     func loadTags() async {
+        let query = tagQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            tagSuggestions = []
+            isLoadingTags = false
+            return
+        }
+
         isLoadingTags = true
         defer { isLoadingTags = false }
         do {
-            tagSuggestions = try await diaryRepository.tags(query: tagQuery)
+            try await Task.sleep(for: .milliseconds(250))
+            try Task.checkCancellation()
+            guard query == tagQuery.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            tagSuggestions = try await diaryRepository.tags(query: query)
+        } catch is CancellationError {
+            return
         } catch {
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -185,12 +193,14 @@ final class MediaLogViewModel {
     func addTypedTag() {
         addTag(tagQuery)
         tagQuery = ""
+        tagSuggestions = []
     }
 
     func addTag(_ rawTag: String) {
         let tag = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tag.isEmpty, !tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) else { return }
         tags.append(tag)
+        tagSuggestions = []
     }
 
     func removeTag(_ tag: String) {
@@ -288,6 +298,15 @@ private enum MediaLogError: LocalizedError {
 struct MediaLogView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaLogViewModel
+    @FocusState private var focusedField: LogField?
+
+    private enum LogField: Hashable {
+        case review
+        case tag
+        case progress
+    }
+
+    private static let tagEditorAnchor = "mediaLogTagEditor"
 
     init(
         detail: MediaDetail,
@@ -308,47 +327,52 @@ struct MediaLogView: View {
     var body: some View {
         ZStack(alignment: .top) {
             SpinePageBackground()
+            backdrop
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 22) {
-                    header
-                    modePicker
-                    if viewModel.mode == .progress {
-                        progressFields
-                    } else {
-                        finishedFields
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
+                        modePicker
+                        if viewModel.mode == .progress {
+                            progressFields
+                        } else {
+                            finishedFields
+                        }
+                        errorText
                     }
-                    errorText
-                    actions
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 20)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 18)
-                .padding(.bottom, 34)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: focusedField) { _, field in
+                    guard field == .tag else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(Self.tagEditorAnchor, anchor: .bottom)
+                    }
+                }
+                .onChange(of: viewModel.tagSuggestions) { _, suggestions in
+                    guard focusedField == .tag, !suggestions.isEmpty else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(Self.tagEditorAnchor, anchor: .bottom)
+                    }
+                }
             }
         }
-        .task {
-            await viewModel.loadTags()
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if focusedField == nil {
+                actionsFooter
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            closeButton
+                .padding(.leading, 18)
+                .padding(.top, 12)
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(.white.opacity(0.12), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close")
-
-                Spacer()
-            }
-
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .bottom, spacing: 14) {
                 MediaArtwork(
                     url: viewModel.detail.displayPosterURL,
@@ -373,24 +397,61 @@ struct MediaLogView: View {
 
                     if let subtitle = viewModel.detail.subtitle ?? viewModel.detail.releaseDate {
                         Text(subtitle)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.58))
                             .lineLimit(1)
                     }
                 }
             }
         }
+        .padding(.top, 92)
+        .padding(.bottom, 6)
+    }
+
+    private var backdrop: some View {
+        ZStack(alignment: .top) {
+            HeroArtwork(detail: viewModel.detail)
+                .frame(height: 286)
+
+            LinearGradient(
+                colors: [.black.opacity(0.14), SpinePalette.pageBackground.opacity(0.64), SpinePalette.pageBackground],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 306)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .ignoresSafeArea(edges: .top)
+        .accessibilityHidden(true)
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay {
+                    Circle().stroke(.white.opacity(0.08))
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Close log")
     }
 
     @ViewBuilder
     private var modePicker: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             if viewModel.supportsProgress {
                 Picker("Log mode", selection: $viewModel.mode) {
                     Text("Finished").tag(MediaLogMode.finished)
                     Text("Progress").tag(MediaLogMode.progress)
                 }
                 .pickerStyle(.segmented)
+                .tint(.white.opacity(0.9))
             }
 
             if viewModel.supportsSeasonLogging {
@@ -415,45 +476,57 @@ struct MediaLogView: View {
                 .foregroundStyle(viewModel.selectedSeasonNumber == seasonNumber ? .black : .white.opacity(0.82))
                 .padding(.horizontal, 13)
                 .frame(height: 34)
-                .background(viewModel.selectedSeasonNumber == seasonNumber ? .white.opacity(0.92) : .white.opacity(0.12), in: Capsule())
+                .background(viewModel.selectedSeasonNumber == seasonNumber ? .white.opacity(0.92) : .black.opacity(0.24), in: Capsule())
+                .overlay {
+                    Capsule().stroke(.white.opacity(viewModel.selectedSeasonNumber == seasonNumber ? 0 : 0.1))
+                }
         }
         .buttonStyle(.plain)
     }
 
     private var finishedFields: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            fieldGroup {
-                DatePicker("Date", selection: $viewModel.consumedAt, displayedComponents: [.date])
-                    .datePickerStyle(.compact)
-                    .colorScheme(.dark)
+        VStack(alignment: .leading, spacing: 14) {
+            composerSurface {
+                dateRow
+                Divider().overlay(.white.opacity(0.1))
                 ratingPicker
-            }
-
-            fieldGroup {
-                TextField("Review", text: $viewModel.review, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(5...9)
+                Divider().overlay(.white.opacity(0.1))
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionLabel("Review")
+                    TextField("Review", text: $viewModel.review, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .focused($focusedField, equals: .review)
+                        .lineLimit(5...8)
+                        .font(.system(size: 17, weight: .regular, design: .rounded))
+                        .foregroundStyle(.white)
+                        .tint(.white)
+                }
             }
 
             tagEditor
+                .id(Self.tagEditorAnchor)
             options
         }
     }
 
     private var progressFields: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            fieldGroup {
+        composerSurface {
+            VStack(alignment: .leading, spacing: 14) {
                 if viewModel.detail.ref.mediaType == "book" {
                     Picker("Progress Type", selection: $viewModel.progressType) {
                         Text("Pages").tag("pages")
                         Text("Percent").tag("percentage")
                     }
                     .pickerStyle(.segmented)
+                    .tint(.white.opacity(0.9))
                 }
 
+                sectionLabel("Progress")
                 HStack {
                     TextField(viewModel.progressPlaceholder, text: $viewModel.progressText)
                         .keyboardType(.decimalPad)
+                        .focused($focusedField, equals: .progress)
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
                     Text(viewModel.progressUnit)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.white.opacity(0.48))
@@ -463,20 +536,40 @@ struct MediaLogView: View {
 
                 TextField("Notes", text: $viewModel.review, axis: .vertical)
                     .lineLimit(3...7)
+                    .font(.system(size: 17, weight: .regular, design: .rounded))
+                    .foregroundStyle(.white)
+                    .tint(.white)
             }
         }
     }
 
+    private var dateRow: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 3) {
+                sectionLabel("Date")
+            }
+
+            Spacer(minLength: 12)
+
+            DatePicker("Date", selection: $viewModel.consumedAt, displayedComponents: [.date])
+                .labelsHidden()
+                .datePickerStyle(.compact)
+                .colorScheme(.dark)
+                .tint(.white)
+        }
+    }
+
     private var ratingPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("Your rating")
+            HStack(alignment: .center, spacing: 10) {
                 GeometryReader { proxy in
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         ForEach(1...5, id: \.self) { star in
                             Image(systemName: starSystemName(star))
-                                .font(.system(size: 32, weight: .bold))
+                                .font(.system(size: 34, weight: .bold))
                                 .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
-                                .frame(width: 33)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                     .contentShape(Rectangle())
@@ -487,10 +580,12 @@ struct MediaLogView: View {
                             }
                     )
                 }
-                .frame(width: 189, height: 42)
+                .frame(maxWidth: 218)
+                .frame(height: 44)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Rating")
                 .accessibilityValue(viewModel.ratingLabel())
+                .accessibilityHint("Drag all the way left to clear your rating")
                 .accessibilityAdjustableAction { direction in
                     switch direction {
                     case .increment:
@@ -522,8 +617,8 @@ struct MediaLogView: View {
             }
 
             Text(viewModel.ratingLabel())
-                .font(.system(size: 13, weight: .heavy))
-                .foregroundStyle(.white.opacity(0.62))
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(viewModel.ratingSteps == 0 ? .white.opacity(0.58) : .yellow.opacity(0.9))
         }
     }
 
@@ -538,30 +633,32 @@ struct MediaLogView: View {
     }
 
     private var tagEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !viewModel.tags.isEmpty {
-                FlowLayout(spacing: 8) {
-                    ForEach(viewModel.tags, id: \.self) { tag in
-                        Button {
-                            viewModel.removeTag(tag)
-                        } label: {
-                            Label(tag, systemImage: "xmark")
-                                .font(.system(size: 12, weight: .bold))
-                                .labelStyle(.titleAndIcon)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .frame(height: 30)
-                                .background(.white.opacity(0.13), in: Capsule())
+        composerSurface {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionLabel("Tags")
+                if !viewModel.tags.isEmpty {
+                    FlowLayout(spacing: 8) {
+                        ForEach(viewModel.tags, id: \.self) { tag in
+                            Button {
+                                viewModel.removeTag(tag)
+                            } label: {
+                                Label(tag, systemImage: "xmark")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .labelStyle(.titleAndIcon)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 30)
+                                    .background(.white.opacity(0.13), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
-            }
 
-            fieldGroup {
-                HStack {
-                    TextField("Tags", text: $viewModel.tagQuery)
+                HStack(spacing: 12) {
+                    TextField("Add tags", text: $viewModel.tagQuery)
                         .textInputAutocapitalization(.never)
+                        .focused($focusedField, equals: .tag)
                         .onSubmit { viewModel.addTypedTag() }
                         .task(id: viewModel.tagQuery) {
                             await viewModel.loadTags()
@@ -569,11 +666,24 @@ struct MediaLogView: View {
                     Button {
                         viewModel.addTypedTag()
                     } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 22, weight: .semibold))
+                        Image(systemName: "plus")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.black)
+                            .frame(width: 30, height: 30)
+                            .background(.white, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .disabled(viewModel.tagQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Add tag")
+                }
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 46)
+                .background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(.white.opacity(0.1))
                 }
             }
 
@@ -601,8 +711,10 @@ struct MediaLogView: View {
     }
 
     private var options: some View {
-        fieldGroup {
+        composerSurface {
             Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .tint(.red)
         }
     }
 
@@ -611,8 +723,11 @@ struct MediaLogView: View {
             Image(systemName: systemName)
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(selectedIconColor(systemName: systemName, isSelected: isSelected))
-                .frame(width: 42, height: 42)
-                .background(isSelected ? .white.opacity(0.94) : .white.opacity(0.12), in: Circle())
+                .frame(width: 44, height: 44)
+                .background(isSelected ? .white.opacity(0.94) : .black.opacity(0.24), in: Circle())
+                .overlay {
+                    Circle().stroke(.white.opacity(isSelected ? 0 : 0.1))
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -633,8 +748,8 @@ struct MediaLogView: View {
         }
     }
 
-    private var actions: some View {
-        VStack(spacing: 10) {
+    private var actionsFooter: some View {
+        VStack(spacing: 0) {
             Button {
                 Task {
                     if await viewModel.save() {
@@ -647,22 +762,13 @@ struct MediaLogView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.isSaving)
 
-            Button {
-                Task {
-                    if await viewModel.markOnly() {
-                        dismiss()
-                    }
-                }
-            } label: {
-                Text(viewModel.markOnlyTitle)
-                    .font(.system(size: 15, weight: .heavy))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            .disabled(viewModel.isSaving)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(SpinePalette.pageBackground)
+        .overlay(alignment: .top) {
+            Divider().overlay(.white.opacity(0.1))
         }
     }
 
@@ -680,23 +786,29 @@ struct MediaLogView: View {
         }
         .foregroundStyle(.black)
         .frame(height: 54)
-        .background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 8))
+        .background(.white.opacity(0.94), in: Capsule())
     }
 
-    private func fieldGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    private func composerSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             content()
         }
-        .font(.system(size: 16, weight: .semibold))
         .foregroundStyle(.white)
         .tint(.white)
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+        .background(SpinePalette.pageBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.white.opacity(0.06))
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(.white.opacity(0.09))
         }
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .heavy, design: .rounded))
+            .foregroundStyle(.white.opacity(0.56))
+            .textCase(.uppercase)
     }
 }
 

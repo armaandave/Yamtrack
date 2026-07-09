@@ -262,6 +262,79 @@ private struct PresentedMediaDiary: Identifiable {
     var title: String { "\(detail.displayTitle) Logs" }
 }
 
+struct MediaPersonCredit: Hashable {
+    let name: String
+    let personRef: PersonRef?
+}
+
+struct MediaCreditPresentation: Hashable {
+    let label: String
+    let people: [MediaPersonCredit]
+
+    var heroPeople: [MediaPersonCredit] {
+        Array(people.prefix(2))
+    }
+
+    var heroMoreCount: Int {
+        max(0, people.count - heroPeople.count)
+    }
+
+    static func make(for detail: MediaDetail) -> MediaCreditPresentation? {
+        guard detail.ref.source == "tmdb" else { return nil }
+
+        let configuration: (pluralKey: String, singularKey: String, singularIDKey: String, singularLabel: String, pluralLabel: String)
+        switch detail.ref.mediaType {
+        case "movie":
+            configuration = ("directors", "director", "director_id", "Director", "Directors")
+        case "tv":
+            configuration = ("creators", "creator", "creator_id", "Creator", "Creators")
+        default:
+            return nil
+        }
+
+        let people = pluralPeople(in: detail.details?[configuration.pluralKey])
+        let resolvedPeople = people.isEmpty
+            ? legacyPerson(
+                name: detail.details?[configuration.singularKey]?.stringValue,
+                id: detail.details?[configuration.singularIDKey]?.stringValue
+            ).map { [$0] } ?? []
+            : people
+        guard !resolvedPeople.isEmpty else { return nil }
+
+        return MediaCreditPresentation(
+            label: resolvedPeople.count == 1 ? configuration.singularLabel : configuration.pluralLabel,
+            people: resolvedPeople
+        )
+    }
+
+    private static func pluralPeople(in value: JSONValue?) -> [MediaPersonCredit] {
+        guard case let .array(values) = value else { return [] }
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard case let .object(person) = value,
+                  let name = person["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty
+            else { return nil }
+            let id = person["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = id.map { "id:\($0)" } ?? "name:\(name.lowercased())"
+            guard seen.insert(key).inserted else { return nil }
+            return MediaPersonCredit(
+                name: name,
+                personRef: id.flatMap { $0.isEmpty ? nil : PersonRef(source: "tmdb", id: $0) }
+            )
+        }
+    }
+
+    private static func legacyPerson(name: String?, id: String?) -> MediaPersonCredit? {
+        guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
+        let id = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MediaPersonCredit(
+            name: name,
+            personRef: id.flatMap { $0.isEmpty ? nil : PersonRef(source: "tmdb", id: $0) }
+        )
+    }
+}
+
 private struct MediaDetailChip: Hashable, Identifiable {
     let label: String
     let discoverRequest: MediaDiscoverRequest?
@@ -830,7 +903,9 @@ struct MediaDetailView: View {
                         maxLogoHeight: 44
                     )
 
-                    if let byline = byline(detail) {
+                    if let credits = MediaCreditPresentation.make(for: detail) {
+                        creditBylineView(credits)
+                    } else if let byline = byline(detail) {
                         bylineView(byline, detail: detail, lineLimit: 2)
                     }
 
@@ -896,7 +971,9 @@ struct MediaDetailView: View {
                             maxLogoHeight: 48
                         )
 
-                        if let byline = byline(detail) {
+                        if let credits = MediaCreditPresentation.make(for: detail) {
+                            creditBylineView(credits)
+                        } else if let byline = byline(detail) {
                             bylineView(byline, detail: detail, lineLimit: 1)
                         }
 
@@ -950,6 +1027,39 @@ struct MediaDetailView: View {
             .multilineTextAlignment(alignment)
     }
 
+    private func creditBylineView(_ credits: MediaCreditPresentation) -> some View {
+        let alignment: Alignment = showsTitleLogo ? .center : .leading
+        let textAlignment: TextAlignment = showsTitleLogo ? .center : .leading
+
+        return VStack(alignment: textAlignment == .center ? .center : .leading, spacing: 2) {
+            ForEach(credits.heroPeople, id: \.self) { person in
+                personCreditText(person, alignment: textAlignment)
+            }
+            if credits.heroMoreCount > 0 {
+                Text("+\(credits.heroMoreCount) more")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.44))
+            }
+        }
+        .multilineTextAlignment(textAlignment)
+        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    @ViewBuilder
+    private func personCreditText(_ person: MediaPersonCredit, alignment: TextAlignment) -> some View {
+        if let personRef = person.personRef {
+            Button {
+                presentedPerson = personRef
+            } label: {
+                bylineText(person.name, lineLimit: 1, alignment: alignment)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View \(person.name)")
+        } else {
+            bylineText(person.name, lineLimit: 1, alignment: alignment)
+        }
+    }
+
     private func backdropURLString(for detail: MediaDetail) -> String? {
         return detail.displayBackdropURL
     }
@@ -983,7 +1093,9 @@ struct MediaDetailView: View {
                 seasonsSection(detail)
             }
 
-            MediaFactsSection(rows: detailRows(detail))
+            MediaFactsSection(rows: detailRows(detail)) { person in
+                presentedPerson = person
+            }
             EpisodesSection(episodes: detail.episodes ?? [])
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
             RecommendationsSection(sections: relatedSections(detail)) { item in
@@ -1319,7 +1431,7 @@ struct MediaDetailView: View {
                 DetailFactRow(label: "Release Date", value: formattedReleaseDate(detail)),
                 DetailFactRow(label: "Runtime", value: detailString(detail, "runtime")),
                 DetailFactRow(label: "Certification", value: detailString(detail, "rating")),
-                DetailFactRow(label: "Director", value: detailString(detail, "director")),
+                creditDetailRow(MediaCreditPresentation.make(for: detail)),
                 DetailFactRow(label: "Box Office", value: moneyString(detail, "revenue")),
             ]
         case "tv", "season":
@@ -1330,7 +1442,7 @@ struct MediaDetailView: View {
                 DetailFactRow(label: "Certification", value: detailString(detail, "rating")),
                 DetailFactRow(label: "Seasons", value: detailString(detail, "seasons")),
                 DetailFactRow(label: "Episodes", value: detailString(detail, "episodes")),
-                DetailFactRow(label: "Creator", value: detailString(detail, "creator")),
+                creditDetailRow(MediaCreditPresentation.make(for: detail)),
             ]
         case "anime":
             rows += [
@@ -1390,8 +1502,11 @@ struct MediaDetailView: View {
                 rows.append(DetailFactRow(label: label, value: values.joined(separator: ", ")))
             }
         }
-        return rows
-        .filter { $0.value?.isEmpty == false }
+        return rows.filter { !$0.isEmpty }
+    }
+
+    private func creditDetailRow(_ credits: MediaCreditPresentation?) -> DetailFactRow {
+        DetailFactRow(label: credits?.label ?? "", people: credits?.people ?? [])
     }
 
     private func creditTitle(_ detail: MediaDetail) -> String {
@@ -1652,7 +1767,7 @@ private enum MediaDetailLayout {
     static let seasonPosterSize = CGSize(width: 90, height: 135)
 }
 
-private enum SpinePalette {
+enum SpinePalette {
     static let pageBackground = Color(red: 0.07, green: 0.07, blue: 0.065)
 }
 
@@ -2047,7 +2162,7 @@ private struct AddToListSheet: View {
     }
 }
 
-private struct HeroArtwork: View {
+struct HeroArtwork: View {
     let detail: MediaDetail
 
     var body: some View {
@@ -2133,7 +2248,7 @@ private struct HeroArtwork: View {
     }
 }
 
-private struct BackdropArtwork: View {
+struct BackdropArtwork: View {
     let urlString: String
 
     var body: some View {
@@ -2626,13 +2741,28 @@ private struct SynopsisFullHeightKey: PreferenceKey {
 
 private struct DetailFactRow: Identifiable {
     let label: String
-    let value: String?
+    var value: String?
+    var people: [MediaPersonCredit]
 
     var id: String { label }
+    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty) }
+
+    init(label: String, value: String?) {
+        self.label = label
+        self.value = value
+        people = []
+    }
+
+    init(label: String, people: [MediaPersonCredit]) {
+        self.label = label
+        value = nil
+        self.people = people
+    }
 }
 
 private struct MediaFactsSection: View {
     let rows: [DetailFactRow]
+    let onPersonSelected: (PersonRef) -> Void
 
     var body: some View {
         if !rows.isEmpty {
@@ -2641,7 +2771,7 @@ private struct MediaFactsSection: View {
 
                 VStack(spacing: 0) {
                     ForEach(rows) { row in
-                        DetailFactRowView(row: row)
+                        DetailFactRowView(row: row, onPersonSelected: onPersonSelected)
 
                         if row.id != rows.last?.id {
                             Divider().overlay(.white.opacity(0.045))
@@ -2656,24 +2786,51 @@ private struct MediaFactsSection: View {
 
 private struct DetailFactRowView: View {
     let row: DetailFactRow
+    let onPersonSelected: (PersonRef) -> Void
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             Text(row.label)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.44))
                 .lineLimit(1)
                 .frame(width: 98, alignment: .leading)
 
-            Text(row.value ?? "")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.84))
-                .lineLimit(2)
-                .minimumScaleFactor(0.86)
+            if row.people.isEmpty {
+                Text(row.value ?? "")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.84))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.86)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(row.people, id: \.self) { person in
+                        if let personRef = person.personRef {
+                            Button {
+                                onPersonSelected(personRef)
+                            } label: {
+                                personName(person.name)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("View \(person.name)")
+                        } else {
+                            personName(person.name)
+                        }
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func personName(_ name: String) -> some View {
+        Text(name)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.84))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

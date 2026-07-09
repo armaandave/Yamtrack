@@ -79,7 +79,7 @@ final class BackdropPickerViewModel {
         defer { isLoading = false }
 
         do {
-            backdrops = try await mediaRepository.backdrops(ref: ref).pinningCurrentFirst()
+            backdrops = try await mediaRepository.backdrops(ref: ref).uniquedByURL().pinningCurrentFirst()
             let currentInOptions = currentBackdropURL.flatMap { current in
                 backdrops.contains { $0.url == current } ? current : nil
             }
@@ -111,6 +111,11 @@ final class BackdropPickerViewModel {
 }
 
 private extension Array where Element == PosterOption {
+    func uniquedByURL() -> [PosterOption] {
+        var seen = Set<String>()
+        return filter { seen.insert($0.url).inserted }
+    }
+
     func pinningCurrentFirst() -> [PosterOption] {
         guard let selectedIndex = firstIndex(where: \.isSelected), selectedIndex != startIndex else { return self }
         var options = self
@@ -284,6 +289,7 @@ private struct BackdropOptionCell: View {
             }
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel(backdrop.isSelected ? "Current backdrop" : "Backdrop option")
     }
 
@@ -291,6 +297,7 @@ private struct BackdropOptionCell: View {
         RoundedRectangle(cornerRadius: 8)
             .fill(Color.gray.opacity(0.18))
             .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .frame(maxWidth: .infinity)
             .overlay {
                 AsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
                     if case let .success(image) = phase {

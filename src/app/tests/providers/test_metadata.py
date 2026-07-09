@@ -100,6 +100,41 @@ class Metadata(TestCase):
 
         self.assertEqual(crew[0]["image"], "https://image.tmdb.org/t/p/w500/denis.jpg")
 
+    def test_tmdb_directors_and_creators_preserve_order_and_deduplicate(self):
+        credits = {
+            "crew": [
+                {"id": 1, "name": " First Director ", "job": "Director"},
+                {"id": 2, "name": "Second Director", "job": "Director"},
+                {"id": 1, "name": "First Director", "job": "Director"},
+                {"id": 3, "name": "Writer", "job": "Writer"},
+                {"id": 4, "name": "", "job": "Director"},
+            ]
+        }
+        creators = [
+            {"id": 10, "name": "Creator One"},
+            {"id": 11, "name": "Creator Two"},
+            {"id": 12, "name": "Creator Three"},
+            {"id": 13, "name": "Creator Four"},
+            {"id": 14, "name": "Creator Five"},
+            {"id": 10, "name": "Creator One"},
+            {"id": 15, "name": ""},
+        ]
+
+        self.assertEqual(
+            tmdb.get_directors(credits),
+            [{"name": "First Director", "id": "1"}, {"name": "Second Director", "id": "2"}],
+        )
+        self.assertEqual(
+            tmdb.get_creators(creators),
+            [
+                {"name": "Creator One", "id": "10"},
+                {"name": "Creator Two", "id": "11"},
+                {"name": "Creator Three", "id": "12"},
+                {"name": "Creator Four", "id": "13"},
+                {"name": "Creator Five", "id": "14"},
+            ],
+        )
+
     def test_tmdb_person_credit_role_groups_common_jobs(self):
         self.assertEqual(tmdb._person_credit_role("Screenplay", "Writing"), "Writer")
         self.assertEqual(tmdb._person_credit_role("Executive Producer", "Production"), "Producer")

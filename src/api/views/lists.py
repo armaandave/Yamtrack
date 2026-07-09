@@ -36,6 +36,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
         "name": custom_list.name,
         "slug": custom_list.slug,
         "description": custom_list.description,
+        "tags": custom_list.tags,
         "visibility": custom_list.visibility,
         "is_ranked": custom_list.is_ranked,
         "owner": user_summary(custom_list.owner, request=request),

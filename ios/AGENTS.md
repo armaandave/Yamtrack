@@ -244,6 +244,40 @@ Rules:
 - API base URL: `ios/Spine/Spine/Core/Environment/AppConfig.swift`
 - Scheme: **Debug** with live API against `http://127.0.0.1:8000` (Docker on same Mac).
 
+### Codex Desktop simulator mirror
+
+For visual iOS work in Codex Desktop, do **not** stop at a normal XcodeBuildMCP build/run. The expected workflow is:
+
+1. Use XcodeBuildMCP to build and run the app on the configured simulator.
+2. Start `serve-sim` for that exact simulator UDID.
+3. Open `http://localhost:3200` in the Codex in-app browser.
+4. Keep the `serve-sim` process running while visual review or iteration is active.
+5. Verify the in-app browser is rendering a real simulator frame before reporting success.
+
+Use this mirror workflow when the user asks to:
+
+- visually inspect the iOS app
+- review UI, layout, spacing, typography, colors, or animations
+- highlight/select areas for annotations
+- view changes live in Codex Desktop
+- iterate on SwiftUI screens with visible feedback
+
+Plain build/test requests do not require the mirror. In those cases, use XcodeBuildMCP build/test tools without opening the in-app browser.
+
+Canonical user-facing prompt this repo should support:
+
+```text
+Build and run the iOS app, then mirror the iPhone simulator inside the Codex in-app browser with serve-sim. Keep the mirror open while we work.
+```
+
+Implementation notes:
+
+- The simulator UDID must come from XcodeBuildMCP session defaults or the build/run result.
+- Prefer the configured simulator in `.xcodebuildmcp/config.yaml` unless the user asks for another device.
+- If `serve-sim` prints a different local URL, open that exact URL instead of assuming port `3200`.
+- If the browser mirror is unavailable or blocked, report that clearly; do not claim visual verification from Apple Simulator alone.
+- Normal app changes still require rebuild/relaunch unless using a supported SwiftUI preview hot-reload workflow.
+
 ---
 
 ## 11) Testing

@@ -128,6 +128,41 @@ class ImportLetterboxdTests(TestCase):
         self.assertEqual([item.position for item in list_items], [1, 2])
         self.assertEqual([item.item.media_id for item in list_items], ["101", "202"])
 
+    def test_list_name_falls_back_to_readable_filename(self):
+        payload = export_zip(
+            {
+                "lists/hidden-gems.csv": (
+                    "Tags,underseen, favorites\n"
+                    "\n"
+                    "Position,Name,Year,URL,Description\n"
+                    "1,Film One,1999,https://boxd.it/film-one-watched,Top pick\n"
+                ),
+            },
+        )
+
+        export = parse_export(payload)
+
+        self.assertEqual(export.lists[0].name, "Hidden Gems")
+        self.assertEqual(export.lists[0].tags, ["underseen", "favorites"])
+
+    def test_imports_list_tags(self):
+        payload = export_zip(
+            {
+                "lists/tagged-list.csv": (
+                    "Name,Tagged List\n"
+                    "Tags,underseen, favorites\n"
+                    "\n"
+                    "Position,Name,Year,URL,Description\n"
+                    "1,Film One,1999,https://boxd.it/film-one-watched,Top pick\n"
+                ),
+            },
+        )
+
+        self._import_bytes(payload)
+
+        custom_list = CustomList.objects.get(name="Tagged List")
+        self.assertEqual(custom_list.tags, ["underseen", "favorites"])
+
     def test_overwrite_deletes_only_letterboxd_data(self):
         manual_list = CustomList.objects.create(owner=self.user, name="Manual")
         old_letterboxd_list = CustomList.objects.create(

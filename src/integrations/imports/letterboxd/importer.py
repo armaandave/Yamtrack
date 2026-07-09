@@ -177,12 +177,19 @@ class LetterboxdImporter:
                 defaults={
                     "slug": f"letterboxd-{slugify(letterboxd_list.name)}"[:255],
                     "description": letterboxd_list.description,
+                    "tags": letterboxd_list.tags,
                     "visibility": CustomList.Visibility.PRIVATE,
                 },
             )
+            fields = []
             if not created and letterboxd_list.description:
                 custom_list.description = letterboxd_list.description
-                custom_list.save(update_fields=["description"])
+                fields.append("description")
+            if not created and letterboxd_list.tags:
+                custom_list.tags = letterboxd_list.tags
+                fields.append("tags")
+            if fields:
+                custom_list.save(update_fields=fields)
             for row in letterboxd_list.rows:
                 item = self._item_for(row, resolved)
                 if not item:
