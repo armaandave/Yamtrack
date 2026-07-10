@@ -749,7 +749,7 @@ def company_catalog(company_id, role):
         raise ValueError("role must be developed or published.")
 
     company_data = company(company_id)
-    cache_key = f"{Sources.IGDB.value}_company_catalog_{company_data['id']}_{role}_v1"
+    cache_key = f"{Sources.IGDB.value}_company_catalog_{company_data['id']}_{role}_v2"
     data = cache.get(cache_key)
     if data is None:
         game_ids = list(dict.fromkeys(company_data.get(role) or []))
@@ -775,7 +775,7 @@ def _games_for_ids(game_ids):
         response = _post_igdb(
             f"{base_url}/games",
             "fields id,name,cover.image_id,cover.width,cover.height,first_release_date,"
-            "total_rating,total_rating_count,genres.name,game_type;"
+            "total_rating,total_rating_count,genres.name,platforms.name,game_type;"
             f"where id = ({ids}); limit {IGDB_BATCH_SIZE};",
             _api_headers(),
         )
@@ -792,6 +792,7 @@ def _company_game_summary(game, role):
         "image": get_image_url(game),
         "release_date": get_start_date(game),
         "genres": get_list(game, "genres") or [],
+        "platforms": get_list(game, "platforms") or [],
         "vote_average": get_score(game),
         "vote_count": game.get("total_rating_count"),
         "roles": ["Developer" if role == "developed" else "Publisher"],

@@ -576,7 +576,9 @@ private final class ProfileListsViewModel {
 struct ProfileListsView: View {
     @State private var viewModel: ProfileListsViewModel
     @State private var searchText = ""
-    @State private var presentedForm: CustomListFormMode?
+    @State private var presentedForm: ListComposerMode?
+    @State private var pendingCreatedListID: Int?
+    @State private var createdListDestination: ProfileCreatedListDestination?
 
     private let listRepository: ListRepository
     private let profileRepository: ProfileRepository
@@ -666,13 +668,22 @@ struct ProfileListsView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .disabled(viewModel.isSaving)
+                .disabled(viewModel.isLoading)
             }
         }
-        .sheet(item: $presentedForm) { mode in
-            CustomListFormSheet(mode: mode, isSaving: viewModel.isSaving) { request in
-                await viewModel.create(request)
+        .fullScreenCover(item: $presentedForm, onDismiss: openCreatedListIfNeeded) { mode in
+            ListComposerView(
+                mode: mode,
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            ) { listID in
+                pendingCreatedListID = listID
+                Task { await viewModel.load() }
             }
+        }
+        .navigationDestination(item: $createdListDestination) { destination in
+            listDetailDestination(listID: destination.id)
         }
         .task {
             if viewModel.lists.isEmpty {
@@ -725,6 +736,37 @@ struct ProfileListsView: View {
         guard !query.isEmpty else { return viewModel.lists }
         return viewModel.lists.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
+
+    private func openCreatedListIfNeeded() {
+        guard let listID = pendingCreatedListID else { return }
+        pendingCreatedListID = nil
+        createdListDestination = ProfileCreatedListDestination(id: listID)
+    }
+
+    private func listDetailDestination(listID: Int) -> some View {
+        ProfileListDetailView(
+            listId: listID,
+            profileRepository: profileRepository,
+            listRepository: listRepository,
+            mediaRepository: mediaRepository,
+            trackingRepository: trackingRepository,
+            diaryRepository: diaryRepository,
+            activityRepository: activityRepository,
+            importCoordinator: importCoordinator,
+            storygraphImportCoordinator: storygraphImportCoordinator,
+            currentUserId: currentUserId,
+            onLogout: onLogout,
+            onOpenDiary: onOpenDiary,
+            onOpenLibrary: onOpenLibrary,
+            selectedTab: selectedTab,
+            onSelectTab: onSelectTab,
+            onUnauthorized: onUnauthorized
+        )
+    }
+}
+
+private struct ProfileCreatedListDestination: Identifiable, Hashable {
+    let id: Int
 }
 
 private struct ProfileListRow: View {
@@ -1049,7 +1091,7 @@ private extension CustomListDetail {
 private struct ProfileListDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: ProfileListDetailViewModel
-    @State private var presentedForm: CustomListFormMode?
+    @State private var presentedForm: ListComposerMode?
     @State private var isDeleteAlertPresented = false
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var edgeDragOffset: CGFloat = 0
@@ -1167,19 +1209,14 @@ private struct ProfileListDetailView: View {
             }
         }
         .onPreferenceChange(ProfileListTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
-        .sheet(item: $presentedForm) { mode in
-            CustomListFormSheet(
+        .fullScreenCover(item: $presentedForm) { mode in
+            ListComposerView(
                 mode: mode,
-                currentList: viewModel.list,
-                isSaving: viewModel.isSaving,
-                onDeleteItem: { item in
-                    await viewModel.remove(item)
-                },
-                onMoveItem: { source, destination in
-                    await viewModel.move(from: source, to: destination)
-                }
-            ) { request in
-                await viewModel.update(request)
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            ) { _ in
+                Task { await viewModel.load() }
             }
         }
         .alert("Delete List?", isPresented: $isDeleteAlertPresented) {
@@ -1656,7 +1693,6 @@ private struct CustomListFormSheet: View {
         VStack(spacing: 0) {
             Picker("Visibility", selection: $visibility) {
                 Text("Public").tag("public")
-                Text("Unlisted").tag("unlisted")
                 Text("Private").tag("private")
             }
             .font(.system(size: 15, weight: .semibold))

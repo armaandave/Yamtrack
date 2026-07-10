@@ -617,6 +617,7 @@ class Metadata(TestCase):
                     "name": "Newer Game",
                     "cover": {"image_id": "newer"},
                     "first_release_date": int(datetime(2024, 1, 1, tzinfo=UTC).timestamp()),
+                    "platforms": [{"name": "PlayStation 5"}],
                     "game_type": 0,
                 },
                 {
@@ -633,6 +634,8 @@ class Metadata(TestCase):
 
         self.assertEqual([game["media_id"] for game in catalog], [10, 11])
         self.assertTrue(all(game["roles"] == ["Developer"] for game in catalog))
+        self.assertEqual(catalog[1]["platforms"], ["PlayStation 5"])
+        self.assertIn("platforms.name", post_igdb.call_args_list[1].args[1])
         self.assertEqual(igdb.company_catalog_count(igdb.company("77"), "developed"), 2)
         self.assertEqual(post_igdb.call_count, 2)
 

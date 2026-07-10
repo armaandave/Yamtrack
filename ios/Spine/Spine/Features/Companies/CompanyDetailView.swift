@@ -7,13 +7,17 @@ final class CompanyDetailViewModel {
     var detail: CompanyDetail?
     var gamesByRole: [CompanyCatalogRole: [MediaSummary]] = [:]
     var nextPageByRole: [CompanyCatalogRole: String] = [:]
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .companyFallback
     var isLoading = false
-    var isLoadingMore = false
     var errorMessage: String?
 
     private let ref: CompanyRef
     private let companyRepository: CompanyRepository
     private let onUnauthorized: () -> Void
+    private var filterRevision = 0
+    private var loadingRevisionByRole: [CompanyCatalogRole: Int] = [:]
+    private var loadingMoreRevisionByRole: [CompanyCatalogRole: Int] = [:]
 
     init(ref: CompanyRef, companyRepository: CompanyRepository, onUnauthorized: @escaping () -> Void) {
         self.ref = ref
@@ -30,6 +34,7 @@ final class CompanyDetailViewModel {
             let loaded = try await companyRepository.detail(ref: ref)
             detail = loaded
             let role = preferredRole(for: loaded)
+            filterRevision += 1
             gamesByRole = [:]
             nextPageByRole = [:]
             await loadGames(for: role, reset: true)
@@ -41,39 +46,95 @@ final class CompanyDetailViewModel {
         }
     }
 
+    func loadFilterOptions() async {
+        do {
+            filterOptions = try await companyRepository.gameFilterOptions(ref: ref)
+        } catch {
+            handleUnauthorized(error)
+        }
+    }
+
     func loadGames(for role: CompanyCatalogRole, reset: Bool = false) async {
         guard detail != nil, reset || gamesByRole[role] == nil else { return }
+        let requestRevision = filterRevision
+        let requestFilter = filter
+        loadingRevisionByRole[role] = requestRevision
         if reset {
             gamesByRole[role] = []
             nextPageByRole[role] = nil
         }
+        defer {
+            if loadingRevisionByRole[role] == requestRevision {
+                loadingRevisionByRole[role] = nil
+            }
+        }
 
         do {
-            let response = try await companyRepository.games(ref: ref, role: role, page: nil)
+            let response = try await companyRepository.games(
+                ref: ref,
+                role: role,
+                page: nil,
+                filter: requestFilter
+            )
+            guard requestRevision == filterRevision, requestFilter == filter else { return }
             gamesByRole[role] = response.results
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
         } catch {
+            guard requestRevision == filterRevision else { return }
             errorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
     }
 
     func loadMore(for role: CompanyCatalogRole) async {
-        guard !isLoadingMore, let page = nextPageByRole[role] else { return }
-        isLoadingMore = true
-        defer { isLoadingMore = false }
+        guard loadingMoreRevisionByRole[role] == nil, let page = nextPageByRole[role] else { return }
+        let requestRevision = filterRevision
+        let requestFilter = filter
+        loadingMoreRevisionByRole[role] = requestRevision
+        defer {
+            if loadingMoreRevisionByRole[role] == requestRevision {
+                loadingMoreRevisionByRole[role] = nil
+            }
+        }
 
         do {
-            let response = try await companyRepository.games(ref: ref, role: role, page: page)
+            let response = try await companyRepository.games(
+                ref: ref,
+                role: role,
+                page: page,
+                filter: requestFilter
+            )
+            guard requestRevision == filterRevision, requestFilter == filter else { return }
             var games = gamesByRole[role] ?? []
             var seen = Set(games.map(\.id))
             games += response.results.filter { seen.insert($0.id).inserted }
             gamesByRole[role] = games
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
         } catch {
+            guard requestRevision == filterRevision else { return }
             errorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
+    }
+
+    func applyFilter(to roles: Set<CompanyCatalogRole>) async {
+        filterRevision += 1
+        let applyRevision = filterRevision
+        errorMessage = nil
+        gamesByRole = [:]
+        nextPageByRole = [:]
+        for role in CompanyCatalogRole.allCases where roles.contains(role) {
+            guard applyRevision == filterRevision else { return }
+            await loadGames(for: role, reset: true)
+        }
+    }
+
+    func isLoadingGames(for role: CompanyCatalogRole) -> Bool {
+        loadingRevisionByRole[role] == filterRevision
+    }
+
+    func isLoadingMore(for role: CompanyCatalogRole) -> Bool {
+        loadingMoreRevisionByRole[role] == filterRevision
     }
 
     private func preferredRole(for detail: CompanyDetail) -> CompanyCatalogRole {
@@ -186,6 +247,7 @@ struct CompanyDetailView: View {
             guard viewModel.detail == nil else { return }
             await viewModel.load()
             expandPrimaryRole()
+            await viewModel.loadFilterOptions()
         }
     }
 
@@ -281,7 +343,22 @@ struct CompanyDetailView: View {
         let availableRoles = CompanyCatalogRole.allCases.filter { $0.count(in: detail) > 0 }
 
         return VStack(alignment: .leading, spacing: 14) {
-            CompanySectionLabel(title: "Games")
+            HStack {
+                CompanySectionLabel(title: "Games")
+
+                Spacer()
+
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .company(ref: detail.ref),
+                    options: viewModel.filterOptions,
+                    mediaTypes: [],
+                    showsTagFilter: false
+                ) {
+                    let roles = expandedRoles
+                    Task { await viewModel.applyFilter(to: roles) }
+                }
+            }
 
             ForEach(availableRoles) { role in
                 roleDisclosureRow(role, detail: detail)
@@ -331,7 +408,7 @@ struct CompanyDetailView: View {
     private func roleGames(_ role: CompanyCatalogRole) -> some View {
         let games = viewModel.gamesByRole[role] ?? []
 
-        if viewModel.gamesByRole[role] == nil, viewModel.errorMessage == nil {
+        if viewModel.isLoadingGames(for: role), viewModel.errorMessage == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 120)
@@ -369,7 +446,7 @@ struct CompanyDetailView: View {
                     Task { await viewModel.loadMore(for: role) }
                 } label: {
                     Group {
-                        if viewModel.isLoadingMore {
+                        if viewModel.isLoadingMore(for: role) {
                             ProgressView().tint(.white)
                         } else {
                             Text("Load More")
@@ -382,7 +459,7 @@ struct CompanyDetailView: View {
                     .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isLoadingMore)
+                .disabled(viewModel.isLoadingMore(for: role))
             }
         }
     }

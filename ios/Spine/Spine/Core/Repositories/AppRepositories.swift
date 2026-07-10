@@ -28,7 +28,19 @@ protocol PeopleRepository {
 
 protocol CompanyRepository {
     func detail(ref: CompanyRef) async throws -> CompanyDetail
-    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary>
+    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse
+    func games(
+        ref: CompanyRef,
+        role: CompanyCatalogRole,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<MediaSummary>
+}
+
+extension CompanyRepository {
+    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary> {
+        try await games(ref: ref, role: role, page: page, filter: MediaFilterState())
+    }
 }
 
 extension PeopleRepository {
@@ -466,11 +478,21 @@ struct APICompanyRepository: CompanyRepository {
         )
     }
 
-    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary> {
+    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
+        try await client.get(
+            "/companies/\(ref.source)/\(ref.companyId)/game-options/",
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+
+    func games(
+        ref: CompanyRef,
+        role: CompanyCatalogRole,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<MediaSummary> {
         var query = [URLQueryItem(name: "role", value: role.rawValue)]
-        if let page {
-            query.append(URLQueryItem(name: "page", value: page))
-        }
+        query += filter.queryItems(page: page)
         return try await client.get(
             "/companies/\(ref.source)/\(ref.companyId)/games/",
             query: query,

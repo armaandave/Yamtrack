@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import logging
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 from aiohttp import ClientError
@@ -45,6 +46,13 @@ DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
 COMPANY_SORTS = {"popularity", "release_date", "title", "average_rating"}
+COMPANY_GAME_SORT_OPTIONS = [
+    {"value": "popularity", "label": "Popularity"},
+    {"value": "release_date", "label": "Release Date"},
+    {"value": "average_rating", "label": "IGDB Rating"},
+    {"value": "title", "label": "Title"},
+]
+COMPANY_GAME_OPTIONS_CACHE_VERSION = "v1"
 POSTER_UNSUPPORTED_MESSAGE = (
     "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
 )
@@ -343,7 +351,17 @@ def company_detail(*, source, company_id):
     }
 
 
-def company_games(*, source, company_id, role, sort="popularity", direction=None, request=None, user=None):
+def company_games(
+    *,
+    source,
+    company_id,
+    role,
+    sort="popularity",
+    direction=None,
+    params=None,
+    request=None,
+    user=None,
+):
     """Return sorted native media summaries for a company catalogue role."""
     if source != Sources.IGDB.value:
         msg = "Company pages are only supported for IGDB in v1."
@@ -357,7 +375,8 @@ def company_games(*, source, company_id, role, sort="popularity", direction=None
 
     direction = direction or ("asc" if sort == "title" else "desc")
     catalog = provider_services.get_company_catalog(source, company_id, role)
-    ordered = _sort_company_catalog(catalog, sort=sort, direction=direction)
+    filtered = _filter_company_catalog(catalog, params or {})
+    ordered = _sort_company_catalog(filtered, sort=sort, direction=direction)
     return [
         media_summary_from_provider(
             game,
@@ -368,6 +387,44 @@ def company_games(*, source, company_id, role, sort="popularity", direction=None
         )
         for game in ordered
     ]
+
+
+def company_game_filter_options(*, source, company_id):
+    """Return complete choices across a company's developed and published games."""
+    if source != Sources.IGDB.value:
+        msg = "Company pages are only supported for IGDB in v1."
+        raise NotImplementedError(msg)
+
+    cache_key = f"company_game_options_{source}_{company_id}_{COMPANY_GAME_OPTIONS_CACHE_VERSION}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    games_by_id = {}
+    for role in ("developed", "published"):
+        for game in provider_services.get_company_catalog(source, company_id, role):
+            games_by_id.setdefault(str(game.get("media_id") or ""), game)
+
+    games = games_by_id.values()
+    genres = sorted({value for game in games for value in game.get("genres") or []}, key=str.casefold)
+    platforms = sorted({value for game in games for value in game.get("platforms") or []}, key=str.casefold)
+    years = sorted(
+        {
+            int(str(game["release_date"])[:4])
+            for game in games
+            if game.get("release_date") and str(game["release_date"])[:4].isdigit()
+        },
+        reverse=True,
+    )
+    options = {
+        "sorts": COMPANY_GAME_SORT_OPTIONS,
+        "genres": [{"value": value, "label": value} for value in genres],
+        "languages": [],
+        "platforms": [{"value": value, "label": value} for value in platforms],
+        "years": years,
+    }
+    cache.set(cache_key, options, DETAIL_TTL)
+    return options
 
 
 def _company_logo_url(logo):
@@ -411,6 +468,128 @@ def _sort_company_catalog(catalog, *, sort, direction):
     else:
         known.sort(key=lambda game: float(game[key]), reverse=descending)
     return [*known, *unknown]
+
+
+def _filter_company_catalog(catalog, params):
+    year = _company_int_param(params, "year")
+    release_status = params.get("release_status")
+    if release_status not in {None, "", "released", "unreleased"}:
+        raise ValueError("release_status must be released or unreleased.")
+    rating_min = _company_decimal_param(params, "rating_min")
+    rating_max = _company_decimal_param(params, "rating_max")
+    if (rating_min is not None and not 0 <= rating_min <= 100) or (
+        rating_max is not None and not 0 <= rating_max <= 100
+    ):
+        raise ValueError("rating_min and rating_max must be between 0 and 100.")
+    if rating_min is not None and rating_max is not None and rating_min > rating_max:
+        raise ValueError("rating_min must be less than or equal to rating_max.")
+
+    genres = set(_company_query_values(params, "genre"))
+    excluded_genres = set(_company_query_values(params, "exclude_genre"))
+    platforms = set(_company_query_values(params, "platform"))
+    excluded_platforms = set(_company_query_values(params, "exclude_platform"))
+    today = datetime.now(tz=UTC).date()
+
+    return [
+        game
+        for game in catalog
+        if _company_game_matches(
+            game,
+            year=year,
+            release_status=release_status,
+            rating_min=rating_min,
+            rating_max=rating_max,
+            genres=genres,
+            excluded_genres=excluded_genres,
+            platforms=platforms,
+            excluded_platforms=excluded_platforms,
+            today=today,
+        )
+    ]
+
+
+def _company_game_matches(  # noqa: C901, PLR0911
+    game,
+    *,
+    year,
+    release_status,
+    rating_min,
+    rating_max,
+    genres,
+    excluded_genres,
+    platforms,
+    excluded_platforms,
+    today,
+):
+    game_genres = set(game.get("genres") or [])
+    game_platforms = set(game.get("platforms") or [])
+    if genres and genres.isdisjoint(game_genres):
+        return False
+    if excluded_genres and not excluded_genres.isdisjoint(game_genres):
+        return False
+    if platforms and platforms.isdisjoint(game_platforms):
+        return False
+    if excluded_platforms and not excluded_platforms.isdisjoint(game_platforms):
+        return False
+
+    release_date = _company_release_date(game.get("release_date"))
+    if year is not None and (release_date is None or release_date.year != year):
+        return False
+    if release_status == "released" and (release_date is None or release_date > today):
+        return False
+    if release_status == "unreleased" and (release_date is None or release_date <= today):
+        return False
+
+    rating = game.get("vote_average")
+    if rating_min is not None or rating_max is not None:
+        if rating in {None, ""}:
+            return False
+        rating = Decimal(str(rating))
+        if rating_min is not None and rating < rating_min:
+            return False
+        if rating_max is not None and rating > rating_max:
+            return False
+    return True
+
+
+def _company_query_values(params, key):
+    if hasattr(params, "getlist"):
+        return [value for value in params.getlist(key) if value not in {None, ""}]
+    value = params.get(key)
+    return [value] if value not in {None, ""} else []
+
+
+def _company_int_param(params, key):
+    value = params.get(key)
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as error:
+        message = f"{key} must be an integer."
+        raise ValueError(message) from error
+
+
+def _company_decimal_param(params, key):
+    value = params.get(key)
+    if value in {None, ""}:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        message = f"{key} must be a number."
+        raise ValueError(message) from error
+
+
+def _company_release_date(value):
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def poster_options(*, source, media_type, media_id, season_number=None, request=None, user=None):

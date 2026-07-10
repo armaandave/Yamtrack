@@ -31,6 +31,7 @@ from api.views.lists import (
 from api.views.media import (
     CommunityStatsView,
     CompanyDetailView,
+    CompanyGameOptionsView,
     CompanyGamesView,
     FilterOptionsView,
     ManualMediaView,
@@ -118,6 +119,11 @@ urlpatterns = [
     path("media/<str:source>/<str:media_type>/<str:media_id>/", MediaDetailView.as_view(), name="api-media-detail"),
     path("people/<str:source>/<str:person_id>/", PersonDetailView.as_view(), name="api-person-detail"),
     path("companies/<str:source>/<str:company_id>/", CompanyDetailView.as_view(), name="api-company-detail"),
+    path(
+        "companies/<str:source>/<str:company_id>/game-options/",
+        CompanyGameOptionsView.as_view(),
+        name="api-company-game-options",
+    ),
     path("companies/<str:source>/<str:company_id>/games/", CompanyGamesView.as_view(), name="api-company-games"),
     path("tracking/", TrackingListView.as_view(), name="api-tracking-list"),
     path("tracking/<str:source>/tv/<str:media_id>/start/", TVStartView.as_view(), name="api-tv-start"),

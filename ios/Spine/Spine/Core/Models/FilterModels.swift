@@ -1,6 +1,7 @@
 import Foundation
 
 enum MediaFilterSort: String, Codable, CaseIterable, Identifiable {
+    case popularity
     case title
     case releaseDate = "release_date"
     case yourRating = "your_rating"
@@ -15,6 +16,7 @@ enum MediaFilterSort: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .popularity: "Popularity"
         case .title: "Title"
         case .releaseDate: "Release Date"
         case .yourRating: "Your Rating"
@@ -47,6 +49,7 @@ enum MediaFilterScope: Equatable {
     case diary
     case list(id: Int)
     case person(ref: PersonRef)
+    case company(ref: CompanyRef)
 
     var optionsQueryItems: [URLQueryItem]? {
         switch self {
@@ -63,6 +66,8 @@ enum MediaFilterScope: Equatable {
                 URLQueryItem(name: "list_id", value: String(id)),
             ]
         case .person:
+            nil
+        case .company:
             nil
         }
     }
@@ -83,8 +88,10 @@ struct MediaFilterState: Equatable {
     var length: String?
     var genres: [String] = []
     var languages: [String] = []
+    var platforms: [String] = []
     var excludedGenres: [String] = []
     var excludedLanguages: [String] = []
+    var excludedPlatforms: [String] = []
     var ratingMin: Decimal?
     var ratingMax: Decimal?
     var watchedFrom: Date?
@@ -109,6 +116,7 @@ struct MediaFilterState: Equatable {
         if length != nil { count += 1 }
         if !genres.isEmpty || !excludedGenres.isEmpty { count += 1 }
         if !languages.isEmpty || !excludedLanguages.isEmpty { count += 1 }
+        if !platforms.isEmpty || !excludedPlatforms.isEmpty { count += 1 }
         if ratingMin != nil || ratingMax != nil { count += 1 }
         if watchedFrom != nil || watchedTo != nil { count += 1 }
         if tag?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { count += 1 }
@@ -139,8 +147,10 @@ struct MediaFilterState: Equatable {
         append("length", length, to: &items)
         genres.forEach { append("genre", $0, to: &items) }
         languages.forEach { append("language", $0, to: &items) }
+        platforms.forEach { append("platform", $0, to: &items) }
         excludedGenres.forEach { append("exclude_genre", $0, to: &items) }
         excludedLanguages.forEach { append("exclude_language", $0, to: &items) }
+        excludedPlatforms.forEach { append("exclude_platform", $0, to: &items) }
         append("rating_min", ratingMin.map(Self.string), to: &items)
         append("rating_max", ratingMax.map(Self.string), to: &items)
         append("watched_from", watchedFrom.map(Self.dateString), to: &items)
@@ -224,7 +234,50 @@ struct MediaFilterOptionsResponse: Decodable, Equatable {
     let sorts: [FilterChoice]
     let genres: [FilterChoice]
     let languages: [FilterChoice]
+    let platforms: [FilterChoice]
     let years: [Int]
 
+    init(
+        sorts: [FilterChoice],
+        genres: [FilterChoice],
+        languages: [FilterChoice],
+        platforms: [FilterChoice] = [],
+        years: [Int]
+    ) {
+        self.sorts = sorts
+        self.genres = genres
+        self.languages = languages
+        self.platforms = platforms
+        self.years = years
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sorts = try container.decodeIfPresent([FilterChoice].self, forKey: .sorts) ?? []
+        genres = try container.decodeIfPresent([FilterChoice].self, forKey: .genres) ?? []
+        languages = try container.decodeIfPresent([FilterChoice].self, forKey: .languages) ?? []
+        platforms = try container.decodeIfPresent([FilterChoice].self, forKey: .platforms) ?? []
+        years = try container.decodeIfPresent([Int].self, forKey: .years) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sorts
+        case genres
+        case languages
+        case platforms
+        case years
+    }
+
     static let empty = MediaFilterOptionsResponse(sorts: [], genres: [], languages: [], years: [])
+    static let companyFallback = MediaFilterOptionsResponse(
+        sorts: [
+            FilterChoice(value: MediaFilterSort.popularity.rawValue, label: "Popularity"),
+            FilterChoice(value: MediaFilterSort.releaseDate.rawValue, label: "Release Date"),
+            FilterChoice(value: MediaFilterSort.averageRating.rawValue, label: "IGDB Rating"),
+            FilterChoice(value: MediaFilterSort.title.rawValue, label: "Title"),
+        ],
+        genres: [],
+        languages: [],
+        years: []
+    )
 }

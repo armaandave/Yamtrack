@@ -272,6 +272,7 @@ class CompanyGamesView(APIView):
                 role=request.query_params.get("role", "developed"),
                 sort=request.query_params.get("sort", "popularity"),
                 direction=request.query_params.get("direction"),
+                params=request.query_params,
                 request=request,
                 user=request.user if request.user.is_authenticated else None,
             )
@@ -287,6 +288,23 @@ class CompanyGamesView(APIView):
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(games, request, view=self)
         return paginator.get_paginated_response(page)
+
+
+class CompanyGameOptionsView(APIView):
+    """Complete provider-backed filter choices for a company's game catalogs."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, company_id):
+        try:
+            return Response(media_service.company_game_filter_options(source=source, company_id=company_id))
+        except NotImplementedError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response({"detail": "Company not found."}, status=status.HTTP_404_NOT_FOUND)
+            raise
 
 
 class MediaReviewsView(APIView):

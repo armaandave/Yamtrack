@@ -38,7 +38,17 @@ struct MediaFilterSheet: View {
                 yearSection
                 releaseSection
                 choiceSection("Genre", choices: options.genres, include: \.genres, exclude: \.excludedGenres)
-                choiceSection("Language", choices: options.languages, include: \.languages, exclude: \.excludedLanguages)
+                if showsPlatformFilter {
+                    choiceSection(
+                        "Platform",
+                        choices: options.platforms,
+                        include: \.platforms,
+                        exclude: \.excludedPlatforms
+                    )
+                }
+                if showsLanguageFilter {
+                    choiceSection("Language", choices: options.languages, include: \.languages, exclude: \.excludedLanguages)
+                }
                 ratingSection
                 diarySection
             }
@@ -61,6 +71,11 @@ struct MediaFilterSheet: View {
                 ToolbarItem(placement: .bottomBar) {
                     Button("Reset", role: .destructive) {
                         draft = resetFilter
+                        if case .company = scope {
+                            filter = draft
+                            onApply()
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -133,10 +148,12 @@ struct MediaFilterSheet: View {
                 Text("Unreleased").tag(Optional("unreleased"))
             }
 
-            Picker("Length", selection: lengthBinding) {
-                Text("Any").tag(String?.none)
-                Text("Feature Length").tag(Optional("feature"))
-                Text("Short Film").tag(Optional("short"))
+            if showsLengthFilter {
+                Picker("Length", selection: lengthBinding) {
+                    Text("Any").tag(String?.none)
+                    Text("Feature Length").tag(Optional("feature"))
+                    Text("Short Film").tag(Optional("short"))
+                }
             }
         }
     }
@@ -184,9 +201,9 @@ struct MediaFilterSheet: View {
 
     private var ratingSection: some View {
         Section("Rating") {
-            TextField("Minimum", text: decimalText(\.ratingMin))
+            TextField(ratingMinimumLabel, text: decimalText(\.ratingMin))
                 .keyboardType(.decimalPad)
-            TextField("Maximum", text: decimalText(\.ratingMax))
+            TextField(ratingMaximumLabel, text: decimalText(\.ratingMax))
                 .keyboardType(.decimalPad)
         }
     }
@@ -214,13 +231,26 @@ struct MediaFilterSheet: View {
             guard MediaFilterSort(rawValue: choice.value) != nil else { return false }
             switch scope {
             case .tracking:
-                return choice.value != MediaFilterSort.consumedAt.rawValue && choice.value != MediaFilterSort.dateAdded.rawValue
+                return choice.value != MediaFilterSort.popularity.rawValue
+                    && choice.value != MediaFilterSort.consumedAt.rawValue
+                    && choice.value != MediaFilterSort.dateAdded.rawValue
             case .diary:
-                return choice.value != MediaFilterSort.dateAdded.rawValue
+                return choice.value != MediaFilterSort.popularity.rawValue
+                    && choice.value != MediaFilterSort.dateAdded.rawValue
             case .list:
-                return choice.value != MediaFilterSort.consumedAt.rawValue
+                return choice.value != MediaFilterSort.popularity.rawValue
+                    && choice.value != MediaFilterSort.consumedAt.rawValue
             case .person:
-                return choice.value != MediaFilterSort.yourRating.rawValue && choice.value != MediaFilterSort.averageRating.rawValue
+                return choice.value != MediaFilterSort.popularity.rawValue
+                    && choice.value != MediaFilterSort.yourRating.rawValue
+                    && choice.value != MediaFilterSort.averageRating.rawValue
+            case .company:
+                return [
+                    MediaFilterSort.popularity.rawValue,
+                    MediaFilterSort.releaseDate.rawValue,
+                    MediaFilterSort.averageRating.rawValue,
+                    MediaFilterSort.title.rawValue,
+                ].contains(choice.value)
             }
         }
     }
@@ -239,6 +269,8 @@ struct MediaFilterSheet: View {
             return MediaFilterState()
         case .person:
             return MediaFilterState()
+        case .company:
+            return MediaFilterState()
         }
     }
 
@@ -248,6 +280,8 @@ struct MediaFilterSheet: View {
             false
         case .diary, .list, .person:
             true
+        case .company:
+            false
         }
     }
 
@@ -255,7 +289,7 @@ struct MediaFilterSheet: View {
         switch scope {
         case .tracking, .list:
             true
-        case .diary, .person:
+        case .diary, .person, .company:
             false
         }
     }
@@ -265,6 +299,41 @@ struct MediaFilterSheet: View {
             return true
         }
         return false
+    }
+
+    private var showsPlatformFilter: Bool {
+        if case .company = scope {
+            return true
+        }
+        return false
+    }
+
+    private var showsLanguageFilter: Bool {
+        if case .company = scope {
+            return false
+        }
+        return true
+    }
+
+    private var showsLengthFilter: Bool {
+        if case .company = scope {
+            return false
+        }
+        return true
+    }
+
+    private var ratingMinimumLabel: String {
+        if case .company = scope {
+            return "Minimum IGDB rating (0–100)"
+        }
+        return "Minimum"
+    }
+
+    private var ratingMaximumLabel: String {
+        if case .company = scope {
+            return "Maximum IGDB rating (0–100)"
+        }
+        return "Maximum"
     }
 
     private var sortBinding: Binding<String?> {

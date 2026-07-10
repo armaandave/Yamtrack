@@ -2514,6 +2514,136 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["results"][0]["title"], "Newer Game")
 
+    @patch("api.services.media.provider_services.get_company_catalog")
+    def test_company_games_support_complete_sort_and_filter_contract(self, catalog_mock):
+        catalog_mock.return_value = [
+            {
+                "media_id": 1,
+                "title": "Alpha",
+                "release_date": "2020-01-01",
+                "genres": ["Action"],
+                "platforms": ["PC"],
+                "vote_average": 90,
+                "vote_count": 100,
+            },
+            {
+                "media_id": 2,
+                "title": "Beta",
+                "release_date": "2024-01-01",
+                "genres": ["RPG"],
+                "platforms": ["PlayStation 5"],
+                "vote_average": 80,
+                "vote_count": 200,
+            },
+            {
+                "media_id": 3,
+                "title": "Future",
+                "release_date": "2035-01-01",
+                "genres": ["Action"],
+                "platforms": ["PlayStation 5"],
+                "vote_average": None,
+                "vote_count": 50,
+            },
+            {
+                "media_id": 4,
+                "title": "Undated",
+                "release_date": None,
+                "genres": ["Strategy"],
+                "platforms": ["Switch"],
+                "vote_average": None,
+                "vote_count": None,
+            },
+        ]
+
+        sort_expectations = {
+            ("popularity", "desc"): ["Beta", "Alpha", "Future", "Undated"],
+            ("popularity", "asc"): ["Future", "Alpha", "Beta", "Undated"],
+            ("release_date", "desc"): ["Future", "Beta", "Alpha", "Undated"],
+            ("average_rating", "desc"): ["Alpha", "Beta", "Future", "Undated"],
+            ("title", "asc"): ["Alpha", "Beta", "Future", "Undated"],
+        }
+        for (sort, direction), expected in sort_expectations.items():
+            with self.subTest(sort=sort, direction=direction):
+                response = self.client.get(
+                    "/api/v1/companies/igdb/77/games/",
+                    {"role": "developed", "sort": sort, "direction": direction, "page_size": 10},
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual([game["title"] for game in response.data["results"]], expected)
+
+        response = self.client.get(
+            "/api/v1/companies/igdb/77/games/",
+            {
+                "role": "developed",
+                "genre": ["Action", "RPG"],
+                "exclude_genre": "RPG",
+                "platform": ["PC", "PlayStation 5"],
+                "exclude_platform": "PC",
+                "release_status": "unreleased",
+                "page_size": 1,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Future")
+
+        response = self.client.get(
+            "/api/v1/companies/igdb/77/games/",
+            {"role": "developed", "year": 2020, "rating_min": 85, "rating_max": 95},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([game["title"] for game in response.data["results"]], ["Alpha"])
+
+    @patch("api.services.media.provider_services.get_company_catalog")
+    def test_company_game_options_union_both_roles(self, catalog_mock):
+        catalog_mock.side_effect = [
+            [
+                {
+                    "media_id": 1,
+                    "release_date": "2024-01-01",
+                    "genres": ["Action", "RPG"],
+                    "platforms": ["PC"],
+                },
+            ],
+            [
+                {
+                    "media_id": 2,
+                    "release_date": "2020-01-01",
+                    "genres": ["Action"],
+                    "platforms": ["PlayStation 5", "PC"],
+                },
+            ],
+        ]
+
+        response = self.client.get("/api/v1/companies/igdb/77/game-options/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["sorts"],
+            [
+                {"value": "popularity", "label": "Popularity"},
+                {"value": "release_date", "label": "Release Date"},
+                {"value": "average_rating", "label": "IGDB Rating"},
+                {"value": "title", "label": "Title"},
+            ],
+        )
+        self.assertEqual(
+            response.data["genres"],
+            [{"value": "Action", "label": "Action"}, {"value": "RPG", "label": "RPG"}],
+        )
+        self.assertEqual(
+            response.data["platforms"],
+            [{"value": "PC", "label": "PC"}, {"value": "PlayStation 5", "label": "PlayStation 5"}],
+        )
+        self.assertEqual(response.data["years"], [2024, 2020])
+        self.assertEqual(
+            [mock_call.args for mock_call in catalog_mock.call_args_list],
+            [
+                (Sources.IGDB.value, "77", "developed"),
+                (Sources.IGDB.value, "77", "published"),
+            ],
+        )
+
     def test_company_games_reject_invalid_role(self):
         response = self.client.get("/api/v1/companies/igdb/77/games/?role=credited")
 

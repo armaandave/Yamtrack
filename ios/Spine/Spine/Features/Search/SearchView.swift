@@ -418,7 +418,7 @@ private struct SearchViewContent: View {
     }
 }
 
-private enum RecentMedia {
+enum RecentMedia {
     static func decodeList(from string: String) -> [MediaSummary] {
         (try? JSONDecoder().decode([MediaSummary].self, from: Data(string.utf8))) ?? []
     }
@@ -547,9 +547,15 @@ private struct SearchResultsList: View {
     }
 }
 
-private struct SearchResultRow: View {
+enum SearchResultAccessory {
+    case chevron
+    case selection(isSelected: Bool)
+}
+
+struct SearchResultRow: View {
     let result: MediaSummary
     var usesDiarySize = false
+    var accessory: SearchResultAccessory = .chevron
 
     var body: some View {
         HStack(spacing: 14) {
@@ -588,12 +594,26 @@ private struct SearchResultRow: View {
 
             Spacer(minLength: 8)
 
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            accessoryView
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var accessoryView: some View {
+        switch accessory {
+        case .chevron:
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        case let .selection(isSelected):
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "plus.circle")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(isSelected ? .green : .white.opacity(0.72))
+                .contentTransition(.symbolEffect(.replace))
+                .accessibilityHidden(true)
+        }
     }
 
     private var subtitleText: String? {

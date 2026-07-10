@@ -52,6 +52,94 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testListComposerRequiresNameAndItemAndSupportsUndoAndOrdering() {
+        let repository = ScriptedListComposerRepository()
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        let first = composerMedia("1")
+        let second = composerMedia("2")
+
+        XCTAssertEqual(viewModel.draft.visibility, "private")
+        XCTAssertFalse(viewModel.canSave)
+
+        viewModel.draft.name = "Favorites"
+        viewModel.toggleSelection(first)
+        viewModel.toggleSelection(second)
+        XCTAssertTrue(viewModel.canSave)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [first.id, second.id])
+
+        viewModel.moveItem(from: 0, to: 2)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
+
+        viewModel.removeItem(id: second.id)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [first.id])
+        viewModel.undoRemoval()
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
+        XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+    }
+
+    @MainActor
+    func testListComposerCreatesAddsAndSavesCompleteOrder() async {
+        let repository = ScriptedListComposerRepository()
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        viewModel.draft.name = "Favorites"
+        viewModel.draft.isRanked = true
+        viewModel.toggleSelection(composerMedia("1"))
+        viewModel.toggleSelection(composerMedia("2"))
+
+        let listID = await viewModel.save()
+
+        XCTAssertEqual(listID, 77)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["1", "2"])
+        XCTAssertEqual(repository.reorderedItemIDs, [101, 102])
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testListComposerRetriesPartialCreateWithoutCreatingOrAddingTwice() async {
+        let repository = ScriptedListComposerRepository(failingMediaIDs: ["2"])
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        viewModel.draft.name = "Favorites"
+        viewModel.toggleSelection(composerMedia("1"))
+        viewModel.toggleSelection(composerMedia("2"))
+
+        let firstSaveResult = await viewModel.save()
+        XCTAssertNil(firstSaveResult)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1"])
+        XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+
+        repository.failingMediaIDs = []
+        let retryResult = await viewModel.save()
+        XCTAssertEqual(retryResult, 77)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["1", "2", "2"])
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1", "2"])
+    }
+
+    @MainActor
+    func testListComposerStagesEditDiffBeforeRemovingAndReordering() async {
+        let first = composerMedia("1", itemID: 11)
+        let second = composerMedia("2", itemID: 12)
+        let repository = ScriptedListComposerRepository(serverItems: [first, second])
+        let viewModel = ListComposerViewModel(
+            mode: .edit(composerList(items: [first, second])),
+            listRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.removeItem(id: first.id)
+        viewModel.toggleSelection(composerMedia("3"))
+        viewModel.moveItem(from: 1, to: 0)
+
+        let saveResult = await viewModel.save()
+        XCTAssertEqual(saveResult, 77)
+        XCTAssertEqual(repository.updateCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["3"])
+        XCTAssertEqual(repository.removedItemIDs, [11])
+        XCTAssertEqual(repository.reorderedItemIDs, [101, 12])
+    }
+
+    @MainActor
     func testSearchLensMediaTypesExcludeEpisodesAndSeasons() {
         let types = SearchViewModel.lensMediaTypes(from: ["movie", "episode", "season", "book"])
         let fallback = SearchViewModel.lensMediaTypes(from: ["episode", "season"])
@@ -149,6 +237,134 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(credit?.ref, CompanyRef(source: "igdb", companyId: "77"))
         XCTAssertTrue(credit?.hasRole(.developed) == true)
         XCTAssertTrue(credit?.hasRole(.published) == true)
+    }
+
+    func testCompanyFilterOptionsDecodePlatformsAndFallbackMissingPlatforms() throws {
+        let options = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(
+                """
+                {
+                  "sorts": [{"value": "popularity", "label": "Popularity"}],
+                  "genres": [{"value": "Action", "label": "Action"}],
+                  "languages": [],
+                  "platforms": [{"value": "PC", "label": "PC"}],
+                  "years": [2024]
+                }
+                """.utf8
+            )
+        )
+        let legacy = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(#"{"sorts":[],"genres":[],"languages":[],"years":[]}"#.utf8)
+        )
+
+        XCTAssertEqual(options.platforms.map(\.value), ["PC"])
+        XCTAssertTrue(legacy.platforms.isEmpty)
+    }
+
+    func testCompanyRepositorySendsSharedFiltersForInitialAndNextPages() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        let repository = APICompanyRepository(client: client)
+        var requestCount = 0
+        RequestCaptureURLProtocol.handler = { request in
+            requestCount += 1
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let query = components?.queryItems ?? []
+            XCTAssertEqual(components?.path, "/api/v1/companies/igdb/77/games/")
+            XCTAssertEqual(query.first { $0.name == "role" }?.value, "developed")
+            XCTAssertEqual(query.first { $0.name == "sort" }?.value, "average_rating")
+            XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+            XCTAssertEqual(query.first { $0.name == "year" }?.value, "2024")
+            XCTAssertEqual(query.first { $0.name == "genre" }?.value, "Action")
+            XCTAssertEqual(query.first { $0.name == "platform" }?.value, "PC")
+            XCTAssertEqual(query.first { $0.name == "rating_min" }?.value, "70")
+            XCTAssertEqual(query.first { $0.name == "page" }?.value, requestCount == 1 ? nil : "2")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"count":0,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        var filter = MediaFilterState()
+        filter.sort = .averageRating
+        filter.direction = .desc
+        filter.year = 2024
+        filter.genres = ["Action"]
+        filter.platforms = ["PC"]
+        filter.ratingMin = 70
+        let ref = CompanyRef(source: "igdb", companyId: "77")
+
+        _ = try await repository.games(ref: ref, role: .developed, page: nil, filter: filter)
+        _ = try await repository.games(ref: ref, role: .developed, page: "2", filter: filter)
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testCompanyRepositoryLoadsPublicGameFilterOptions() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        let repository = APICompanyRepository(client: client)
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/companies/igdb/77/game-options/"
+            )
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "sorts": [{"value": "popularity", "label": "Popularity"}],
+                  "genres": [],
+                  "languages": [],
+                  "platforms": [{"value": "PC", "label": "PC"}],
+                  "years": [2024]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        let options = try await repository.gameFilterOptions(ref: CompanyRef(source: "igdb", companyId: "77"))
+
+        XCTAssertEqual(options.sorts.map(\.value), ["popularity"])
+        XCTAssertEqual(options.platforms.map(\.value), ["PC"])
+    }
+
+    @MainActor
+    func testCompanyViewModelAppliesOneFilterToExpandedRolesAndRejectsStaleResponses() async throws {
+        let repository = ScriptedCompanyRepository()
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "igdb", companyId: "77"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        viewModel.filter.sort = .title
+        let staleTask = Task {
+            await viewModel.applyFilter(to: [.developed, .published])
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = .releaseDate
+        await viewModel.applyFilter(to: [.developed, .published])
+        await staleTask.value
+
+        XCTAssertEqual(viewModel.gamesByRole[.developed]?.map(\.title), ["Fresh developed"])
+        XCTAssertEqual(viewModel.gamesByRole[.published]?.map(\.title), ["Fresh published"])
+        let freshRequests = repository.requests.filter { $0.filter.sort == .releaseDate }
+        XCTAssertEqual(Set(freshRequests.map(\.role)), Set(CompanyCatalogRole.allCases))
     }
 
     @MainActor
@@ -482,8 +698,10 @@ final class SpineTests: XCTestCase {
         filter.length = "feature"
         filter.genres = ["Drama", "Comedy"]
         filter.languages = ["English"]
+        filter.platforms = ["PC", "PlayStation 5"]
         filter.excludedGenres = ["Horror"]
         filter.excludedLanguages = ["French"]
+        filter.excludedPlatforms = ["Switch"]
         filter.hasReview = true
 
         let query = filter.queryItems(page: "3", mediaType: "movie")
@@ -496,8 +714,10 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(query.first { $0.name == "length" }?.value, "feature")
         XCTAssertEqual(query.filter { $0.name == "genre" }.map(\.value), ["Drama", "Comedy"])
         XCTAssertEqual(query.first { $0.name == "language" }?.value, "English")
+        XCTAssertEqual(query.filter { $0.name == "platform" }.map(\.value), ["PC", "PlayStation 5"])
         XCTAssertEqual(query.first { $0.name == "exclude_genre" }?.value, "Horror")
         XCTAssertEqual(query.first { $0.name == "exclude_language" }?.value, "French")
+        XCTAssertEqual(query.first { $0.name == "exclude_platform" }?.value, "Switch")
         XCTAssertEqual(query.first { $0.name == "has_review" }?.value, "true")
         XCTAssertEqual(query.first { $0.name == "page" }?.value, "3")
     }
@@ -4155,6 +4375,69 @@ private struct ActivityRequest: Equatable {
     let limit: Int
 }
 
+private struct CompanyGameRequest: Equatable {
+    let role: CompanyCatalogRole
+    let page: String?
+    let filter: MediaFilterState
+}
+
+@MainActor
+private final class ScriptedCompanyRepository: CompanyRepository {
+    var requests: [CompanyGameRequest] = []
+
+    func detail(ref: CompanyRef) async throws -> CompanyDetail {
+        CompanyDetail(
+            id: ref.companyId,
+            source: ref.source,
+            name: "Space Studio",
+            description: nil,
+            logoUrl: nil,
+            logoWidth: nil,
+            logoHeight: nil,
+            foundedYear: nil,
+            countryCode: nil,
+            status: nil,
+            companySize: nil,
+            parent: nil,
+            igdbUrl: nil,
+            websites: [],
+            catalogs: CompanyCatalogCounts(
+                developed: CompanyCatalogCount(count: 2),
+                published: CompanyCatalogCount(count: 2)
+            )
+        )
+    }
+
+    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
+        .companyFallback
+    }
+
+    func games(
+        ref: CompanyRef,
+        role: CompanyCatalogRole,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<MediaSummary> {
+        requests.append(CompanyGameRequest(role: role, page: page, filter: filter))
+        if filter.sort == .title {
+            try await Task.sleep(for: .milliseconds(80))
+        }
+        let prefix = filter.sort == .releaseDate ? "Fresh" : filter.sort == .title ? "Stale" : "Default"
+        let game = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "igdb",
+                mediaType: "game",
+                mediaId: "\(prefix)-\(role.rawValue)",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "\(prefix) \(role.rawValue)"
+        )
+        return PagedResponse(count: 1, next: nil, previous: nil, results: [game])
+    }
+}
+
 private final class ScriptedLibraryTrackingRepository: TrackingRepository {
     private let responses: [String: PagedResponse<Spine.LibraryItem>]
     var requests: [LibraryTrackingRequest] = []
@@ -4476,6 +4759,125 @@ private final class RecordingProfileRepository: ProfileRepository {
     func clearHallOfFameItem(mediaType: String) async throws -> [String: MediaSummary?] {
         profile.hof
     }
+}
+
+private enum ListComposerTestError: LocalizedError {
+    case addFailed
+
+    var errorDescription: String? { "Add failed" }
+}
+
+@MainActor
+private final class ScriptedListComposerRepository: ListRepository {
+    var failingMediaIDs: Set<String>
+    var serverItems: [MediaSummary]
+    var createCount = 0
+    var updateCount = 0
+    var addAttempts: [String] = []
+    var removedItemIDs: [Int] = []
+    var reorderedItemIDs: [Int] = []
+    private var nextItemID = 101
+
+    init(failingMediaIDs: Set<String> = [], serverItems: [MediaSummary] = []) {
+        self.failingMediaIDs = failingMediaIDs
+        self.serverItems = serverItems
+    }
+
+    func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary] { [] }
+
+    func detail(id: Int) async throws -> CustomListDetail {
+        composerList(items: serverItems)
+    }
+
+    func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary {
+        createCount += 1
+        return CustomListSummary(
+            id: 77,
+            name: request.name ?? "",
+            slug: "favorites",
+            description: request.description ?? "",
+            visibility: request.visibility ?? "private",
+            isRanked: request.isRanked ?? false,
+            owner: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
+            itemsCount: serverItems.count,
+            likeCount: 0
+        )
+    }
+
+    func update(id: Int, _ request: CustomListWriteRequest) async throws -> CustomListDetail {
+        updateCount += 1
+        return composerList(items: serverItems)
+    }
+
+    func delete(id: Int) async throws {}
+
+    func addItem(listId: Int, ref: MediaRef) async throws -> MediaSummary {
+        addAttempts.append(ref.mediaId)
+        if failingMediaIDs.contains(ref.mediaId) {
+            throw ListComposerTestError.addFailed
+        }
+        let saved = MediaSummary(
+            ref: MediaRef(
+                itemId: nextItemID,
+                source: ref.source,
+                mediaType: ref.mediaType,
+                mediaId: ref.mediaId,
+                seasonNumber: ref.seasonNumber,
+                episodeNumber: ref.episodeNumber
+            ),
+            title: "Media \(ref.mediaId)"
+        )
+        nextItemID += 1
+        serverItems.append(saved)
+        return saved
+    }
+
+    func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary> {
+        PagedResponse(count: serverItems.count, next: nil, previous: nil, results: serverItems)
+    }
+
+    func removeItem(listId: Int, itemId: Int) async throws {
+        removedItemIDs.append(itemId)
+        serverItems.removeAll { $0.ref.itemId == itemId }
+    }
+
+    func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail {
+        reorderedItemIDs = itemIds
+        let byID = Dictionary(uniqueKeysWithValues: serverItems.compactMap { item in
+            item.ref.itemId.map { ($0, item) }
+        })
+        serverItems = itemIds.compactMap { byID[$0] }
+        return composerList(items: serverItems)
+    }
+}
+
+private func composerMedia(_ mediaID: String, itemID: Int? = nil) -> MediaSummary {
+    MediaSummary(
+        ref: MediaRef(
+            itemId: itemID,
+            source: "tmdb",
+            mediaType: "movie",
+            mediaId: mediaID,
+            seasonNumber: nil,
+            episodeNumber: nil
+        ),
+        title: "Media \(mediaID)"
+    )
+}
+
+private func composerList(items: [MediaSummary]) -> CustomListDetail {
+    CustomListDetail(
+        id: 77,
+        name: "Favorites",
+        slug: "favorites",
+        description: "",
+        visibility: "private",
+        isRanked: false,
+        owner: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
+        itemsCount: items.count,
+        likeCount: 0,
+        items: items
+    )
 }
 
 private struct FakeListRepository: ListRepository {
