@@ -603,8 +603,8 @@ Unsupported media types/sources return `501` with a clear `detail`. Invalid para
     }
   ],
   "external_ratings": [
-    { "source": "TMDB", "value": "8.4", "vote_count": 1000, "max_value": "10" },
-    { "source": "IMDb", "value": "8.8", "vote_count": 2300000, "max_value": "10" },
+    { "source": "TMDB", "value": "8.4", "vote_count": 1000, "max_value": "10", "url": "https://www.themoviedb.org/movie/550" },
+    { "source": "IMDb", "value": "8.8", "vote_count": 2300000, "max_value": "10", "url": "https://www.imdb.com/title/tt0137523/" },
     { "source": "Rotten Tomatoes", "value": "79%", "vote_count": 100, "max_value": "100%" }
   ],
   "community": {
@@ -622,6 +622,7 @@ Unsupported media types/sources return `501` with a clear `detail`. Invalid para
 
 Rules:
 
+- Each `external_ratings` entry may include an optional absolute HTTP(S) `url` for the exact media page on that rating provider. Native clients should make the rating pill actionable only when this field is present and valid; entries without `url` remain display-only. Representative provider URLs include `https://letterboxd.com/film/fight-club/`, `https://hardcover.app/books/the-great-gatsby`, and `https://openlibrary.org/books/OL7353617M`. Provider API URLs, credentials, and generic search-result pages must not be returned.
 - Books expose `other_editions` and recommendations when providers return them.
 - Games expose typed sections such as `dlcs`, `expansions`, and canonical `all_related`.
 - Anime and manga expose MAL/MangaUpdates related sections such as `related_anime`, `related_manga`, and recommendations.

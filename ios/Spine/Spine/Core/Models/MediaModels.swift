@@ -814,8 +814,22 @@ struct ExternalRating: Codable, Identifiable, Hashable {
     let value: String
     let voteCount: Int?
     let maxValue: String?
+    let url: String?
 
     var id: String { source }
+
+    var destinationURL: URL? {
+        guard
+            let url,
+            let destination = URL(string: url),
+            let scheme = destination.scheme?.lowercased(),
+            ["http", "https"].contains(scheme),
+            destination.host != nil
+        else {
+            return nil
+        }
+        return destination
+    }
 }
 
 struct MediaReview: Codable, Identifiable, Hashable {

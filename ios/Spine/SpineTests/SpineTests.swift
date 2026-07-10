@@ -2367,6 +2367,8 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(detail.userState?.diaryConsumedAt, "2026-06-20T12:00:00Z")
         XCTAssertEqual(detail.externalRatings?.count, 4)
         XCTAssertEqual(detail.externalRatings?.first { $0.source == "IMDb" }?.voteCount, 84231)
+        XCTAssertNil(detail.externalRatings?.first { $0.source == "IMDb" }?.url)
+        XCTAssertNil(detail.externalRatings?.first { $0.source == "IMDb" }?.destinationURL)
         XCTAssertEqual(detail.customBackdropUrl, "https://example.com/custom-backdrop.jpg")
         XCTAssertEqual(detail.cast?.first?.character, "Mika")
         XCTAssertEqual(detail.relatedSections?.first?.items.first?.title, "Pulp Fiction")
@@ -2374,8 +2376,30 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(season.episodes?.first?.runtime, "49m")
         XCTAssertEqual(season.episodes?.first?.overview, "Ada finds the first card.")
         XCTAssertEqual(anime.relatedSections?.count, 2)
+        XCTAssertEqual(anime.externalRatings?.first?.url, "https://myanimelist.net/anime/1")
+        XCTAssertEqual(anime.externalRatings?.first?.destinationURL?.absoluteString, "https://myanimelist.net/anime/1")
         XCTAssertEqual(reviews.results.first?.reviewTitle, "A pulse under glass")
         XCTAssertEqual(reviews.results.last?.containsSpoilers, true)
+    }
+
+    func testExternalRatingDestinationURLAcceptsOnlyAbsoluteHTTPURLs() throws {
+        let ratings = try JSONDecoder.api.decode(
+            [ExternalRating].self,
+            from: """
+            [
+              { "source": "HTTP", "value": "8", "url": "http://example.com/media/1" },
+              { "source": "JavaScript", "value": "8", "url": "javascript:alert(1)" },
+              { "source": "File", "value": "8", "url": "file:///tmp/media" },
+              { "source": "Relative", "value": "8", "url": "/media/1" },
+              { "source": "Missing Host", "value": "8", "url": "https:///media/1" }
+            ]
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(ratings[0].destinationURL?.absoluteString, "http://example.com/media/1")
+        for rating in ratings.dropFirst() {
+            XCTAssertNil(rating.destinationURL, "Expected \(rating.source) URL to be rejected")
+        }
     }
 
     func testMediaCreditPresentationUsesPluralCreditsAndLegacyFallback() throws {
@@ -5309,7 +5333,7 @@ private enum TestFixtures {
       "providers": null,
       "community": { "average_rating": "9.0", "rating_count": 1800, "diary_count": 721, "review_count": 84, "liked_count": 1133, "rating_distribution": [] },
       "external_ratings": [
-        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10" }
+        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10", "url": "https://myanimelist.net/anime/1" }
       ],
       "reviews": null,
       "cast": [],

@@ -119,6 +119,13 @@ struct PersonDetailView: View {
         ZStack(alignment: .topLeading) {
             SpinePageBackground()
 
+            if let detail = viewModel.detail {
+                PersonHeroArtwork(urlString: detail.profileUrl)
+                    .frame(height: 390)
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+            }
+
             content
 
             PersonBackButton {
@@ -569,6 +576,63 @@ private struct PersonProfileImage: View {
             Circle().stroke(.white.opacity(0.16), lineWidth: 1)
         }
         .accessibilityLabel(name)
+    }
+
+    private var imageURL: URL? {
+        guard let urlString, !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return URL(string: urlString)
+    }
+}
+
+private struct PersonHeroArtwork: View {
+    let urlString: String?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                AsyncImage(url: imageURL) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    default:
+                        SpinePalette.pageBackground
+                    }
+                }
+                .blur(radius: 30, opaque: true)
+                .scaleEffect(1.28)
+                .brightness(-0.04)
+                .saturation(1.2)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.4), location: 0),
+                        .init(color: .black.opacity(0.14), location: 0.3),
+                        .init(color: .clear, location: 0.58),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.32),
+                        .init(color: SpinePalette.pageBackground.opacity(0.2), location: 0.54),
+                        .init(color: SpinePalette.pageBackground.opacity(0.7), location: 0.78),
+                        .init(color: SpinePalette.pageBackground, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .clipped()
+        }
     }
 
     private var imageURL: URL? {

@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import logging
 from copy import deepcopy
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from aiohttp import ClientError
 from django.conf import settings
@@ -50,6 +50,33 @@ BACKDROP_UNSUPPORTED_MESSAGE = (
     "Backdrop customization is only available for TMDB movies/TV shows/seasons and IGDB games."
 )
 logger = logging.getLogger(__name__)
+
+RATING_URL_BASES = {
+    "comicvine": "https://comicvine.gamespot.com/",
+    "hardcover": "https://hardcover.app/",
+    "igdb": "https://www.igdb.com/",
+    "imdb": "https://www.imdb.com/",
+    "letterboxd": "https://letterboxd.com/",
+    "mal": "https://myanimelist.net/",
+    "mangaupdates": "https://www.mangaupdates.com/",
+    "metacritic": "https://www.metacritic.com/",
+    "openlibrary": "https://openlibrary.org/",
+    "tmdb": "https://www.themoviedb.org/",
+    "tomatoes": "https://www.rottentomatoes.com/",
+}
+RATING_URL_HOSTS = {
+    "comicvine": {"comicvine.gamespot.com"},
+    "hardcover": {"hardcover.app"},
+    "igdb": {"igdb.com"},
+    "imdb": {"imdb.com"},
+    "letterboxd": {"boxd.it", "letterboxd.com"},
+    "mal": {"myanimelist.net"},
+    "mangaupdates": {"mangaupdates.com"},
+    "metacritic": {"metacritic.com"},
+    "openlibrary": {"openlibrary.org"},
+    "tmdb": {"themoviedb.org"},
+    "tomatoes": {"rottentomatoes.com"},
+}
 
 
 def default_source_for(media_type):
@@ -844,6 +871,110 @@ def enrich_episodes(metadata, source, user):
     return payload
 
 
+def _is_allowed_rating_host(host, allowed_hosts):
+    return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+
+
+def _safe_urlsplit(value):
+    try:
+        return urlsplit(value)
+    except ValueError:
+        return None
+
+
+def _absolute_rating_url(source, candidate, allowed_hosts):
+    parsed = _safe_urlsplit(candidate)
+    if parsed is None:
+        return None
+    if parsed.scheme:
+        return candidate
+    if candidate.startswith("//"):
+        return f"https:{candidate}"
+
+    first_segment = candidate.lstrip("/").split("/", 1)[0].lower()
+    if _is_allowed_rating_host(first_segment, allowed_hosts):
+        return f"https://{candidate.lstrip('/')}"
+    return urljoin(RATING_URL_BASES[source], candidate)
+
+
+def _normalize_rating_url(source, value):
+    """Return a trusted absolute HTTPS URL for a known rating provider."""
+    source = str(source).lower()
+    allowed_hosts = RATING_URL_HOSTS.get(source)
+    candidate = str(value or "").strip()
+    if not allowed_hosts or not candidate:
+        return None
+
+    candidate = _absolute_rating_url(source, candidate, allowed_hosts)
+    parsed = _safe_urlsplit(candidate) if candidate else None
+    if parsed is None:
+        return None
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not host
+        or parsed.username
+        or parsed.password
+        or not _is_allowed_rating_host(host, allowed_hosts)
+    ):
+        return None
+
+    if parsed.scheme.lower() == "http":
+        parsed = parsed._replace(scheme="https")
+    return parsed.geturl()
+
+
+def _provider_rating_fallback(*, source, media_type, media_id, season_number=None):
+    encoded_id = quote(str(media_id), safe="")
+    if source == Sources.TMDB.value and media_type == MediaTypes.SEASON.value:
+        return (
+            f"https://www.themoviedb.org/tv/{encoded_id}/season/{season_number}"
+            if season_number is not None
+            else None
+        )
+
+    return {
+        (Sources.TMDB.value, MediaTypes.MOVIE.value): f"https://www.themoviedb.org/movie/{encoded_id}",
+        (Sources.TMDB.value, MediaTypes.TV.value): f"https://www.themoviedb.org/tv/{encoded_id}",
+        (Sources.MAL.value, MediaTypes.ANIME.value): f"https://myanimelist.net/anime/{encoded_id}",
+        (Sources.MAL.value, MediaTypes.MANGA.value): f"https://myanimelist.net/manga/{encoded_id}",
+        (Sources.OPENLIBRARY.value, MediaTypes.BOOK.value): f"https://openlibrary.org/books/{encoded_id}",
+        (Sources.HARDCOVER.value, MediaTypes.BOOK.value): f"https://hardcover.app/book/{encoded_id}",
+    }.get((source, media_type))
+
+
+def _provider_rating_url(*, metadata, source, media_type, media_id, season_number=None):
+    """Return the provider page for its own rating, without guessing slug-based URLs."""
+    if url := _normalize_rating_url(source, metadata.get("source_url")):
+        return url
+
+    fallback = _provider_rating_fallback(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+    )
+
+    return _normalize_rating_url(source, fallback)
+
+
+def _third_party_rating_url(*, metadata, rating_source, rating, media_type, media_id):
+    """Prefer MDBList's provider URL, then use identifiers already resolved by TMDB."""
+    if url := _normalize_rating_url(rating_source, rating.get("url")):
+        return url
+
+    external_links = metadata.get("external_links") or {}
+    fallback = None
+    if rating_source == "imdb":
+        fallback = external_links.get("IMDb") or external_links.get("imdb")
+    elif rating_source == "letterboxd" and media_type == MediaTypes.MOVIE.value:
+        fallback = external_links.get("Letterboxd") or external_links.get("letterboxd")
+        if not fallback:
+            fallback = f"https://letterboxd.com/tmdb/{quote(str(media_id), safe='')}"
+
+    return _normalize_rating_url(rating_source, fallback)
+
+
 def external_ratings(*, metadata, source, media_type, media_id, season_number=None):
     """Normalize provider and third-party ratings for media detail."""
     ratings = []
@@ -855,6 +986,13 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
                 "value": str(score),
                 "vote_count": metadata.get("score_count"),
                 "max_value": max_rating_value(source),
+                "url": _provider_rating_url(
+                    metadata=metadata,
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    season_number=season_number,
+                ),
             },
         )
 
@@ -880,6 +1018,13 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
                     "value": str(value),
                     "vote_count": rating.get("votes"),
                     "max_value": max_rating_value(rating_source),
+                    "url": _third_party_rating_url(
+                        metadata=metadata,
+                        rating_source=rating_source,
+                        rating=rating,
+                        media_type=media_type,
+                        media_id=media_id,
+                    ),
                 },
             )
 
@@ -894,7 +1039,7 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
                     "value": str(metacritic["value"]),
                     "vote_count": None,
                     "max_value": max_rating_value("metacritic"),
-                    "url": metacritic.get("url"),
+                    "url": _normalize_rating_url("metacritic", metacritic.get("url")),
                 },
             )
 

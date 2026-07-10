@@ -1093,9 +1093,15 @@ struct MediaDetailView: View {
                 seasonsSection(detail)
             }
 
-            MediaFactsSection(rows: detailRows(detail)) { person in
-                presentedPerson = person
-            }
+            MediaFactsSection(
+                rows: detailRows(detail),
+                onPersonSelected: { person in
+                    presentedPerson = person
+                },
+                onDiscover: { request in
+                    presentedDiscover = request
+                }
+            )
             EpisodesSection(episodes: detail.episodes ?? [])
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
             RecommendationsSection(sections: relatedSections(detail)) { item in
@@ -1339,6 +1345,7 @@ struct MediaDetailView: View {
                 source: "SP",
                 value: "\(rating.starRatingValue)/5",
                 assetName: nil,
+                providerName: "Spine",
                 voteCount: detail.community?.ratingCount,
                 voteCountLabel: "ratings"
             ))
@@ -1354,6 +1361,8 @@ struct MediaDetailView: View {
                 source: rating.source.ratingAbbreviation,
                 value: rating.displayValue,
                 assetName: rating.ratingAssetName,
+                providerName: rating.source,
+                destination: rating.destinationURL,
                 voteCount: rating.voteCount,
                 voteCountLabel: rating.source.ratingCountLabel
             ))
@@ -1498,7 +1507,14 @@ struct MediaDetailView: View {
                 continue
             }
             let values = detailArray(detail, key)
-            if !values.isEmpty {
+            if key == "genres" {
+                let chips = values.map {
+                    MediaDetailChip(label: $0, discoverRequest: discoverRequest(detail, filter: .genre($0)))
+                }
+                if !chips.isEmpty {
+                    rows.append(DetailFactRow(label: label, chips: chips))
+                }
+            } else if !values.isEmpty {
                 rows.append(DetailFactRow(label: label, value: values.joined(separator: ", ")))
             }
         }
@@ -2411,15 +2427,35 @@ private struct RatingChip: Hashable {
     let source: String
     let value: String
     let assetName: String?
+    let providerName: String
+    let destination: URL?
     let voteCount: Int?
     let voteCountLabel: String?
 
-    init(source: String, value: String, assetName: String?, voteCount: Int? = nil, voteCountLabel: String? = nil) {
+    init(
+        source: String,
+        value: String,
+        assetName: String?,
+        providerName: String? = nil,
+        destination: URL? = nil,
+        voteCount: Int? = nil,
+        voteCountLabel: String? = nil
+    ) {
         self.source = source
         self.value = value
         self.assetName = assetName
+        self.providerName = providerName ?? source
+        self.destination = destination
         self.voteCount = voteCount
         self.voteCountLabel = voteCountLabel
+    }
+
+    var accessibilityLabel: String {
+        var components = ["\(providerName) rating \(value)"]
+        if let voteCount, voteCount > 0 {
+            components.append("\(voteCount.formatted()) \(voteCountLabel ?? "votes")")
+        }
+        return components.joined(separator: ", ")
     }
 }
 
@@ -2447,7 +2483,24 @@ private struct RatingChipRow: View {
         }
     }
 
+    @ViewBuilder
     private func ratingChip(_ chip: RatingChip) -> some View {
+        if let destination = chip.destination {
+            Link(destination: destination) {
+                ratingChipContent(chip)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(chip.accessibilityLabel)
+            .accessibilityHint("Opens the \(chip.providerName) media page")
+        } else {
+            ratingChipContent(chip)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(chip.accessibilityLabel)
+        }
+    }
+
+    private func ratingChipContent(_ chip: RatingChip) -> some View {
         HStack(spacing: 6) {
             RatingSourceBadge(chip: chip)
             VStack(alignment: .leading, spacing: 1) {
@@ -2743,26 +2796,37 @@ private struct DetailFactRow: Identifiable {
     let label: String
     var value: String?
     var people: [MediaPersonCredit]
+    var chips: [MediaDetailChip]
 
     var id: String { label }
-    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty) }
+    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty && chips.isEmpty) }
 
     init(label: String, value: String?) {
         self.label = label
         self.value = value
         people = []
+        chips = []
     }
 
     init(label: String, people: [MediaPersonCredit]) {
         self.label = label
         value = nil
         self.people = people
+        chips = []
+    }
+
+    init(label: String, chips: [MediaDetailChip]) {
+        self.label = label
+        value = nil
+        people = []
+        self.chips = chips
     }
 }
 
 private struct MediaFactsSection: View {
     let rows: [DetailFactRow]
     let onPersonSelected: (PersonRef) -> Void
+    let onDiscover: (MediaDiscoverRequest) -> Void
 
     var body: some View {
         if !rows.isEmpty {
@@ -2771,7 +2835,11 @@ private struct MediaFactsSection: View {
 
                 VStack(spacing: 0) {
                     ForEach(rows) { row in
-                        DetailFactRowView(row: row, onPersonSelected: onPersonSelected)
+                        DetailFactRowView(
+                            row: row,
+                            onPersonSelected: onPersonSelected,
+                            onDiscover: onDiscover
+                        )
 
                         if row.id != rows.last?.id {
                             Divider().overlay(.white.opacity(0.045))
@@ -2787,6 +2855,7 @@ private struct MediaFactsSection: View {
 private struct DetailFactRowView: View {
     let row: DetailFactRow
     let onPersonSelected: (PersonRef) -> Void
+    let onDiscover: (MediaDiscoverRequest) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -2796,7 +2865,24 @@ private struct DetailFactRowView: View {
                 .lineLimit(1)
                 .frame(width: 98, alignment: .leading)
 
-            if row.people.isEmpty {
+            if !row.chips.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(row.chips) { chip in
+                        if let request = chip.discoverRequest {
+                            Button {
+                                onDiscover(request)
+                            } label: {
+                                linkedDetailText(chip.label)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Browse \(chip.label)")
+                        } else {
+                            detailText(chip.label)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if row.people.isEmpty {
                 Text(row.value ?? "")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.84))
@@ -2827,7 +2913,16 @@ private struct DetailFactRowView: View {
     }
 
     private func personName(_ name: String) -> some View {
-        Text(name)
+        detailText(name)
+    }
+
+    private func linkedDetailText(_ text: String) -> some View {
+        detailText(text)
+            .underline()
+    }
+
+    private func detailText(_ text: String) -> some View {
+        Text(text)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white.opacity(0.84))
             .frame(maxWidth: .infinity, alignment: .leading)

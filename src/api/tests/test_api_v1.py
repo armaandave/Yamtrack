@@ -10,6 +10,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from api.serializers.common import media_summary_from_item
+from api.services.media import external_ratings
 from app.models import (
     TV,
     Anime,
@@ -1965,6 +1966,7 @@ class ApiV1FoundationTests(TestCase):
             "media_id": "550",
             "media_type": "movie",
             "source": "tmdb",
+            "source_url": "https://www.themoviedb.org/movie/550",
             "title": "Fight Club",
             "image": "https://example.com/fight-club.jpg",
             "backdrop_path": "/rr7E0NoGKxvbkb89eR1GwfoYjpA.jpg",
@@ -1983,6 +1985,10 @@ class ApiV1FoundationTests(TestCase):
             },
             "cast": [{"person_id": 819, "name": "Edward Norton", "character": "Narrator", "image": "/ed.jpg"}],
             "crew": [{"person_id": 7467, "name": "David Fincher", "roles": ["Director"], "job": "Director", "image": "/fincher.jpg"}],
+            "external_links": {
+                "IMDb": "http://www.imdb.com/title/tt0137523/",
+                "Letterboxd": "https://letterboxd.com/tmdb/550",
+            },
             "related": {
                 "Fight Club Collection": [
                     {
@@ -2018,7 +2024,7 @@ class ApiV1FoundationTests(TestCase):
         ratings_mock.return_value = {
             "imdb": {"value": "8.8", "votes": 2300000},
             "letterboxd": {"value": "4.3", "votes": 500000},
-            "tomatoes": {"value": "79%", "votes": 100},
+            "tomatoes": {"value": "79%", "votes": 100, "url": "/m/fight_club"},
         }
         user = get_user_model().objects.create_user(username="viewer", password="strong-password-123")
         self.client.force_authenticate(user)
@@ -2051,6 +2057,15 @@ class ApiV1FoundationTests(TestCase):
             [(rating["source"], rating["value"]) for rating in response.data["external_ratings"]],
             [("TMDB", "8.4"), ("IMDb", "8.8"), ("Letterboxd", "4.3"), ("Rotten Tomatoes", "79%")],
         )
+        self.assertEqual(
+            {rating["source"]: rating["url"] for rating in response.data["external_ratings"]},
+            {
+                "TMDB": "https://www.themoviedb.org/movie/550",
+                "IMDb": "https://www.imdb.com/title/tt0137523/",
+                "Letterboxd": "https://letterboxd.com/tmdb/550",
+                "Rotten Tomatoes": "https://www.rottentomatoes.com/m/fight_club",
+            },
+        )
         self.assertEqual(response.data["details"]["genres"], ["Drama", "Thriller"])
         self.assertEqual(response.data["details"]["director"], "David Fincher")
         self.assertEqual(response.data["details"]["director_id"], 7467)
@@ -2081,6 +2096,72 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(str(item.letterboxd_rating), "4.30")
         self.assertEqual(str(item.rotten_tomatoes_rating), "79.00")
         self.assertTrue(ItemFilterFacet.objects.filter(item=item, facet_type="genre", value="Drama").exists())
+
+    @patch("app.providers.mdblist.get_media_ratings")
+    def test_external_rating_urls_only_use_verified_fallbacks(self, ratings_mock):
+        ratings_mock.return_value = {
+            "letterboxd": {"value": "4.3", "votes": 500000},
+            "tomatoes": {"value": "79%", "votes": 100},
+        }
+
+        movie_ratings = external_ratings(
+            metadata={},
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+        )
+        tv_ratings = external_ratings(
+            metadata={},
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            media_id="1399",
+        )
+
+        self.assertEqual(movie_ratings[0]["url"], "https://letterboxd.com/tmdb/550")
+        self.assertIsNone(movie_ratings[1]["url"])
+        self.assertIsNone(tv_ratings[0]["url"])
+        self.assertIsNone(tv_ratings[1]["url"])
+
+    @patch("app.providers.mdblist.get_media_ratings")
+    def test_tv_and_season_rating_urls_use_available_series_pages(self, ratings_mock):
+        ratings_mock.return_value = {
+            "imdb": {"value": "9.2", "votes": 2500000},
+            "letterboxd": {
+                "value": "4.6",
+                "votes": 900000,
+                "url": "https://letterboxd.com/film/a-supported-limited-series/",
+            },
+            "tomatoes": {
+                "value": "89%",
+                "votes": 400,
+                "url": "//www.rottentomatoes.com/tv/example_show",
+            },
+        }
+        metadata = {
+            "external_links": {"IMDb": "https://www.imdb.com/title/tt0944947/"},
+        }
+        expected_urls = {
+            "IMDb": "https://www.imdb.com/title/tt0944947/",
+            "Letterboxd": "https://letterboxd.com/film/a-supported-limited-series/",
+            "Rotten Tomatoes": "https://www.rottentomatoes.com/tv/example_show",
+        }
+
+        for media_type, season_number in [
+            (MediaTypes.TV.value, None),
+            (MediaTypes.SEASON.value, 1),
+        ]:
+            ratings = external_ratings(
+                metadata=metadata,
+                source=Sources.TMDB.value,
+                media_type=media_type,
+                media_id="1399",
+                season_number=season_number,
+            )
+
+            self.assertEqual(
+                {rating["source"]: rating["url"] for rating in ratings},
+                expected_urls,
+            )
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_landscape_only_artwork_marks_poster_orientation(self, metadata_mock):
@@ -2541,6 +2622,49 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["details"]["genres"], ["Action", "Sci-Fi"])
         self.assertEqual([section["id"] for section in response.data["related_sections"]], ["related_anime", "recommendations"])
         self.assertEqual(response.data["external_ratings"][0]["source"], "MAL")
+        self.assertEqual(response.data["external_ratings"][0]["url"], "https://myanimelist.net/anime/1")
+
+    def test_mal_manga_rating_uses_verified_id_url(self):
+        ratings = external_ratings(
+            metadata={"score": 9.4, "score_count": 750000},
+            source=Sources.MAL.value,
+            media_type=MediaTypes.MANGA.value,
+            media_id="2",
+        )
+
+        self.assertEqual(ratings[0]["url"], "https://myanimelist.net/manga/2")
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_mangaupdates_rating_uses_provider_source_url(self, metadata_mock):
+        metadata_mock.return_value = {
+            "media_id": "abc123",
+            "media_type": "manga",
+            "source": "mangaupdates",
+            "source_url": "https://www.mangaupdates.com/series/abc123/example-manga",
+            "title": "Example Manga",
+            "score": "8.2",
+            "score_count": 321,
+        }
+
+        response = self.client.get("/api/v1/media/mangaupdates/manga/abc123/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["external_ratings"][0]["source"], "MangaUpdates")
+        self.assertEqual(
+            response.data["external_ratings"][0]["url"],
+            "https://www.mangaupdates.com/series/abc123/example-manga",
+        )
+
+    def test_mangaupdates_rating_without_source_url_stays_unlinked(self):
+        for source_url in [None, "https://["]:
+            ratings = external_ratings(
+                metadata={"score": 8.2, "score_count": 321, "source_url": source_url},
+                source=Sources.MANGAUPDATES.value,
+                media_type=MediaTypes.MANGA.value,
+                media_id="abc123",
+            )
+
+            self.assertIsNone(ratings[0]["url"])
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_openlibrary_book_detail_exposes_other_editions(self, metadata_mock):
@@ -2564,6 +2688,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["related_sections"][0]["id"], "other_editions")
         self.assertEqual(response.data["external_ratings"][0]["max_value"], "5")
         self.assertEqual(response.data["external_ratings"][0]["value"], "4.1")
+        self.assertEqual(response.data["external_ratings"][0]["url"], "https://openlibrary.org/books/OL1M")
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_hardcover_book_detail_exposes_series_before_recommendations(self, metadata_mock):
@@ -2642,6 +2767,7 @@ class ApiV1FoundationTests(TestCase):
             "media_id": "377193",
             "media_type": "book",
             "source": "hardcover",
+            "source_url": "https://hardcover.app/books/the-great-gatsby",
             "title": "The Great Gatsby",
             "image": "https://example.com/gatsby.jpg",
             "score": 4.3,
@@ -2656,6 +2782,17 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(rating["value"], "4.3")
         self.assertEqual(rating["max_value"], "5")
         self.assertEqual(rating["vote_count"], 1234)
+        self.assertEqual(rating["url"], "https://hardcover.app/books/the-great-gatsby")
+
+    def test_hardcover_rating_without_slug_uses_id_redirect_url(self):
+        ratings = external_ratings(
+            metadata={"score": 4.3, "score_count": 1234},
+            source=Sources.HARDCOVER.value,
+            media_type=MediaTypes.BOOK.value,
+            media_id="377193",
+        )
+
+        self.assertEqual(ratings[0]["url"], "https://hardcover.app/book/377193")
 
     @patch("app.providers.steam.get_metacritic_rating")
     @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
@@ -2674,6 +2811,7 @@ class ApiV1FoundationTests(TestCase):
             "media_id": "1020",
             "media_type": "game",
             "source": "igdb",
+            "source_url": "https://www.igdb.com/games/space-game",
             "title": "Space Game",
             "image": "https://example.com/space.jpg",
             "artworks": [{"image_id": "wide-art"}],
@@ -2732,6 +2870,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_ratings"][0]["value"], "92.7")
         self.assertEqual(response.data["external_ratings"][0]["max_value"], "100")
         self.assertEqual(response.data["external_ratings"][0]["vote_count"], 5000)
+        self.assertEqual(response.data["external_ratings"][0]["url"], "https://www.igdb.com/games/space-game")
         self.assertEqual(response.data["external_ratings"][1]["source"], "Metacritic")
         self.assertEqual(response.data["external_ratings"][1]["value"], "94")
         self.assertEqual(response.data["external_ratings"][1]["max_value"], "100")
