@@ -2483,6 +2483,7 @@ class ApiV1FoundationTests(TestCase):
                 "image": "https://example.com/older.jpg",
                 "release_date": "2020-01-01",
                 "vote_average": 9.0,
+                "vote_count": 1_000,
                 "roles": ["Developer"],
                 "credit_roles": ["Developer"],
             },
@@ -2492,6 +2493,7 @@ class ApiV1FoundationTests(TestCase):
                 "image": "https://example.com/newer.jpg",
                 "release_date": "2024-01-01",
                 "vote_average": 7.0,
+                "vote_count": 10,
                 "roles": ["Developer"],
                 "credit_roles": ["Developer"],
             },
@@ -2501,9 +2503,16 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 2)
-        self.assertEqual(response.data["results"][0]["title"], "Newer Game")
+        self.assertEqual(response.data["results"][0]["title"], "Older Game")
         self.assertEqual(response.data["results"][0]["ref"]["source"], Sources.IGDB.value)
         catalog_mock.assert_called_once_with(Sources.IGDB.value, "77", "developed")
+
+        response = self.client.get(
+            "/api/v1/companies/igdb/77/games/?role=developed&sort=release_date&page_size=1"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"][0]["title"], "Newer Game")
 
     def test_company_games_reject_invalid_role(self):
         response = self.client.get("/api/v1/companies/igdb/77/games/?role=credited")

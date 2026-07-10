@@ -270,7 +270,7 @@ class CompanyGamesView(APIView):
                 source=source,
                 company_id=company_id,
                 role=request.query_params.get("role", "developed"),
-                sort=request.query_params.get("sort", "release_date"),
+                sort=request.query_params.get("sort", "popularity"),
                 direction=request.query_params.get("direction"),
                 request=request,
                 user=request.user if request.user.is_authenticated else None,

@@ -44,7 +44,7 @@ SEARCH_TTL = 60 * 60 * 6
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
-COMPANY_SORTS = {"release_date", "title", "average_rating"}
+COMPANY_SORTS = {"popularity", "release_date", "title", "average_rating"}
 POSTER_UNSUPPORTED_MESSAGE = (
     "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
 )
@@ -343,7 +343,7 @@ def company_detail(*, source, company_id):
     }
 
 
-def company_games(*, source, company_id, role, sort="release_date", direction=None, request=None, user=None):
+def company_games(*, source, company_id, role, sort="popularity", direction=None, request=None, user=None):
     """Return sorted native media summaries for a company catalogue role."""
     if source != Sources.IGDB.value:
         msg = "Company pages are only supported for IGDB in v1."
@@ -351,7 +351,7 @@ def company_games(*, source, company_id, role, sort="release_date", direction=No
     if role not in {"developed", "published"}:
         raise ValueError("role must be developed or published.")
     if sort not in COMPANY_SORTS:
-        raise ValueError("sort must be release_date, title, or average_rating.")
+        raise ValueError("sort must be popularity, release_date, title, or average_rating.")
     if direction not in {None, "asc", "desc"}:
         raise ValueError("direction must be asc or desc.")
 
@@ -398,7 +398,12 @@ def _sort_company_catalog(catalog, *, sort, direction):
     if sort == "title":
         return sorted(catalog, key=lambda game: (game.get("title") or "").casefold(), reverse=descending)
 
-    key = "release_date" if sort == "release_date" else "vote_average"
+    if sort == "popularity":
+        key = "vote_count"
+    elif sort == "release_date":
+        key = "release_date"
+    else:
+        key = "vote_average"
     known = [game for game in catalog if game.get(key) not in (None, "")]
     unknown = [game for game in catalog if game.get(key) in (None, "")]
     if sort == "release_date":
