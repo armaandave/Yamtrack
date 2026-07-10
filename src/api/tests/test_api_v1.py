@@ -2123,6 +2123,26 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(tv_ratings[1]["url"])
 
     @patch("app.providers.mdblist.get_media_ratings")
+    def test_bare_imdb_value_falls_back_to_tmdb_imdb_id(self, ratings_mock):
+        ratings_mock.return_value = {
+            "imdb": {"value": "5.4", "votes": 17, "url": "17"},
+        }
+        metadata = {
+            "external_links": {
+                "IMDb": "https://www.imdb.com/title/tt14173636/",
+            },
+        }
+
+        ratings = external_ratings(
+            metadata=metadata,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="the-invite",
+        )
+
+        self.assertEqual(ratings[0]["url"], "https://www.imdb.com/title/tt14173636/")
+
+    @patch("app.providers.mdblist.get_media_ratings")
     def test_tv_and_season_rating_urls_use_available_series_pages(self, ratings_mock):
         ratings_mock.return_value = {
             "imdb": {"value": "9.2", "votes": 2500000},

@@ -534,6 +534,15 @@ struct LibraryView: View {
             ) {
                 Task { await viewModel.loadNextPage() }
             }
+        } else if viewModel.hasMorePages, let last = viewModel.displayedItems.last {
+            Color.clear
+                .frame(height: 1)
+                .id(last.id)
+                .onAppear {
+                    Task {
+                        await viewModel.loadNextPageIfNeeded(currentItem: last)
+                    }
+                }
         }
     }
 

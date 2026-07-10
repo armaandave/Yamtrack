@@ -981,6 +981,19 @@ def _is_allowed_rating_host(host, allowed_hosts):
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
 
 
+def _is_valid_rating_path(source, path):
+    if source != "imdb":
+        return True
+
+    segments = [segment for segment in path.split("/") if segment]
+    return (
+        len(segments) == 2
+        and segments[0] == "title"
+        and segments[1].startswith("tt")
+        and segments[1][2:].isdigit()
+    )
+
+
 def _safe_urlsplit(value):
     try:
         return urlsplit(value)
@@ -1022,6 +1035,7 @@ def _normalize_rating_url(source, value):
         or parsed.username
         or parsed.password
         or not _is_allowed_rating_host(host, allowed_hosts)
+        or not _is_valid_rating_path(source, parsed.path)
     ):
         return None
 
