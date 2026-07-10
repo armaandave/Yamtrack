@@ -3,7 +3,7 @@ import hashlib
 import logging
 from copy import deepcopy
 from datetime import UTC, datetime
-from urllib.parse import quote, urlencode, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 from aiohttp import ClientError
 from django.conf import settings
@@ -374,7 +374,12 @@ def _company_logo_url(logo):
     url = logo.get("url") if isinstance(logo, dict) else None
     if url:
         normalized = f"https:{url}" if url.startswith("//") else url
-        return normalized.replace("t_thumb", "t_logo_med")
+        parts = urlsplit(normalized)
+        path = parts.path.replace("/t_thumb/", "/t_logo_med/")
+        filename = path.rsplit("/", 1)[-1]
+        if "." in filename:
+            path = path.rsplit(".", 1)[0]
+        return urlunsplit(parts._replace(path=f"{path}.png"))
     image_id = logo.get("image_id") if isinstance(logo, dict) else None
     if image_id:
         return f"https://images.igdb.com/igdb/image/upload/t_logo_med/{image_id}.png"

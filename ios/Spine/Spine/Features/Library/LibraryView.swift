@@ -233,7 +233,6 @@ final class LibraryViewModel {
 
 struct LibraryView: View {
     @State private var viewModel: LibraryViewModel
-    @State private var isMediaLensExpanded = false
     @State private var searchDraftText = ""
     @Binding private var requestedShelf: LibraryShelf?
 
@@ -359,15 +358,16 @@ struct LibraryView: View {
                     .foregroundStyle(.white)
             }
 
+            mediaPicker
+
             MediaSearchBar(
                 text: $searchDraftText,
                 selectedMediaType: selectedMediaTypeBinding,
-                isLensExpanded: $isMediaLensExpanded,
+                isLensExpanded: .constant(false),
                 availableTypes: viewModel.mediaTypes,
                 horizontalPadding: 0,
-                onLensTap: {
-                    isMediaLensExpanded = true
-                },
+                showsMediaLens: false,
+                onLensTap: {},
                 onLensSelect: { _ in },
                 onSearch: { text in
                     Task { await viewModel.setSearchQuery(text) }
@@ -401,6 +401,16 @@ struct LibraryView: View {
             }
         }
         .padding(.bottom, 14)
+    }
+
+    private var mediaPicker: some View {
+        MediaSearchLensPicker(
+            selectedType: selectedMediaTypeBinding,
+            availableTypes: viewModel.mediaTypes,
+            horizontalPadding: 0,
+            fitsAllTypes: true,
+            isCompact: true
+        ) { _ in }
     }
 
     @ViewBuilder

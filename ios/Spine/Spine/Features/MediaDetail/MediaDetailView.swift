@@ -296,7 +296,7 @@ struct MediaCreditPresentation: Hashable {
         let resolvedPeople = people.isEmpty
             ? legacyPerson(
                 name: detail.details?[configuration.singularKey]?.stringValue,
-                id: detail.details?[configuration.singularIDKey]?.stringValue
+                id: identifier(in: detail.details?[configuration.singularIDKey])
             ).map { [$0] } ?? []
             : people
         guard !resolvedPeople.isEmpty else { return nil }
@@ -315,7 +315,7 @@ struct MediaCreditPresentation: Hashable {
                   let name = person["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !name.isEmpty
             else { return nil }
-            let id = person["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = identifier(in: person["id"])?.trimmingCharacters(in: .whitespacesAndNewlines)
             let key = id.map { "id:\($0)" } ?? "name:\(name.lowercased())"
             guard seen.insert(key).inserted else { return nil }
             return MediaPersonCredit(
@@ -332,6 +332,17 @@ struct MediaCreditPresentation: Hashable {
             name: name,
             personRef: id.flatMap { $0.isEmpty ? nil : PersonRef(source: "tmdb", id: $0) }
         )
+    }
+
+    private static func identifier(in value: JSONValue?) -> String? {
+        switch value {
+        case let .string(id):
+            id
+        case let .number(id) where id.rounded() == id:
+            String(Int(id))
+        default:
+            nil
+        }
     }
 }
 
@@ -380,6 +391,7 @@ struct MediaDetailView: View {
     @State private var presentedMediaDiary: PresentedMediaDiary?
     @State private var presentedDiscover: MediaDiscoverRequest?
     @State private var presentedPerson: PersonRef?
+    @State private var presentedCompany: CompanyRef?
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
     @State private var isLogPresented = false
@@ -395,6 +407,7 @@ struct MediaDetailView: View {
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
     private let peopleRepository: PeopleRepository
+    private let companyRepository: CompanyRepository
     private let currentUserId: Int?
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
@@ -407,6 +420,7 @@ struct MediaDetailView: View {
         diaryRepository: DiaryRepository,
         listRepository: ListRepository = AppRepositories.current().lists,
         peopleRepository: PeopleRepository = AppRepositories.current().people,
+        companyRepository: CompanyRepository = AppRepositories.current().companies,
         currentUserId: Int? = nil,
         selectedTab: AppTab = .home,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
@@ -417,6 +431,7 @@ struct MediaDetailView: View {
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
         self.peopleRepository = peopleRepository
+        self.companyRepository = companyRepository
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
@@ -634,6 +649,7 @@ struct MediaDetailView: View {
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
                 peopleRepository: peopleRepository,
+                companyRepository: companyRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -648,6 +664,21 @@ struct MediaDetailView: View {
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedCompany) { company in
+            CompanyDetailView(
+                ref: company,
+                companyRepository: companyRepository,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -903,7 +934,9 @@ struct MediaDetailView: View {
                         maxLogoHeight: 44
                     )
 
-                    if let credits = MediaCreditPresentation.make(for: detail) {
+                    if let credits = gameDeveloperCredits(detail) {
+                        companyCreditBylineView(credits)
+                    } else if let credits = MediaCreditPresentation.make(for: detail) {
                         creditBylineView(credits)
                     } else if let byline = byline(detail) {
                         bylineView(byline, detail: detail, lineLimit: 2)
@@ -971,7 +1004,9 @@ struct MediaDetailView: View {
                             maxLogoHeight: 48
                         )
 
-                        if let credits = MediaCreditPresentation.make(for: detail) {
+                        if let credits = gameDeveloperCredits(detail) {
+                            companyCreditBylineView(credits)
+                        } else if let credits = MediaCreditPresentation.make(for: detail) {
                             creditBylineView(credits)
                         } else if let byline = byline(detail) {
                             bylineView(byline, detail: detail, lineLimit: 1)
@@ -1060,6 +1095,32 @@ struct MediaDetailView: View {
         }
     }
 
+    private func companyCreditBylineView(_ credits: [MediaCompanyCredit]) -> some View {
+        let alignment: Alignment = showsTitleLogo ? .center : .leading
+        let textAlignment: TextAlignment = showsTitleLogo ? .center : .leading
+        let visibleCredits = Array(credits.prefix(2))
+        let moreCount = max(0, credits.count - visibleCredits.count)
+
+        return VStack(alignment: textAlignment == .center ? .center : .leading, spacing: 2) {
+            ForEach(visibleCredits) { credit in
+                Button {
+                    presentedCompany = credit.ref
+                } label: {
+                    bylineText(credit.name, lineLimit: 1, alignment: textAlignment)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View \(credit.name)")
+            }
+            if moreCount > 0 {
+                Text("+\(moreCount) more")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.44))
+            }
+        }
+        .multilineTextAlignment(textAlignment)
+        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
     private func backdropURLString(for detail: MediaDetail) -> String? {
         return detail.displayBackdropURL
     }
@@ -1097,6 +1158,9 @@ struct MediaDetailView: View {
                 rows: detailRows(detail),
                 onPersonSelected: { person in
                     presentedPerson = person
+                },
+                onCompanySelected: { company in
+                    presentedCompany = company
                 }
             )
             EpisodesSection(episodes: detail.episodes ?? [])
@@ -1469,7 +1533,8 @@ struct MediaDetailView: View {
                 DetailFactRow(label: "Age Rating", value: detailString(detail, "age_rating") ?? detailArray(detail, "age_ratings").joinedOrNil),
                 DetailFactRow(label: "Collection", value: detailString(detail, "collection")),
                 DetailFactRow(label: "Franchise", value: detailString(detail, "franchise") ?? detailArray(detail, "franchises").joinedOrNil),
-                DetailFactRow(label: "Developer", value: detailString(detail, "developer")),
+                companyDetailRow(label: "Developer", detail: detail, role: .developed),
+                companyDetailRow(label: "Publisher", detail: detail, role: .published),
                 DetailFactRow(label: "Themes", value: detailArray(detail, "themes").joinedOrNil),
                 DetailFactRow(label: "Time to Beat", value: timeToBeatString(detail)),
             ]
@@ -1513,6 +1578,29 @@ struct MediaDetailView: View {
 
     private func creditDetailRow(_ credits: MediaCreditPresentation?) -> DetailFactRow {
         DetailFactRow(label: credits?.label ?? "", people: credits?.people ?? [])
+    }
+
+    @MainActor
+    private func gameDeveloperCredits(_ detail: MediaDetail) -> [MediaCompanyCredit]? {
+        let credits = companyCredits(detail, role: .developed)
+        return credits.isEmpty ? nil : credits
+    }
+
+    @MainActor
+    private func companyDetailRow(label: String, detail: MediaDetail, role: CompanyCatalogRole) -> DetailFactRow {
+        let credits = companyCredits(detail, role: role)
+        if !credits.isEmpty {
+            return DetailFactRow(label: label, companies: credits)
+        }
+        let legacyKey = role == .developed ? "developer" : "publisher"
+        return DetailFactRow(label: label, value: detailString(detail, legacyKey))
+    }
+
+    @MainActor
+    private func companyCredits(_ detail: MediaDetail, role: CompanyCatalogRole? = nil) -> [MediaCompanyCredit] {
+        let credits = (detail.details?["company_credits"]?.arrayValue ?? []).compactMap(MediaCompanyCredit.init(json:))
+        guard let role else { return credits }
+        return credits.filter { $0.hasRole(role) }
     }
 
     private func creditTitle(_ detail: MediaDetail) -> String {
@@ -2786,26 +2874,37 @@ private struct DetailFactRow: Identifiable {
     let label: String
     var value: String?
     var people: [MediaPersonCredit]
+    var companies: [MediaCompanyCredit]
 
     var id: String { label }
-    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty) }
+    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty && companies.isEmpty) }
 
     init(label: String, value: String?) {
         self.label = label
         self.value = value
         people = []
+        companies = []
     }
 
     init(label: String, people: [MediaPersonCredit]) {
         self.label = label
         value = nil
         self.people = people
+        companies = []
+    }
+
+    init(label: String, companies: [MediaCompanyCredit]) {
+        self.label = label
+        value = nil
+        people = []
+        self.companies = companies
     }
 }
 
 private struct MediaFactsSection: View {
     let rows: [DetailFactRow]
     let onPersonSelected: (PersonRef) -> Void
+    let onCompanySelected: (CompanyRef) -> Void
 
     var body: some View {
         if !rows.isEmpty {
@@ -2816,7 +2915,8 @@ private struct MediaFactsSection: View {
                     ForEach(rows) { row in
                         DetailFactRowView(
                             row: row,
-                            onPersonSelected: onPersonSelected
+                            onPersonSelected: onPersonSelected,
+                            onCompanySelected: onCompanySelected
                         )
 
                         if row.id != rows.last?.id {
@@ -2833,6 +2933,7 @@ private struct MediaFactsSection: View {
 private struct DetailFactRowView: View {
     let row: DetailFactRow
     let onPersonSelected: (PersonRef) -> Void
+    let onCompanySelected: (CompanyRef) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -2842,14 +2943,14 @@ private struct DetailFactRowView: View {
                 .lineLimit(1)
                 .frame(width: 98, alignment: .leading)
 
-            if row.people.isEmpty {
+            if row.people.isEmpty && row.companies.isEmpty {
                 Text(row.value ?? "")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.84))
                     .lineLimit(2)
                     .minimumScaleFactor(0.86)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
+            } else if !row.people.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(row.people, id: \.self) { person in
                         if let personRef = person.personRef {
@@ -2863,6 +2964,19 @@ private struct DetailFactRowView: View {
                         } else {
                             personName(person.name)
                         }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(row.companies) { company in
+                        Button {
+                            onCompanySelected(company.ref)
+                        } label: {
+                            detailText(company.name)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(company.name)")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

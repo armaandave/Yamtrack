@@ -26,6 +26,11 @@ protocol PeopleRepository {
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail
 }
 
+protocol CompanyRepository {
+    func detail(ref: CompanyRef) async throws -> CompanyDetail
+    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary>
+}
+
 extension PeopleRepository {
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
         try await detail(ref: ref)
@@ -226,6 +231,7 @@ struct AppRepositories {
     let auth: AuthRepository
     let media: MediaRepository
     let people: PeopleRepository
+    let companies: CompanyRepository
     let tracking: TrackingRepository
     let diary: DiaryRepository
     let activity: ActivityRepository
@@ -238,6 +244,7 @@ struct AppRepositories {
         auth: AuthRepository,
         media: MediaRepository,
         people: PeopleRepository = APIPeopleRepository(client: AppEnvironment.apiClient),
+        companies: CompanyRepository = APICompanyRepository(client: AppEnvironment.apiClient),
         tracking: TrackingRepository,
         diary: DiaryRepository,
         activity: ActivityRepository,
@@ -249,6 +256,7 @@ struct AppRepositories {
         self.auth = auth
         self.media = media
         self.people = people
+        self.companies = companies
         self.tracking = tracking
         self.diary = diary
         self.activity = activity
@@ -267,6 +275,7 @@ struct AppRepositories {
             auth: APIAuthRepository(service: AuthService(client: client), tokenStore: client.tokenProvider),
             media: APIMediaRepository(client: client),
             people: APIPeopleRepository(client: client),
+            companies: APICompanyRepository(client: client),
             tracking: APITrackingRepository(client: client),
             diary: APIDiaryRepository(client: client),
             activity: APIActivityRepository(client: client),
@@ -442,6 +451,29 @@ struct APIPeopleRepository: PeopleRepository {
         try await client.get(
             "/people/\(ref.source)/\(ref.id)/",
             query: filter.queryItems(),
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+}
+
+struct APICompanyRepository: CompanyRepository {
+    let client: APIClient
+
+    func detail(ref: CompanyRef) async throws -> CompanyDetail {
+        try await client.get(
+            "/companies/\(ref.source)/\(ref.companyId)/",
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+
+    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary> {
+        var query = [URLQueryItem(name: "role", value: role.rawValue)]
+        if let page {
+            query.append(URLQueryItem(name: "page", value: page))
+        }
+        return try await client.get(
+            "/companies/\(ref.source)/\(ref.companyId)/games/",
+            query: query,
             authenticated: client.tokenProvider.accessToken != nil
         )
     }

@@ -103,6 +103,55 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testCompanyDetailDecodesStudioAPIContract() throws {
+        let detail = try JSONDecoder.api.decode(
+            CompanyDetail.self,
+            from: Data(
+                """
+                {
+                  "id": "77",
+                  "source": "igdb",
+                  "name": "Space Studio",
+                  "description": "Makes space games.",
+                  "logo_url": "https://example.com/logo.png",
+                  "logo_width": 284,
+                  "logo_height": 160,
+                  "founded_year": 1993,
+                  "country_code": 840,
+                  "status": "Active",
+                  "company_size": "Medium",
+                  "parent": {"id": "7", "name": "Parent Co"},
+                  "igdb_url": "https://www.igdb.com/companies/space-studio",
+                  "websites": ["https://example.com"],
+                  "catalogs": {
+                    "developed": {"count": 24},
+                    "published": {"count": 8}
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(detail.ref, CompanyRef(source: "igdb", companyId: "77"))
+        XCTAssertEqual(detail.catalogs.developed.count, 24)
+        XCTAssertEqual(detail.parent?.name, "Parent Co")
+    }
+
+    @MainActor
+    func testMediaCompanyCreditParsesStructuredDeveloperRole() {
+        let credit = MediaCompanyCredit(json: .object([
+            "id": .string("77"),
+            "source": .string("igdb"),
+            "name": .string("Space Studio"),
+            "roles": .array([.string("Developer"), .string("Publisher")]),
+        ]))
+
+        XCTAssertEqual(credit?.ref, CompanyRef(source: "igdb", companyId: "77"))
+        XCTAssertTrue(credit?.hasRole(.developed) == true)
+        XCTAssertTrue(credit?.hasRole(.published) == true)
+    }
+
+    @MainActor
     func testLibraryViewModelSeparatesPlanningFromTrackedItems() async {
         let repository = ScriptedLibraryTrackingRepository(responses: [
             "movie:": PagedResponse(

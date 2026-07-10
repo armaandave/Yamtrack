@@ -9,6 +9,7 @@ struct MediaSearchBar: View {
     let availableTypes: [String]
     var placeholderPrefix = "Search"
     var horizontalPadding: CGFloat = 16
+    var showsMediaLens = true
     let onLensTap: () -> Void
     let onLensSelect: (String) -> Void
     let onSearch: (String) -> Void
@@ -16,7 +17,7 @@ struct MediaSearchBar: View {
 
     var body: some View {
         ZStack {
-            if isLensExpanded {
+            if isLensExpanded, showsMediaLens {
                 MediaSearchLensPicker(
                     selectedType: $selectedMediaType,
                     availableTypes: availableTypes,
@@ -50,8 +51,10 @@ struct MediaSearchBar: View {
                 .submitLabel(.search)
                 .onSubmit(performSearch)
 
-            MediaLensChip(selectedType: selectedMediaType, size: 24, symbolSize: 12, onTap: onLensTap)
-                .padding(.horizontal, 2)
+            if showsMediaLens {
+                MediaLensChip(selectedType: selectedMediaType, size: 24, symbolSize: 12, onTap: onLensTap)
+                    .padding(.horizontal, 2)
+            }
 
             Button(action: clearOrDismiss) {
                 Image(systemName: "xmark.circle.fill")

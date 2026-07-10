@@ -2426,7 +2426,12 @@ class ApiV1FoundationTests(TestCase):
             "id": 77,
             "name": "Space Studio",
             "description": "Makes space games.",
-            "logo": {"image_id": "studio-logo", "width": 284, "height": 160},
+            "logo": {
+                "image_id": "studio-logo",
+                "url": "//images.igdb.com/igdb/image/upload/t_thumb/studio-logo.jpg",
+                "width": 284,
+                "height": 160,
+            },
             "country": 840,
             "start_date": int(datetime(1993, 1, 1, tzinfo=UTC).timestamp()),
             "status": {"name": "Active"},
@@ -2442,7 +2447,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], "77")
         self.assertEqual(response.data["logo_width"], 284)
-        self.assertIn("t_logo_med/studio-logo", response.data["logo_url"])
+        self.assertEqual(
+            response.data["logo_url"],
+            "https://images.igdb.com/igdb/image/upload/t_logo_med/studio-logo.png",
+        )
         self.assertEqual(response.data["founded_year"], 1993)
         self.assertEqual(response.data["catalogs"], {"developed": {"count": 24}, "published": {"count": 8}})
 
