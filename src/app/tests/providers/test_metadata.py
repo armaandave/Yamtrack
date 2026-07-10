@@ -567,7 +567,9 @@ class Metadata(TestCase):
                             },
                         ],
                         "involved_companies": [
-                            {"developer": True, "company": {"name": "Space Studio"}},
+                            {"developer": True, "company": {"id": 77, "name": "Space Studio"}},
+                            {"publisher": True, "company": {"id": 77, "name": "Space Studio"}},
+                            {"developer": True, "company": {"id": 88, "name": "Orbit Works"}},
                         ],
                     },
                 ],
@@ -588,6 +590,51 @@ class Metadata(TestCase):
             [game["title"] for game in response["related"]["collection"]],
             ["Space Game", "Space Game 2"],
         )
+        self.assertEqual(
+            response["details"]["company_credits"],
+            [
+                {"id": "77", "source": "igdb", "name": "Space Studio", "roles": ["Developer", "Publisher"]},
+                {"id": "88", "source": "igdb", "name": "Orbit Works", "roles": ["Developer"]},
+            ],
+        )
+
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb._post_igdb")
+    def test_company_catalog_keeps_roles_and_omits_missing_games(self, post_igdb, _token_mock):
+        cache.clear()
+        post_igdb.side_effect = [
+            [
+                {
+                    "id": 77,
+                    "name": "Space Studio",
+                    "developed": [10, 11, 10],
+                    "published": [12],
+                },
+            ],
+            [
+                {
+                    "id": 11,
+                    "name": "Newer Game",
+                    "cover": {"image_id": "newer"},
+                    "first_release_date": int(datetime(2024, 1, 1, tzinfo=UTC).timestamp()),
+                    "game_type": 0,
+                },
+                {
+                    "id": 10,
+                    "name": "Older Game",
+                    "cover": {"image_id": "older"},
+                    "first_release_date": int(datetime(2020, 1, 1, tzinfo=UTC).timestamp()),
+                    "game_type": 0,
+                },
+            ],
+        ]
+
+        catalog = igdb.company_catalog("77", "developed")
+
+        self.assertEqual([game["media_id"] for game in catalog], [10, 11])
+        self.assertTrue(all(game["roles"] == ["Developer"] for game in catalog))
+        self.assertEqual(igdb.company_catalog_count(igdb.company("77"), "developed"), 2)
+        self.assertEqual(post_igdb.call_count, 2)
 
     @requires_provider_network
     def test_external_game_steam(self):

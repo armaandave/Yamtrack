@@ -312,3 +312,24 @@ def get_person_page(source, person_id):
     if source == Sources.OPENLIBRARY.value:
         return openlibrary.person_page(person_id)
     raise_not_found_error(source, person_id, "person")
+
+
+def get_company(source, company_id):
+    """Return a provider company profile for native company pages."""
+    if source == Sources.IGDB.value:
+        return igdb.company(company_id)
+    raise_not_found_error(source, company_id, "company")
+
+
+def get_company_catalog(source, company_id, role):
+    """Return normalized provider games for a company catalogue role."""
+    if source == Sources.IGDB.value:
+        return igdb.company_catalog(company_id, role)
+    raise_not_found_error(source, company_id, "company")
+
+
+def company_catalog_count(source, company, role):
+    """Return the provider-advertised count for a company catalogue role."""
+    if source == Sources.IGDB.value:
+        return igdb.company_catalog_count(company, role)
+    raise_not_found_error(source, company.get("id"), "company")

@@ -15,6 +15,9 @@ from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.igdb.com/v4"
+COMPANY_CACHE_TTL = 60 * 60 * 24
+COMPANY_CATALOG_CACHE_TTL = 60 * 60 * 24
+IGDB_BATCH_SIZE = 500
 
 
 class ExternalGameSource(IntEnum):
@@ -416,7 +419,8 @@ def game(media_id):
             "franchises.name,collection.name,collections.name,"
             "collections.games.name,collections.games.cover.image_id,"
             "collections.games.game_type,collections.games.first_release_date,"
-            "involved_companies.company.name,involved_companies.developer,"
+            "involved_companies.company.id,involved_companies.company.name,"
+            "involved_companies.developer,involved_companies.publisher,"
             "parent_game.name,parent_game.cover.image_id,"
             "remasters.name,remasters.cover.image_id,"
             "remakes.name,remakes.cover.image_id,"
@@ -515,6 +519,7 @@ def game(media_id):
                 "platforms": get_list(game_response, "platforms"),
                 "companies": get_companies(game_response),
                 "developer": get_developer(game_response),
+                "company_credits": get_company_credits(game_response),
             },
             "related": {
                 "parent_game": get_parent(game_response.get("parent_game")),
@@ -688,6 +693,111 @@ def get_developer(response):
         return None
     except (KeyError, TypeError):
         return None
+
+
+def get_company_credits(response):
+    """Return ordered, de-duplicated IGDB company credits with their roles."""
+    credits = {}
+    for involvement in response.get("involved_companies", []) or []:
+        company = involvement.get("company") or {}
+        company_id = company.get("id")
+        name = company.get("name")
+        if company_id is None or not name:
+            continue
+
+        key = str(company_id)
+        credit = credits.setdefault(
+            key,
+            {
+                "id": key,
+                "source": Sources.IGDB.value,
+                "name": name,
+                "roles": [],
+            },
+        )
+        if involvement.get("developer") and "Developer" not in credit["roles"]:
+            credit["roles"].append("Developer")
+        if involvement.get("publisher") and "Publisher" not in credit["roles"]:
+            credit["roles"].append("Publisher")
+    return list(credits.values())
+
+
+def company(company_id):
+    """Return an IGDB company profile, including its developed/published game IDs."""
+    company_id = int(company_id)
+    cache_key = f"{Sources.IGDB.value}_company_{company_id}_v1"
+    data = cache.get(cache_key)
+    if data is None:
+        response = _post_igdb(
+            f"{base_url}/companies",
+            "fields id,name,description,logo.image_id,logo.url,logo.width,logo.height,"
+            "country,start_date,status.name,company_size.name,parent.id,parent.name,"
+            "url,websites.url,developed,published;"
+            f"where id = {company_id}; limit 1;",
+            _api_headers(),
+        )
+        if not response:
+            services.raise_not_found_error(Sources.IGDB.value, company_id, "company")
+        data = response[0]
+        cache.set(cache_key, data, COMPANY_CACHE_TTL)
+    return data
+
+
+def company_catalog(company_id, role):
+    """Return normalized game records for one IGDB company role."""
+    if role not in {"developed", "published"}:
+        raise ValueError("role must be developed or published.")
+
+    company_data = company(company_id)
+    cache_key = f"{Sources.IGDB.value}_company_catalog_{company_data['id']}_{role}_v1"
+    data = cache.get(cache_key)
+    if data is None:
+        game_ids = list(dict.fromkeys(company_data.get(role) or []))
+        games = _games_for_ids(game_ids)
+        data = [_company_game_summary(game, role) for game in games]
+        cache.set(cache_key, data, COMPANY_CATALOG_CACHE_TTL)
+    return data
+
+
+def company_catalog_count(company_data, role):
+    """Return the provider-advertised count for a company catalogue role."""
+    return len(set(company_data.get(role) or []))
+
+
+def _games_for_ids(game_ids):
+    if not game_ids:
+        return []
+
+    games_by_id = {}
+    for index in range(0, len(game_ids), IGDB_BATCH_SIZE):
+        batch = game_ids[index : index + IGDB_BATCH_SIZE]
+        ids = ",".join(str(int(game_id)) for game_id in batch)
+        response = _post_igdb(
+            f"{base_url}/games",
+            "fields id,name,cover.image_id,cover.width,cover.height,first_release_date,"
+            "total_rating,total_rating_count,genres.name,game_type;"
+            f"where id = ({ids}); limit {IGDB_BATCH_SIZE};",
+            _api_headers(),
+        )
+        games_by_id.update({game["id"]: game for game in response or [] if game.get("id") is not None})
+    return [games_by_id[game_id] for game_id in game_ids if game_id in games_by_id]
+
+
+def _company_game_summary(game, role):
+    return {
+        "media_id": game["id"],
+        "source": Sources.IGDB.value,
+        "media_type": MediaTypes.GAME.value,
+        "title": game.get("name") or "",
+        "image": get_image_url(game),
+        "release_date": get_start_date(game),
+        "genres": get_list(game, "genres") or [],
+        "vote_average": get_score(game),
+        "vote_count": game.get("total_rating_count"),
+        "roles": ["Developer" if role == "developed" else "Publisher"],
+        "credit_roles": ["Developer" if role == "developed" else "Publisher"],
+        "game_type": get_game_type(game.get("game_type")),
+    }
 
 
 def get_game_covers(media_id):

@@ -2419,6 +2419,70 @@ class ApiV1FoundationTests(TestCase):
             "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1.",
         )
 
+    @patch("api.services.media.provider_services.company_catalog_count")
+    @patch("api.services.media.provider_services.get_company")
+    def test_company_detail_returns_igdb_studio_profile(self, company_mock, count_mock):
+        company_mock.return_value = {
+            "id": 77,
+            "name": "Space Studio",
+            "description": "Makes space games.",
+            "logo": {"image_id": "studio-logo", "width": 284, "height": 160},
+            "country": 840,
+            "start_date": int(datetime(1993, 1, 1, tzinfo=UTC).timestamp()),
+            "status": {"name": "Active"},
+            "company_size": {"name": "Medium"},
+            "parent": {"id": 7, "name": "Parent Co"},
+            "url": "https://www.igdb.com/companies/space-studio",
+            "websites": [{"url": "https://example.com"}],
+        }
+        count_mock.side_effect = [24, 8]
+
+        response = self.client.get("/api/v1/companies/igdb/77/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], "77")
+        self.assertEqual(response.data["logo_width"], 284)
+        self.assertIn("t_logo_med/studio-logo", response.data["logo_url"])
+        self.assertEqual(response.data["founded_year"], 1993)
+        self.assertEqual(response.data["catalogs"], {"developed": {"count": 24}, "published": {"count": 8}})
+
+    @patch("api.services.media.provider_services.get_company_catalog")
+    def test_company_games_are_role_scoped_sorted_and_paginated(self, catalog_mock):
+        catalog_mock.return_value = [
+            {
+                "media_id": 1,
+                "title": "Older Game",
+                "image": "https://example.com/older.jpg",
+                "release_date": "2020-01-01",
+                "vote_average": 9.0,
+                "roles": ["Developer"],
+                "credit_roles": ["Developer"],
+            },
+            {
+                "media_id": 2,
+                "title": "Newer Game",
+                "image": "https://example.com/newer.jpg",
+                "release_date": "2024-01-01",
+                "vote_average": 7.0,
+                "roles": ["Developer"],
+                "credit_roles": ["Developer"],
+            },
+        ]
+
+        response = self.client.get("/api/v1/companies/igdb/77/games/?role=developed&page_size=1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(response.data["results"][0]["title"], "Newer Game")
+        self.assertEqual(response.data["results"][0]["ref"]["source"], Sources.IGDB.value)
+        catalog_mock.assert_called_once_with(Sources.IGDB.value, "77", "developed")
+
+    def test_company_games_reject_invalid_role(self):
+        response = self.client.get("/api/v1/companies/igdb/77/games/?role=credited")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "role must be developed or published.")
+
     @patch("app.providers.tmdb.get_title_logo", return_value=None)
     @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
     @patch("app.providers.mdblist.get_media_ratings", return_value={})

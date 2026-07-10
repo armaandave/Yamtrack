@@ -1097,9 +1097,6 @@ struct MediaDetailView: View {
                 rows: detailRows(detail),
                 onPersonSelected: { person in
                     presentedPerson = person
-                },
-                onDiscover: { request in
-                    presentedDiscover = request
                 }
             )
             EpisodesSection(episodes: detail.episodes ?? [])
@@ -1507,14 +1504,7 @@ struct MediaDetailView: View {
                 continue
             }
             let values = detailArray(detail, key)
-            if key == "genres" {
-                let chips = values.map {
-                    MediaDetailChip(label: $0, discoverRequest: discoverRequest(detail, filter: .genre($0)))
-                }
-                if !chips.isEmpty {
-                    rows.append(DetailFactRow(label: label, chips: chips))
-                }
-            } else if !values.isEmpty {
+            if !values.isEmpty {
                 rows.append(DetailFactRow(label: label, value: values.joined(separator: ", ")))
             }
         }
@@ -2796,37 +2786,26 @@ private struct DetailFactRow: Identifiable {
     let label: String
     var value: String?
     var people: [MediaPersonCredit]
-    var chips: [MediaDetailChip]
 
     var id: String { label }
-    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty && chips.isEmpty) }
+    var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty) }
 
     init(label: String, value: String?) {
         self.label = label
         self.value = value
         people = []
-        chips = []
     }
 
     init(label: String, people: [MediaPersonCredit]) {
         self.label = label
         value = nil
         self.people = people
-        chips = []
-    }
-
-    init(label: String, chips: [MediaDetailChip]) {
-        self.label = label
-        value = nil
-        people = []
-        self.chips = chips
     }
 }
 
 private struct MediaFactsSection: View {
     let rows: [DetailFactRow]
     let onPersonSelected: (PersonRef) -> Void
-    let onDiscover: (MediaDiscoverRequest) -> Void
 
     var body: some View {
         if !rows.isEmpty {
@@ -2837,8 +2816,7 @@ private struct MediaFactsSection: View {
                     ForEach(rows) { row in
                         DetailFactRowView(
                             row: row,
-                            onPersonSelected: onPersonSelected,
-                            onDiscover: onDiscover
+                            onPersonSelected: onPersonSelected
                         )
 
                         if row.id != rows.last?.id {
@@ -2855,7 +2833,6 @@ private struct MediaFactsSection: View {
 private struct DetailFactRowView: View {
     let row: DetailFactRow
     let onPersonSelected: (PersonRef) -> Void
-    let onDiscover: (MediaDiscoverRequest) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -2865,24 +2842,7 @@ private struct DetailFactRowView: View {
                 .lineLimit(1)
                 .frame(width: 98, alignment: .leading)
 
-            if !row.chips.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(row.chips) { chip in
-                        if let request = chip.discoverRequest {
-                            Button {
-                                onDiscover(request)
-                            } label: {
-                                linkedDetailText(chip.label)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Browse \(chip.label)")
-                        } else {
-                            detailText(chip.label)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else if row.people.isEmpty {
+            if row.people.isEmpty {
                 Text(row.value ?? "")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.84))
@@ -2914,11 +2874,6 @@ private struct DetailFactRowView: View {
 
     private func personName(_ name: String) -> some View {
         detailText(name)
-    }
-
-    private func linkedDetailText(_ text: String) -> some View {
-        detailText(text)
-            .underline()
     }
 
     private func detailText(_ text: String) -> some View {

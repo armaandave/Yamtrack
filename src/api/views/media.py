@@ -14,6 +14,7 @@ from api.throttling import SearchRateThrottle
 from app import config
 from app.forms import ManualItemForm
 from app.models import BasicMedia, DiaryEntry, Status
+from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
 
 
@@ -236,6 +237,56 @@ class PersonDetailView(APIView):
             )
         except NotImplementedError as error:
             return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class CompanyDetailView(APIView):
+    """Provider-backed company profile for native studio pages."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, company_id):
+        try:
+            return Response(media_service.company_detail(source=source, company_id=company_id))
+        except NotImplementedError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response({"detail": "Company not found."}, status=status.HTTP_404_NOT_FOUND)
+            raise
+
+
+class CompanyGamesView(APIView):
+    """Paginated games developed or published by a provider company."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, company_id):
+        try:
+            games = media_service.company_games(
+                source=source,
+                company_id=company_id,
+                role=request.query_params.get("role", "developed"),
+                sort=request.query_params.get("sort", "release_date"),
+                direction=request.query_params.get("direction"),
+                request=request,
+                user=request.user if request.user.is_authenticated else None,
+            )
+        except NotImplementedError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response({"detail": "Company not found."}, status=status.HTTP_404_NOT_FOUND)
+            raise
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(games, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 class MediaReviewsView(APIView):

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 from copy import deepcopy
+from datetime import UTC, datetime
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from aiohttp import ClientError
@@ -43,6 +44,7 @@ SEARCH_TTL = 60 * 60 * 6
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
+COMPANY_SORTS = {"release_date", "title", "average_rating"}
 POSTER_UNSUPPORTED_MESSAGE = (
     "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
 )
@@ -300,6 +302,105 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
             ],
         },
     }
+
+
+def company_detail(*, source, company_id):
+    """Return an IGDB company profile for native studio pages."""
+    if source != Sources.IGDB.value:
+        msg = "Company pages are only supported for IGDB in v1."
+        raise NotImplementedError(msg)
+
+    company = provider_services.get_company(source, company_id)
+    logo = company.get("logo") or {}
+    parent = company.get("parent") or {}
+    return {
+        "id": str(company.get("id") or company_id),
+        "source": source,
+        "name": company.get("name") or "",
+        "description": company.get("description") or None,
+        "logo_url": _company_logo_url(logo),
+        "logo_width": logo.get("width") or None,
+        "logo_height": logo.get("height") or None,
+        "founded_year": _company_founded_year(company.get("start_date")),
+        "country_code": company.get("country"),
+        "status": (company.get("status") or {}).get("name"),
+        "company_size": (company.get("company_size") or {}).get("name"),
+        "parent": (
+            {"id": str(parent["id"]), "name": parent.get("name") or ""}
+            if parent.get("id") is not None
+            else None
+        ),
+        "igdb_url": company.get("url") or None,
+        "websites": [
+            website["url"]
+            for website in company.get("websites") or []
+            if isinstance(website, dict) and website.get("url")
+        ],
+        "catalogs": {
+            "developed": {"count": provider_services.company_catalog_count(source, company, "developed")},
+            "published": {"count": provider_services.company_catalog_count(source, company, "published")},
+        },
+    }
+
+
+def company_games(*, source, company_id, role, sort="release_date", direction=None, request=None, user=None):
+    """Return sorted native media summaries for a company catalogue role."""
+    if source != Sources.IGDB.value:
+        msg = "Company pages are only supported for IGDB in v1."
+        raise NotImplementedError(msg)
+    if role not in {"developed", "published"}:
+        raise ValueError("role must be developed or published.")
+    if sort not in COMPANY_SORTS:
+        raise ValueError("sort must be release_date, title, or average_rating.")
+    if direction not in {None, "asc", "desc"}:
+        raise ValueError("direction must be asc or desc.")
+
+    direction = direction or ("asc" if sort == "title" else "desc")
+    catalog = provider_services.get_company_catalog(source, company_id, role)
+    ordered = _sort_company_catalog(catalog, sort=sort, direction=direction)
+    return [
+        media_summary_from_provider(
+            game,
+            media_type=MediaTypes.GAME.value,
+            source=Sources.IGDB.value,
+            request=request,
+            user=user,
+        )
+        for game in ordered
+    ]
+
+
+def _company_logo_url(logo):
+    url = logo.get("url") if isinstance(logo, dict) else None
+    if url:
+        normalized = f"https:{url}" if url.startswith("//") else url
+        return normalized.replace("t_thumb", "t_logo_med")
+    image_id = logo.get("image_id") if isinstance(logo, dict) else None
+    if image_id:
+        return f"https://images.igdb.com/igdb/image/upload/t_logo_med/{image_id}.png"
+    return None
+
+
+def _company_founded_year(value):
+    try:
+        return datetime.fromtimestamp(int(value), tz=UTC).year
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _sort_company_catalog(catalog, *, sort, direction):
+    descending = direction == "desc"
+    if sort == "title":
+        return sorted(catalog, key=lambda game: (game.get("title") or "").casefold(), reverse=descending)
+
+    key = "release_date" if sort == "release_date" else "vote_average"
+    known = [game for game in catalog if game.get(key) not in (None, "")]
+    unknown = [game for game in catalog if game.get(key) in (None, "")]
+    if sort == "release_date":
+        known.sort(key=lambda game: game[key], reverse=descending)
+    else:
+        known.sort(key=lambda game: float(game[key]), reverse=descending)
+    return [*known, *unknown]
 
 
 def poster_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
