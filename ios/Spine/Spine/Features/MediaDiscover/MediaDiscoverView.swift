@@ -90,7 +90,7 @@ final class MediaDiscoverViewModel {
 struct MediaDiscoverView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaDiscoverViewModel
-    @State private var selectedRef: MediaRef?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var edgeDragOffset: CGFloat = 0
 
     private let request: MediaDiscoverRequest
@@ -148,7 +148,10 @@ struct MediaDiscoverView: View {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
                             ForEach(viewModel.results) { media in
                                 Button {
-                                    selectedRef = media.ref
+                                    selectedMedia = MediaBrowsingSelection(
+                                        ref: media.ref,
+                                        within: viewModel.results.map(\.ref)
+                                    )
                                 } label: {
                                     MediaArtwork(
                                         url: media.displayPosterURL,
@@ -197,9 +200,10 @@ struct MediaDiscoverView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
-        .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
-                ref: ref,
+                ref: selection.ref,
+                browsingContext: selection.context,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,

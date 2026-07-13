@@ -274,6 +274,51 @@ class Metadata(TestCase):
         )
         self.assertEqual(mock_api_request.call_count, 1)
 
+    @patch("app.providers.tmdb.services.api_request")
+    def test_title_logos_return_all_languages_sorted_and_cached(self, mock_api_request):
+        """Test TMDB title logo option normalization, ordering, and caching."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "logos": [
+                {
+                    "file_path": "/smaller.png",
+                    "width": 1000,
+                    "height": 400,
+                    "aspect_ratio": 2.5,
+                    "vote_average": 8,
+                    "vote_count": 4,
+                    "iso_639_1": "fr",
+                },
+                {
+                    "file_path": "/best.png",
+                    "width": 1600,
+                    "height": 500,
+                    "aspect_ratio": 3.2,
+                    "vote_average": 8,
+                    "vote_count": 4,
+                    "iso_639_1": "en",
+                },
+                {
+                    "file_path": "/neutral.png",
+                    "width": 1200,
+                    "height": 400,
+                    "aspect_ratio": 3,
+                    "vote_average": 7,
+                    "vote_count": 10,
+                    "iso_639_1": None,
+                },
+            ],
+        }
+
+        logos = tmdb.get_title_logos("550", MediaTypes.MOVIE.value)
+        cached = tmdb.get_title_logos("550", MediaTypes.MOVIE.value)
+
+        self.assertEqual([logo["language"] for logo in logos], ["en", "fr", None])
+        self.assertEqual(logos[0]["url"], "https://image.tmdb.org/t/p/w500/best.png")
+        self.assertEqual(logos[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w300/best.png")
+        self.assertEqual(cached, logos)
+        mock_api_request.assert_called_once()
+
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
     def test_movie_changes(self, mock_api_request, mock_localdate):
@@ -719,6 +764,44 @@ class Metadata(TestCase):
         self.assertEqual(logo["aspect_ratio"], 2.791)
         api_request_mock.assert_called_once()
         self.assertIn("/logos/steam/1245620", api_request_mock.call_args.args[2])
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_logos_return_style_then_score_order(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB logo options use stable style and score ordering."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {"id": 1, "score": 100, "style": "white", "url": "https://example.com/white.png"},
+                {"id": 2, "score": 5, "style": "official", "url": "https://example.com/official-low.png"},
+                {"id": 3, "score": 10, "style": "official", "url": "https://example.com/official-high.png"},
+                {"id": 4, "score": 50, "style": "custom", "url": "https://example.com/custom.png"},
+            ],
+        }
+
+        logos = steamgriddb.get_game_logos("1020")
+
+        self.assertEqual(
+            [logo["url"] for logo in logos],
+            [
+                "https://example.com/official-high.png",
+                "https://example.com/official-low.png",
+                "https://example.com/custom.png",
+                "https://example.com/white.png",
+            ],
+        )
+
+    @override_settings(STEAMGRIDDB_API_KEY="")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id")
+    def test_steamgriddb_game_logos_without_credentials_are_empty(self, steam_id_mock):
+        """Test logo options degrade cleanly when SteamGridDB is not configured."""
+        cache.clear()
+
+        self.assertEqual(steamgriddb.get_game_logos("1020"), [])
+        self.assertIsNone(steamgriddb.get_game_logo("1020"))
+        steam_id_mock.assert_not_called()
 
     @override_settings(STEAMGRIDDB_API_KEY="test-key")
     @patch("app.providers.steamgriddb.igdb.game", return_value={"title": "Ghost of Tsushima"})

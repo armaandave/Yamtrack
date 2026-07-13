@@ -234,6 +234,7 @@ final class LibraryViewModel {
 struct LibraryView: View {
     @State private var viewModel: LibraryViewModel
     @State private var searchDraftText = ""
+    @State private var selectedGridMedia: MediaBrowsingSelection?
     @Binding private var requestedShelf: LibraryShelf?
 
     private let mediaRepository: MediaRepository
@@ -328,6 +329,20 @@ struct LibraryView: View {
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
                 Task { await viewModel.reload() }
             }
+        }
+        .fullScreenCover(item: $selectedGridMedia, onDismiss: { selectedGridMedia = nil }) { selection in
+            MediaDetailView(
+                ref: selection.ref,
+                browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
         }
     }
 
@@ -480,8 +495,11 @@ struct LibraryView: View {
     private func libraryGrid(_ items: [LibraryItem]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(items) { item in
-                NavigationLink {
-                    mediaDestination(for: item)
+                Button {
+                    selectedGridMedia = MediaBrowsingSelection(
+                        ref: item.media.ref,
+                        within: items.map(\.media.ref)
+                    )
                 } label: {
                     MediaArtwork(
                         url: item.media.displayPosterURL,
@@ -546,9 +564,13 @@ struct LibraryView: View {
         }
     }
 
-    private func mediaDestination(for item: LibraryItem) -> some View {
+    private func mediaDestination(
+        for item: LibraryItem,
+        browsingContext: MediaBrowsingContext? = nil
+    ) -> some View {
         MediaDetailView(
             ref: item.media.ref,
+            browsingContext: browsingContext,
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,

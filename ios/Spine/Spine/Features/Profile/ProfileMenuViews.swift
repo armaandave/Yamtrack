@@ -163,6 +163,10 @@ struct ProfileLikesView: View {
                 NavigationLink {
                     MediaDetailView(
                         ref: item.ref,
+                        browsingContext: MediaBrowsingContext(
+                            refs: media.map(\.ref),
+                            selected: item.ref
+                        ),
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,
@@ -533,6 +537,7 @@ private final class ProfileListsViewModel {
 
     private let listRepository: ListRepository
     private let onUnauthorized: () -> Void
+    private var hasLoaded = false
 
     init(listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
         self.listRepository = listRepository
@@ -540,12 +545,15 @@ private final class ProfileListsViewModel {
     }
 
     func load() async {
-        isLoading = true
+        isLoading = !hasLoaded
         errorMessage = nil
         defer { isLoading = false }
 
         do {
             lists = try await listRepository.list()
+            hasLoaded = true
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -880,12 +888,16 @@ private final class ProfileListDetailViewModel {
     }
 
     func load() async {
-        isLoading = true
-        errorMessage = nil
         requestGeneration += 1
         let generation = requestGeneration
+        isLoading = list == nil
+        errorMessage = nil
         let requestFilter = filter
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
             let detail = try await listRepository.detail(id: listId)
@@ -895,7 +907,10 @@ private final class ProfileListDetailViewModel {
             nextPage = APIPageCursor.nextPage(from: response.next)
             list = detail.withItems(response.results)
             Task { await loadFilterOptions() }
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -1092,6 +1107,7 @@ private struct ProfileListDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: ProfileListDetailViewModel
     @State private var presentedForm: ListComposerMode?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var isDeleteAlertPresented = false
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var edgeDragOffset: CGFloat = 0
@@ -1209,6 +1225,18 @@ private struct ProfileListDetailView: View {
             }
         }
         .onPreferenceChange(ProfileListTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
+            MediaDetailView(
+                ref: selection.ref,
+                browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
         .fullScreenCover(item: $presentedForm) { mode in
             ListComposerView(
                 mode: mode,
@@ -1417,16 +1445,8 @@ private struct ProfileListDetailView: View {
     private func mediaGrid(_ items: [MediaSummary]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(items) { item in
-                NavigationLink {
-                    MediaDetailView(
-                        ref: item.ref,
-                        mediaRepository: mediaRepository,
-                        trackingRepository: trackingRepository,
-                        diaryRepository: diaryRepository,
-                        selectedTab: selectedTab,
-                        onSelectTab: onSelectTab,
-                        onUnauthorized: onUnauthorized
-                    )
+                Button {
+                    selectedMedia = MediaBrowsingSelection(ref: item.ref, within: items.map(\.ref))
                 } label: {
                     VStack(spacing: 5) {
                         MediaArtwork(

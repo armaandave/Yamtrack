@@ -16,6 +16,7 @@ from app.models import (
     Anime,
     Book,
     CustomBackdropPreference,
+    CustomLogoPreference,
     CustomPosterPreference,
     DiaryEntry,
     Item,
@@ -3222,6 +3223,11 @@ class ApiV1FoundationTests(TestCase):
             image="https://example.com/book.jpg",
         )
         DiaryEntry.objects.create(user=user, item=item, consumed_at=timezone.now(), visibility="public")
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom-book.jpg",
+        )
         self.client.force_authenticate(user)
 
         response = self.client.get("/api/v1/diary/")
@@ -3229,6 +3235,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         media = response.data["results"][0]["media"]
         self.assertEqual(media["image_url"], media["poster_url"])
+        self.assertEqual(media["custom_poster_url"], "https://example.com/custom-book.jpg")
         self.assertIsNone(media["backdrop_url"])
         self.assertEqual(media["poster_orientation"], "unknown")
 
@@ -3349,6 +3356,270 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(all_tags.status_code, status.HTTP_200_OK)
         self.assertEqual(len(capped.data["results"]), 10)
         self.assertEqual(len(all_tags.data["results"]), 11)
+
+    @patch("app.providers.tmdb.get_title_logo")
+    @patch("app.providers.tmdb.get_title_logos")
+    def test_media_logos_endpoint_returns_options_and_external_selection(self, logos_mock, logo_mock):
+        user = get_user_model().objects.create_user(username="logos", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+            image="https://example.com/poster.jpg",
+        )
+        automatic = {
+            "url": "https://image.tmdb.org/t/p/w500/automatic.png",
+            "thumbnail_url": "https://image.tmdb.org/t/p/w300/automatic.png",
+            "width": 1200,
+            "height": 400,
+            "aspect_ratio": 3.0,
+            "vote_average": 8.0,
+            "vote_count": 10,
+            "language": "en",
+            "style": None,
+        }
+        alternate = {
+            **automatic,
+            "url": "https://image.tmdb.org/t/p/w500/alternate.png",
+            "thumbnail_url": "https://image.tmdb.org/t/p/w300/alternate.png",
+            "language": "fr",
+        }
+        logos_mock.return_value = [automatic, alternate]
+        logo_mock.return_value = automatic
+
+        anonymous = self.client.get("/api/v1/media/tmdb/movie/550/logos/")
+        anonymous_save = self.client.put(
+            "/api/v1/media/tmdb/movie/550/logo/",
+            {"logo_url": alternate["url"]},
+            format="json",
+        )
+        self.client.force_authenticate(user)
+        initial = self.client.get("/api/v1/media/tmdb/movie/550/logos/")
+        selected = self.client.put(
+            "/api/v1/media/tmdb/movie/550/logo/",
+            {"logo_url": alternate["url"]},
+            format="json",
+        )
+        external_url = "https://cdn.example.com/custom/logo.webp"
+        external = self.client.put(
+            "/api/v1/media/tmdb/movie/550/logo/",
+            {"logo_url": external_url},
+            format="json",
+        )
+        updated = self.client.get("/api/v1/media/tmdb/movie/550/logos/")
+
+        self.assertEqual(anonymous.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(anonymous_save.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(initial.status_code, status.HTTP_200_OK)
+        self.assertTrue(initial.data["logos"][0]["is_original"])
+        self.assertTrue(initial.data["logos"][0]["is_selected"])
+        self.assertEqual(selected.data["logo_width"], 1200)
+        self.assertEqual(external.data["logo_url"], external_url)
+        self.assertIsNone(external.data["logo_width"])
+        self.assertEqual(updated.data["logos"][0]["url"], external_url)
+        self.assertTrue(updated.data["logos"][0]["is_selected"])
+        self.assertEqual(
+            CustomLogoPreference.objects.get(user=user, item=item).custom_image_url,
+            external_url,
+        )
+
+    @patch("app.providers.steamgriddb.get_game_logo")
+    @patch("app.providers.steamgriddb.get_game_logos")
+    def test_media_game_logos_endpoint_returns_steamgriddb_options(self, logos_mock, logo_mock):
+        user = get_user_model().objects.create_user(username="game-logos", password="strong-password-123")
+        Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/game.jpg",
+        )
+        option = {
+            "url": "https://cdn2.steamgriddb.com/logo/space.png",
+            "thumbnail_url": "https://cdn2.steamgriddb.com/logo/space-thumb.png",
+            "width": 600,
+            "height": 215,
+            "aspect_ratio": 2.791,
+            "vote_average": 0,
+            "vote_count": 42,
+            "language": None,
+            "style": "official",
+        }
+        logos_mock.return_value = [option]
+        logo_mock.return_value = option
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/igdb/game/1020/logos/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["logos"][0]["style"], "official")
+        self.assertTrue(response.data["logos"][0]["is_original"])
+        self.assertTrue(response.data["logos"][0]["is_selected"])
+
+    @patch("app.providers.tmdb.get_title_logo")
+    @patch("app.providers.tmdb.get_title_logos")
+    def test_media_tv_logos_endpoint_is_supported(self, logos_mock, logo_mock):
+        user = get_user_model().objects.create_user(username="tv-logos", password="strong-password-123")
+        Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            media_id="1399",
+            title="Game of Thrones",
+        )
+        option = {
+            "url": "https://image.tmdb.org/t/p/w500/game-of-thrones.png",
+            "thumbnail_url": "https://image.tmdb.org/t/p/w300/game-of-thrones.png",
+            "width": 1200,
+            "height": 400,
+            "aspect_ratio": 3.0,
+            "vote_average": 8,
+            "vote_count": 10,
+            "language": "en",
+            "style": None,
+        }
+        logos_mock.return_value = [option]
+        logo_mock.return_value = option
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/tmdb/tv/1399/logos/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["logos"][0]["is_original"])
+
+    def test_media_logo_endpoints_reject_invalid_urls_and_unsupported_media(self):
+        user = get_user_model().objects.create_user(username="bad-logos", password="strong-password-123")
+        Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+        )
+        self.client.force_authenticate(user)
+
+        missing = self.client.put("/api/v1/media/tmdb/movie/550/logo/", {}, format="json")
+        relative = self.client.put(
+            "/api/v1/media/tmdb/movie/550/logo/",
+            {"logo_url": "/logo.png"},
+            format="json",
+        )
+        unsafe = self.client.put(
+            "/api/v1/media/tmdb/movie/550/logo/",
+            {"logo_url": "file:///tmp/logo.png"},
+            format="json",
+        )
+        unsupported = self.client.get("/api/v1/media/mal/anime/1/logos/")
+        unsupported_season = self.client.get("/api/v1/media/tmdb/season/1399/logos/")
+
+        self.assertEqual(missing.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(relative.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(unsafe.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(unsupported.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(unsupported_season.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("app.providers.tmdb.get_title_logos")
+    @patch("app.providers.tmdb.get_title_logo")
+    @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
+    @patch("app.providers.mdblist.get_media_ratings", return_value={})
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_media_detail_uses_viewer_custom_logo_and_preserves_isolation(
+        self,
+        metadata_mock,
+        _ratings_mock,
+        _backdrops_mock,
+        logo_mock,
+        logos_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "550",
+            "media_type": "movie",
+            "source": "tmdb",
+            "title": "Fight Club",
+            "image": "https://example.com/fight-club.jpg",
+        }
+        automatic = {
+            "url": "https://image.tmdb.org/t/p/w500/automatic.png",
+            "width": 1200,
+            "height": 400,
+            "aspect_ratio": 3.0,
+        }
+        custom = {
+            "url": "https://image.tmdb.org/t/p/w500/custom.png",
+            "thumbnail_url": "https://image.tmdb.org/t/p/w300/custom.png",
+            "width": 1500,
+            "height": 500,
+            "aspect_ratio": 3.0,
+            "vote_average": 7,
+            "vote_count": 2,
+            "language": "en",
+            "style": None,
+        }
+        logo_mock.return_value = automatic
+        logos_mock.return_value = [custom]
+        owner = get_user_model().objects.create_user(username="logo-owner", password="strong-password-123")
+        other = get_user_model().objects.create_user(username="logo-other", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+            image="https://example.com/fight-club.jpg",
+        )
+        CustomLogoPreference.objects.create(user=owner, item=item, custom_image_url=custom["url"])
+
+        self.client.force_authenticate(owner)
+        personalized = self.client.get("/api/v1/media/tmdb/movie/550/")
+        self.client.force_authenticate(other)
+        isolated = self.client.get("/api/v1/media/tmdb/movie/550/")
+        self.client.force_authenticate(None)
+        anonymous = self.client.get("/api/v1/media/tmdb/movie/550/")
+
+        self.assertEqual(personalized.data["logo_url"], custom["url"])
+        self.assertEqual(personalized.data["custom_logo_url"], custom["url"])
+        self.assertEqual(personalized.data["logo_width"], 1500)
+        self.assertEqual(isolated.data["logo_url"], automatic["url"])
+        self.assertIsNone(isolated.data["custom_logo_url"])
+        self.assertEqual(anonymous.data["logo_url"], automatic["url"])
+
+    @patch("app.providers.tmdb.get_title_logos", return_value=[])
+    @patch("app.providers.tmdb.get_title_logo", return_value=None)
+    @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
+    @patch("app.providers.mdblist.get_media_ratings", return_value={})
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_media_detail_supports_external_custom_logo_without_automatic_logo(
+        self,
+        metadata_mock,
+        _ratings_mock,
+        _backdrops_mock,
+        _logo_mock,
+        _logos_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "550",
+            "media_type": "movie",
+            "source": "tmdb",
+            "title": "Fight Club",
+            "image": "https://example.com/fight-club.jpg",
+        }
+        user = get_user_model().objects.create_user(username="external-logo", password="strong-password-123")
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+            image="https://example.com/fight-club.jpg",
+        )
+        custom_url = "https://cdn.example.com/external-logo.png"
+        CustomLogoPreference.objects.create(user=user, item=item, custom_image_url=custom_url)
+        self.client.force_authenticate(user)
+
+        response = self.client.get("/api/v1/media/tmdb/movie/550/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["logo_url"], custom_url)
+        self.assertEqual(response.data["custom_logo_url"], custom_url)
+        self.assertIsNone(response.data["logo_width"])
+        self.assertIsNone(response.data["logo_aspect_ratio"])
 
     @patch("app.providers.tmdb.get_poster_images")
     def test_media_posters_endpoint_requires_auth_and_returns_original_first(self, posters_mock):

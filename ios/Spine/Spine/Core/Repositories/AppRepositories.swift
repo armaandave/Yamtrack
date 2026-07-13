@@ -19,6 +19,8 @@ protocol MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse
     func backdrops(ref: MediaRef) async throws -> [PosterOption]
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse
+    func logos(ref: MediaRef) async throws -> [LogoOption]
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse
 }
 
 protocol PeopleRepository {
@@ -107,6 +109,17 @@ protocol DiaryRepository {
 
 protocol ActivityRepository {
     func userActivity(username: String, limit: Int) async throws -> [ActivityItem]
+    func userActivityPage(username: String, pageSize: Int, cursorLink: String?) async throws -> ActivityCursorResponse
+}
+
+extension ActivityRepository {
+    func userActivityPage(username: String, pageSize: Int, cursorLink _: String?) async throws -> ActivityCursorResponse {
+        ActivityCursorResponse(
+            nextCursor: nil,
+            previousCursor: nil,
+            results: try await userActivity(username: username, limit: pageSize)
+        )
+    }
 }
 
 extension DiaryRepository {
@@ -450,6 +463,22 @@ struct APIMediaRepository: MediaRepository {
             authenticated: true
         )
     }
+
+    func logos(ref: MediaRef) async throws -> [LogoOption] {
+        let response: LogoOptionsResponse = try await client.get(
+            "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/logos/",
+            authenticated: true
+        )
+        return response.logos
+    }
+
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse {
+        try await client.put(
+            "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/logo/",
+            body: LogoSaveRequest(logoUrl: logoURL),
+            authenticated: true
+        )
+    }
 }
 
 struct APIPeopleRepository: PeopleRepository {
@@ -664,12 +693,28 @@ struct APIActivityRepository: ActivityRepository {
     let client: APIClient
 
     func userActivity(username: String, limit: Int) async throws -> [ActivityItem] {
+        let response = try await userActivityPage(username: username, pageSize: limit, cursorLink: nil)
+        return Array(response.results.prefix(limit))
+    }
+
+    func userActivityPage(username: String, pageSize: Int, cursorLink: String?) async throws -> ActivityCursorResponse {
+        var query = [URLQueryItem(name: "page_size", value: String(pageSize))]
+        if let cursor = Self.cursorValue(from: cursorLink) {
+            query.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+
         let response: ActivityCursorResponse = try await client.get(
             "/users/\(username)/activity/",
-            query: [URLQueryItem(name: "page_size", value: String(limit))],
+            query: query,
             authenticated: true
         )
-        return Array(response.results.prefix(limit))
+        return response
+    }
+
+    private static func cursorValue(from cursorLink: String?) -> String? {
+        guard let cursorLink, !cursorLink.isEmpty else { return nil }
+        guard let components = URLComponents(string: cursorLink) else { return cursorLink }
+        return components.queryItems?.first(where: { $0.name == "cursor" })?.value ?? cursorLink
     }
 }
 

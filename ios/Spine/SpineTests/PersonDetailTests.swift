@@ -95,6 +95,39 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.filmography.first?.title, "I Am Not a Serial Killer")
     }
 
+    func testCreditGroupsPutKnownDepartmentRoleFirst() {
+        let filmography = [
+            mediaSummary(id: "1", title: "Acting One", creditRoles: ["Actor"]),
+            mediaSummary(id: "2", title: "Acting Two", creditRoles: ["Actor"]),
+            mediaSummary(id: "3", title: "Producing One", creditRoles: ["Producer"]),
+            mediaSummary(id: "4", title: "Producing Two", creditRoles: ["Producer"]),
+            mediaSummary(id: "5", title: "Directing One", creditRoles: ["Director"]),
+        ]
+
+        let groups = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: "Directing"
+        )
+
+        XCTAssertEqual(groups.map(\.role), ["Director", "Actor", "Producer"])
+    }
+
+    func testCreditGroupsFallBackToCountThenAlphabeticalOrder() {
+        let filmography = [
+            mediaSummary(id: "1", title: "Directing One", creditRoles: ["Director"]),
+            mediaSummary(id: "2", title: "Acting One", creditRoles: ["Actor"]),
+            mediaSummary(id: "3", title: "Producing One", creditRoles: ["Producer"]),
+            mediaSummary(id: "4", title: "Producing Two", creditRoles: ["Producer"]),
+        ]
+
+        let groups = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: "Sound"
+        )
+
+        XCTAssertEqual(groups.map(\.role), ["Producer", "Actor", "Director"])
+    }
+
     @MainActor
     func testPersonDetailViewModelLoadsAndDeduplicatesFilmography() async {
         let ref = PersonRef(source: "tmdb", id: "819")
@@ -201,7 +234,12 @@ final class PersonDetailTests: XCTestCase {
         )
     }
 
-    private func mediaSummary(id: String, title: String, genres: [String] = []) -> MediaSummary {
+    private func mediaSummary(
+        id: String,
+        title: String,
+        genres: [String] = [],
+        creditRoles: [String] = []
+    ) -> MediaSummary {
         MediaSummary(
             ref: MediaRef(
                 itemId: nil,
@@ -214,6 +252,7 @@ final class PersonDetailTests: XCTestCase {
             title: title,
             posterUrl: "https://example.com/\(id).jpg",
             genres: genres,
+            creditRoles: creditRoles,
             defaultSource: "tmdb"
         )
     }

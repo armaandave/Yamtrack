@@ -53,12 +53,9 @@ final class PosterPickerViewModel {
         default:
             filtered = posters.filter { $0.language == selectedLanguage }
         }
-        guard let selectedPosterURL,
-              let selected = posters.first(where: { $0.url == selectedPosterURL }),
-              !filtered.contains(selected) else {
-            return filtered
-        }
-        return [selected] + filtered
+
+        guard let current = posters.first(where: \.isSelected) else { return filtered }
+        return [current] + filtered.filter { $0.url != current.url }
     }
 
     var canSave: Bool {
@@ -251,6 +248,15 @@ private struct PosterOptionCell: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(isSelected ? .white : .clear, lineWidth: 3)
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                                .shadow(radius: 4)
+                                .padding(10)
+                        }
+                    }
 
                 if poster.isSelected {
                     Text("Current")
@@ -262,14 +268,6 @@ private struct PosterOptionCell: View {
                         .padding(6)
                 }
 
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .shadow(radius: 4)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(7)
-                }
             }
         }
         .buttonStyle(.plain)
@@ -336,4 +334,6 @@ private struct PreviewPosterRepository: MediaRepository {
 
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }

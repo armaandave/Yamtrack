@@ -14,6 +14,7 @@ struct MediaSearchBar: View {
     let onLensSelect: (String) -> Void
     let onSearch: (String) -> Void
     let onClear: () -> Void
+    var focusRequest: Int = 0
 
     var body: some View {
         ZStack {
@@ -35,6 +36,13 @@ struct MediaSearchBar: View {
         .onChange(of: isLensExpanded) {
             if isLensExpanded {
                 isFocused = false
+            }
+        }
+        .onChange(of: focusRequest) {
+            isLensExpanded = false
+            Task { @MainActor in
+                await Task.yield()
+                isFocused = true
             }
         }
     }

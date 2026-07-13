@@ -16,7 +16,6 @@ from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
-NO_LOGO = "__no_logo__"
 DETAIL_CACHE_VERSION = "v3"
 base_params = {
     "api_key": settings.TMDB_API,
@@ -1482,16 +1481,13 @@ def get_season_backdrop_images(media_id, season_number):
     return data
 
 
-def get_title_logo(media_id, media_type):
-    """Return the best title logo for a movie or TV show from TMDB."""
+def get_title_logos(media_id, media_type):
+    """Return all title logos for a movie or TV show from TMDB."""
     if media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
         raise ValueError("Title logos are only available for movies and TV shows")
 
-    cache_key = f"{Sources.TMDB.value}_{media_type}_logo_{media_id}"
+    cache_key = f"{Sources.TMDB.value}_{media_type}_logos_{media_id}_v1"
     data = cache.get(cache_key)
-    if data == NO_LOGO:
-        return None
-
     if data is None:
         url = f"{base_url}/{media_type}/{media_id}/images"
         params = {**base_params}
@@ -1507,34 +1503,54 @@ def get_title_logo(media_id, media_type):
         except requests.exceptions.HTTPError as error:
             handle_error(error)
 
-        lang = getattr(settings, "TMDB_LANG", "en") or "en"
-        logos = response.get("logos", [])
-        candidates = [logo for logo in logos if logo.get("iso_639_1") == lang]
-        if not candidates:
-            candidates = [logo for logo in logos if logo.get("iso_639_1") is None]
-
-        if not candidates:
-            data = NO_LOGO
-        else:
-            logo = max(
-                candidates,
-                key=lambda item: (
-                    item.get("vote_average") or 0,
-                    item.get("vote_count") or 0,
-                    item.get("width") or 0,
-                ),
-            )
+        logos = []
+        for logo in response.get("logos", []):
             file_path = logo["file_path"]
-            data = {
-                "url": f"https://image.tmdb.org/t/p/w500{file_path}",
-                "width": logo.get("width"),
-                "height": logo.get("height"),
-                "aspect_ratio": logo.get("aspect_ratio"),
-            }
+            logos.append(
+                {
+                    "url": f"https://image.tmdb.org/t/p/w500{file_path}",
+                    "thumbnail_url": f"https://image.tmdb.org/t/p/w300{file_path}",
+                    "width": logo.get("width") or 0,
+                    "height": logo.get("height") or 0,
+                    "aspect_ratio": logo.get("aspect_ratio"),
+                    "vote_average": logo.get("vote_average") or 0,
+                    "vote_count": logo.get("vote_count") or 0,
+                    "language": logo.get("iso_639_1"),
+                    "style": None,
+                }
+            )
+
+        data = sorted(
+            logos,
+            key=lambda item: (
+                item["vote_average"],
+                item["vote_count"],
+                item["width"],
+            ),
+            reverse=True,
+        )
 
         cache.set(cache_key, data, 86400)
 
-    return None if data == NO_LOGO else data
+    return data
+
+
+def get_title_logo(media_id, media_type):
+    """Return the best localized title logo for a movie or TV show."""
+    logos = get_title_logos(media_id, media_type)
+    lang = getattr(settings, "TMDB_LANG", "en") or "en"
+    candidates = [logo for logo in logos if logo.get("language") == lang]
+    if not candidates:
+        candidates = [logo for logo in logos if logo.get("language") is None]
+    if not candidates:
+        return None
+    logo = candidates[0]
+    return {
+        "url": logo["url"],
+        "width": logo["width"],
+        "height": logo["height"],
+        "aspect_ratio": logo["aspect_ratio"],
+    }
 
 
 def watch_provider_regions():

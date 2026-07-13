@@ -111,6 +111,10 @@ struct APIClient: Sendable {
         do {
             let delegate = progressHandler.map(MultipartUploadProgressDelegate.init(progressHandler:))
             (data, response) = try await multipartSession.upload(for: request, fromFile: bodyURL, delegate: delegate)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw APIError.network(error)
         }
@@ -213,6 +217,10 @@ struct APIClient: Sendable {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw APIError.network(error)
         }

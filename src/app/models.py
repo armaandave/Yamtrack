@@ -2398,6 +2398,31 @@ class CustomBackdropPreference(models.Model):
         return f"{self.user.username}'s custom backdrop for {self.item.title}"
 
 
+class CustomLogoPreference(models.Model):
+    """Model to store user's custom title logo preferences for media items."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    custom_image_url = models.URLField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Meta options for the model."""
+
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "item"],
+                name="unique_user_item_logo",
+            )
+        ]
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        """Return string representation."""
+        return f"{self.user.username}'s custom logo for {self.item.title}"
+
+
 class DiaryEntry(models.Model):
     """Model to store diary entries for movie consumption."""
 

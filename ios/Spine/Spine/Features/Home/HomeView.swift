@@ -103,11 +103,10 @@ final class HomeViewModel {
 }
 
 struct HomeView: View {
-    private static let headerAvatarSize: CGFloat = 58
+    private static let headerAvatarSize: CGFloat = 40
 
     @State private var viewModel: HomeViewModel
     @State private var selectedRef: MediaRef?
-    @State private var selectedEntry: DiaryEntry?
     @State private var selectedActivityEntry: ActivityEntrySelection?
 
     private let mediaRepository: MediaRepository
@@ -151,8 +150,9 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
+            ZStack(alignment: .top) {
                 SpinePageBackground()
+                HomeArtworkAtmosphere(media: viewModel.inProgressItems.first?.media)
 
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -206,18 +206,6 @@ struct HomeView: View {
                     onUnauthorized: onUnauthorized
                 )
             }
-            .fullScreenCover(item: $selectedEntry, onDismiss: { selectedEntry = nil }) { entry in
-                DiaryLogDetailNavigationCover(
-                    entryId: entry.id,
-                    diaryRepository: diaryRepository,
-                    mediaRepository: mediaRepository,
-                    trackingRepository: trackingRepository,
-                    currentUserId: currentUserId,
-                    selectedTab: selectedTab,
-                    onSelectTab: onSelectTab,
-                    onUnauthorized: onUnauthorized
-                )
-            }
             .fullScreenCover(item: $selectedActivityEntry, onDismiss: { selectedActivityEntry = nil }) { selection in
                 DiaryLogDetailNavigationCover(
                     entryId: selection.id,
@@ -243,50 +231,38 @@ struct HomeView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Profile")
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Home")
-                    .font(.system(size: 32, weight: .black))
-                    .foregroundStyle(.white)
-
-                if let profile = viewModel.profile {
-                    Text("@\(profile.username)")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.54))
-                }
-            }
+            Text("Home")
+                .font(.system(size: 30, weight: .black))
+                .foregroundStyle(.white)
 
             Spacer()
-
-            Button {
-                onSelectTab(.search)
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 17, weight: .black))
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(.white.opacity(0.10), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Search")
         }
     }
 
     @ViewBuilder
     private var content: some View {
         if let error = viewModel.profileErrorMessage, viewModel.profile == nil {
-            HomeStateCard(
+            HomeInlineState(
                 title: "Could not load home",
                 systemImage: "exclamationmark.triangle",
-                message: error
-            )
+                message: error,
+                actionTitle: "Retry"
+            ) {
+                Task { await viewModel.reload() }
+            }
+            .frame(minHeight: 360)
         } else if viewModel.isLoading, viewModel.profile == nil {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity, minHeight: 420)
+            VStack(alignment: .leading, spacing: 22) {
+                HomeSection(title: "In Progress") {
+                    HomeInProgressSkeleton()
+                }
+                HomeSection(title: "Activity") {
+                    ActivityFeedSkeleton()
+                }
+            }
         } else {
             inProgressSection
             activitySection
-            socialPlaceholders
         }
     }
 
@@ -295,9 +271,23 @@ struct HomeView: View {
             if viewModel.isLoadingInProgress {
                 HomeInProgressSkeleton()
             } else if let error = viewModel.inProgressErrorMessage {
-                HomeStateCard(title: "Could not load progress", systemImage: "exclamationmark.triangle", message: error)
+                HomeInlineState(
+                    title: "Could not load progress",
+                    systemImage: "exclamationmark.triangle",
+                    message: error,
+                    actionTitle: "Retry"
+                ) {
+                    Task { await viewModel.loadInProgress() }
+                }
             } else if viewModel.inProgressItems.isEmpty {
-                HomeStateCard(title: "Nothing in progress", systemImage: "play.circle", message: "Current watches, reads, and plays will appear here.")
+                HomeInlineState(
+                    title: "Nothing in progress",
+                    systemImage: "play.circle",
+                    message: "Current watches, reads, and plays will appear here.",
+                    actionTitle: "Find something"
+                ) {
+                    onSelectTab(.search)
+                }
             } else {
                 HomeInProgressRail(items: viewModel.inProgressItems) { item in
                     selectedRef = item.media.ref
@@ -309,38 +299,63 @@ struct HomeView: View {
     private var activitySection: some View {
         HomeSection(title: "Activity") {
             if viewModel.isLoadingActivity {
-                HomeActivitySkeleton()
+                ActivityFeedSkeleton()
             } else if let error = viewModel.activityErrorMessage {
-                HomeStateCard(title: "Could not load activity", systemImage: "exclamationmark.triangle", message: error)
+                HomeInlineState(
+                    title: "Could not load activity",
+                    systemImage: "exclamationmark.triangle",
+                    message: error,
+                    actionTitle: "Retry"
+                ) {
+                    Task { await viewModel.loadActivity() }
+                }
             } else if viewModel.activityItems.isEmpty {
-                HomeStateCard(title: "No activity yet", systemImage: "person.2", message: "Diary logs will appear here.")
+                HomeInlineState(
+                    title: "No activity yet",
+                    systemImage: "clock.arrow.circlepath",
+                    message: "Diary logs and progress updates will appear here."
+                )
             } else {
-                LazyVStack(spacing: 10) {
+                LazyVStack(spacing: 0) {
                     ForEach(viewModel.activityItems) { activity in
                         Button {
                             handleActivityTap(activity)
                         } label: {
-                            HomeActivityItemCard(activity: activity)
+                            ActivityFeedRow(activity: activity)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint(ActivityFeedPresentation.destinationHint(for: activity))
+
+                        if activity.id != viewModel.activityItems.last?.id {
+                            ActivityFeedDivider()
+                        }
+                    }
+
+                    if let username = viewModel.profile?.username {
+                        ActivityFeedDivider()
+
+                        NavigationLink {
+                            ActivityFeedView(
+                                username: username,
+                                activityRepository: activityRepository,
+                                onUnauthorized: onUnauthorized,
+                                onSelectActivity: handleActivityTap
+                            )
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text("View all activity")
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.74))
+                            .padding(.vertical, 15)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
-            }
-        }
-    }
-
-    private var socialPlaceholders: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HomeSection(title: "Friend Feed") {
-                HomePlaceholderCard(title: "No friend activity yet", systemName: "person.2.fill", message: "Followed users' logs and ratings will appear here.")
-            }
-
-            HomeSection(title: "People to Follow") {
-                HomePlaceholderCard(title: "No suggestions yet", systemName: "person.badge.plus", message: "Suggested people will appear here.")
-            }
-
-            HomeSection(title: "Community Lists") {
-                HomePlaceholderCard(title: "No community lists yet", systemName: "list.bullet.rectangle", message: "Public lists will appear here.")
             }
         }
     }
@@ -356,6 +371,63 @@ struct HomeView: View {
 
 private struct ActivityEntrySelection: Identifiable {
     let id: Int
+}
+
+private struct HomeArtworkAtmosphere: View {
+    let media: MediaSummary?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let artworkURL {
+                    AsyncImage(url: artworkURL) { phase in
+                        if case let .success(image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: 420)
+                                .clipped()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .blur(radius: 12)
+                    .scaleEffect(1.14)
+                    .saturation(1.15)
+                    .opacity(0.62)
+                }
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.28), location: 0),
+                        .init(color: .clear, location: 0.35),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.32),
+                        .init(color: SpinePalette.pageBackground.opacity(0.72), location: 0.72),
+                        .init(color: SpinePalette.pageBackground, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .frame(width: proxy.size.width, height: 420)
+        }
+        .frame(height: 420)
+        .clipped()
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var artworkURL: URL? {
+        URL(string: media?.displayBackdropURL ?? media?.displayPosterURL ?? "")
+    }
 }
 
 private struct HomeAvatar: View {
@@ -392,7 +464,7 @@ private struct HomeSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title.uppercased())
                 .font(.system(size: 13, weight: .black))
-                .foregroundStyle(.white.opacity(0.58))
+                .foregroundStyle(.white)
                 .tracking(0.8)
 
             content()
@@ -408,7 +480,7 @@ private struct HomeInProgressRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: 12) {
                 ForEach(items) { item in
-                    HomeInProgressCard(item: item) {
+                    HomeInProgressPoster(item: item) {
                         action(item)
                     }
                 }
@@ -418,7 +490,7 @@ private struct HomeInProgressRail: View {
     }
 }
 
-private struct HomeInProgressCard: View {
+private struct HomeInProgressPoster: View {
     let item: LibraryItem
     let action: () -> Void
 
@@ -432,11 +504,11 @@ private struct HomeInProgressCard: View {
                     mediaType: item.media.ref.mediaType,
                     orientation: item.media.posterOrientation
                 )
-                .shadow(color: .black.opacity(0.30), radius: 10, y: 5)
+                .shadow(color: .black.opacity(0.26), radius: 10, y: 5)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.media.title)
-                        .font(.system(size: 12, weight: .heavy))
+                    Text(item.media.displayTitle)
+                        .font(.caption.weight(.bold))
                         .foregroundStyle(.white)
                         .lineLimit(2)
 
@@ -444,7 +516,7 @@ private struct HomeInProgressCard: View {
                         ProgressDeltaInlineView(delta: progressDelta)
                     } else {
                         Text(metadataText)
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.caption2.weight(.bold))
                             .foregroundStyle(.white.opacity(0.54))
                             .lineLimit(1)
                     }
@@ -453,7 +525,7 @@ private struct HomeInProgressCard: View {
             .frame(width: PosterSlot.carousel.size.width, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("View \(item.media.title)")
+        .accessibilityLabel("View \(item.media.displayTitle), \(metadataText)")
     }
 
     private var progressDelta: ProgressChangeDisplay? {
@@ -467,418 +539,41 @@ private struct HomeInProgressCard: View {
     }
 }
 
-private struct HomeActivityItemCard: View {
-    private static let cornerRadius: CGFloat = 22
-
-    let activity: ActivityItem
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                HomeUserAvatar(user: activity.actor)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(activity.actor.displayName)
-                        .font(.system(size: 14, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-
-                    Text(actionText)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                if let date = DiaryDateFormatter.exactDate(from: activity.createdAt) {
-                    Text(date)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.42))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                }
-            }
-
-            if let media = activity.media {
-                HStack(alignment: .top, spacing: 12) {
-                    MediaArtwork(
-                        url: media.displayPosterURL,
-                        title: media.title,
-                        slot: .profileRow,
-                        mediaType: media.ref.mediaType,
-                        orientation: media.posterOrientation
-                    )
-                    .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        if let ratingText {
-                            DiaryStarRating(rating: ratingText)
-                        }
-
-                        Text(media.displayTitle)
-                            .font(.system(size: 16, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-
-                        if let progressDelta {
-                            ProgressDeltaChipView(delta: progressDelta)
-                        } else if let listName {
-                            Text(listName)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.58))
-                                .lineLimit(2)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background(.white.opacity(0.072), in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .stroke(.white.opacity(0.09), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 8)
-        .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var actionText: String {
-        switch activity.type {
-        case "progress_updated":
-            "updated progress"
-        case "diary_created":
-            "logged \(mediaTypePhrase)"
-        case "diary_updated":
-            "updated a log"
-        case "diary_deleted":
-            "deleted a log"
-        case "list_created":
-            "created a list"
-        case "list_item_added":
-            "added to a list"
-        default:
-            "shared activity"
-        }
-    }
-
-    private var progressDelta: ProgressChangeDisplay? {
-        guard
-            activity.type == "progress_updated",
-            let previous = activity.object.previous,
-            let current = activity.object.current
-        else {
-            return nil
-        }
-        let ref = activity.media?.ref
-        return ProgressChangeState(
-            id: activity.object.id,
-            previous: previous,
-            current: current,
-            createdAt: activity.createdAt
-        )
-        .compactDisplayParts(preferredMode: ref.flatMap { ProgressDisplayPreferences.mode(for: $0) })
-    }
-
-    private var ratingText: String? {
-        clean(activity.object.rating)
-    }
-
-    private var listName: String? {
-        activity.object.type == "list" ? clean(activity.object.name) : nil
-    }
-
-    private var mediaTypePhrase: String {
-        switch activity.media?.ref.mediaType {
-        case "movie":
-            "a movie"
-        case "tv":
-            "a TV show"
-        case "season":
-            "a season"
-        case "episode":
-            "an episode"
-        case "anime":
-            "an anime"
-        case "manga":
-            "a manga"
-        case "game":
-            "a game"
-        case "book":
-            "a book"
-        case "comic":
-            "a comic"
-        case "boardgame":
-            "a board game"
-        default:
-            "media"
-        }
-    }
-
-    private func clean(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
-private struct HomeActivityCard: View {
-    private static let cornerRadius: CGFloat = 22
-
-    let entry: DiaryEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                HomeUserAvatar(user: entry.user)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.user.displayName)
-                        .font(.system(size: 14, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-
-                    Text("logged \(mediaTypePhrase)")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                if let date = DiaryDateFormatter.exactDate(from: entry.consumedAt ?? entry.createdAt) {
-                    Text(date)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.42))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                }
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                MediaArtwork(
-                    url: entry.media.displayPosterURL,
-                    title: entry.media.title,
-                    slot: .profileRow,
-                    mediaType: entry.media.ref.mediaType,
-                    orientation: entry.media.posterOrientation
-                )
-                .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    if hasRatingOrLike {
-                        ratingLikeLine
-                    }
-
-                    Text(entry.media.displayTitle)
-                        .font(.system(size: 16, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    if let reviewTitle = clean(entry.reviewTitle) {
-                        Text(reviewTitle)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineLimit(2)
-                    }
-
-                    if entry.containsSpoilers {
-                        Label("Contains spoilers", systemImage: "eye.slash")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.56))
-                    } else if let review = clean(entry.review) {
-                        Text(review)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.58))
-                            .lineLimit(3)
-                    }
-
-                    metadata
-                }
-            }
-        }
-        .padding(14)
-        .background(.white.opacity(0.072), in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .stroke(.white.opacity(0.09), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 8)
-        .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var metadata: some View {
-        HStack(spacing: 6) {
-            if entry.isRewatch {
-                HomeChip(text: "Rewatch", systemName: "arrow.clockwise")
-            }
-
-            ForEach(entry.tags.prefix(2), id: \.self) { tag in
-                HomeChip(text: tag)
-            }
-        }
-    }
-
-    private var hasRatingOrLike: Bool {
-        clean(entry.rating) != nil || entry.liked
-    }
-
-    private var ratingLikeLine: some View {
-        HStack(spacing: 6) {
-            if let rating = clean(entry.rating) {
-                DiaryStarRating(rating: rating)
-            }
-
-            if entry.liked {
-                Image(systemName: "heart.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.pink)
-                    .accessibilityLabel("Liked")
-            }
-        }
-    }
-
-    private var mediaTypePhrase: String {
-        switch entry.media.ref.mediaType {
-        case "movie":
-            "a movie"
-        case "tv":
-            "a TV show"
-        case "season":
-            "a season"
-        case "episode":
-            "an episode"
-        case "anime":
-            "an anime"
-        case "manga":
-            "a manga"
-        case "game":
-            "a game"
-        case "book":
-            "a book"
-        case "comic":
-            "a comic"
-        case "boardgame":
-            "a board game"
-        default:
-            "media"
-        }
-    }
-
-    private func clean(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
-private struct HomeUserAvatar: View {
-    let user: UserSummary
-
-    var body: some View {
-        AsyncImage(url: URL(string: user.avatarUrl ?? "")) { phase in
-            if case let .success(image) = phase {
-                image
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.54))
-            }
-        }
-        .frame(width: 32, height: 32)
-        .background(.white.opacity(0.10), in: Circle())
-        .clipShape(Circle())
-    }
-}
-
-private struct HomeChip: View {
-    let text: String
-    var systemName: String?
-
-    var body: some View {
-        Label {
-            Text(text)
-                .lineLimit(1)
-        } icon: {
-            if let systemName {
-                Image(systemName: systemName)
-                    .font(.system(size: 9, weight: .black))
-            }
-        }
-        .font(.system(size: 10, weight: .bold))
-        .foregroundStyle(.white.opacity(0.78))
-        .padding(.horizontal, 7)
-        .frame(height: 21)
-        .background(.white.opacity(0.11), in: Capsule())
-    }
-}
-
-private struct HomePlaceholderCard: View {
+private struct HomeInlineState: View {
     let title: String
-    let systemName: String
+    let systemImage: String
     let message: String
+    var actionTitle: String?
+    var action: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .black))
-                .foregroundStyle(.white.opacity(0.62))
-                .frame(width: 36, height: 36)
-                .background(.white.opacity(0.08), in: Circle())
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.56))
+                .frame(width: 30)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(.system(size: 14, weight: .heavy))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
 
                 Text(message)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption)
                     .foregroundStyle(.white.opacity(0.52))
-                    .lineLimit(2)
+
+                if let actionTitle, let action {
+                    Button(actionTitle, action: action)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .padding(.top, 2)
+                }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(13)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
-        }
-    }
-}
-
-private struct HomeStateCard: View {
-    let title: String
-    let systemImage: String
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(.white.opacity(0.64))
-
-            Text(title)
-                .font(.system(size: 16, weight: .heavy))
-                .foregroundStyle(.white)
-
-            Text(message)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.54))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(22)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 10)
     }
 }
 
@@ -902,18 +597,6 @@ private struct HomeInProgressSkeleton: View {
             }
         }
         .redacted(reason: .placeholder)
-    }
-}
-
-private struct HomeActivitySkeleton: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            ForEach(0 ..< 3, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(.white.opacity(0.07))
-                    .frame(height: 126)
-            }
-        }
-        .redacted(reason: .placeholder)
+        .accessibilityHidden(true)
     }
 }

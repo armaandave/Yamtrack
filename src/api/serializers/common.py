@@ -204,7 +204,12 @@ def media_summary_from_item(
         default_backdrop_url, custom_backdrop_url = resolved_item_backdrop_urls(item, request=request, user=user)
         artwork["backdrop_url"] = default_backdrop_url
     else:
-        custom_backdrop_url = custom_backdrop_url_for_user(user, media_ref_from_item(item), request=request) if user else None
+        custom_backdrop_url = custom_backdrop_url_for_user(
+            user,
+            media_ref_from_item(item),
+            request=request,
+            item=item,
+        ) if user else None
     return {
         "ref": media_ref_from_item(item),
         "title": item.title,
@@ -214,7 +219,12 @@ def media_summary_from_item(
         "poster_accent_color": item.poster_accent_color or None,
         "release_date": None,
         "default_source": item.source,
-        "custom_poster_url": custom_poster_url_for_user(user, media_ref_from_item(item), request=request) if user else None,
+        "custom_poster_url": custom_poster_url_for_user(
+            user,
+            media_ref_from_item(item),
+            request=request,
+            item=item,
+        ) if user else None,
         "custom_backdrop_url": custom_backdrop_url,
         "user_state": user_state_for_item(user, item) if user and include_user_state else None,
     }
@@ -399,29 +409,37 @@ def episodes_from_metadata(metadata, request=None):
     ]
 
 
-def custom_poster_url_for_user(user, ref, request=None):
+def custom_poster_url_for_user(user, ref, request=None, item=None):
     """Return a viewer's custom poster for an existing Item."""
     if not user or not user.is_authenticated:
         return None
     from app.models import CustomPosterPreference
 
-    item = find_item(ref)
+    if item is None:
+        item = find_item(ref)
     if item is None:
         return None
-    preference = CustomPosterPreference.objects.filter(user=user, item=item).first()
+    prefetched = getattr(item, "viewer_custom_poster_preferences", None)
+    preference = prefetched[0] if prefetched else None
+    if prefetched is None:
+        preference = CustomPosterPreference.objects.filter(user=user, item=item).first()
     return absolute_url(request, preference.custom_image_url) if preference else None
 
 
-def custom_backdrop_url_for_user(user, ref, request=None):
+def custom_backdrop_url_for_user(user, ref, request=None, item=None):
     """Return a viewer's custom backdrop for an existing Item."""
     if not user or not user.is_authenticated:
         return None
     from app.models import CustomBackdropPreference
 
-    item = find_item(ref)
+    if item is None:
+        item = find_item(ref)
     if item is None:
         return None
-    preference = CustomBackdropPreference.objects.filter(user=user, item=item).first()
+    prefetched = getattr(item, "viewer_custom_backdrop_preferences", None)
+    preference = prefetched[0] if prefetched else None
+    if prefetched is None:
+        preference = CustomBackdropPreference.objects.filter(user=user, item=item).first()
     return absolute_url(request, preference.custom_image_url) if preference else None
 
 

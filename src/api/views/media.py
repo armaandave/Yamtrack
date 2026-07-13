@@ -429,6 +429,46 @@ class MediaBackdropPreferenceView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class MediaLogosView(APIView):
+    """Selectable title logos for TMDB movie/TV media and IGDB games."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, source, media_type, media_id):
+        try:
+            return Response(
+                media_service.logo_options(
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    request=request,
+                    user=request.user,
+                ),
+            )
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MediaLogoPreferenceView(APIView):
+    """Save the viewer's selected title logo."""
+
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, source, media_type, media_id):
+        try:
+            return Response(
+                media_service.save_logo_preference(
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    logo_url=request.data.get("logo_url"),
+                    user=request.user,
+                ),
+            )
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class TVSeasonsView(APIView):
     """TV season summaries."""
 

@@ -21,6 +21,7 @@ final class ProfileViewModel {
     private let activityRepository: ActivityRepository
     private let onUnauthorized: () -> Void
     private let username: String?
+    private var requestGeneration = 0
 
     init(
         profileRepository: ProfileRepository,
@@ -37,20 +38,32 @@ final class ProfileViewModel {
     }
 
     func load() async {
-        isLoading = true
+        requestGeneration += 1
+        let generation = requestGeneration
+        isLoading = profile == nil
         errorMessage = nil
         activityErrorMessage = nil
         inProgressErrorMessage = nil
-        inProgressItems = []
-        defer { isLoading = false }
+        isLoadingInProgress = false
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
+            let loadedProfile: UserProfile
             if let username {
-                profile = try await profileRepository.profile(username: username)
+                loadedProfile = try await profileRepository.profile(username: username)
             } else {
-                profile = try await profileRepository.me()
+                loadedProfile = try await profileRepository.me()
             }
+            guard generation == requestGeneration else { return }
+            profile = loadedProfile
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == requestGeneration else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -59,9 +72,9 @@ final class ProfileViewModel {
         }
 
         if username == nil {
-            await loadInProgressItems()
+            await loadInProgressItems(generation: generation)
         }
-        await loadRecentActivity()
+        await loadRecentActivity(generation: generation)
     }
 
     func reload() async {
@@ -72,22 +85,27 @@ final class ProfileViewModel {
         savingHallOfFameSlots.contains(mediaType)
     }
 
-    private func loadRecentActivity() async {
+    private func loadRecentActivity(generation: Int) async {
         guard let username = profile?.username else {
             recentActivityItems = []
             return
         }
 
         do {
-            recentActivityItems = try await activityRepository.userActivity(username: username, limit: 6)
+            let activity = try await activityRepository.userActivity(username: username, limit: 6)
+            guard generation == requestGeneration else { return }
+            recentActivityItems = activity
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == requestGeneration else { return }
             recentActivityItems = []
             activityErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
     }
 
-    private func loadInProgressItems() async {
+    private func loadInProgressItems(generation: Int) async {
         let mediaTypes = InProgressLibraryLoader.mediaTypes(from: profile)
         guard !mediaTypes.isEmpty else {
             inProgressItems = []
@@ -95,15 +113,24 @@ final class ProfileViewModel {
         }
 
         isLoadingInProgress = true
-        defer { isLoadingInProgress = false }
+        defer {
+            if generation == requestGeneration {
+                isLoadingInProgress = false
+            }
+        }
 
         do {
-            inProgressItems = try await InProgressLibraryLoader.load(
+            let items = try await InProgressLibraryLoader.load(
                 mediaTypes: mediaTypes,
                 trackingRepository: trackingRepository,
                 limit: 8
             )
+            guard generation == requestGeneration else { return }
+            inProgressItems = items
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == requestGeneration else { return }
             inProgressItems = []
             inProgressErrorMessage = error.localizedDescription
             handleUnauthorized(error)
@@ -730,6 +757,7 @@ struct ProfileView: View {
                     .frame(height: topSafeAreaInset + ProfileHeroBackdropLayout.backdropHeight)
                     .onLongPressGesture {
                         guard isOwnProfile else { return }
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         isProfileBackdropSearchPresented = true
                     }
             }

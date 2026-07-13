@@ -25,6 +25,30 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(theme.gradientColors.count, 2)
     }
 
+    func testMediaBrowsingContextPreservesGridOrderAndRemovesDuplicates() {
+        let first = mediaRef("1")
+        let second = mediaRef("2")
+        let third = mediaRef("3")
+
+        let context = MediaBrowsingContext(
+            refs: [first, second, first, third],
+            selected: second
+        )
+
+        XCTAssertEqual(context.refs, [first, second, third])
+        XCTAssertEqual(context.selectedID, second.id)
+    }
+
+    func testMediaBrowsingContextIncludesSelectedMediaMissingFromGridSnapshot() {
+        let first = mediaRef("1")
+        let selected = mediaRef("2")
+
+        let context = MediaBrowsingContext(refs: [first], selected: selected)
+
+        XCTAssertEqual(context.refs, [first, selected])
+        XCTAssertEqual(context.selectedID, selected.id)
+    }
+
     func testCustomListReorderMathClampsAndMapsDestinations() {
         XCTAssertEqual(CustomListReorderMath.destination(from: 1, translation: 10, count: 4, rowHeight: 10), 3)
         XCTAssertEqual(CustomListReorderMath.destination(from: 2, translation: -10, count: 4, rowHeight: 10), 1)
@@ -633,6 +657,145 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(unauthorizedCount, 1)
         XCTAssertNotNil(viewModel.inProgressErrorMessage)
         XCTAssertFalse(viewModel.isLoading)
+    }
+
+    @MainActor
+    func testActivityFeedViewModelLoadsAndDeduplicatesNextPage() async {
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=next-page"
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nextLink,
+                previousCursor: nil,
+                results: [
+                    activityItem(id: 1, title: "First"),
+                    activityItem(id: 2, title: "Second"),
+                    activityItem(id: 2, title: "Second"),
+                ]
+            )),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 2, title: "Second"), activityItem(id: 3, title: "Third")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            pageSize: 2,
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPageIfNeeded(currentItem: viewModel.items[0])
+
+        XCTAssertEqual(repository.pageRequests.count, 1)
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2])
+        XCTAssertTrue(viewModel.hasMorePages)
+
+        await viewModel.loadNextPageIfNeeded(currentItem: viewModel.items[1])
+
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2, 3])
+        XCTAssertFalse(viewModel.hasMorePages)
+        XCTAssertEqual(repository.pageRequests, [
+            ActivityPageRequest(username: "mobile", pageSize: 2, cursorLink: nil),
+            ActivityPageRequest(username: "mobile", pageSize: 2, cursorLink: nextLink),
+        ])
+    }
+
+    @MainActor
+    func testActivityFeedViewModelRefreshReplacesItems() async {
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 1, title: "Old")]
+            )),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 4, title: "Fresh")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.items.map(\.id), [4])
+        XCTAssertEqual(repository.pageRequests.count, 2)
+    }
+
+    @MainActor
+    func testActivityFeedViewModelRetriesFailedNextPage() async {
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=retry-page"
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nextLink,
+                previousCursor: nil,
+                results: [activityItem(id: 1, title: "First")]
+            )),
+            .failure(URLError(.cannotConnectToHost)),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 2, title: "Recovered")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertNotNil(viewModel.nextPageErrorMessage)
+        XCTAssertEqual(viewModel.items.map(\.id), [1])
+
+        await viewModel.loadNextPage()
+
+        XCTAssertNil(viewModel.nextPageErrorMessage)
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2])
+        XCTAssertEqual(repository.pageRequests.compactMap(\.cursorLink), [nextLink, nextLink])
+    }
+
+    @MainActor
+    func testActivityFeedViewModelUnauthorizedCallsHandler() async {
+        let repository = ScriptedPagedActivityRepository(results: [.failure(APIError.unauthorized)])
+        var unauthorizedCount = 0
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: { unauthorizedCount += 1 }
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(unauthorizedCount, 1)
+        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.items.isEmpty)
+    }
+
+    func testActivityTimestampFormatterUsesCompactRelativeUnits() throws {
+        let event = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-20T12:00:00Z"))
+
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(30)
+        ), "Now")
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(2 * 3_600)
+        ), "2h")
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(3 * 86_400)
+        ), "3d")
     }
 
     func testRecentSearchesKeepMediaTypeAndReadLegacyText() throws {
@@ -1457,6 +1620,56 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(customDetail.displayBackdropURL, "https://example.com/custom.jpg")
     }
 
+    func testMediaDetailCustomLogoDecodingAndReplacement() throws {
+        let data = """
+        {
+          "ref": {
+            "item_id": null,
+            "source": "tmdb",
+            "media_type": "movie",
+            "media_id": "550",
+            "season_number": null,
+            "episode_number": null
+          },
+          "title": "Movie",
+          "logo_url": "https://example.com/default.png",
+          "custom_logo_url": "https://example.com/custom.png",
+          "logo_width": 500,
+          "logo_height": 200,
+          "logo_aspect_ratio": 2.5,
+          "custom_poster_url": "https://example.com/poster.jpg",
+          "custom_backdrop_url": "https://example.com/backdrop.jpg"
+        }
+        """.data(using: .utf8)!
+
+        let detail = try JSONDecoder.api.decode(MediaDetail.self, from: data)
+        XCTAssertEqual(detail.displayLogoURL, "https://example.com/custom.png")
+
+        let updated = detail.replacingLogo(with: LogoSaveResponse(
+            logoUrl: "https://example.com/new.png",
+            customLogoUrl: "https://example.com/new.png",
+            logoWidth: nil,
+            logoHeight: nil,
+            logoAspectRatio: nil
+        ))
+
+        XCTAssertEqual(updated.logoUrl, "https://example.com/new.png")
+        XCTAssertEqual(updated.customLogoUrl, "https://example.com/new.png")
+        XCTAssertEqual(updated.displayLogoURL, "https://example.com/new.png")
+        XCTAssertNil(updated.logoWidth)
+        XCTAssertEqual(updated.customPosterUrl, detail.customPosterUrl)
+        XCTAssertEqual(updated.customBackdropUrl, detail.customBackdropUrl)
+        XCTAssertEqual(updated.replacingHasLiked(true).customLogoUrl, updated.customLogoUrl)
+        XCTAssertEqual(
+            updated.replacingPoster(with: PosterSaveResponse(
+                posterUrl: "https://example.com/replacement.jpg",
+                customPosterUrl: "https://example.com/replacement.jpg",
+                posterAccentColor: nil
+            )).customLogoUrl,
+            updated.customLogoUrl
+        )
+    }
+
     func testMediaDetailReplacingBackdropPreservesDefaultAndSetsCustom() {
         let detail = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "550", seasonNumber: nil, episodeNumber: nil),
@@ -1590,6 +1803,60 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(decodedBookOptions.posters.first?.thumbnailUrl, "https://example.com/book-original-thumb.jpg")
     }
 
+    func testLogoOptionsAndSaveResponseDecoding() throws {
+        let options = """
+        {
+          "logos": [
+            {
+              "url": "https://example.com/logo.png",
+              "thumbnail_url": "https://example.com/logo-thumb.png",
+              "width": 500,
+              "height": 200,
+              "aspect_ratio": 2.5,
+              "vote_average": 8.1,
+              "vote_count": 42,
+              "language": "en",
+              "style": "official",
+              "is_original": true,
+              "is_selected": true
+            },
+            {
+              "url": "https://example.com/external.png",
+              "thumbnail_url": "https://example.com/external.png",
+              "width": 0,
+              "height": 0,
+              "aspect_ratio": null,
+              "vote_average": 0,
+              "vote_count": 0,
+              "language": null,
+              "style": null,
+              "is_original": false,
+              "is_selected": false
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+        let save = """
+        {
+          "logo_url": "https://example.com/external.png",
+          "custom_logo_url": "https://example.com/external.png",
+          "logo_width": null,
+          "logo_height": null,
+          "logo_aspect_ratio": null
+        }
+        """.data(using: .utf8)!
+
+        let decodedOptions = try JSONDecoder.api.decode(LogoOptionsResponse.self, from: options)
+        let decodedSave = try JSONDecoder.api.decode(LogoSaveResponse.self, from: save)
+
+        XCTAssertEqual(decodedOptions.logos.first?.style, "official")
+        XCTAssertEqual(decodedOptions.logos.first?.language, "en")
+        XCTAssertNil(decodedOptions.logos.last?.aspectRatio)
+        XCTAssertEqual(decodedOptions.logos.last?.width, 0)
+        XCTAssertEqual(decodedSave.customLogoUrl, "https://example.com/external.png")
+        XCTAssertNil(decodedSave.logoWidth)
+    }
+
     func testMediaArtworkCustomizationEligibility() {
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "tmdb", mediaType: "tv"))
@@ -1600,6 +1867,12 @@ final class SpineTests: XCTestCase {
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "movie"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "tv"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "igdb", mediaType: "game"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "season"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "mal", mediaType: "anime"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "openlibrary", mediaType: "book"))
     }
 
     func testTrackingDiaryAndProfileDecoding() throws {
@@ -2025,6 +2298,49 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(items.first?.type, "progress_updated")
         XCTAssertEqual(items.first?.object.current?.compactDisplayText, "58%")
         XCTAssertEqual(items.first?.object.liked, false)
+        client.tokenProvider.clear()
+    }
+
+    func testActivityRepositoryLoadsCursorPage() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APIActivityRepository(client: client)
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=following-page"
+
+        RequestCaptureURLProtocol.handler = { request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let query = components?.queryItems ?? []
+            XCTAssertEqual(components?.path, "/api/v1/users/mobile/activity/")
+            XCTAssertEqual(query.first { $0.name == "page_size" }?.value, "25")
+            XCTAssertEqual(query.first { $0.name == "cursor" }?.value, "current-page")
+
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "next_cursor": "\(nextLink)",
+                  "previous_cursor": null,
+                  "results": []
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let response = try await repository.userActivityPage(
+            username: "mobile",
+            pageSize: 25,
+            cursorLink: "https://example.com/api/v1/users/mobile/activity/?cursor=current-page"
+        )
+
+        XCTAssertEqual(response.nextCursor, nextLink)
+        XCTAssertTrue(response.results.isEmpty)
         client.tokenProvider.clear()
     }
 
@@ -2868,6 +3184,28 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(activityRepository.requests, [ActivityRequest(username: "mobile", limit: 6)])
     }
 
+    @MainActor
+    func testProfileViewModelCancellationPreservesLoadedProfile() async {
+        let profile = profileFixture(hof: [:], enabledMediaTypes: [])
+        let repository = ScriptedProfileRepository(results: [
+            .success(profile),
+            .failure(CancellationError()),
+        ])
+        let viewModel = ProfileViewModel(
+            profileRepository: repository,
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.profile?.id, profile.id)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
     func testHardcoverBookSeriesRelatedSectionDecoding() throws {
         let data = """
         {
@@ -3018,6 +3356,31 @@ final class SpineTests: XCTestCase {
 
         let response: HealthResponse = try await client.get("/health/")
         XCTAssertEqual(response.status, "ok")
+    }
+
+    func testAPIClientPreservesCancellation() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        RequestCaptureURLProtocol.handler = { _ in
+            throw URLError(.cancelled)
+        }
+
+        do {
+            let _: HealthResponse = try await client.get("/health/")
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected: cancellation is lifecycle control, not an API failure.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
     }
 
     func testAPIClientPreservesTrailingSlashForDjangoEndpoints() async throws {
@@ -3305,6 +3668,35 @@ final class SpineTests: XCTestCase {
         )
 
         XCTAssertEqual(seasonBackdropResponse.backdropUrl, "https://example.com/new-season-backdrop.jpg")
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/logos/")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"logos":[]}"#.data(using: .utf8)!
+            )
+        }
+        _ = try await repository.logos(ref: ref)
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/logo/")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            let body = try JSONDecoder.api.decode(LogoSaveRequest.self, from: requestBodyData(for: request))
+            XCTAssertEqual(body.logoUrl, "https://example.com/new-logo.png")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {"logo_url":"https://example.com/new-logo.png","custom_logo_url":"https://example.com/new-logo.png","logo_width":500,"logo_height":200,"logo_aspect_ratio":2.5}
+                """.data(using: .utf8)!
+            )
+        }
+        let logoResponse = try await repository.saveLogo(ref: ref, logoURL: "https://example.com/new-logo.png")
+        XCTAssertEqual(logoResponse.logoWidth, 500)
         client.tokenProvider.clear()
     }
 
@@ -3874,10 +4266,27 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.filteredPosters.map(\.url), ["https://example.com/en.jpg"])
         XCTAssertEqual(viewModel.selectedPosterURL, "https://example.com/en.jpg")
 
+        viewModel.selectedLanguage = "all"
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            [
+                "https://example.com/en.jpg",
+                "https://example.com/fr.jpg",
+                "https://example.com/no-language.jpg",
+            ]
+        )
+
         viewModel.selectedLanguage = "none"
-        XCTAssertEqual(viewModel.filteredPosters.map(\.url), ["https://example.com/en.jpg", "https://example.com/no-language.jpg"])
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            ["https://example.com/en.jpg", "https://example.com/no-language.jpg"]
+        )
 
         viewModel.selectedPosterURL = "https://example.com/no-language.jpg"
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            ["https://example.com/en.jpg", "https://example.com/no-language.jpg"]
+        )
         await viewModel.save()
 
         XCTAssertEqual(savedResponse?.customPosterUrl, "https://example.com/no-language.jpg")
@@ -3898,19 +4307,47 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.selectedLanguage, "none")
-        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), [
-            "https://example.com/backdrop-fr.jpg",
-            "https://example.com/backdrop-no-language.jpg",
-        ])
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
         XCTAssertEqual(viewModel.selectedBackdropURL, "https://example.com/backdrop-fr.jpg")
 
         viewModel.selectedLanguage = "none"
-        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-fr.jpg", "https://example.com/backdrop-no-language.jpg"])
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
 
         viewModel.selectedBackdropURL = "https://example.com/backdrop-no-language.jpg"
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
         await viewModel.save()
 
         XCTAssertEqual(savedResponse?.customBackdropUrl, "https://example.com/backdrop-no-language.jpg")
+    }
+
+    @MainActor
+    func testLogoPickerViewModelFiltersPinsCurrentAndSaves() async {
+        var savedResponse: LogoSaveResponse?
+        let viewModel = LogoPickerViewModel(
+            ref: TestFixtures.movieDetail.ref,
+            mediaRepository: PosterFixtureRepository(),
+            onUnauthorized: {},
+            onSaved: { savedResponse = $0 }
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.selectedLanguage, "en")
+        XCTAssertEqual(viewModel.selectedLogoURL, "https://example.com/logo-en.png")
+        XCTAssertEqual(viewModel.filteredLogos.map(\.url), ["https://example.com/logo-en.png"])
+
+        viewModel.selectedLanguage = "none"
+        XCTAssertEqual(
+            viewModel.filteredLogos.map(\.url),
+            ["https://example.com/logo-en.png", "https://example.com/logo-neutral.png"]
+        )
+
+        viewModel.selectedLogoURL = "https://example.com/logo-neutral.png"
+        await viewModel.save()
+
+        XCTAssertEqual(savedResponse?.customLogoUrl, "https://example.com/logo-neutral.png")
+        XCTAssertFalse(viewModel.isSaving)
+        XCTAssertNil(viewModel.errorMessage)
     }
 
     @MainActor
@@ -4354,6 +4791,8 @@ private struct FakeMediaRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private struct LibraryTrackingRequest: Equatable {
@@ -4373,6 +4812,12 @@ private struct LibraryTrackingRequest: Equatable {
 private struct ActivityRequest: Equatable {
     let username: String
     let limit: Int
+}
+
+private struct ActivityPageRequest: Equatable {
+    let username: String
+    let pageSize: Int
+    let cursorLink: String?
 }
 
 private struct CompanyGameRequest: Equatable {
@@ -4517,6 +4962,17 @@ private func libraryItem(
     )
 }
 
+private func mediaRef(_ mediaID: String) -> MediaRef {
+    MediaRef(
+        itemId: nil,
+        source: "tmdb",
+        mediaType: "movie",
+        mediaId: mediaID,
+        seasonNumber: nil,
+        episodeNumber: nil
+    )
+}
+
 private func mediaSummary(id: String, mediaType: String, backdropURL: String?, customBackdropURL: String? = nil) -> MediaSummary {
     MediaSummary(
         ref: MediaRef(itemId: nil, source: "tmdb", mediaType: mediaType, mediaId: id, seasonNumber: nil, episodeNumber: nil),
@@ -4635,6 +5091,27 @@ private final class ScriptedHomeActivityRepository: ActivityRepository {
         requests.append(ActivityRequest(username: username, limit: limit))
         if let error { throw error }
         return Array(items.prefix(limit))
+    }
+}
+
+private final class ScriptedPagedActivityRepository: ActivityRepository {
+    private var results: [Result<ActivityCursorResponse, Error>]
+    var pageRequests: [ActivityPageRequest] = []
+
+    init(results: [Result<ActivityCursorResponse, Error>]) {
+        self.results = results
+    }
+
+    func userActivity(username _: String, limit _: Int) async throws -> [ActivityItem] {
+        fatalError("Use userActivityPage in paged activity tests")
+    }
+
+    func userActivityPage(username: String, pageSize: Int, cursorLink: String?) async throws -> ActivityCursorResponse {
+        pageRequests.append(ActivityPageRequest(username: username, pageSize: pageSize, cursorLink: cursorLink))
+        guard !results.isEmpty else {
+            fatalError("No scripted activity page remains")
+        }
+        return try results.removeFirst().get()
     }
 }
 
@@ -4891,6 +5368,29 @@ private struct FakeListRepository: ListRepository {
     func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail { fatalError("Not used") }
 }
 
+private final class ScriptedProfileRepository: ProfileRepository {
+    private var results: [Result<UserProfile, Error>]
+
+    init(results: [Result<UserProfile, Error>]) {
+        self.results = results
+    }
+
+    func me() async throws -> UserProfile {
+        guard !results.isEmpty else { fatalError("No scripted profile result remains") }
+        return try results.removeFirst().get()
+    }
+
+    func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile { fatalError("Not used") }
+    func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String? { fatalError("Not used") }
+    func deleteAvatar() async throws -> String? { fatalError("Not used") }
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences { fatalError("Not used") }
+    func changePassword(_ request: PasswordChangeRequest) async throws { fatalError("Not used") }
+    func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?] { fatalError("Not used") }
+    func clearHallOfFameItem(mediaType: String) async throws -> [String: MediaSummary?] { fatalError("Not used") }
+}
+
 private final class HallOfFameProfileRepository: ProfileRepository {
     let profile: UserProfile
     let setResponse: [String: MediaSummary?]
@@ -5125,6 +5625,8 @@ private struct MediaDetailFixtureRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private struct LikeFixtureDiaryRepository: DiaryRepository {
@@ -5176,6 +5678,8 @@ private final class DiaryLogFixtureMediaRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private final class RecordingDiaryRepository: DiaryRepository {
@@ -5304,18 +5808,6 @@ private struct PosterFixtureRepository: MediaRepository {
     func posters(ref: MediaRef) async throws -> [PosterOption] {
         [
             PosterOption(
-                url: "https://example.com/en.jpg",
-                thumbnailUrl: nil,
-                width: 1000,
-                height: 1500,
-                aspectRatio: 0.667,
-                voteAverage: 8,
-                voteCount: 10,
-                language: "en",
-                isOriginal: false,
-                isSelected: true
-            ),
-            PosterOption(
                 url: "https://example.com/fr.jpg",
                 thumbnailUrl: nil,
                 width: 1000,
@@ -5326,6 +5818,18 @@ private struct PosterFixtureRepository: MediaRepository {
                 language: "fr",
                 isOriginal: false,
                 isSelected: false
+            ),
+            PosterOption(
+                url: "https://example.com/en.jpg",
+                thumbnailUrl: nil,
+                width: 1000,
+                height: 1500,
+                aspectRatio: 0.667,
+                voteAverage: 8,
+                voteCount: 10,
+                language: "en",
+                isOriginal: false,
+                isSelected: true
             ),
             PosterOption(
                 url: "https://example.com/no-language.jpg",
@@ -5389,6 +5893,60 @@ private struct PosterFixtureRepository: MediaRepository {
 
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse {
         BackdropSaveResponse(backdropUrl: backdropURL, customBackdropUrl: backdropURL)
+    }
+
+    func logos(ref: MediaRef) async throws -> [LogoOption] {
+        [
+            LogoOption(
+                url: "https://example.com/logo-fr.png",
+                thumbnailUrl: nil,
+                width: 500,
+                height: 180,
+                aspectRatio: 2.778,
+                voteAverage: 7,
+                voteCount: 5,
+                language: "fr",
+                style: nil,
+                isOriginal: false,
+                isSelected: false
+            ),
+            LogoOption(
+                url: "https://example.com/logo-en.png",
+                thumbnailUrl: nil,
+                width: 500,
+                height: 150,
+                aspectRatio: 3.333,
+                voteAverage: 8,
+                voteCount: 10,
+                language: "en",
+                style: "official",
+                isOriginal: true,
+                isSelected: true
+            ),
+            LogoOption(
+                url: "https://example.com/logo-neutral.png",
+                thumbnailUrl: nil,
+                width: 0,
+                height: 0,
+                aspectRatio: nil,
+                voteAverage: 0,
+                voteCount: 0,
+                language: nil,
+                style: "white",
+                isOriginal: false,
+                isSelected: false
+            ),
+        ]
+    }
+
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse {
+        LogoSaveResponse(
+            logoUrl: logoURL,
+            customLogoUrl: logoURL,
+            logoWidth: 500,
+            logoHeight: 150,
+            logoAspectRatio: 3.333
+        )
     }
 }
 

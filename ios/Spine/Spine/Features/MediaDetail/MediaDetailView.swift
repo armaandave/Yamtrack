@@ -229,6 +229,10 @@ final class MediaDetailViewModel {
     func applyBackdropSave(_ response: BackdropSaveResponse) {
         detail = detail?.replacingBackdrop(with: response)
     }
+
+    func applyLogoSave(_ response: LogoSaveResponse) {
+        detail = detail?.replacingLogo(with: response)
+    }
 }
 
 enum MediaDetailQuickAction {
@@ -372,6 +376,13 @@ enum MediaArtworkCustomization {
         }
         return source == "igdb" && mediaType == "game"
     }
+
+    static func supportsLogo(source: String, mediaType: String) -> Bool {
+        if source == "tmdb", ["movie", "tv"].contains(mediaType) {
+            return true
+        }
+        return source == "igdb" && mediaType == "game"
+    }
 }
 
 private struct TopSafeAreaInsetKey: PreferenceKey {
@@ -383,6 +394,108 @@ private struct TopSafeAreaInsetKey: PreferenceKey {
 }
 
 struct MediaDetailView: View {
+    @State private var selectedID: MediaRef.ID?
+
+    private let ref: MediaRef
+    private let browsingContext: MediaBrowsingContext?
+    private let mediaRepository: MediaRepository
+    private let trackingRepository: TrackingRepository
+    private let diaryRepository: DiaryRepository
+    private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
+    private let companyRepository: CompanyRepository
+    private let currentUserId: Int?
+    private let selectedTab: AppTab
+    private let onSelectTab: (AppTab) -> Void
+    private let onUnauthorized: () -> Void
+
+    init(
+        ref: MediaRef,
+        browsingContext: MediaBrowsingContext? = nil,
+        mediaRepository: MediaRepository,
+        trackingRepository: TrackingRepository,
+        diaryRepository: DiaryRepository,
+        listRepository: ListRepository = AppRepositories.current().lists,
+        peopleRepository: PeopleRepository = AppRepositories.current().people,
+        companyRepository: CompanyRepository = AppRepositories.current().companies,
+        currentUserId: Int? = nil,
+        selectedTab: AppTab = .home,
+        onSelectTab: @escaping (AppTab) -> Void = { _ in },
+        onUnauthorized: @escaping () -> Void = {}
+    ) {
+        self.ref = ref
+        self.browsingContext = browsingContext
+        self.mediaRepository = mediaRepository
+        self.trackingRepository = trackingRepository
+        self.diaryRepository = diaryRepository
+        self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
+        self.companyRepository = companyRepository
+        self.currentUserId = currentUserId
+        self.selectedTab = selectedTab
+        self.onSelectTab = onSelectTab
+        self.onUnauthorized = onUnauthorized
+        _selectedID = State(initialValue: browsingContext?.selectedID ?? ref.id)
+    }
+
+    var body: some View {
+        Group {
+            if let browsingContext, browsingContext.refs.count > 1 {
+                GeometryReader { proxy in
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 0) {
+                            ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
+                                detailPage(
+                                    ref: pageRef,
+                                    shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
+                                    topSafeAreaInset: proxy.safeAreaInsets.top
+                                )
+                                .containerRelativeFrame(.horizontal)
+                                .id(pageRef.id)
+                            }
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollIndicators(.hidden)
+                    .scrollTargetBehavior(.paging)
+                    .scrollPosition(id: $selectedID)
+                    .ignoresSafeArea(edges: .top)
+                }
+            } else {
+                detailPage(ref: ref, shouldLoad: true)
+            }
+        }
+        .toolbar(.hidden, for: .tabBar)
+    }
+
+    private func selectedIndex(in context: MediaBrowsingContext) -> Int {
+        context.refs.firstIndex(where: { $0.id == selectedID }) ?? 0
+    }
+
+    private func detailPage(
+        ref: MediaRef,
+        shouldLoad: Bool,
+        topSafeAreaInset: CGFloat? = nil
+    ) -> some View {
+        MediaDetailPageView(
+            ref: ref,
+            shouldLoad: shouldLoad,
+            topSafeAreaInset: topSafeAreaInset,
+            mediaRepository: mediaRepository,
+            trackingRepository: trackingRepository,
+            diaryRepository: diaryRepository,
+            listRepository: listRepository,
+            peopleRepository: peopleRepository,
+            companyRepository: companyRepository,
+            currentUserId: currentUserId,
+            selectedTab: selectedTab,
+            onSelectTab: onSelectTab,
+            onUnauthorized: onUnauthorized
+        )
+    }
+}
+
+private struct MediaDetailPageView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaDetailViewModel
     @State private var presentedSheet: MediaDetailSheet?
@@ -394,6 +507,7 @@ struct MediaDetailView: View {
     @State private var presentedCompany: CompanyRef?
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
+    @State private var isLogoPickerPresented = false
     @State private var isLogPresented = false
     @State private var progressUpdateDetail: MediaDetail?
     @State private var isQuickActionAlertPresented = false
@@ -412,9 +526,13 @@ struct MediaDetailView: View {
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
+    private let shouldLoad: Bool
+    private let topSafeAreaInsetOverride: CGFloat?
 
     init(
         ref: MediaRef,
+        shouldLoad: Bool,
+        topSafeAreaInset: CGFloat? = nil,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
@@ -426,6 +544,8 @@ struct MediaDetailView: View {
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
         onUnauthorized: @escaping () -> Void = {}
     ) {
+        self.shouldLoad = shouldLoad
+        topSafeAreaInsetOverride = topSafeAreaInset
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
@@ -458,7 +578,7 @@ struct MediaDetailView: View {
                     } else if let detail = viewModel.detail {
                         VStack(spacing: 0) {
                             hero(detail)
-                                .padding(.top, -topSafeAreaInset)
+                                .padding(.top, -resolvedTopSafeAreaInset)
                             content(detail)
                         }
                     } else if let error = viewModel.errorMessage {
@@ -474,7 +594,7 @@ struct MediaDetailView: View {
 
             topButtons
                 .padding(.horizontal, 16)
-                .padding(.top, topSafeAreaInset + 6)
+                .padding(.top, resolvedTopSafeAreaInset + 6)
 
             if progressUpdateDetail == nil {
                 MediaDetailBottomBar(selectedTab: selectedTab, onSelectTab: navigateToTab)
@@ -483,7 +603,6 @@ struct MediaDetailView: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
             }
         }
-        .toolbar(.hidden, for: .tabBar)
         .navigationBarBackButtonHidden()
         .offset(x: edgeDragOffset)
         .overlay(alignment: .leading) {
@@ -526,6 +645,7 @@ struct MediaDetailView: View {
                     showsTVShowOption: parentTVRef(viewModel.detail) != nil,
                     showsPosterOption: canCustomizePoster(viewModel.detail),
                     showsBackdropOption: canCustomizeBackdrop(viewModel.detail),
+                    showsLogoOption: canCustomizeLogo(viewModel.detail),
                     onViewTVShow: {
                         guard let ref = parentTVRef(viewModel.detail) else { return }
                         presentedSheet = nil
@@ -546,6 +666,12 @@ struct MediaDetailView: View {
                         presentedSheet = nil
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             isBackdropPickerPresented = true
+                        }
+                    },
+                    onCustomizeLogo: {
+                        presentedSheet = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            isLogoPickerPresented = true
                         }
                     }
                 )
@@ -608,6 +734,20 @@ struct MediaDetailView: View {
                     viewModel.applyBackdropSave(response)
                     presentedSheet = nil
                     isBackdropPickerPresented = false
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $isLogoPickerPresented) {
+            if let detail = viewModel.detail {
+                LogoPickerView(
+                    ref: detail.ref,
+                    mediaRepository: mediaRepository,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    viewModel.applyLogoSave(response)
+                    showsTitleLogo = true
+                    presentedSheet = nil
+                    isLogoPickerPresented = false
                 }
             }
         }
@@ -727,8 +867,8 @@ struct MediaDetailView: View {
                 onUnauthorized: onUnauthorized
             )
         }
-        .task {
-            if viewModel.detail == nil {
+        .task(id: shouldLoad) {
+            if shouldLoad, viewModel.detail == nil {
                 await viewModel.load()
             }
         }
@@ -768,11 +908,18 @@ struct MediaDetailView: View {
         }
     }
 
+    private var resolvedTopSafeAreaInset: CGFloat {
+        topSafeAreaInsetOverride ?? topSafeAreaInset
+    }
+
     private func posterMenuHeight(for detail: MediaDetail?) -> CGFloat {
-        let showRowHeight: CGFloat = parentTVRef(detail) == nil ? 0 : 68
-        if canCustomizeBackdrop(detail) { return 284 + showRowHeight }
-        if canCustomizePoster(detail) { return 216 + showRowHeight }
-        return 146 + showRowHeight
+        let optionalRows = [
+            parentTVRef(detail) != nil,
+            canCustomizePoster(detail),
+            canCustomizeBackdrop(detail),
+            canCustomizeLogo(detail),
+        ].filter { $0 }.count
+        return 80 + CGFloat(optionalRows * 68)
     }
 
     private func canCustomizePoster(_ detail: MediaDetail?) -> Bool {
@@ -786,6 +933,14 @@ struct MediaDetailView: View {
     private func canCustomizeBackdrop(_ detail: MediaDetail?) -> Bool {
         guard let detail else { return false }
         return MediaArtworkCustomization.supportsBackdrop(
+            source: detail.ref.source,
+            mediaType: detail.ref.mediaType
+        )
+    }
+
+    private func canCustomizeLogo(_ detail: MediaDetail?) -> Bool {
+        guard let detail else { return false }
+        return MediaArtworkCustomization.supportsLogo(
             source: detail.ref.source,
             mediaType: detail.ref.mediaType
         )
@@ -864,6 +1019,12 @@ struct MediaDetailView: View {
         isBackdropPickerPresented = true
     }
 
+    private func openLogoPicker(for detail: MediaDetail) {
+        guard canCustomizeLogo(detail), detail.displayLogoURL != nil else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        isLogoPickerPresented = true
+    }
+
     private func navigateToTab(_ tab: AppTab) {
         onSelectTab(tab)
         if !dismissPresentedViewControllerStack() {
@@ -882,7 +1043,7 @@ struct MediaDetailView: View {
 
             if let backdropURL = backdropURLString(for: detail) {
                 BackdropArtwork(urlString: backdropURL)
-                    .frame(height: topSafeAreaInset + MediaDetailLayout.backdropHeight)
+                    .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
                     .onLongPressGesture {
                         openBackdropPicker(for: detail)
                     }
@@ -891,7 +1052,7 @@ struct MediaDetailView: View {
             heroHeader(detail)
             .padding(.horizontal, 14)
             .padding(.bottom, 18)
-            .padding(.top, topSafeAreaInset + heroPosterTopOffset(for: detail))
+            .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
             .frame(minHeight: heroHeight(for: detail), alignment: .top)
         }
     }
@@ -915,7 +1076,10 @@ struct MediaDetailView: View {
             maxLogoHeight: maxLogoHeight,
             onTap: parentTVRef(detail).map { ref in
                 { presentedRef = ref }
-            }
+            },
+            onLongPress: canCustomizeLogo(detail) && detail.displayLogoURL != nil
+                ? { openLogoPicker(for: detail) }
+                : nil
         )
     }
 
@@ -1138,8 +1302,8 @@ struct MediaDetailView: View {
 
     private func content(_ detail: MediaDetail) -> some View {
         VStack(alignment: .leading, spacing: 28) {
+            SynopsisText(text: synopsisPreview(detail))
             trackingSummarySection(detail)
-            SynopsisCard(text: synopsisPreview(detail))
             SpineRatingDistributionSection(community: detail.community)
 
             if detail.ref.mediaType == "tv" {
@@ -1901,10 +2065,12 @@ private struct PosterMenuSheet: View {
     let showsTVShowOption: Bool
     let showsPosterOption: Bool
     let showsBackdropOption: Bool
+    let showsLogoOption: Bool
     let onViewTVShow: () -> Void
     let onAddToList: () -> Void
     let onCustomizePoster: () -> Void
     let onCustomizeBackdrop: () -> Void
+    let onCustomizeLogo: () -> Void
 
     var body: some View {
         VStack(spacing: 10) {
@@ -1948,6 +2114,19 @@ private struct PosterMenuSheet: View {
             if showsBackdropOption {
                 Button(action: onCustomizeBackdrop) {
                     Label("Customize Backdrop", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .frame(height: 54)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+            }
+
+            if showsLogoOption {
+                Button(action: onCustomizeLogo) {
+                    Label("Customize Logo", systemImage: "textformat")
                         .font(.system(size: 17, weight: .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 18)
@@ -2389,8 +2568,8 @@ struct BackdropArtwork: View {
 }
 
 private struct ActionRail: View {
-    private static let buttonSize: CGFloat = 44
-    private static let buttonSpacing: CGFloat = 10
+    private static let buttonSize: CGFloat = 42
+    private static let buttonSpacing: CGFloat = 9
 
     let isTracked: Bool
     let isLiked: Bool
@@ -2404,51 +2583,53 @@ private struct ActionRail: View {
     var onEye: () -> Void = {}
 
     var body: some View {
-        if isHorizontal {
-            HStack(spacing: Self.buttonSpacing) {
-                railButton(
-                    systemName: "plus",
-                    label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                    usesLargePlus: true,
-                    action: onTrack
-                )
-                railButton(
-                    systemName: isLiked ? "heart.fill" : "heart",
-                    label: isLiked ? "Unlike" : "Like",
-                    usesLargePlus: false,
-                    isLoading: isLikeLoading,
-                    action: onLike
-                )
-                railButton(
-                    systemName: "eye",
-                    label: eyeLabel ?? "Mark as watched",
-                    usesLargePlus: false,
-                    isLoading: isEyeLoading,
-                    action: onEye
-                )
-            }
-        } else {
-            VStack(spacing: Self.buttonSpacing) {
-                railButton(
-                    systemName: isLiked ? "heart.fill" : "heart",
-                    label: isLiked ? "Unlike" : "Like",
-                    usesLargePlus: false,
-                    isLoading: isLikeLoading,
-                    action: onLike
-                )
-                railButton(
-                    systemName: "eye",
-                    label: eyeLabel ?? "Mark as watched",
-                    usesLargePlus: false,
-                    isLoading: isEyeLoading,
-                    action: onEye
-                )
-                railButton(
-                    systemName: "plus",
-                    label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                    usesLargePlus: false,
-                    action: onTrack
-                )
+        GlassEffectContainer(spacing: Self.buttonSpacing) {
+            if isHorizontal {
+                HStack(spacing: Self.buttonSpacing) {
+                    railButton(
+                        systemName: "plus",
+                        label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
+                        usesLargePlus: true,
+                        action: onTrack
+                    )
+                    railButton(
+                        systemName: isLiked ? "heart.fill" : "heart",
+                        label: isLiked ? "Unlike" : "Like",
+                        usesLargePlus: false,
+                        isLoading: isLikeLoading,
+                        action: onLike
+                    )
+                    railButton(
+                        systemName: "eye",
+                        label: eyeLabel ?? "Mark as watched",
+                        usesLargePlus: false,
+                        isLoading: isEyeLoading,
+                        action: onEye
+                    )
+                }
+            } else {
+                VStack(spacing: Self.buttonSpacing) {
+                    railButton(
+                        systemName: isLiked ? "heart.fill" : "heart",
+                        label: isLiked ? "Unlike" : "Like",
+                        usesLargePlus: false,
+                        isLoading: isLikeLoading,
+                        action: onLike
+                    )
+                    railButton(
+                        systemName: "eye",
+                        label: eyeLabel ?? "Mark as watched",
+                        usesLargePlus: false,
+                        isLoading: isEyeLoading,
+                        action: onEye
+                    )
+                    railButton(
+                        systemName: "plus",
+                        label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
+                        usesLargePlus: false,
+                        action: onTrack
+                    )
+                }
             }
         }
     }
@@ -2467,17 +2648,17 @@ private struct ActionRail: View {
                         .tint(.white)
                 } else {
                     Image(systemName: systemName)
-                        .font(.system(size: usesLargePlus ? 25 : 17, weight: usesLargePlus ? .semibold : .bold))
+                        .font(.system(size: usesLargePlus ? 22 : 16, weight: .semibold))
                         .foregroundStyle(railIconColor(systemName: systemName))
                 }
             }
             .frame(width: Self.buttonSize, height: Self.buttonSize)
-            .background(.black.opacity(0.28), in: Circle())
-            .glassEffect(.regular.tint(.white.opacity(0.045)).interactive(), in: Circle())
+            .background(.white.opacity(0.08), in: Circle())
+            .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Circle())
             .overlay {
-                Circle().stroke(.white.opacity(0.1), lineWidth: 1)
+                Circle().stroke(.white.opacity(0.16), lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.34), radius: 12, y: 6)
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
         .disabled(isLoading)
@@ -2486,7 +2667,7 @@ private struct ActionRail: View {
 
     private func railIconColor(systemName: String) -> Color {
         if systemName == "heart.fill" { return .pink }
-        return .white.opacity(0.88)
+        return .white.opacity(0.84)
     }
 }
 
@@ -2785,88 +2966,37 @@ private struct TrackingSummarySection: View {
 
 }
 
-private struct SynopsisCard: View {
+private struct SynopsisText: View {
     let text: String
     @State private var isExpanded = false
-    @State private var truncatedHeight: CGFloat = 0
-    @State private var fullHeight: CGFloat = 0
-
-    private var canExpand: Bool {
-        fullHeight > truncatedHeight + 1
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            SectionLabel(title: "Synopsis")
-
-            Text(text)
-                .font(synopsisFont)
-                .foregroundStyle(.white.opacity(0.88))
-                .lineSpacing(3)
-                .lineLimit(isExpanded ? nil : 3)
-                .background {
-                    Text(text)
-                        .font(synopsisFont)
-                        .lineSpacing(3)
-                        .lineLimit(3)
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: SynopsisTruncatedHeightKey.self, value: proxy.size.height)
-                            }
-                        }
-                        .hidden()
-                }
-                .background {
-                    Text(text)
-                        .font(synopsisFont)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: SynopsisFullHeightKey.self, value: proxy.size.height)
-                            }
-                        }
-                        .hidden()
-                }
-
-            if canExpand {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isExpanded.toggle()
-                    }
-                } label: {
-                    Label(isExpanded ? "Less" : "More", systemImage: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.62))
-                }
-                .buttonStyle(.plain)
+        Button {
+            withAnimation(.smooth(duration: 0.3)) {
+                isExpanded.toggle()
             }
+        } label: {
+            synopsisCopy
         }
-        .padding(16)
+        .buttonStyle(.plain)
+        .accessibilityLabel(isExpanded ? "Collapse synopsis" : "Expand synopsis")
         .frame(maxWidth: .infinity, alignment: .leading)
-        .mediaDetailSurface(cornerRadius: 14)
-        .onPreferenceChange(SynopsisTruncatedHeightKey.self) { truncatedHeight = $0 }
-        .onPreferenceChange(SynopsisFullHeightKey.self) { fullHeight = $0 }
+        .padding(.horizontal, 12)
+        .animation(.smooth(duration: 0.3), value: isExpanded)
+    }
+
+    private var synopsisCopy: some View {
+        Text(text)
+            .font(synopsisFont)
+            .foregroundStyle(.white.opacity(0.88))
+            .lineSpacing(3)
+            .lineLimit(isExpanded ? nil : 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private var synopsisFont: Font {
         .system(size: 15, weight: .medium)
-    }
-}
-
-private struct SynopsisTruncatedHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct SynopsisFullHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -3013,44 +3143,41 @@ private struct SpineRatingDistributionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionLabel(title: "Spine Ratings")
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    if let average = community?.averageRating {
-                        Label(average.starRatingLabel, systemImage: "star.fill")
-                            .font(.system(size: 18, weight: .heavy))
-                            .foregroundStyle(.white)
-                    }
-                    Spacer()
-                    Text("\((community?.ratingCount ?? 0).formatted()) ratings")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.52))
+            HStack {
+                if let average = community?.averageRating {
+                    Label(average.starRatingLabel, systemImage: "star.fill")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white)
                 }
-
-                if buckets.isEmpty {
-                    Text("No Spine ratings yet.")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.58))
-                } else {
-                    HStack(alignment: .bottom, spacing: 8) {
-                        ForEach(buckets, id: \.rating) { bucket in
-                            VStack(spacing: 6) {
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(.white.opacity(0.82))
-                                    .frame(width: 18, height: max(4, CGFloat(bucket.count) / CGFloat(maxCount) * 70))
-                                Text(bucket.rating)
-                                    .font(.system(size: 9, weight: .heavy))
-                                    .foregroundStyle(.white.opacity(0.58))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .frame(height: 96, alignment: .bottom)
-                }
+                Spacer()
+                Text("\((community?.ratingCount ?? 0).formatted()) ratings")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.52))
             }
-            .padding(14)
-            .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 16))
+
+            if buckets.isEmpty {
+                Text("No ratings yet.")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.58))
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    ForEach(buckets, id: \.rating) { bucket in
+                        VStack(spacing: 6) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(.white.opacity(0.82))
+                                .frame(width: 18, height: max(4, CGFloat(bucket.count) / CGFloat(maxCount) * 70))
+                            Text(bucket.rating)
+                                .font(.system(size: 9, weight: .heavy))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .frame(height: 96, alignment: .bottom)
+            }
         }
+        .padding(14)
+        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var buckets: [RatingDistributionBucket] {
@@ -3104,16 +3231,11 @@ private struct CreditSection: View {
                     }
                 }
 
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 7) {
                     ForEach(visiblePeople) { person in
                         creditRow(person)
-
-                        if person.id != visiblePeople.last?.id {
-                            Divider().overlay(.white.opacity(0.045))
-                        }
                     }
                 }
-                .mediaDetailSurface(cornerRadius: 14)
             }
         }
     }
@@ -3147,18 +3269,20 @@ private struct CreditSection: View {
                 Button {
                     onSelect(personRef)
                 } label: {
-                    creditRowContent(person)
+                    creditRowContent(person, showsChevron: true)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("View \(person.name)")
+                .accessibilityLabel(accessibilityLabel(for: person))
+                .accessibilityHint("Opens person details")
             } else {
-                creditRowContent(person)
+                creditRowContent(person, showsChevron: false)
+                    .accessibilityElement(children: .combine)
             }
         }
     }
 
-    private func creditRowContent(_ person: CreditDisplay) -> some View {
-        HStack(spacing: 12) {
+    private func creditRowContent(_ person: CreditDisplay, showsChevron: Bool) -> some View {
+        HStack(spacing: 10) {
             AsyncImage(url: URL(string: person.imageUrl ?? "")) { phase in
                 switch phase {
                 case let .success(image):
@@ -3172,7 +3296,7 @@ private struct CreditSection: View {
                         }
                 }
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 38, height: 38)
             .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 3) {
@@ -3185,15 +3309,31 @@ private struct CreditSection: View {
                     Text(subtitle)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.38))
+                    .accessibilityHidden(true)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 52)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        .background(.white.opacity(0.12), in: Capsule())
+        .contentShape(Capsule())
+    }
+
+    private func accessibilityLabel(for person: CreditDisplay) -> String {
+        guard let subtitle = person.subtitle, !subtitle.isEmpty else {
+            return "View \(person.name)"
+        }
+        return "View \(person.name), \(subtitle)"
     }
 }
 
@@ -3537,7 +3677,7 @@ private extension Color {
 }
 
 func supportsTitleLogo(_ detail: MediaDetail) -> Bool {
-    detail.logoUrl != nil && (
+    detail.displayLogoURL != nil && (
         detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
             || detail.ref.source == "igdb" && detail.ref.mediaType == "game"
     )
@@ -3552,6 +3692,7 @@ private struct MediaTitleDisplay: View {
     let minimumScaleFactor: CGFloat
     let maxLogoHeight: CGFloat
     let onTap: (() -> Void)?
+    let onLongPress: (() -> Void)?
 
     private var canToggle: Bool {
         supportsTitleLogo(detail)
@@ -3563,7 +3704,7 @@ private struct MediaTitleDisplay: View {
 
     var body: some View {
         Group {
-            if canToggle, showsLogo, let logoUrl = detail.logoUrl, let url = URL(string: logoUrl) {
+            if canToggle, showsLogo, let logoUrl = detail.displayLogoURL, let url = URL(string: logoUrl) {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
@@ -3594,6 +3735,10 @@ private struct MediaTitleDisplay: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 showsLogo.toggle()
             }
+        }
+        .onLongPressGesture {
+            guard canToggle, showsLogo else { return }
+            onLongPress?()
         }
         .accessibilityLabel(title)
         .accessibilityHint(onTap != nil ? "Open TV show" : canToggle ? "Double tap to switch between logo and text title" : "")
@@ -3642,15 +3787,30 @@ private struct TitleLogoLayout: Layout {
     }
 
     private func logoSize(for availableWidth: CGFloat) -> CGSize {
-        guard availableWidth > 0, let aspectRatio, aspectRatio > 0 else {
-            return CGSize(width: availableWidth, height: maxLogoHeight)
-        }
-
-        let targetWidth = availableWidth * 0.82
-        let neededHeight = targetWidth / aspectRatio
-        let height = min(max(neededHeight, maxLogoHeight), maxLogoHeight * 1.45)
-        return CGSize(width: min(availableWidth, height * aspectRatio), height: height)
+        titleLogoSize(
+            availableWidth: availableWidth,
+            maxLogoHeight: maxLogoHeight,
+            aspectRatio: aspectRatio
+        )
     }
+}
+
+func titleLogoSize(
+    availableWidth: CGFloat,
+    maxLogoHeight: CGFloat,
+    aspectRatio: CGFloat?
+) -> CGSize {
+    guard availableWidth > 0, let aspectRatio, aspectRatio > 0 else {
+        return CGSize(width: availableWidth, height: maxLogoHeight)
+    }
+
+    let targetWidth = availableWidth * 0.82
+    let preferredHeight = min(
+        max(targetWidth / aspectRatio, maxLogoHeight),
+        maxLogoHeight * 1.45
+    )
+    let width = min(availableWidth, preferredHeight * aspectRatio)
+    return CGSize(width: width, height: width / aspectRatio)
 }
 
 private extension String {

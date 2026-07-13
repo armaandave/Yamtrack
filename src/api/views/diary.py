@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -10,7 +10,7 @@ from api.serializers.diary import DiaryEntryWriteSerializer
 from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services.social import set_like
-from app.models import DiaryEntry
+from app.models import CustomBackdropPreference, CustomPosterPreference, DiaryEntry
 from app.services import delete_diary_entry
 from social.models import ContentLike
 
@@ -21,10 +21,24 @@ class DiaryListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        viewer_posters = CustomPosterPreference.objects.filter(user=request.user)
+        viewer_backdrops = CustomBackdropPreference.objects.filter(user=request.user)
         entries = (
             DiaryEntry.objects.filter(user=request.user)
             .select_related("item", "user")
-            .prefetch_related("tags")
+            .prefetch_related(
+                "tags",
+                Prefetch(
+                    "item__customposterpreference_set",
+                    queryset=viewer_posters,
+                    to_attr="viewer_custom_poster_preferences",
+                ),
+                Prefetch(
+                    "item__custombackdroppreference_set",
+                    queryset=viewer_backdrops,
+                    to_attr="viewer_custom_backdrop_preferences",
+                ),
+            )
             .order_by("-consumed_at", "-id")
         )
         item_id = request.query_params.get("item_id")

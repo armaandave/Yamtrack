@@ -50,8 +50,10 @@ def get_game_backdrops(media_id):
     )
 
 
-def get_game_logo(media_id):
-    """Return the best transparent SteamGridDB logo for an IGDB game."""
+def get_game_logos(media_id):
+    """Return transparent SteamGridDB logos for an IGDB game."""
+    if not getattr(settings, "STEAMGRIDDB_API_KEY", ""):
+        return []
     logos = _cached_assets(
         "logos",
         media_id,
@@ -67,8 +69,6 @@ def get_game_logo(media_id):
         },
         fallback_aspect_ratio=None,
     )
-    if not logos:
-        return None
     style_rank = {"official": 0, "custom": 1, "white": 2, "black": 3}
     return sorted(
         logos,
@@ -76,7 +76,13 @@ def get_game_logo(media_id):
             style_rank.get(logo.get("style"), 99),
             -(logo.get("vote_count") or 0),
         ),
-    )[0]
+    )
+
+
+def get_game_logo(media_id):
+    """Return the best transparent SteamGridDB logo for an IGDB game."""
+    logos = get_game_logos(media_id)
+    return logos[0] if logos else None
 
 
 def _cached_assets(kind, media_id, endpoint, params, fallback_aspect_ratio):

@@ -24,6 +24,33 @@ struct MediaRef: Codable, Hashable, Identifiable {
     }
 }
 
+struct MediaBrowsingContext: Hashable {
+    let refs: [MediaRef]
+    let selectedID: MediaRef.ID
+
+    init(refs: [MediaRef], selected: MediaRef) {
+        var seen = Set<MediaRef.ID>()
+        var uniqueRefs = refs.filter { seen.insert($0.id).inserted }
+        if !seen.contains(selected.id) {
+            uniqueRefs.append(selected)
+        }
+        self.refs = uniqueRefs
+        selectedID = selected.id
+    }
+}
+
+struct MediaBrowsingSelection: Hashable, Identifiable {
+    let ref: MediaRef
+    let context: MediaBrowsingContext
+
+    var id: MediaRef.ID { ref.id }
+
+    init(ref: MediaRef, within refs: [MediaRef]) {
+        self.ref = ref
+        context = MediaBrowsingContext(refs: refs, selected: ref)
+    }
+}
+
 struct MediaSummary: Codable, Identifiable, Hashable {
     let ref: MediaRef
     let title: String
@@ -296,6 +323,7 @@ struct MediaDetail: Decodable, Identifiable {
     let seasons: [SeasonSummary]?
     let customPosterUrl: String?
     let customBackdropUrl: String?
+    let customLogoUrl: String?
 
     var id: String { ref.id }
 
@@ -305,6 +333,10 @@ struct MediaDetail: Decodable, Identifiable {
 
     var displayBackdropURL: String? {
         customBackdropUrl ?? backdropUrl
+    }
+
+    var displayLogoURL: String? {
+        customLogoUrl ?? logoUrl
     }
 
     var displayTitle: String {
@@ -345,6 +377,7 @@ struct MediaDetail: Decodable, Identifiable {
         case seasons
         case customPosterUrl
         case customBackdropUrl
+        case customLogoUrl
     }
 
     init(
@@ -380,7 +413,8 @@ struct MediaDetail: Decodable, Identifiable {
         episodes: [EpisodeSummary]? = nil,
         seasons: [SeasonSummary]? = nil,
         customPosterUrl: String? = nil,
-        customBackdropUrl: String? = nil
+        customBackdropUrl: String? = nil,
+        customLogoUrl: String? = nil
     ) {
         self.ref = ref
         self.title = title
@@ -415,6 +449,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.seasons = seasons
         self.customPosterUrl = customPosterUrl
         self.customBackdropUrl = customBackdropUrl
+        self.customLogoUrl = customLogoUrl
     }
 
     init(from decoder: Decoder) throws {
@@ -453,7 +488,8 @@ struct MediaDetail: Decodable, Identifiable {
             episodes: try container.decodeIfPresent([EpisodeSummary].self, forKey: .episodes),
             seasons: try container.decodeIfPresent([SeasonSummary].self, forKey: .seasons),
             customPosterUrl: try container.decodeIfPresent(String.self, forKey: .customPosterUrl),
-            customBackdropUrl: try container.decodeIfPresent(String.self, forKey: .customBackdropUrl)
+            customBackdropUrl: try container.decodeIfPresent(String.self, forKey: .customBackdropUrl),
+            customLogoUrl: try container.decodeIfPresent(String.self, forKey: .customLogoUrl)
         )
     }
 
@@ -491,7 +527,8 @@ struct MediaDetail: Decodable, Identifiable {
             episodes: episodes,
             seasons: seasons,
             customPosterUrl: response.customPosterUrl ?? response.posterUrl,
-            customBackdropUrl: customBackdropUrl
+            customBackdropUrl: customBackdropUrl,
+            customLogoUrl: customLogoUrl
         )
     }
 
@@ -529,7 +566,47 @@ struct MediaDetail: Decodable, Identifiable {
             episodes: episodes,
             seasons: seasons,
             customPosterUrl: customPosterUrl,
-            customBackdropUrl: response.customBackdropUrl ?? response.backdropUrl
+            customBackdropUrl: response.customBackdropUrl ?? response.backdropUrl,
+            customLogoUrl: customLogoUrl
+        )
+    }
+
+    func replacingLogo(with response: LogoSaveResponse) -> MediaDetail {
+        MediaDetail(
+            ref: ref,
+            title: title,
+            subtitle: subtitle,
+            overview: overview,
+            synopsis: synopsis,
+            imageUrl: imageUrl,
+            posterUrl: posterUrl,
+            posterOrientation: posterOrientation,
+            posterAspectRatio: posterAspectRatio,
+            posterWidth: posterWidth,
+            posterHeight: posterHeight,
+            posterAccentColor: posterAccentColor,
+            logoUrl: response.logoUrl,
+            logoWidth: response.logoWidth,
+            logoHeight: response.logoHeight,
+            logoAspectRatio: response.logoAspectRatio,
+            releaseDate: releaseDate,
+            defaultSource: defaultSource,
+            userState: userState,
+            backdropUrl: backdropUrl,
+            details: details,
+            related: related,
+            providers: providers,
+            community: community,
+            externalRatings: externalRatings,
+            reviews: reviews,
+            cast: cast,
+            crew: crew,
+            relatedSections: relatedSections,
+            episodes: episodes,
+            seasons: seasons,
+            customPosterUrl: customPosterUrl,
+            customBackdropUrl: customBackdropUrl,
+            customLogoUrl: response.customLogoUrl
         )
     }
 
@@ -567,7 +644,8 @@ struct MediaDetail: Decodable, Identifiable {
             episodes: episodes,
             seasons: seasons,
             customPosterUrl: customPosterUrl,
-            customBackdropUrl: customBackdropUrl
+            customBackdropUrl: customBackdropUrl,
+            customLogoUrl: customLogoUrl
         )
     }
 
@@ -645,6 +723,38 @@ struct BackdropSaveRequest: Codable, Equatable {
 struct BackdropSaveResponse: Codable, Equatable {
     let backdropUrl: String
     let customBackdropUrl: String?
+}
+
+struct LogoOptionsResponse: Codable, Equatable {
+    let logos: [LogoOption]
+}
+
+struct LogoOption: Codable, Identifiable, Equatable {
+    let url: String
+    let thumbnailUrl: String?
+    let width: Int
+    let height: Int
+    let aspectRatio: Double?
+    let voteAverage: Double
+    let voteCount: Int
+    let language: String?
+    let style: String?
+    let isOriginal: Bool
+    let isSelected: Bool
+
+    var id: String { url }
+}
+
+struct LogoSaveRequest: Codable, Equatable {
+    let logoUrl: String
+}
+
+struct LogoSaveResponse: Codable, Equatable {
+    let logoUrl: String
+    let customLogoUrl: String?
+    let logoWidth: Int?
+    let logoHeight: Int?
+    let logoAspectRatio: Double?
 }
 
 struct HallOfFameItemWriteRequest: Codable, Equatable {

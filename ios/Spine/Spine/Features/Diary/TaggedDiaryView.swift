@@ -212,6 +212,10 @@ struct TaggedDiaryView: View {
                 NavigationLink {
                     MediaDetailView(
                         ref: item.media.ref,
+                        browsingContext: MediaBrowsingContext(
+                            refs: viewModel.media.map(\.media.ref),
+                            selected: item.media.ref
+                        ),
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,

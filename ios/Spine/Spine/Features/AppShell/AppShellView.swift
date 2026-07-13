@@ -3,6 +3,7 @@ import SwiftUI
 struct AppShellView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = AppTab.home
+    @State private var searchFocusRequest = 0
     @State private var requestedLibraryShelf: LibraryShelf?
     @State private var mediaLensStore = MediaLensStore()
 
@@ -43,6 +44,7 @@ struct AppShellView: View {
                     mediaLensStore: mediaLensStore,
                     currentUserId: currentUserId,
                     selectedTab: selectedTab,
+                    focusRequest: searchFocusRequest,
                     onSelectTab: { selectedTab = $0 },
                     onUnauthorized: unauthorized
                 )
@@ -118,6 +120,13 @@ struct AppShellView: View {
             }
             .tag(AppTab.profile)
         }
+        .background {
+            TabBarSelectionObserver { index in
+                guard AppTab(tabBarIndex: index) == .search,
+                      selectedTab == .search else { return }
+                searchFocusRequest += 1
+            }
+        }
         .onChange(of: scenePhase) {
             guard scenePhase == .active else { return }
             session.letterboxdImportCoordinator.resumeIfNeeded()
@@ -136,6 +145,104 @@ enum AppTab: Hashable {
     case library
     case diary
     case profile
+
+    init?(tabBarIndex: Int) {
+        switch tabBarIndex {
+        case 0: self = .home
+        case 1: self = .search
+        case 2: self = .library
+        case 3: self = .diary
+        case 4: self = .profile
+        default: return nil
+        }
+    }
+}
+
+private struct TabBarSelectionObserver: UIViewControllerRepresentable {
+    let onSelect: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSelect: onSelect)
+    }
+
+    func makeUIViewController(context: Context) -> ObserverViewController {
+        let controller = ObserverViewController()
+        controller.onAttach = { [weak controller] in
+            guard let tabBarController = controller?.tabBarController else { return }
+            context.coordinator.observe(tabBarController)
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: ObserverViewController, context: Context) {
+        context.coordinator.onSelect = onSelect
+        controller.onAttach = { [weak controller] in
+            guard let tabBarController = controller?.tabBarController else { return }
+            context.coordinator.observe(tabBarController)
+        }
+
+        DispatchQueue.main.async {
+            guard let tabBarController = controller.tabBarController else { return }
+            context.coordinator.observe(tabBarController)
+        }
+    }
+
+    static func dismantleUIViewController(_ controller: ObserverViewController, coordinator: Coordinator) {
+        coordinator.stopObserving()
+    }
+
+    final class Coordinator: NSObject, UITabBarControllerDelegate {
+        var onSelect: (Int) -> Void
+        weak var tabBarController: UITabBarController?
+        weak var previousDelegate: UITabBarControllerDelegate?
+
+        init(onSelect: @escaping (Int) -> Void) {
+            self.onSelect = onSelect
+        }
+
+        func observe(_ tabBarController: UITabBarController) {
+            if self.tabBarController === tabBarController {
+                if tabBarController.delegate !== self {
+                    previousDelegate = tabBarController.delegate
+                    tabBarController.delegate = self
+                }
+                return
+            }
+
+            self.tabBarController = tabBarController
+            previousDelegate = tabBarController.delegate
+            tabBarController.delegate = self
+        }
+
+        func stopObserving() {
+            guard let tabBarController,
+                  tabBarController.delegate === self else { return }
+            tabBarController.delegate = previousDelegate
+        }
+
+        func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
+            previousDelegate?.tabBarController?(tabBarController, didSelect: viewController)
+
+            guard let index = tabBarController.viewControllers?.firstIndex(of: viewController) else { return }
+            onSelect(index)
+        }
+    }
+
+    final class ObserverViewController: UIViewController {
+        var onAttach: (() -> Void)?
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            if parent != nil {
+                onAttach?()
+            }
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            onAttach?()
+        }
+    }
 }
 
 private struct LazyTab<Content: View>: View {

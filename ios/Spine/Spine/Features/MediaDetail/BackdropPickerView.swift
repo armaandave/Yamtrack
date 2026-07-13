@@ -47,21 +47,14 @@ final class BackdropPickerViewModel {
     }
 
     var filteredBackdrops: [PosterOption] {
-        let filtered: [PosterOption]
         switch selectedLanguage {
         case "all":
-            filtered = backdrops
+            return backdrops
         case "none":
-            filtered = backdrops.filter { $0.language == nil }
+            return backdrops.filter { $0.language == nil }
         default:
-            filtered = backdrops.filter { $0.language == selectedLanguage }
+            return backdrops.filter { $0.language == selectedLanguage }
         }
-        guard let selectedBackdropURL,
-              let selected = backdrops.first(where: { $0.url == selectedBackdropURL }),
-              !filtered.contains(selected) else {
-            return filtered
-        }
-        return [selected] + filtered
     }
 
     var canSave: Bool {

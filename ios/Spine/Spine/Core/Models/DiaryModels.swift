@@ -24,10 +24,11 @@ struct DiaryMedia: Codable {
     let title: String
     let imageUrl: String?
     let posterUrl: String?
+    let customPosterUrl: String?
     let posterOrientation: PosterOrientation?
 
     var displayPosterURL: String? {
-        posterUrl ?? imageUrl
+        customPosterUrl ?? posterUrl ?? imageUrl
     }
 
     var displayTitle: String {
@@ -39,6 +40,7 @@ struct DiaryMedia: Codable {
         case title
         case imageUrl
         case posterUrl
+        case customPosterUrl
         case posterOrientation
     }
 
@@ -49,6 +51,7 @@ struct DiaryMedia: Codable {
         title = try container.decode(String.self, forKey: .title)
         self.imageUrl = imageUrl
         posterUrl = try container.decodeIfPresent(String.self, forKey: .posterUrl) ?? imageUrl
+        customPosterUrl = try container.decodeIfPresent(String.self, forKey: .customPosterUrl)
         posterOrientation = try container.decodeIfPresent(PosterOrientation.self, forKey: .posterOrientation)
     }
 }

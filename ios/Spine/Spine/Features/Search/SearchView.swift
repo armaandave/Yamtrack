@@ -101,6 +101,7 @@ struct SearchView: View {
     private let mediaLensStore: MediaLensStore
     private let currentUserId: Int?
     private let selectedTab: AppTab
+    private let focusRequest: Int
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
 
@@ -113,6 +114,7 @@ struct SearchView: View {
         mediaLensStore: MediaLensStore? = nil,
         currentUserId: Int? = nil,
         selectedTab: AppTab = .search,
+        focusRequest: Int = 0,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
         onUnauthorized: @escaping () -> Void = {}
     ) {
@@ -123,6 +125,7 @@ struct SearchView: View {
         self.mediaLensStore = mediaLensStore ?? MediaLensStore()
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
+        self.focusRequest = focusRequest
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
     }
@@ -136,6 +139,7 @@ struct SearchView: View {
             mediaLensStore: mediaLensStore,
             currentUserId: currentUserId,
             selectedTab: selectedTab,
+            focusRequest: focusRequest,
             onSelectTab: onSelectTab,
             onUnauthorized: onUnauthorized
         )
@@ -153,6 +157,7 @@ private struct SearchViewContainer: View {
     let mediaLensStore: MediaLensStore
     let currentUserId: Int?
     let selectedTab: AppTab
+    let focusRequest: Int
     let onSelectTab: (AppTab) -> Void
     let onUnauthorized: () -> Void
 
@@ -160,6 +165,7 @@ private struct SearchViewContainer: View {
         SearchViewContent(
             mediaRepository: mediaRepository,
             mediaLensStore: mediaLensStore,
+            focusRequest: focusRequest,
             onUnauthorized: onUnauthorized,
             onSelect: { selectedRef = $0.ref }
         )
@@ -268,6 +274,7 @@ private struct SearchViewContent: View {
     @AppStorage("recentMedia") private var recentMediaData = "[]"
 
     let mediaLensStore: MediaLensStore
+    let focusRequest: Int
     let supportedMediaTypes: [String]?
     let title: String
     let onCancel: (() -> Void)?
@@ -276,6 +283,7 @@ private struct SearchViewContent: View {
     init(
         mediaRepository: MediaRepository,
         mediaLensStore: MediaLensStore,
+        focusRequest: Int = 0,
         supportedMediaTypes: [String]? = nil,
         title: String = "Search",
         onCancel: (() -> Void)? = nil,
@@ -284,6 +292,7 @@ private struct SearchViewContent: View {
     ) {
         _viewModel = State(initialValue: SearchViewModel(mediaRepository: mediaRepository, onUnauthorized: onUnauthorized))
         self.mediaLensStore = mediaLensStore
+        self.focusRequest = focusRequest
         self.supportedMediaTypes = supportedMediaTypes
         self.title = title
         self.onCancel = onCancel
@@ -312,7 +321,8 @@ private struct SearchViewContent: View {
                         },
                         onClear: {
                             viewModel.clear()
-                        }
+                        },
+                        focusRequest: focusRequest
                     )
 
                     SearchResultsSection(

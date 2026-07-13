@@ -16,6 +16,7 @@ final class DiaryViewModel {
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
+    private var didLoad = false
 
     init(
         diaryRepository: DiaryRepository,
@@ -34,26 +35,35 @@ final class DiaryViewModel {
         self.onUnauthorized = onUnauthorized
     }
 
+    func loadIfNeeded() async {
+        guard !didLoad, !isLoading else { return }
+        await load()
+    }
+
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
         let requestFilter = diaryRequestFilter
-        entries = []
-        nextPage = nil
         isLoading = true
         errorMessage = nil
         nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, requestFilter == diaryRequestFilter {
+                isLoading = false
+            }
+        }
 
         do {
             let response = try await diaryRepository.page(filter: requestFilter, page: nil)
             guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             entries = response.results
             nextPage = APIPageCursor.nextPage(from: response.next)
-            isLoading = false
+            didLoad = true
+        } catch is CancellationError {
+            return
         } catch {
             guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             errorMessage = error.localizedDescription
-            isLoading = false
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
@@ -75,6 +85,11 @@ final class DiaryViewModel {
         let requestFilter = diaryRequestFilter
         isLoadingNextPage = true
         nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, requestFilter == diaryRequestFilter {
+                isLoadingNextPage = false
+            }
+        }
 
         do {
             let response = try await diaryRepository.page(filter: requestFilter, page: page)
@@ -82,11 +97,11 @@ final class DiaryViewModel {
             let existingIDs = Set(entries.map(\.id))
             entries += response.results.filter { !existingIDs.contains($0.id) }
             nextPage = APIPageCursor.nextPage(from: response.next)
-            isLoadingNextPage = false
+        } catch is CancellationError {
+            return
         } catch {
             guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             nextPageErrorMessage = error.localizedDescription
-            isLoadingNextPage = false
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
@@ -165,11 +180,11 @@ struct MediaDiaryView: View {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         header
 
-                        if viewModel.isLoading {
+                        if viewModel.isLoading, viewModel.entries.isEmpty {
                             ProgressView()
                                 .tint(.white)
                                 .frame(maxWidth: .infinity, minHeight: 320)
-                        } else if let error = viewModel.errorMessage {
+                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
                             DiaryStateCard(
                                 title: "Could not load logs",
                                 systemImage: "exclamationmark.triangle",
@@ -220,7 +235,7 @@ struct MediaDiaryView: View {
                     .gesture(edgeSwipeBackGesture)
             }
             .task {
-                await viewModel.load()
+                await viewModel.loadIfNeeded()
             }
             .onReceive(NotificationCenter.default.publisher(for: .letterboxdImportDidSucceed)) { _ in
                 Task { await viewModel.load() }
@@ -278,17 +293,20 @@ struct MediaDiaryView: View {
 
     @ViewBuilder
     private var paginationFooter: some View {
-        if viewModel.isLoadingNextPage {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        } else if let last = viewModel.entries.last {
+        VStack(spacing: 0) {
+            if viewModel.isLoadingNextPage {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+
             Color.clear
                 .frame(height: 1)
-                .task {
-                    await viewModel.loadNextPageIfNeeded(currentEntry: last)
-                }
+        }
+        .task {
+            guard let last = viewModel.entries.last else { return }
+            await viewModel.loadNextPageIfNeeded(currentEntry: last)
         }
     }
 }
@@ -333,11 +351,11 @@ struct DiaryView: View {
                         header
                         mediaPicker
 
-                        if viewModel.isLoading {
+                        if viewModel.isLoading, viewModel.entries.isEmpty {
                             ProgressView()
                                 .tint(.white)
                                 .frame(maxWidth: .infinity, minHeight: 320)
-                        } else if let error = viewModel.errorMessage {
+                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
                             DiaryStateCard(
                                 title: "Could not load diary",
                                 systemImage: "exclamationmark.triangle",
@@ -380,7 +398,7 @@ struct DiaryView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .task {
                 await viewModel.loadFilterOptions()
-                await viewModel.load()
+                await viewModel.loadIfNeeded()
             }
             .onReceive(NotificationCenter.default.publisher(for: .letterboxdImportDidSucceed)) { _ in
                 Task { await viewModel.load() }
@@ -443,19 +461,22 @@ struct DiaryView: View {
 
     @ViewBuilder
     private var paginationFooter: some View {
-        if viewModel.isLoadingNextPage {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        } else if let error = viewModel.nextPageErrorMessage {
-            DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
-        } else if let last = viewModel.entries.last {
+        VStack(spacing: 0) {
+            if viewModel.isLoadingNextPage {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            } else if let error = viewModel.nextPageErrorMessage {
+                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+            }
+
             Color.clear
                 .frame(height: 1)
-                .task {
-                    await viewModel.loadNextPageIfNeeded(currentEntry: last)
-                }
+        }
+        .task {
+            guard let last = viewModel.entries.last else { return }
+            await viewModel.loadNextPageIfNeeded(currentEntry: last)
         }
     }
 }

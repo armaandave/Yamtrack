@@ -152,7 +152,7 @@ struct CompanyDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: CompanyDetailViewModel
     @State private var expandedRoles = Set<CompanyCatalogRole>()
-    @State private var selectedMedia: MediaRef?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var selectedCompany: CompanyRef?
     @State private var edgeDragOffset: CGFloat = 0
 
@@ -214,9 +214,10 @@ struct CompanyDetailView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
-        .fullScreenCover(item: $selectedMedia) { ref in
+        .fullScreenCover(item: $selectedMedia) { selection in
             MediaDetailView(
-                ref: ref,
+                ref: selection.ref,
+                browsingContext: selection.context,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -424,7 +425,10 @@ struct CompanyDetailView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
                 ForEach(games) { game in
                     Button {
-                        selectedMedia = game.ref
+                        selectedMedia = MediaBrowsingSelection(
+                            ref: game.ref,
+                            within: games.map(\.ref)
+                        )
                     } label: {
                         MediaArtwork(
                             url: game.displayPosterURL,

@@ -9,6 +9,8 @@ from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 from aiohttp import ClientError
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.db.models import Count
 
 from api.serializers.common import (
@@ -33,6 +35,7 @@ from api.services.filters import (
 from app import config
 from app.models import (
     CustomBackdropPreference,
+    CustomLogoPreference,
     CustomPosterPreference,
     Item,
     MediaTypes,
@@ -59,6 +62,7 @@ POSTER_UNSUPPORTED_MESSAGE = (
 BACKDROP_UNSUPPORTED_MESSAGE = (
     "Backdrop customization is only available for TMDB movies/TV shows/seasons and IGDB games."
 )
+LOGO_UNSUPPORTED_MESSAGE = "Logo customization is only available for TMDB movies/TV shows and IGDB games."
 logger = logging.getLogger(__name__)
 
 RATING_URL_BASES = {
@@ -224,7 +228,13 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     ref = summary["ref"]
     if summary.get("poster_accent_color") is None:
         summary["poster_accent_color"] = poster_accent_color(metadata, ref)
-    logo = title_logo(source=source, media_type=media_type, media_id=media_id)
+    logo, custom_logo_url = resolved_logo(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        request=request,
+        user=user,
+    )
     default_backdrop_url, custom_backdrop_url = resolved_backdrop_urls(
         source=source,
         media_type=media_type,
@@ -243,6 +253,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         "logo_width": logo.get("width") if logo else None,
         "logo_height": logo.get("height") if logo else None,
         "logo_aspect_ratio": logo.get("aspect_ratio") if logo else None,
+        "custom_logo_url": custom_logo_url,
         "details": details_for_api(metadata),
         "cast": cast_from_metadata(metadata, request=request),
         "crew": crew_from_metadata(metadata, request=request),
@@ -901,6 +912,144 @@ def save_backdrop_preference(*, source, media_type, media_id, backdrop_url, user
         "backdrop_url": backdrop_url,
         "custom_backdrop_url": backdrop_url,
     }
+
+
+def logo_options(*, source, media_type, media_id, request=None, user=None):
+    """Return selectable title logos for supported media."""
+    _require_logo_support(source, media_type)
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    provider_logos = _provider_logo_options(source, media_type, media_id)
+    automatic = title_logo(source=source, media_type=media_type, media_id=media_id)
+    preference = CustomLogoPreference.objects.filter(user=user, item=item).first()
+    selected_url = preference.custom_image_url if preference else automatic.get("url") if automatic else None
+    automatic_url = automatic.get("url") if automatic else None
+
+    logos = [
+        {
+            **logo,
+            "style": logo.get("style"),
+            "is_original": logo["url"] == automatic_url,
+            "is_selected": logo["url"] == selected_url,
+        }
+        for logo in provider_logos
+    ]
+    if selected_url and not any(logo["url"] == selected_url for logo in logos):
+        logos.insert(
+            0,
+            {
+                "url": absolute_url(request, selected_url),
+                "thumbnail_url": absolute_url(request, selected_url),
+                "width": 0,
+                "height": 0,
+                "aspect_ratio": None,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": None,
+                "style": None,
+                "is_original": False,
+                "is_selected": True,
+            },
+        )
+    return {"logos": logos}
+
+
+def save_logo_preference(*, source, media_type, media_id, logo_url, user):
+    """Save a user's title logo preference."""
+    _require_logo_support(source, media_type)
+    _validate_logo_url(logo_url)
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    CustomLogoPreference.objects.update_or_create(
+        user=user,
+        item=item,
+        defaults={"custom_image_url": logo_url},
+    )
+    try:
+        matched = next(
+            (logo for logo in _provider_logo_options(source, media_type, media_id) if logo["url"] == logo_url),
+            None,
+        )
+    except provider_services.ProviderAPIError:
+        matched = None
+    return {
+        "logo_url": logo_url,
+        "custom_logo_url": logo_url,
+        "logo_width": matched.get("width") if matched else None,
+        "logo_height": matched.get("height") if matched else None,
+        "logo_aspect_ratio": matched.get("aspect_ratio") if matched else None,
+    }
+
+
+def resolved_logo(*, source, media_type, media_id, request=None, user=None):
+    """Return effective logo metadata and the viewer's custom URL."""
+    automatic = title_logo(source=source, media_type=media_type, media_id=media_id)
+    if not _supports_logo(source, media_type) or not user or not user.is_authenticated:
+        return automatic, None
+
+    item = Item.objects.filter(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=None,
+        episode_number=None,
+    ).first()
+    preference = (
+        CustomLogoPreference.objects.filter(user=user, item=item).first()
+        if item is not None
+        else None
+    )
+    if preference is None:
+        return automatic, None
+
+    custom_url = absolute_url(request, preference.custom_image_url)
+    matched = next(
+        (
+            logo
+            for logo in _provider_logo_options(source, media_type, media_id)
+            if logo["url"] == preference.custom_image_url
+        ),
+        None,
+    )
+    if matched:
+        return {**matched, "url": custom_url}, custom_url
+    return {
+        "url": custom_url,
+        "width": None,
+        "height": None,
+        "aspect_ratio": None,
+    }, custom_url
+
+
+def _provider_logo_options(source, media_type, media_id):
+    if source == Sources.TMDB.value:
+        from app.providers import tmdb
+
+        return tmdb.get_title_logos(media_id, media_type)
+    from app.providers import steamgriddb
+
+    return steamgriddb.get_game_logos(media_id)
+
+
+def _supports_logo(source, media_type):
+    return (
+        source == Sources.TMDB.value
+        and media_type in [MediaTypes.MOVIE.value, MediaTypes.TV.value]
+    ) or (source == Sources.IGDB.value and media_type == MediaTypes.GAME.value)
+
+
+def _require_logo_support(source, media_type):
+    if not _supports_logo(source, media_type):
+        raise ValueError(LOGO_UNSUPPORTED_MESSAGE)
+
+
+def _validate_logo_url(logo_url):
+    if not isinstance(logo_url, str) or not logo_url:
+        raise ValueError("logo_url is required.")
+    if len(logo_url) > CustomLogoPreference._meta.get_field("custom_image_url").max_length:
+        raise ValueError("logo_url must be 500 characters or fewer.")
+    try:
+        URLValidator(schemes=["http", "https"])(logo_url)
+    except ValidationError as error:
+        raise ValueError("logo_url must be a valid absolute HTTP(S) URL.") from error
 
 
 def _customizable_item(*, source, media_type, media_id, season_number=None):

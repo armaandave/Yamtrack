@@ -30,7 +30,12 @@ def diary_payload(entry, request=None, viewer=None):
     return {
         "id": entry.id,
         "user": user_summary(entry.user, request=request),
-        "media": media_summary_from_item(entry.item, request=request),
+        "media": media_summary_from_item(
+            entry.item,
+            request=request,
+            user=viewer,
+            include_user_state=False,
+        ),
         "consumed_at": entry.consumed_at,
         "rating": str(entry.rating) if entry.rating is not None else None,
         "review_title": entry.review_title,

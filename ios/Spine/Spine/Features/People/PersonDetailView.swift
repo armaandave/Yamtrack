@@ -72,7 +72,7 @@ final class PersonDetailViewModel {
 struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PersonDetailViewModel
-    @State private var selectedRef: MediaRef?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var selectedFilmographyType: FilmographyType = .movie
     @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
@@ -143,9 +143,10 @@ struct PersonDetailView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
-        .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
-                ref: ref,
+                ref: selection.ref,
+                browsingContext: selection.context,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -289,7 +290,10 @@ struct PersonDetailView: View {
         let types = FilmographyType.available(in: viewModel.filmography)
         let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
         let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
-        let groups = FilmographyCreditGroup.groups(from: filmography)
+        let groups = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: viewModel.detail?.knownForDepartment
+        )
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -378,21 +382,24 @@ struct PersonDetailView: View {
 
     private func filmographyGrid(_ media: [MediaSummary]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-            ForEach(media) { media in
+            ForEach(media) { item in
                 Button {
-                    selectedRef = media.ref
+                    selectedMedia = MediaBrowsingSelection(
+                        ref: item.ref,
+                        within: media.map(\.ref)
+                    )
                 } label: {
                     MediaArtwork(
-                        url: media.displayPosterURL,
-                        title: media.title,
+                        url: item.displayPosterURL,
+                        title: item.title,
                         slot: .tagGrid,
-                        mediaType: media.ref.mediaType,
-                        orientation: media.posterOrientation
+                        mediaType: item.ref.mediaType,
+                        orientation: item.posterOrientation
                     )
                     .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("View \(media.title)")
+                .accessibilityLabel("View \(item.title)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -426,7 +433,10 @@ struct PersonDetailView: View {
         let types = FilmographyType.available(in: viewModel.filmography)
         let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
         let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
-        if let primaryGroup = FilmographyCreditGroup.groups(from: filmography).first {
+        if let primaryGroup = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: viewModel.detail?.knownForDepartment
+        ).first {
             expandedCreditRoles = [primaryGroup.id]
         } else {
             expandedCreditRoles = []
@@ -479,13 +489,16 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
     }
 }
 
-private struct FilmographyCreditGroup: Identifiable {
+struct FilmographyCreditGroup: Identifiable {
     let role: String
     let media: [MediaSummary]
 
     var id: String { role }
 
-    static func groups(from media: [MediaSummary]) -> [FilmographyCreditGroup] {
+    static func groups(
+        from media: [MediaSummary],
+        knownForDepartment: String? = nil
+    ) -> [FilmographyCreditGroup] {
         var grouped: [String: [MediaSummary]] = [:]
 
         for item in media {
@@ -495,9 +508,16 @@ private struct FilmographyCreditGroup: Identifiable {
             }
         }
 
+        let primaryRoles = primaryRoles(for: knownForDepartment)
+
         return grouped
             .map { FilmographyCreditGroup(role: $0.key, media: $0.value) }
             .sorted {
+                let firstIsPrimary = primaryRoles.contains($0.role.lowercased())
+                let secondIsPrimary = primaryRoles.contains($1.role.lowercased())
+                if firstIsPrimary != secondIsPrimary {
+                    return firstIsPrimary
+                }
                 if $0.media.count != $1.media.count {
                     return $0.media.count > $1.media.count
                 }
@@ -505,14 +525,14 @@ private struct FilmographyCreditGroup: Identifiable {
             }
     }
 
-    func title(for type: FilmographyType) -> String {
+    fileprivate func title(for type: FilmographyType) -> String {
         if role == "Credits" {
             return compactTitle(for: type)
         }
         return "\(role) \(connector) \(media.count) \(type.creditNoun(count: media.count))"
     }
 
-    func compactTitle(for type: FilmographyType) -> String {
+    fileprivate func compactTitle(for type: FilmographyType) -> String {
         "\(role) · \(media.count) \(type.creditNoun(count: media.count))"
     }
 
@@ -533,6 +553,23 @@ private struct FilmographyCreditGroup: Identifiable {
             let clean = role.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
             return clean
+        }
+    }
+
+    private static func primaryRoles(for department: String?) -> Set<String> {
+        switch department?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "acting":
+            ["actor", "actress"]
+        case "directing":
+            ["director"]
+        case "writing":
+            ["writer"]
+        case "production":
+            ["producer"]
+        case "author":
+            ["author"]
+        default:
+            []
         }
     }
 }
