@@ -578,6 +578,7 @@ class Metadata(TestCase):
             result["external_links"]["IMDb"],
             "https://www.imdb.com/title/tt0959621/",
         )
+        self.assertEqual(result["imdb_id"], "tt0959621")
         self.assertNotIn("TVDB", result["external_links"])
         self.assertIsNone(result["external_ratings"]["imdb"]["value"])
         self.assertEqual(result["parent"]["show"]["ref"]["media_type"], "tv")
@@ -640,6 +641,8 @@ class Metadata(TestCase):
 
         self.assertEqual(result["image"], settings.IMG_NONE)
         self.assertIsNone(result["backdrop_path"])
+        self.assertIsNone(result["score"])
+        self.assertEqual(result["score_count"], 0)
 
     def test_tmdb_find_next_episode(self):
         """Test the find_next_episode function."""

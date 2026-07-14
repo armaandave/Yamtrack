@@ -129,8 +129,16 @@ def update_item_filter_metadata(item, metadata, ratings=None):
     )
 
 
-def update_item_external_ratings(*, source, media_type, media_id, ratings, season_number=None):
-    """Cache MDBList ratings for an already materialized item."""
+def update_item_external_ratings(
+    *,
+    source,
+    media_type,
+    media_id,
+    ratings,
+    season_number=None,
+    episode_number=None,
+):
+    """Cache external ratings for an already materialized exact item."""
     if not ratings:
         return
     item = Item.objects.filter(
@@ -138,6 +146,7 @@ def update_item_external_ratings(*, source, media_type, media_id, ratings, seaso
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
     ).first()
     if item is None:
         return

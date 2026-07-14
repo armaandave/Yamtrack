@@ -973,8 +973,8 @@ struct ProfileView: View {
     }
 
     private func statsGrid(_ counts: ProfileCounts) -> some View {
-        GlassEffectContainer(spacing: 3) {
-            HStack(spacing: 6) {
+        GlassEffectContainer(spacing: 3.5) {
+            HStack(spacing: 7) {
                 if isOwnProfile {
                     Button(action: onOpenDiary) {
                         ProfileStatChip(
@@ -1067,7 +1067,7 @@ struct ProfileView: View {
     }
 
     @ViewBuilder
-    private func profileMenuLink(_ destination: ProfileMenuDestination, count: Int, showsDivider: Bool) -> some View {
+    private func profileMenuLink(_ destination: ProfileMenuDestination, count: Int?, showsDivider: Bool) -> some View {
         switch destination {
         case .library:
             Button {
@@ -1081,6 +1081,23 @@ struct ProfileView: View {
                 onOpenDiary()
             } label: {
                 ProfileMenuRow(title: destination.title, count: count, showsDivider: showsDivider)
+            }
+            .buttonStyle(.plain)
+        case .stats:
+            NavigationLink {
+                StatsView(
+                    profileRepository: profileRepository,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    diaryRepository: diaryRepository,
+                    listRepository: listRepository,
+                    currentUserId: currentUserId ?? viewModel.profile?.id,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    onUnauthorized: onUnauthorized
+                )
+            } label: {
+                ProfileMenuRow(title: destination.title, count: nil, showsDivider: showsDivider)
             }
             .buttonStyle(.plain)
         case .reviews:
@@ -1507,7 +1524,7 @@ private struct HallOfFamePickerRow: View {
 }
 
 private struct ProfileStatChip: View {
-    private static let cornerRadius: CGFloat = 9
+    private static let cornerRadius: CGFloat = 10.5
 
     let value: Int
     let title: String
@@ -1520,7 +1537,7 @@ private struct ProfileStatChip: View {
                 RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                     .strokeBorder(.white.opacity(0.18), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.12), radius: 3, y: 1.5)
+            .shadow(color: .black.opacity(0.12), radius: 3.5, y: 1.75)
             .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(value.formatted()) \(title)")
@@ -1544,14 +1561,14 @@ private struct ProfileStatChip: View {
     }
 
     private var content: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 3) {
+        VStack(spacing: 2.5) {
+            HStack(spacing: 3.5) {
                 Image(systemName: systemName)
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.56))
 
                 Text(value.formatted())
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 15.5, weight: .bold))
                     .foregroundStyle(.white.opacity(0.94))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -1560,12 +1577,12 @@ private struct ProfileStatChip: View {
             }
 
             Text(title)
-                .font(.system(size: 8, weight: .semibold))
+                .font(.system(size: 8.5, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.5))
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
         }
-        .frame(width: 58, height: 44)
+        .frame(width: 67, height: 50)
         .background(
             .white.opacity(0.055),
             in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
@@ -1576,6 +1593,7 @@ private struct ProfileStatChip: View {
 enum ProfileMenuDestination: CaseIterable, Hashable {
     case library
     case diary
+    case stats
     case reviews
     case lists
     case planned
@@ -1586,6 +1604,7 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
         switch self {
         case .library: "Library"
         case .diary: "Diary"
+        case .stats: "Stats"
         case .reviews: "Reviews"
         case .lists: "Lists"
         case .planned: "Planned"
@@ -1594,10 +1613,11 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
         }
     }
 
-    func count(from counts: ProfileCounts) -> Int {
+    func count(from counts: ProfileCounts) -> Int? {
         switch self {
         case .library: counts.libraryItems
         case .diary: counts.diaryEntries
+        case .stats: nil
         case .reviews: counts.reviews
         case .lists: counts.lists
         case .planned: counts.plannedItems
@@ -1609,7 +1629,7 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
 
 struct ProfileMenuRow: View {
     let title: String
-    let count: Int
+    let count: Int?
     var showsDivider = true
 
     var body: some View {
@@ -1622,11 +1642,13 @@ struct ProfileMenuRow: View {
 
             Spacer(minLength: 12)
 
-            Text(count.formatted())
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white.opacity(0.42))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
+            if let count {
+                Text(count.formatted())
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .bold))
@@ -1644,7 +1666,7 @@ struct ProfileMenuRow: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(count)")
+        .accessibilityLabel(count.map { "\(title), \($0)" } ?? title)
     }
 }
 

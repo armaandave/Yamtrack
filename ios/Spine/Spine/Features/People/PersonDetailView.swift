@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+private struct PersonTopSafeAreaInsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 @MainActor
 @Observable
 final class PersonDetailViewModel {
@@ -92,6 +100,7 @@ struct PersonDetailView: View {
     @State private var selectedFilmographyType: FilmographyType = .movie
     @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
+    @State private var topSafeAreaInset: CGFloat = 0
 
     private let peopleRepository: PeopleRepository
     private let mediaRepository: MediaRepository
@@ -153,6 +162,12 @@ struct PersonDetailView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: PersonTopSafeAreaInsetKey.self, value: proxy.safeAreaInsets.top)
+            }
+        }
+        .onPreferenceChange(PersonTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
         .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
                 ref: selection.ref,
@@ -207,8 +222,7 @@ struct PersonDetailView: View {
             ScrollView(showsIndicators: false) {
                 ZStack(alignment: .top) {
                     PersonHeroArtwork(urlString: detail.profileUrl)
-                        .frame(height: 390)
-                        .ignoresSafeArea(edges: .top)
+                        .frame(height: topSafeAreaInset + 390)
                         .allowsHitTesting(false)
 
                     VStack(alignment: .leading, spacing: 26) {
@@ -217,11 +231,12 @@ struct PersonDetailView: View {
                         filmographySection
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 44)
+                    .padding(.top, topSafeAreaInset + 44)
                     .padding(.bottom, 36)
                 }
             }
             .scrollContentBackground(.hidden)
+            .ignoresSafeArea(edges: .top)
             .refreshable {
                 await viewModel.load()
                 syncSelectedFilmographyType()

@@ -9,6 +9,11 @@ This page outlines the environment variables used in the YamTrack project.
 | `TMDB_API`      | The Movie Database API key for movies and TV shows. A default key is provided.                                                                                                                                                                        |
 | `TMDB_NSFW`     | Default to `False`. Set to `True` to include adult content in TV and movie searches.                                                                                                                                                                  |
 | `TMDB_LANG`     | TMDB metadata language. Uses a language code in ISO 639-1 (e.g., `en`). Also supports a country code in ISO 3166-1 (e.g., `en-US`). Metadata is cached for a few hours in Redis. You may need to clear the cache to see the new language immediately. |
+| `IMDB_API_KEY` | Optional licensed IMDb API key from AWS Data Exchange. When this and the three IMDb asset identifiers are configured, episode pages enrich their IMDb link with the current rating and vote count. |
+| `IMDB_DATA_SET_ID` | IMDb AWS Data Exchange data-set ID for the subscribed API product. |
+| `IMDB_REVISION_ID` | IMDb AWS Data Exchange revision ID for the subscribed API product. |
+| `IMDB_ASSET_ID` | IMDb AWS Data Exchange API asset ID for the subscribed API product. |
+| `IMDB_AWS_REGION` | AWS region used for IMDb Data Exchange requests. Defaults to `us-east-1`. Boto3 uses the standard AWS credential chain. |
 | `MAL_API`       | MyAnimeList API key for anime and manga. A default key is provided.                                                                                                                                                                                   |
 | `MAL_NSFW`      | Default to `False`. Set to `True` to include adult content in anime and manga searches from MyAnimeList.                                                                                                                                              |
 | `MU_NSFW`       | Default to `False`. Set to `True` to include adult content in manga searches from MangaUpdates.                                                                                                                                                       |
@@ -90,6 +95,7 @@ YamTrack supports reading sensitive configuration values from Docker secrets fil
 | `DB_USER`                 | `DB_USER_FILE`                 |
 | `DB_PASSWORD`             | `DB_PASSWORD_FILE`             |
 | `TMDB_API`                | `TMDB_API_FILE`                |
+| `IMDB_API_KEY`            | `IMDB_API_KEY_FILE`            |
 | `MAL_API`                 | `MAL_API_FILE`                 |
 | `IGDB_ID`                 | `IGDB_ID_FILE`                 |
 | `IGDB_SECRET`             | `IGDB_SECRET_FILE`             |

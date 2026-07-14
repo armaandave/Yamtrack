@@ -1599,6 +1599,7 @@ class ApiV1FoundationTests(TestCase):
                 {
                     "media_id": "550",
                     "title": "Fight Club",
+                    "subtitle": "1999 · 20th Century Fox",
                     "image": "https://example.com/fight-club.jpg",
                     "poster_width": 500,
                     "poster_height": 750,
@@ -1616,6 +1617,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["results"][0]["ref"]["source"], "tmdb")
         self.assertEqual(response.data["results"][0]["ref"]["media_type"], "movie")
         self.assertEqual(response.data["results"][0]["title"], "Fight Club")
+        self.assertEqual(
+            response.data["results"][0]["subtitle"],
+            "1999 · 20th Century Fox",
+        )
         self.assertEqual(response.data["results"][0]["image_url"], response.data["results"][0]["poster_url"])
         self.assertEqual(response.data["results"][0]["custom_poster_url"], "https://example.com/custom-fight-club.jpg")
         self.assertEqual(response.data["results"][0]["poster_orientation"], "portrait")
@@ -2980,8 +2985,16 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(response.data["image_url"])
         self.assertIsNone(response.data["backdrop_url"])
 
+    @patch(
+        "app.providers.imdb.get_title_rating",
+        return_value={
+            "value": 8.5,
+            "votes": 12000,
+            "url": "https://www.imdb.com/title/tt1480055/",
+        },
+    )
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_episode_detail_is_first_class_backdrop_only_media(self, metadata_mock):
+    def test_episode_detail_is_first_class_backdrop_only_media(self, metadata_mock, imdb_rating_mock):
         user = get_user_model().objects.create_user(
             username="episode-viewer",
             password="strong-password-123",
@@ -3063,6 +3076,7 @@ class ApiV1FoundationTests(TestCase):
                 },
             ],
             "external_links": {"IMDb": imdb_url},
+            "imdb_id": "tt1480055",
             "external_ratings": {
                 "imdb": {"value": None, "votes": None, "url": imdb_url},
             },
@@ -3128,11 +3142,17 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_links"]["IMDb"], imdb_url)
         self.assertEqual(
             [(rating["source"], rating["value"]) for rating in response.data["external_ratings"]],
-            [("TMDB", "8.6"), ("IMDb", "")],
+            [("TMDB", "8.6"), ("IMDb", "8.5")],
         )
         self.assertEqual(response.data["external_ratings"][0]["url"], metadata_mock.return_value["source_url"])
         self.assertEqual(response.data["external_ratings"][1]["url"], imdb_url)
+        self.assertEqual(response.data["external_ratings"][1]["vote_count"], 12000)
         self.assertEqual(response.data["community"]["average_rating"], "9.00")
+        first_episode.refresh_from_db()
+        selected_episode.refresh_from_db()
+        self.assertIsNone(first_episode.imdb_rating)
+        self.assertEqual(str(selected_episode.imdb_rating), "8.50")
+        imdb_rating_mock.assert_called_once_with("tt1480055")
         metadata_mock.assert_called_once_with(
             MediaTypes.EPISODE.value,
             "1399",

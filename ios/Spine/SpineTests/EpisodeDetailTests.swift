@@ -53,12 +53,42 @@ final class EpisodeDetailTests: XCTestCase {
         XCTAssertEqual(detail.episodeStillURL, "https://image.tmdb.org/t/p/original/episode-still.jpg")
         XCTAssertEqual(detail.details?["runtime"], .string("58 min"))
 
-        let imdb = try XCTUnwrap(detail.externalRatings?.first)
+        let tmdb = try XCTUnwrap(detail.externalRatings?.first { $0.source == "TMDB" })
+        XCTAssertEqual(tmdb.value, "8.6")
+        XCTAssertEqual(tmdb.voteCount, 321)
+        XCTAssertEqual(tmdb.maxValue, "10")
+        XCTAssertEqual(
+            tmdb.destinationURL?.absoluteString,
+            "https://www.themoviedb.org/tv/1399/season/3/episode/2"
+        )
+
+        let imdb = try XCTUnwrap(detail.externalRatings?.first { $0.source == "IMDb" })
         XCTAssertEqual(imdb.source, "IMDb")
         XCTAssertEqual(imdb.value, "")
         XCTAssertNil(imdb.voteCount)
         XCTAssertEqual(imdb.maxValue, "10")
         XCTAssertEqual(imdb.destinationURL?.absoluteString, "https://www.imdb.com/title/tt2178784/")
+    }
+
+    func testEpisodeExternalRatingPresentationIncludesTMDB() throws {
+        XCTAssertTrue(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "episode"))
+        XCTAssertTrue(MediaExternalRatingPresentation.includes(source: "IMDb", mediaType: "episode"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "movie"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "tv"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "season"))
+    }
+
+    func testEpisodeIMDbRatingDecodesWhenBackendEnrichesIt() throws {
+        let rating = try JSONDecoder.api.decode(
+            ExternalRating.self,
+            from: Data(
+                #"{"source":"IMDb","value":"8.5","vote_count":12000,"max_value":"10","url":"https://www.imdb.com/title/tt2178784/"}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(rating.value, "8.5")
+        XCTAssertEqual(rating.voteCount, 12000)
+        XCTAssertEqual(rating.destinationURL?.absoluteString, "https://www.imdb.com/title/tt2178784/")
     }
 
     func testMediaRepositoryBuildsEpisodeDetailRequest() async throws {
@@ -195,6 +225,13 @@ final class EpisodeDetailTests: XCTestCase {
             "runtime": "58 min"
           },
           "external_ratings": [
+            {
+              "source": "TMDB",
+              "value": "8.6",
+              "vote_count": 321,
+              "max_value": "10",
+              "url": "https://www.themoviedb.org/tv/1399/season/3/episode/2"
+            },
             {
               "source": "IMDb",
               "value": "",

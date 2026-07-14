@@ -116,6 +116,7 @@ struct HomeView: View {
     @State private var viewModel: HomeViewModel
     @State private var selectedRef: MediaRef?
     @State private var selectedActivityEntry: ActivityEntrySelection?
+    @State private var scrollOffset: CGFloat = 0
 
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
@@ -161,6 +162,8 @@ struct HomeView: View {
             ZStack(alignment: .top) {
                 SpinePageBackground()
                 HomeArtworkAtmosphere(media: viewModel.inProgressItems.first?.media)
+                    .offset(y: -scrollOffset)
+                    .opacity(HomeBackdropMotion.opacity(for: scrollOffset))
 
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -174,6 +177,11 @@ struct HomeView: View {
                 }
                 .refreshable {
                     await viewModel.reload()
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    max(0, geometry.contentOffset.y)
+                } action: { _, offset in
+                    scrollOffset = offset
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -405,6 +413,14 @@ struct HomeView: View {
         } else if let ref = activity.media?.ref {
             selectedRef = ref
         }
+    }
+}
+
+enum HomeBackdropMotion {
+    private static let fadeDistance: CGFloat = 240
+
+    static func opacity(for scrollOffset: CGFloat) -> Double {
+        Double(max(0, 1 - (scrollOffset / fadeDistance)))
     }
 }
 

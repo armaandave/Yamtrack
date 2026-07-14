@@ -1104,6 +1104,8 @@ def episode(media_id, season_number, episode_number):
     }
     imdb_url = external_links.get("IMDb")
     still_path = response.get("still_path")
+    vote_average = response.get("vote_average")
+    vote_count = response.get("vote_count") or 0
 
     data = {
         "media_id": str(media_id),
@@ -1127,8 +1129,8 @@ def episode(media_id, season_number, episode_number):
         "backdrop_path": still_path,
         "synopsis": get_synopsis(response.get("overview", "")),
         "release_date": get_start_date(response.get("air_date", "")),
-        "score": get_score(response.get("vote_average", 0)),
-        "score_count": response.get("vote_count"),
+        "score": get_score(vote_average) if vote_average and vote_count else None,
+        "score_count": vote_count,
         "details": {
             "format": "Episode",
             "series_title": series_title,
@@ -1142,9 +1144,10 @@ def episode(media_id, season_number, episode_number):
         "cast": get_cast({"cast": response.get("guest_stars", [])}),
         "crew": get_crew({"crew": response.get("crew", [])}),
         "external_links": external_links,
-        # MDBList does not resolve episode ratings. This provider-owned shape
-        # keeps the IMDb destination truthful now and can accept a real value
-        # later without changing the public media-detail contract.
+        "imdb_id": response.get("external_ids", {}).get("imdb_id"),
+        # Keep a truthful link-only fallback; the media service can enrich this
+        # shape through the optional licensed IMDb API without changing the
+        # public media-detail contract.
         "external_ratings": {
             "imdb": {
                 "value": None,

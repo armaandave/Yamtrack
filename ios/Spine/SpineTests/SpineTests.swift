@@ -3491,6 +3491,37 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(message.contains("Cloudflare tunnel"))
     }
 
+    func testAPIErrorSurfacesFieldValidationMessage() {
+        let error = APIError.httpStatus(
+            400,
+            #"{"username":["A user with that username already exists."]}"#
+        )
+
+        XCTAssertEqual(
+            error.localizedDescription,
+            "Username: A user with that username already exists."
+        )
+    }
+
+    func testAPIErrorSurfacesNonFieldValidationMessageWithoutInternalKey() {
+        let error = APIError.httpStatus(
+            400,
+            #"{"non_field_errors":["Invalid username/email or password."]}"#
+        )
+
+        XCTAssertEqual(error.localizedDescription, "Invalid username/email or password.")
+    }
+
+    func testAPIErrorDoesNotExposeUnknownServerPayload() {
+        let error = APIError.httpStatus(
+            500,
+            #"{"debug":"internal stack detail"}"#
+        )
+
+        XCTAssertFalse(error.localizedDescription.contains("internal stack detail"))
+        XCTAssertTrue(error.localizedDescription.contains("HTTP 500"))
+    }
+
     func testAPIClientBuildsPrefixedPaths() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -4102,6 +4133,38 @@ final class SpineTests: XCTestCase {
             XCTFail("Expected signed out state.")
             return
         }
+    }
+
+    @MainActor
+    func testLoginEntersHome() async {
+        let auth = FakeAuthRepository(hasStoredTokens: false)
+        let session = AppSession(repositories: fakeRepositories(auth: auth))
+
+        await session.login(usernameOrEmail: "reader", password: "password")
+
+        XCTAssertEqual(session.signedInEntryPoint, .home)
+        guard case .signedIn = session.state else {
+            XCTFail("Expected signed in state.")
+            return
+        }
+    }
+
+    @MainActor
+    func testRegistrationEntersSearchOnce() async {
+        let auth = FakeAuthRepository(hasStoredTokens: false)
+        let session = AppSession(repositories: fakeRepositories(auth: auth))
+
+        await session.register(username: "reader", email: "reader@example.com", password: "long-enough")
+
+        XCTAssertEqual(session.signedInEntryPoint, .search)
+        guard case .signedIn = session.state else {
+            XCTFail("Expected signed in state.")
+            return
+        }
+
+        session.markSignedInEntryPointHandled()
+
+        XCTAssertEqual(session.signedInEntryPoint, .home)
     }
 
     @MainActor
@@ -4841,13 +4904,14 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(ProfileMenuDestination.allCases.map(\.title), [
             "Library",
             "Diary",
+            "Stats",
             "Reviews",
             "Lists",
             "Planned",
             "Likes",
             "Tags",
         ])
-        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, 3, 4, 5, 6, 7])
+        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, nil, 3, 4, 5, 6, 7])
     }
 
     private func profileFixture(

@@ -429,6 +429,19 @@ enum MediaArtworkCustomization {
     }
 }
 
+enum MediaExternalRatingPresentation {
+    static func includes(source: String, mediaType: String) -> Bool {
+        let normalizedSource = source.lowercased()
+        if normalizedSource == "spine" {
+            return false
+        }
+        if normalizedSource == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
+            return false
+        }
+        return true
+    }
+}
+
 private struct TopSafeAreaInsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
@@ -2044,10 +2057,10 @@ private struct MediaDetailPageView: View {
             ))
         }
         for rating in sortedExternalRatings(detail.externalRatings ?? []) where !rating.value.isEmpty {
-            if rating.source.lowercased() == "spine" {
-                continue
-            }
-            if ["movie", "tv", "season", "episode"].contains(detail.ref.mediaType), rating.source.lowercased() == "tmdb" {
+            if !MediaExternalRatingPresentation.includes(
+                source: rating.source,
+                mediaType: detail.ref.mediaType
+            ) {
                 continue
             }
             chips.append(RatingChip(

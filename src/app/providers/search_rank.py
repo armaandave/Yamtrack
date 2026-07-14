@@ -13,6 +13,7 @@ RANKING_KEYS = {
     "game_type",
     "num_scoring_users",
     "popularity",
+    "provider_rank_boost",
     "rating",
     "ratings_average",
     "ratings_count",
@@ -77,6 +78,7 @@ def _score(query, result, media_type):
     score += popularity
     score += _metadata_score(result)
     score += _media_type_score(result, media_type)
+    score += _first_number(result, ("provider_rank_boost",))
     score -= _junk_penalty(normalized_query, normalized_title, result, popularity)
     return score
 

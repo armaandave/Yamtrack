@@ -2,12 +2,18 @@ import SwiftUI
 
 struct AppShellView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab = AppTab.home
+    @State private var selectedTab: AppTab
     @State private var searchFocusRequest = 0
     @State private var requestedLibraryShelf: LibraryShelf?
     @State private var mediaLensStore = MediaLensStore()
 
     let session: AppSession
+
+    @MainActor
+    init(session: AppSession) {
+        self.session = session
+        _selectedTab = State(initialValue: session.signedInEntryPoint == .search ? .search : .home)
+    }
 
     private var currentUserId: Int? {
         if case let .signedIn(user) = session.state {
@@ -133,6 +139,12 @@ struct AppShellView: View {
             session.letterboxdImportCoordinator.resumeIfNeeded()
             session.storygraphImportCoordinator.resumeIfNeeded()
             session.goodreadsImportCoordinator.resumeIfNeeded()
+        }
+        .task {
+            guard session.signedInEntryPoint == .search else { return }
+            session.markSignedInEntryPointHandled()
+            await Task.yield()
+            searchFocusRequest += 1
         }
     }
 

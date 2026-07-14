@@ -203,6 +203,7 @@ struct DiaryFilter: Equatable {
 protocol ProfileRepository {
     func me() async throws -> UserProfile
     func profile(username: String) async throws -> UserProfile
+    func statsSummary(username: String?, period: StatsPeriod) async throws -> StatsSummary
     func likedMedia() async throws -> [MediaSummary]
     func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile
     func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String?
@@ -221,6 +222,10 @@ extension ProfileRepository {
     }
 
     func likedMedia() async throws -> [MediaSummary] {
+        fatalError("Not implemented")
+    }
+
+    func statsSummary(username: String?, period: StatsPeriod) async throws -> StatsSummary {
         fatalError("Not implemented")
     }
 }
@@ -777,6 +782,17 @@ struct APIProfileRepository: ProfileRepository {
     func profile(username: String) async throws -> UserProfile {
         let escapedUsername = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
         return try await client.get("/users/\(escapedUsername)/", authenticated: true)
+    }
+
+    func statsSummary(username: String?, period: StatsPeriod) async throws -> StatsSummary {
+        let path: String
+        if let username {
+            let escapedUsername = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
+            path = "/users/\(escapedUsername)/stats/summary/"
+        } else {
+            path = "/stats/me/summary/"
+        }
+        return try await client.get(path, query: period.query, authenticated: true)
     }
 
     func likedMedia() async throws -> [MediaSummary] {

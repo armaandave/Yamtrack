@@ -9,8 +9,14 @@ final class AppSession {
         case signedIn(AuthUser?)
     }
 
+    enum SignedInEntryPoint: Equatable {
+        case home
+        case search
+    }
+
     var state: State = .checking
     var errorMessage: String?
+    private(set) var signedInEntryPoint: SignedInEntryPoint = .home
 
     let repositories: AppRepositories
     let letterboxdImportCoordinator: LetterboxdImportCoordinator
@@ -35,6 +41,7 @@ final class AppSession {
 
     func start() async {
         guard repositories.auth.hasStoredTokens else {
+            signedInEntryPoint = .home
             state = .signedOut
             return
         }
@@ -42,6 +49,7 @@ final class AppSession {
         do {
             try await repositories.auth.refresh()
             let profile = try? await repositories.profile.me()
+            signedInEntryPoint = .home
             state = .signedIn(profile.map(AuthUser.init(profile:)))
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
@@ -57,6 +65,7 @@ final class AppSession {
         errorMessage = nil
         do {
             let user = try await repositories.auth.login(usernameOrEmail: usernameOrEmail, password: password)
+            signedInEntryPoint = .home
             state = .signedIn(user)
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
@@ -70,6 +79,7 @@ final class AppSession {
         errorMessage = nil
         do {
             let user = try await repositories.auth.register(username: username, email: email, password: password)
+            signedInEntryPoint = .search
             state = .signedIn(user)
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
@@ -84,7 +94,17 @@ final class AppSession {
         letterboxdImportCoordinator.clearFinishedJob()
         storygraphImportCoordinator.clearFinishedJob()
         goodreadsImportCoordinator.clearFinishedJob()
+        signedInEntryPoint = .home
+        errorMessage = nil
         state = .signedOut
+    }
+
+    func clearError() {
+        errorMessage = nil
+    }
+
+    func markSignedInEntryPointHandled() {
+        signedInEntryPoint = .home
     }
 }
 

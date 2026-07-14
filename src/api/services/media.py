@@ -45,6 +45,7 @@ from app.providers import services as provider_services
 from app.utils.color import build_accent_palette, compute_and_store_poster_accent
 
 SEARCH_TTL = 60 * 60 * 6
+SEARCH_CACHE_VERSION = "v3"
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
@@ -104,7 +105,7 @@ def search_media(*, media_type, query, page=1, source=None, request=None, user=N
     source = source or default_source_for(media_type)
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
     cache_key = (
-        f"api:v2:search:{media_type}:{source}:{query_hash}:"
+        f"api:{SEARCH_CACHE_VERSION}:search:{media_type}:{source}:{query_hash}:"
         f"p{page}:u{getattr(settings, 'TMDB_LANG', 'en')}:nsfw{settings.TMDB_NSFW}"
     )
     data = cache.get(cache_key)
@@ -1577,6 +1578,44 @@ def _normalized_external_rating(*, metadata, rating_source, rating, media_type, 
     }
 
 
+def _provider_external_ratings(
+    *,
+    metadata,
+    source,
+    media_type,
+    media_id,
+    season_number,
+    episode_number,
+):
+    """Return provider ratings with optional exact-episode IMDb enrichment."""
+    provider_ratings = {
+        rating_source: dict(rating)
+        for rating_source, rating in (metadata.get("external_ratings") or {}).items()
+    }
+    if source != Sources.TMDB.value or media_type != MediaTypes.EPISODE.value:
+        return provider_ratings
+
+    from app.providers import imdb
+
+    imdb_rating = imdb.get_title_rating(metadata.get("imdb_id"))
+    if not imdb_rating:
+        return provider_ratings
+
+    provider_ratings["imdb"] = {
+        **provider_ratings.get("imdb", {}),
+        **imdb_rating,
+    }
+    update_item_external_ratings(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+        ratings={"imdb": imdb_rating},
+    )
+    return provider_ratings
+
+
 def external_ratings(
     *,
     metadata,
@@ -1607,7 +1646,16 @@ def external_ratings(
             },
         )
 
-    for rating_source, rating in (metadata.get("external_ratings") or {}).items():
+    provider_ratings = _provider_external_ratings(
+        metadata=metadata,
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
+
+    for rating_source, rating in provider_ratings.items():
         normalized = _normalized_external_rating(
             metadata=metadata,
             rating_source=rating_source,
@@ -1628,6 +1676,7 @@ def external_ratings(
             media_type=media_type,
             media_id=media_id,
             season_number=season_number,
+            episode_number=episode_number,
             ratings=mdblist_ratings,
         )
         for rating_source, rating in mdblist_ratings.items():

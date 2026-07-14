@@ -520,6 +520,18 @@ MDBLIST_API = config(
     ),
 )
 
+# Optional licensed IMDb API integration through AWS Data Exchange. Boto3 uses
+# the standard AWS credential chain (for example, an instance role or
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables).
+IMDB_API_KEY = config(
+    "IMDB_API_KEY",
+    default=secret("IMDB_API_KEY_FILE", ""),
+)
+IMDB_DATA_SET_ID = config("IMDB_DATA_SET_ID", default="")
+IMDB_REVISION_ID = config("IMDB_REVISION_ID", default="")
+IMDB_ASSET_ID = config("IMDB_ASSET_ID", default="")
+IMDB_AWS_REGION = config("IMDB_AWS_REGION", default="us-east-1")
+
 TESTING = False
 
 HEALTHCHECK_CELERY_PING_TIMEOUT = config(
