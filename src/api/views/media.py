@@ -205,17 +205,20 @@ class MediaDetailView(APIView):
     throttle_classes = [SearchRateThrottle]
 
     def get(self, request, source, media_type, media_id):
-        return Response(
-            media_service.media_detail(
-                source=source,
-                media_type=media_type,
-                media_id=media_id,
-                season_number=request.query_params.get("season_number"),
-                episode_number=request.query_params.get("episode_number"),
-                request=request,
-                user=request.user if request.user.is_authenticated else None,
-            ),
-        )
+        try:
+            return Response(
+                media_service.media_detail(
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    season_number=request.query_params.get("season_number"),
+                    episode_number=request.query_params.get("episode_number"),
+                    request=request,
+                    user=request.user if request.user.is_authenticated else None,
+                ),
+            )
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class PersonDetailView(APIView):
@@ -531,5 +534,6 @@ class CommunityStatsView(APIView):
                 media_type=media_type,
                 media_id=media_id,
                 season_number=request.query_params.get("season_number"),
+                episode_number=request.query_params.get("episode_number"),
             ),
         )

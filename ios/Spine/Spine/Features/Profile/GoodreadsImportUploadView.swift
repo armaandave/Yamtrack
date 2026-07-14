@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-struct LetterboxdImportUploadView: View {
-    let coordinator: LetterboxdImportCoordinator
+struct GoodreadsImportUploadView: View {
+    let coordinator: GoodreadsImportCoordinator
     let onDone: () -> Void
 
     var body: some View {
@@ -49,8 +49,8 @@ struct LetterboxdImportUploadView: View {
             resultContent(
                 systemName: "square.and.arrow.down",
                 tint: .white.opacity(0.7),
-                title: "Letterboxd Import",
-                message: "Choose a Letterboxd export to start."
+                title: "Goodreads Import",
+                message: "Choose a Goodreads export to start."
             )
         }
     }
@@ -61,7 +61,7 @@ struct LetterboxdImportUploadView: View {
                 .font(.system(size: 58, weight: .bold))
                 .foregroundStyle(.white)
 
-            Text("Uploading your Letterboxd export")
+            Text("Uploading your Goodreads export")
                 .font(.system(size: 31, weight: .black))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
@@ -201,10 +201,10 @@ struct LetterboxdImportUploadView: View {
 }
 
 #Preview("Uploading") {
-    let coordinator = LetterboxdImportCoordinator(importRepository: MockUploadImportRepository())
-    coordinator.phase = .uploading(fileName: "letterboxd-export.zip", progress: 0.42)
+    let coordinator = GoodreadsImportCoordinator(importRepository: MockUploadImportRepository())
+    coordinator.phase = .uploading(fileName: "goodreads_library_export.csv", progress: 0.42)
     coordinator.uploadFileSize = 24_000_000
-    return LetterboxdImportUploadView(coordinator: coordinator, onDone: {})
+    return GoodreadsImportUploadView(coordinator: coordinator, onDone: {})
 }
 
 private struct MockUploadImportRepository: ImportRepository {
@@ -214,8 +214,7 @@ private struct MockUploadImportRepository: ImportRepository {
         mode: ImportMode,
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse {
-        progressHandler?(1)
-        return ImportQueueResponse(taskId: "preview-task", status: "queued")
+        fatalError("Not used")
     }
 
     func queueStoryGraphImport(
@@ -233,7 +232,8 @@ private struct MockUploadImportRepository: ImportRepository {
         mode: ImportMode,
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse {
-        fatalError("Not used")
+        progressHandler?(1)
+        return ImportQueueResponse(taskId: "preview-task", status: "queued")
     }
 
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {

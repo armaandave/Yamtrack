@@ -1288,6 +1288,141 @@ final class SpineTests: XCTestCase {
         resumed.clearFinishedJob()
     }
 
+    @MainActor
+    func testGoodreadsImportCoordinatorTransitionsToSuccess() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorTransitions")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-1", taskName: nil, status: "SUCCESS", dateCreated: nil, dateDone: nil, result: "Imported 3 books.")
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+        let fileURL = try makeTemporaryGoodreadsCSV()
+        var notifiedTaskId: String?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .goodreadsImportDidSucceed,
+            object: nil,
+            queue: nil,
+        ) { notification in
+            notifiedTaskId = notification.userInfo?["taskId"] as? String
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
+        coordinator.startImport(fileURL: fileURL, mode: .new)
+
+        try await waitUntil {
+            if case let .uploading(fileName, progress) = coordinator.phase {
+                return fileName == fileURL.lastPathComponent && progress == 1
+            }
+            return false
+        }
+
+        try await waitUntil {
+            if case let .processing(taskId, _, _) = coordinator.phase {
+                return taskId == "goodreads-task-1"
+            }
+            return false
+        }
+
+        try await waitUntil {
+            coordinator.phase == .succeeded(message: "Imported 3 books.")
+        }
+
+        XCTAssertEqual(repository.queuedFileName, fileURL.lastPathComponent)
+        XCTAssertEqual(repository.queuedMode, .new)
+        XCTAssertEqual(repository.statusRequests, ["goodreads-task-1"])
+        XCTAssertEqual(notifiedTaskId, "goodreads-task-1")
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorPersistsAndResumesTask() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorPersistence")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-2", taskName: nil, status: "PENDING", dateCreated: nil, dateDone: nil, result: nil)
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .seconds(60),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryGoodreadsCSV(), mode: .overwrite)
+
+        try await waitUntil {
+            if case let .processing(taskId, _, _) = coordinator.phase {
+                return taskId == "goodreads-task-2"
+            }
+            return false
+        }
+
+        let resumed = GoodreadsImportCoordinator(
+            importRepository: ScriptedGoodreadsImportRepository(statuses: []),
+            defaults: defaults,
+            pollInterval: .seconds(60),
+            timeout: 5
+        )
+        resumed.resumeIfNeeded()
+
+        guard case let .processing(taskId, _, _) = resumed.phase else {
+            XCTFail("Expected persisted task to resume.")
+            return
+        }
+        XCTAssertEqual(taskId, "goodreads-task-2")
+
+        coordinator.clearFinishedJob()
+        resumed.clearFinishedJob()
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorSurfacesTaskFailure() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorFailure")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-failure", taskName: nil, status: "FAILURE", dateCreated: nil, dateDone: nil, result: "Goodreads import could not be completed.")
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryGoodreadsCSV(), mode: .new)
+
+        try await waitUntil {
+            coordinator.phase == .failed(message: "Goodreads import could not be completed.")
+        }
+
+        XCTAssertEqual(repository.statusRequests, ["goodreads-task-failure"])
+        XCTAssertFalse(coordinator.canCheckStatus)
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorRejectsNonCSVFile() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorInvalidExtension")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryZip(), mode: .new)
+
+        try await waitUntil {
+            coordinator.phase == .failed(message: "Please upload the .csv export from Goodreads, not a ZIP file.")
+        }
+
+        XCTAssertNil(repository.queuedFileName)
+        XCTAssertTrue(repository.statusRequests.isEmpty)
+    }
+
     func testMultipartBodyIncludesFieldsAndFile() {
         let body = MultipartFormData.body(
             boundary: "TestBoundary",
@@ -1320,6 +1455,22 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"mode\"\r\n\r\noverwrite\r\n"))
         XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"file\"; filename=\"storygraph.csv\""))
         XCTAssertTrue(text.contains("Content-Type: text/csv\r\n\r\nTitle,Authors\nBook,Author\n\r\n"))
+    }
+
+    func testGoodreadsMultipartBodyIncludesModeAndCSVFile() {
+        let body = MultipartFormData.body(
+            boundary: "TestBoundary",
+            fields: ["mode": "new"],
+            fileFieldName: "file",
+            fileName: "goodreads_library_export.csv",
+            fileData: Data("Book Id,Title,Author\n123,Book,Author\n".utf8),
+            mimeType: "text/csv"
+        )
+        let text = String(data: body, encoding: .utf8)!
+
+        XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"mode\"\r\n\r\nnew\r\n"))
+        XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"file\"; filename=\"goodreads_library_export.csv\""))
+        XCTAssertTrue(text.contains("Content-Type: text/csv\r\n\r\nBook Id,Title,Author\n123,Book,Author\n\r\n"))
     }
 
 
@@ -3998,6 +4149,34 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testMediaDetailEpisodeWatchKeepsMutationSuccessWhenRefreshFails() async {
+        let detail = TestFixtures.episodeDetail
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaDetailViewModel(
+            ref: detail.ref,
+            mediaRepository: MediaDetailFixtureRepository(detailError: APIError.httpStatus(503, nil)),
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {}
+        )
+        viewModel.detail = detail
+        let watchedAt = Date(timeIntervalSince1970: 1_797_120_000)
+
+        let didSave = await viewModel.watchEpisode(detail, watchedAt: watchedAt)
+
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.source, "tmdb")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.mediaId, "1399")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.seasonNumber, 3)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.episodeNumber, 2)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.watchedAt, watchedAt)
+        XCTAssertEqual(viewModel.detail?.userState?.isTracked, true)
+        XCTAssertNil(viewModel.detail?.userState?.status)
+        XCTAssertNil(viewModel.quickActionErrorMessage)
+        XCTAssertNil(viewModel.tracking)
+    }
+
+    @MainActor
     func testMediaDetailCurrentlyQuickActionSetsInProgress() async {
         let detail = TestFixtures.logDetail(mediaType: "book")
         let tracking = RecordingTrackingRepository()
@@ -4392,9 +4571,17 @@ final class SpineTests: XCTestCase {
             onUnauthorized: {},
             onSaved: {}
         )
+        let episodeLog = MediaLogViewModel(
+            detail: TestFixtures.episodeDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
 
         XCTAssertEqual(movieLog.primaryActionTitle, "Log Movie")
         XCTAssertEqual(bookLog.primaryActionTitle, "Log Book")
+        XCTAssertEqual(episodeLog.primaryActionTitle, "Log Episode")
     }
 
     @MainActor
@@ -4518,6 +4705,30 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(tracking.watchedSeasons.first?.source, "tmdb")
         XCTAssertEqual(tracking.watchedSeasons.first?.mediaId, "1399")
         XCTAssertEqual(tracking.watchedSeasons.first?.seasonNumber, 1)
+    }
+
+    @MainActor
+    func testMediaLogEpisodeMarkOnlyUsesNestedEpisodeWatch() async {
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaLogViewModel(
+            detail: TestFixtures.episodeDetail,
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let watchedAt = Date(timeIntervalSince1970: 1_797_120_000)
+        viewModel.consumedAt = watchedAt
+
+        let didSave = await viewModel.markOnly()
+
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.source, "tmdb")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.mediaId, "1399")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.seasonNumber, 3)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.episodeNumber, 2)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.watchedAt, watchedAt)
+        XCTAssertTrue(tracking.consumedRefs.isEmpty)
     }
 
     @MainActor
@@ -5472,6 +5683,13 @@ private struct FakeImportRepository: ImportRepository {
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse { fatalError("Not used") }
 
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse { fatalError("Not used") }
+
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus { fatalError("Not used") }
 }
 
@@ -5499,6 +5717,15 @@ private final class ScriptedLetterboxdImportRepository: ImportRepository {
     }
 
     func queueStoryGraphImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueGoodreadsImport(
         fileData: Data,
         fileName: String,
         mode: ImportMode,
@@ -5547,6 +5774,66 @@ private final class ScriptedStoryGraphImportRepository: ImportRepository {
         progressHandler?(1)
         try await Task.sleep(for: .milliseconds(40))
         return ImportQueueResponse(taskId: statuses.first?.taskId ?? "storygraph-task-2", status: "queued")
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
+        statusRequests.append(taskId)
+        try await Task.sleep(for: .milliseconds(40))
+        if statuses.count > 1 {
+            return statuses.removeFirst()
+        }
+        return statuses.first ?? ImportTaskStatus(taskId: taskId, taskName: nil, status: "PENDING", dateCreated: nil, dateDone: nil, result: nil)
+    }
+}
+
+private final class ScriptedGoodreadsImportRepository: ImportRepository {
+    private(set) var queuedFileName: String?
+    private(set) var queuedMode: ImportMode?
+    private(set) var statusRequests: [String] = []
+    private var statuses: [ImportTaskStatus]
+
+    init(statuses: [ImportTaskStatus]) {
+        self.statuses = statuses
+    }
+
+    func queueLetterboxdImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueStoryGraphImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        queuedFileName = fileName
+        queuedMode = mode
+        progressHandler?(1)
+        try await Task.sleep(for: .milliseconds(40))
+        return ImportQueueResponse(taskId: statuses.first?.taskId ?? "goodreads-task-2", status: "queued")
     }
 
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
@@ -5600,6 +5887,14 @@ private func makeTemporaryCSV() throws -> URL {
     return url
 }
 
+private func makeTemporaryGoodreadsCSV() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("goodreads-\(UUID().uuidString)")
+        .appendingPathExtension("csv")
+    try Data("Book Id,Title,Author\n123,Book,Author\n".utf8).write(to: url)
+    return url
+}
+
 @MainActor
 private func waitUntil(timeout: TimeInterval = 1, predicate: @escaping () -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeout)
@@ -5613,9 +5908,20 @@ private func waitUntil(timeout: TimeInterval = 1, predicate: @escaping () -> Boo
 }
 
 private struct MediaDetailFixtureRepository: MediaRepository {
+    var detailError: Error?
+
+    init(detailError: Error? = nil) {
+        self.detailError = detailError
+    }
+
     func meta() async throws -> MetaResponse { fatalError("Not used") }
     func search(query: String, mediaType: String) async throws -> [MediaSummary] { fatalError("Not used") }
-    func detail(ref: MediaRef) async throws -> MediaDetail { TestFixtures.movieDetail }
+    func detail(ref: MediaRef) async throws -> MediaDetail {
+        if let detailError {
+            throw detailError
+        }
+        return TestFixtures.movieDetail
+    }
 
     func reviews(ref: MediaRef) async throws -> [MediaReview] {
         try JSONDecoder.api.decode(PagedResponse<MediaReview>.self, from: TestFixtures.reviewsJSON.data(using: .utf8)!).results
@@ -5763,6 +6069,7 @@ private final class RecordingTrackingRepository: TrackingRepository {
     var updateRequests: [(ref: MediaRef, request: TrackingWriteRequest)] = []
     var consumedRefs: [(ref: MediaRef, consumedAt: Date?)] = []
     var watchedSeasons: [(source: String, mediaId: String, seasonNumber: Int)] = []
+    var watchedEpisodes: [(source: String, mediaId: String, seasonNumber: Int, episodeNumber: Int, watchedAt: Date?)] = []
     var bookProgressRequests: [(source: String, mediaId: String, progressType: String, value: Decimal, notes: String)] = []
     var completedBooks: [(source: String, mediaId: String, completedAt: Date?)] = []
 
@@ -5785,6 +6092,17 @@ private final class RecordingTrackingRepository: TrackingRepository {
 
     func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState {
         watchedSeasons.append((source, mediaId, seasonNumber))
+        return TestFixtures.trackingState
+    }
+
+    func watchEpisode(
+        source: String,
+        mediaId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        watchedAt: Date?
+    ) async throws -> TrackingState {
+        watchedEpisodes.append((source, mediaId, seasonNumber, episodeNumber, watchedAt))
         return TestFixtures.trackingState
     }
 
@@ -5959,6 +6277,22 @@ private enum TestFixtures {
     static let tvDetail: MediaDetail = try! JSONDecoder.api.decode(
         MediaDetail.self,
         from: tvDetailJSON.data(using: .utf8)!
+    )
+
+    static let episodeDetail = MediaDetail(
+        ref: MediaRef(
+            itemId: 912,
+            source: "tmdb",
+            mediaType: "episode",
+            mediaId: "1399",
+            seasonNumber: 3,
+            episodeNumber: 2
+        ),
+        title: "Dark Wings, Dark Words",
+        subtitle: "Game of Thrones",
+        releaseDate: "2013-04-07",
+        userState: UserMediaState(isTracked: false),
+        backdropUrl: "https://example.com/episode.jpg"
     )
 
     static let trackingState = TrackingState(

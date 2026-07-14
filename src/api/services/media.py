@@ -48,6 +48,7 @@ SEARCH_TTL = 60 * 60 * 6
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
+EPISODE_DETAIL_CACHE_VERSION = "v1"
 COMPANY_SORTS = {"popularity", "release_date", "title", "average_rating"}
 COMPANY_GAME_SORT_OPTIONS = [
     {"value": "popularity", "label": "Popularity"},
@@ -183,8 +184,17 @@ def discover_media(
 
 def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):
     """Fetch provider metadata and normalize it for the API."""
+    if media_type == MediaTypes.EPISODE.value and (
+        season_number in (None, "") or episode_number in (None, "")
+    ):
+        raise ValueError("season_number and episode_number are required for episodes.")
+    season_number = int(season_number) if season_number not in (None, "") else None
+    episode_number = int(episode_number) if episode_number not in (None, "") else None
+    cache_version = DETAIL_CACHE_VERSION
+    if media_type == MediaTypes.EPISODE.value:
+        cache_version = f"{cache_version}:episode-{EPISODE_DETAIL_CACHE_VERSION}"
     cache_key = (
-        f"api:{DETAIL_CACHE_VERSION}:detail:{source}:{media_type}:{media_id}:"
+        f"api:{cache_version}:detail:{source}:{media_type}:{media_id}:"
         f"s{season_number}:e{episode_number}:u{getattr(settings, 'TMDB_LANG', 'en')}"
     )
     metadata = cache.get(cache_key)
@@ -255,6 +265,8 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         "logo_aspect_ratio": logo.get("aspect_ratio") if logo else None,
         "custom_logo_url": custom_logo_url,
         "details": details_for_api(metadata),
+        "parent": metadata.get("parent"),
+        "external_links": metadata.get("external_links", {}),
         "cast": cast_from_metadata(metadata, request=request),
         "crew": crew_from_metadata(metadata, request=request),
         "seasons": seasons_from_metadata(metadata, request=request) if media_type == MediaTypes.TV.value else [],
@@ -277,6 +289,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             media_type=media_type,
             media_id=media_id,
             season_number=season_number,
+            episode_number=episode_number,
         ),
         "external_ratings": external_ratings(
             metadata=metadata,
@@ -284,6 +297,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             media_type=media_type,
             media_id=media_id,
             season_number=season_number,
+            episode_number=episode_number,
         ),
     }
 
@@ -1377,13 +1391,27 @@ def _normalize_rating_url(source, value):
     return parsed.geturl()
 
 
-def _provider_rating_fallback(*, source, media_type, media_id, season_number=None):
+def _provider_rating_fallback(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
     encoded_id = quote(str(media_id), safe="")
     if source == Sources.TMDB.value and media_type == MediaTypes.SEASON.value:
         return (
             f"https://www.themoviedb.org/tv/{encoded_id}/season/{season_number}"
             if season_number is not None
             else None
+        )
+    if source == Sources.TMDB.value and media_type == MediaTypes.EPISODE.value:
+        if season_number is None or episode_number is None:
+            return None
+        return (
+            f"https://www.themoviedb.org/tv/{encoded_id}/season/"
+            f"{season_number}/episode/{episode_number}"
         )
 
     return {
@@ -1396,7 +1424,15 @@ def _provider_rating_fallback(*, source, media_type, media_id, season_number=Non
     }.get((source, media_type))
 
 
-def _provider_rating_url(*, metadata, source, media_type, media_id, season_number=None):
+def _provider_rating_url(
+    *,
+    metadata,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
     """Return the provider page for its own rating, without guessing slug-based URLs."""
     if url := _normalize_rating_url(source, metadata.get("source_url")):
         return url
@@ -1406,6 +1442,7 @@ def _provider_rating_url(*, metadata, source, media_type, media_id, season_numbe
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
     )
 
     return _normalize_rating_url(source, fallback)
@@ -1428,7 +1465,36 @@ def _third_party_rating_url(*, metadata, rating_source, rating, media_type, medi
     return _normalize_rating_url(rating_source, fallback)
 
 
-def external_ratings(*, metadata, source, media_type, media_id, season_number=None):
+def _normalized_external_rating(*, metadata, rating_source, rating, media_type, media_id):
+    """Normalize a provider-supplied rating or link-only rating hint."""
+    value = rating.get("value") or rating.get("score")
+    url = _third_party_rating_url(
+        metadata=metadata,
+        rating_source=rating_source,
+        rating=rating,
+        media_type=media_type,
+        media_id=media_id,
+    )
+    if value is None and url is None:
+        return None
+    return {
+        "source": source_label(rating_source),
+        "value": str(value) if value is not None else "",
+        "vote_count": rating.get("vote_count", rating.get("votes")),
+        "max_value": str(rating.get("max_value") or max_rating_value(rating_source)),
+        "url": url,
+    }
+
+
+def external_ratings(
+    *,
+    metadata,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
     """Normalize provider and third-party ratings for media detail."""
     ratings = []
     score = metadata.get("score")
@@ -1445,9 +1511,21 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
                     media_type=media_type,
                     media_id=media_id,
                     season_number=season_number,
+                    episode_number=episode_number,
                 ),
             },
         )
+
+    for rating_source, rating in (metadata.get("external_ratings") or {}).items():
+        normalized = _normalized_external_rating(
+            metadata=metadata,
+            rating_source=rating_source,
+            rating=rating,
+            media_type=media_type,
+            media_id=media_id,
+        )
+        if normalized is not None:
+            ratings.append(normalized)
 
     if source == "tmdb" and media_type in {MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.SEASON.value}:
         from app.providers import mdblist
@@ -1462,24 +1540,15 @@ def external_ratings(*, metadata, source, media_type, media_id, season_number=No
             ratings=mdblist_ratings,
         )
         for rating_source, rating in mdblist_ratings.items():
-            value = rating.get("value") or rating.get("score")
-            if value is None:
-                continue
-            ratings.append(
-                {
-                    "source": source_label(rating_source),
-                    "value": str(value),
-                    "vote_count": rating.get("votes"),
-                    "max_value": max_rating_value(rating_source),
-                    "url": _third_party_rating_url(
-                        metadata=metadata,
-                        rating_source=rating_source,
-                        rating=rating,
-                        media_type=media_type,
-                        media_id=media_id,
-                    ),
-                },
+            normalized = _normalized_external_rating(
+                metadata=metadata,
+                rating_source=rating_source,
+                rating=rating,
+                media_type=media_type,
+                media_id=media_id,
             )
+            if normalized is not None:
+                ratings.append(normalized)
 
     if source == Sources.IGDB.value and media_type == MediaTypes.GAME.value:
         from app.providers import steam
@@ -1563,7 +1632,14 @@ def season_episodes(*, source, media_id, season_number, request=None, user=None)
     return {"episodes": detail.get("episodes", [])}
 
 
-def community_stats(*, source, media_type, media_id, season_number=None):
+def community_stats(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
     """Return current community aggregates for a media identity."""
     from app.models import DiaryEntry, Item, MediaLike
 
@@ -1572,6 +1648,7 @@ def community_stats(*, source, media_type, media_id, season_number=None):
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
     ).first()
     if item is None:
         return {

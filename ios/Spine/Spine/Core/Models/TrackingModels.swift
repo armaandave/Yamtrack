@@ -293,6 +293,10 @@ struct TrackingConsumeRequest: Encodable {
     let consumedAt: Date?
 }
 
+struct EpisodeWatchRequest: Encodable {
+    let watchedAt: Date?
+}
+
 struct BookProgressRequest: Encodable {
     let progressType: String
     let value: Decimal

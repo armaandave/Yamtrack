@@ -15,15 +15,20 @@ final class AppSession {
     let repositories: AppRepositories
     let letterboxdImportCoordinator: LetterboxdImportCoordinator
     let storygraphImportCoordinator: StoryGraphImportCoordinator
+    let goodreadsImportCoordinator: GoodreadsImportCoordinator
 
     init(repositories: AppRepositories) {
         self.repositories = repositories
         self.letterboxdImportCoordinator = LetterboxdImportCoordinator(importRepository: repositories.imports)
         self.storygraphImportCoordinator = StoryGraphImportCoordinator(importRepository: repositories.imports)
+        self.goodreadsImportCoordinator = GoodreadsImportCoordinator(importRepository: repositories.imports)
         self.letterboxdImportCoordinator.onUnauthorized = { [weak self] in
             Task { await self?.logout() }
         }
         self.storygraphImportCoordinator.onUnauthorized = { [weak self] in
+            Task { await self?.logout() }
+        }
+        self.goodreadsImportCoordinator.onUnauthorized = { [weak self] in
             Task { await self?.logout() }
         }
     }
@@ -40,6 +45,7 @@ final class AppSession {
             state = .signedIn(profile.map(AuthUser.init(profile:)))
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
+            goodreadsImportCoordinator.resumeIfNeeded()
         } catch {
             await repositories.auth.logout()
             errorMessage = error.localizedDescription
@@ -54,6 +60,7 @@ final class AppSession {
             state = .signedIn(user)
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
+            goodreadsImportCoordinator.resumeIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -66,6 +73,7 @@ final class AppSession {
             state = .signedIn(user)
             letterboxdImportCoordinator.resumeIfNeeded()
             storygraphImportCoordinator.resumeIfNeeded()
+            goodreadsImportCoordinator.resumeIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -75,6 +83,7 @@ final class AppSession {
         await repositories.auth.logout()
         letterboxdImportCoordinator.clearFinishedJob()
         storygraphImportCoordinator.clearFinishedJob()
+        goodreadsImportCoordinator.clearFinishedJob()
         state = .signedOut
     }
 }

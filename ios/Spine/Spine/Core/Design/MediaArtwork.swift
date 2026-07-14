@@ -11,7 +11,7 @@ struct MediaArtwork: View {
     var body: some View {
         Group {
             if let imageURL {
-                AsyncImage(url: imageURL) { phase in
+                SpineAsyncImage(url: imageURL) { phase in
                     artwork(for: phase)
                 }
             } else {
@@ -34,7 +34,7 @@ struct MediaArtwork: View {
                 .frame(width: slot.size.width, height: slot.size.height)
                 .clipped()
         case .empty:
-            ProgressView()
+            placeholder
         default:
             placeholder
         }

@@ -19,7 +19,7 @@ struct TaggedDiaryMedia: Identifiable {
 final class TaggedDiaryViewModel {
     var entries: [DiaryEntry] = []
     var filter = MediaFilterState()
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
     var selectedTab: TaggedDiaryTab = .diary
 
@@ -109,6 +109,7 @@ struct TaggedDiaryView: View {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         content
+                            .spineContentTransition(value: contentPhase)
                     } header: {
                         viewToggle
                     }
@@ -169,11 +170,11 @@ struct TaggedDiaryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading {
+        if viewModel.isLoading, viewModel.entries.isEmpty {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 320)
-        } else if let error = viewModel.errorMessage {
+        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
             DiaryStateCard(
                 title: "Could not load tag",
                 systemImage: "exclamationmark.triangle",
@@ -204,6 +205,14 @@ struct TaggedDiaryView: View {
                 mediaGrid
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var mediaGrid: some View {

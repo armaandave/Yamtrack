@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from importlib import import_module
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase, override_settings
@@ -19,6 +20,7 @@ from app.models import (
     CustomLogoPreference,
     CustomPosterPreference,
     DiaryEntry,
+    Episode,
     Item,
     ItemFilterFacet,
     MediaLike,
@@ -1259,6 +1261,119 @@ class ApiV1FoundationTests(TestCase):
         anime = Anime.objects.get(user=user, item=item)
         self.assertEqual(anime.status, Status.COMPLETED.value)
         self.assertEqual(anime.end_date, datetime(2025, 4, 5, tzinfo=UTC))
+
+    @patch("app.models.Item.fetch_releases")
+    @patch("api.services.diary.provider_services.get_media_metadata")
+    def test_diary_create_episode_auto_mark_consumed_preserves_repeats(
+        self,
+        metadata_mock,
+        _fetch_releases_mock,
+    ):
+        user = get_user_model().objects.create_user(
+            username="diary-episode",
+            password="strong-password-123",
+        )
+        tv_item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            media_id="episode-log",
+            title="Example Show",
+        )
+        tv = TV(item=tv_item, user=user, status=Status.PLANNING.value)
+        TV.save_base(tv)
+        season_episodes = [
+            {
+                "episode_number": 1,
+                "name": "The Arrival",
+                "still_path": "/arrival.jpg",
+                "air_date": "2025-01-01",
+            },
+            {
+                "episode_number": 2,
+                "name": "The Return",
+                "still_path": "/return.jpg",
+                "air_date": "2025-01-08",
+            },
+        ]
+
+        def metadata(media_type, *_args, **_kwargs):
+            if media_type == MediaTypes.EPISODE.value:
+                return {
+                    "title": "The Arrival",
+                    "image": "https://image.tmdb.org/t/p/w500/arrival.jpg",
+                }
+            if media_type == MediaTypes.SEASON.value:
+                return {
+                    "title": "Example Show",
+                    "image": "https://example.com/season.jpg",
+                    "season_number": 1,
+                    "episodes": season_episodes,
+                }
+            if media_type == "tv_with_seasons":
+                return {"season/1": {"episodes": season_episodes}}
+            message = f"Unexpected metadata request: {media_type}"
+            raise AssertionError(message)
+
+        metadata_mock.side_effect = metadata
+        self.client.force_authenticate(user)
+        ref = {
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.EPISODE.value,
+            "media_id": "episode-log",
+            "season_number": 1,
+            "episode_number": 1,
+        }
+
+        first = self.client.post(
+            "/api/v1/diary/",
+            {
+                "ref": ref,
+                "consumed_at": "2025-04-05T12:34:56Z",
+                "auto_mark_consumed": True,
+            },
+            format="json",
+        )
+        repeat = self.client.post(
+            "/api/v1/diary/",
+            {
+                "ref": ref,
+                "consumed_at": "2025-04-06T01:02:03Z",
+                "auto_mark_consumed": True,
+                "is_rewatch": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(repeat.status_code, status.HTTP_201_CREATED)
+        episode_item = Item.objects.get(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="episode-log",
+            season_number=1,
+            episode_number=1,
+        )
+        self.assertEqual(episode_item.title, "The Arrival")
+        season = Season.objects.get(
+            user=user,
+            item__media_id="episode-log",
+            item__season_number=1,
+        )
+        watched = Episode.objects.filter(
+            related_season=season,
+            item=episode_item,
+        ).order_by("end_date")
+        self.assertEqual(watched.count(), 2)
+        self.assertEqual(
+            list(watched.values_list("end_date", flat=True)),
+            [
+                datetime(2025, 4, 5, 12, 34, 56, tzinfo=UTC),
+                datetime(2025, 4, 6, 1, 2, 3, tzinfo=UTC),
+            ],
+        )
+        season.refresh_from_db()
+        self.assertEqual(season.status, Status.IN_PROGRESS.value)
+        self.assertEqual(season.progress, 1)
 
     def test_diary_update_emits_audit_not_recent_activity(self):
         user = get_user_model().objects.create_user(username="diary-social-log", password="strong-password-123")
@@ -2797,8 +2912,14 @@ class ApiV1FoundationTests(TestCase):
         logo_mock.assert_not_called()
 
     @patch("app.providers.mdblist.get_media_ratings", return_value={})
+    @patch("app.providers.tmdb.get_season_backdrop_images", return_value=[])
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_season_detail_exposes_episodes_with_runtime_string(self, metadata_mock, _ratings_mock):
+    def test_season_detail_exposes_episodes_with_runtime_string(
+        self,
+        metadata_mock,
+        _backdrops_mock,
+        _ratings_mock,
+    ):
         metadata_mock.return_value = {
             "media_id": "1399",
             "media_type": "season",
@@ -2816,6 +2937,15 @@ class ApiV1FoundationTests(TestCase):
                     "still_path": "/ep1.jpg",
                     "vote_average": 8.2,
                 },
+                {
+                    "episode_number": 2,
+                    "name": "The Kingsroad",
+                    "overview": "The journey begins.",
+                    "air_date": "2011-04-24",
+                    "runtime": 55,
+                    "still_path": None,
+                    "vote_average": 7.9,
+                },
             ],
         }
 
@@ -2825,7 +2955,233 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(detail.status_code, status.HTTP_200_OK)
         self.assertEqual(detail.data["episodes"][0]["runtime"], "1h 2m")
         self.assertEqual(detail.data["episodes"][0]["image_role"], "still")
+        self.assertEqual(detail.data["episodes"][0]["rating"], "8.2")
+        self.assertIsNone(detail.data["episodes"][1]["image_url"])
         self.assertEqual(episodes.data["episodes"], detail.data["episodes"])
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_episode_detail_without_still_has_no_backdrop(self, metadata_mock):
+        metadata_mock.return_value = {
+            "media_id": "1399",
+            "media_type": MediaTypes.EPISODE.value,
+            "source": Sources.TMDB.value,
+            "title": "The Kingsroad",
+            "image": settings.IMG_NONE,
+            "backdrop_path": None,
+            "season_number": 1,
+            "episode_number": 2,
+        }
+
+        response = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/?season_number=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["image_url"])
+        self.assertIsNone(response.data["backdrop_url"])
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_episode_detail_is_first_class_backdrop_only_media(self, metadata_mock):
+        user = get_user_model().objects.create_user(
+            username="episode-viewer",
+            password="strong-password-123",
+        )
+        first_episode = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            season_number=1,
+            episode_number=1,
+            title="Winter Is Coming",
+            image="https://example.com/e1.jpg",
+        )
+        selected_episode = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            season_number=1,
+            episode_number=2,
+            title="The Kingsroad",
+            image="https://example.com/e2.jpg",
+        )
+        DiaryEntry.objects.create(
+            user=user,
+            item=first_episode,
+            consumed_at=timezone.now(),
+            rating="2.0",
+            visibility="public",
+        )
+        DiaryEntry.objects.create(
+            user=user,
+            item=selected_episode,
+            consumed_at=timezone.now(),
+            rating="9.0",
+            visibility="public",
+        )
+        imdb_url = "https://www.imdb.com/title/tt1480055/"
+        metadata_mock.return_value = {
+            "media_id": "1399",
+            "media_type": "episode",
+            "source": "tmdb",
+            "source_url": "https://www.themoviedb.org/tv/1399/season/1/episode/2",
+            "title": "The Kingsroad",
+            "subtitle": "Game of Thrones • S1 E2",
+            "series_title": "Game of Thrones",
+            "season_title": "Season 1",
+            "season_number": 1,
+            "episode_number": 2,
+            "image": "https://image.tmdb.org/t/p/w500/e2.jpg",
+            "backdrop_path": "/e2.jpg",
+            "synopsis": "The royal party travels south.",
+            "release_date": "2011-04-24",
+            "score": 8.6,
+            "score_count": 321,
+            "details": {
+                "format": "Episode",
+                "series_title": "Game of Thrones",
+                "season_title": "Season 1",
+                "season_number": 1,
+                "episode_number": 2,
+                "air_date": "2011-04-24",
+                "runtime": "55m",
+                "production_code": "102",
+            },
+            "cast": [
+                {
+                    "person_id": 1,
+                    "name": "Guest Actor",
+                    "character": "Guest",
+                    "image": "https://image.tmdb.org/t/p/w500/guest.jpg",
+                },
+            ],
+            "crew": [
+                {
+                    "person_id": 2,
+                    "name": "Episode Director",
+                    "roles": ["Director"],
+                    "image": "https://image.tmdb.org/t/p/w500/director.jpg",
+                },
+            ],
+            "external_links": {"IMDb": imdb_url},
+            "external_ratings": {
+                "imdb": {"value": None, "votes": None, "url": imdb_url},
+            },
+            "parent": {
+                "show": {
+                    "title": "Game of Thrones",
+                    "ref": {
+                        "item_id": None,
+                        "source": "tmdb",
+                        "media_type": "tv",
+                        "media_id": "1399",
+                        "season_number": None,
+                        "episode_number": None,
+                    },
+                },
+                "season": {
+                    "title": "Season 1",
+                    "ref": {
+                        "item_id": None,
+                        "source": "tmdb",
+                        "media_type": "season",
+                        "media_id": "1399",
+                        "season_number": 1,
+                        "episode_number": None,
+                    },
+                },
+            },
+        }
+
+        response = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/?season_number=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["title"], "The Kingsroad")
+        self.assertEqual(response.data["subtitle"], "Game of Thrones • S1 E2")
+        self.assertEqual(
+            response.data["ref"],
+            {
+                "item_id": selected_episode.id,
+                "source": "tmdb",
+                "media_type": "episode",
+                "media_id": "1399",
+                "season_number": 1,
+                "episode_number": 2,
+            },
+        )
+        self.assertIsNone(response.data["image_url"])
+        self.assertIsNone(response.data["poster_url"])
+        self.assertIsNone(response.data["poster_orientation"])
+        self.assertEqual(
+            response.data["backdrop_url"],
+            "https://image.tmdb.org/t/p/original/e2.jpg",
+        )
+        self.assertEqual(response.data["overview"], "The royal party travels south.")
+        self.assertEqual(response.data["release_date"], "2011-04-24")
+        self.assertEqual(response.data["details"]["runtime"], "55m")
+        self.assertEqual(response.data["details"]["production_code"], "102")
+        self.assertEqual(response.data["cast"][0]["name"], "Guest Actor")
+        self.assertEqual(response.data["crew"][0]["role"], "Director")
+        self.assertEqual(response.data["parent"]["show"]["title"], "Game of Thrones")
+        self.assertEqual(response.data["parent"]["season"]["ref"]["season_number"], 1)
+        self.assertEqual(response.data["external_links"]["IMDb"], imdb_url)
+        self.assertEqual(
+            [(rating["source"], rating["value"]) for rating in response.data["external_ratings"]],
+            [("TMDB", "8.6"), ("IMDb", "")],
+        )
+        self.assertEqual(response.data["external_ratings"][0]["url"], metadata_mock.return_value["source_url"])
+        self.assertEqual(response.data["external_ratings"][1]["url"], imdb_url)
+        self.assertEqual(response.data["community"]["average_rating"], "9.00")
+        metadata_mock.assert_called_once_with(
+            MediaTypes.EPISODE.value,
+            "1399",
+            Sources.TMDB.value,
+            [1],
+            2,
+        )
+
+    def test_episode_external_rating_contract_accepts_real_imdb_value(self):
+        imdb_url = "https://www.imdb.com/title/tt1480055/"
+
+        ratings = external_ratings(
+            metadata={
+                "external_links": {"IMDb": imdb_url},
+                "external_ratings": {
+                    "imdb": {"value": "8.5", "votes": 12000, "url": imdb_url},
+                },
+            },
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            season_number=1,
+            episode_number=2,
+        )
+
+        self.assertEqual(
+            ratings,
+            [
+                {
+                    "source": "IMDb",
+                    "value": "8.5",
+                    "vote_count": 12000,
+                    "max_value": "10",
+                    "url": imdb_url,
+                },
+            ],
+        )
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_episode_detail_requires_numeric_coordinates(self, metadata_mock):
+        missing = self.client.get("/api/v1/media/tmdb/episode/1399/")
+        invalid = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/?season_number=one&episode_number=2",
+        )
+
+        self.assertEqual(missing.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("required for episodes", missing.data["detail"])
+        self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
+        metadata_mock.assert_not_called()
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_mal_anime_detail_exposes_genres_related_and_rating(self, metadata_mock):

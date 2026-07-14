@@ -9,7 +9,7 @@ extension Notification.Name {
 final class DiaryLogDetailViewModel {
     var entry: DiaryEntry?
     var mediaDetail: MediaDetail?
-    var isLoading = false
+    var isLoading = true
     var isDeleting = false
     var errorMessage: String?
     var isReviewRevealed = false
@@ -159,6 +159,7 @@ struct DiaryLogDetailView: View {
                             .padding()
                     }
                 }
+                .spineContentTransition(value: contentPhase)
                 .padding(.bottom, 38)
             }
             .scrollContentBackground(.hidden)
@@ -247,6 +248,14 @@ struct DiaryLogDetailView: View {
     private var canManageEntry: Bool {
         guard let entry = viewModel.entry, let currentUserId else { return false }
         return entry.user.id == currentUserId
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.entry != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var edgeSwipeBackGesture: some Gesture {
@@ -519,7 +528,7 @@ private struct DiaryLogHeroArtwork: View {
             ZStack {
                 Color(red: 0.07, green: 0.07, blue: 0.065)
 
-                AsyncImage(url: artworkURL) { phase in
+                SpineAsyncImage(url: artworkURL) { phase in
                     switch phase {
                     case let .success(image):
                         image

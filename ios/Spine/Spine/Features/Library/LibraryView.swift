@@ -17,6 +17,11 @@ enum LibraryShelf: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class LibraryViewModel {
+    private struct RequestScope: Equatable {
+        let mediaType: String
+        let filter: MediaFilterState
+    }
+
     var mediaType = "movie"
     var mediaTypes = LibraryViewModel.libraryMediaTypes(from: APIConstants.fallbackMediaTypes)
     var query = ""
@@ -26,6 +31,7 @@ final class LibraryViewModel {
     var shelf: LibraryShelf = .tracked
     var items: [LibraryItem] = []
     var totalCount = 0
+    var isBootstrapping = true
     var isLoadingInitial = false
     var isLoadingNextPage = false
     var errorMessage: String?
@@ -38,6 +44,7 @@ final class LibraryViewModel {
     private var nextPage: String?
     private var requestGeneration = 0
     private var didBootstrap = false
+    private var presentedScope: RequestScope?
 
     init(
         mediaRepository: MediaRepository,
@@ -53,6 +60,10 @@ final class LibraryViewModel {
 
     var hasMorePages: Bool {
         nextPage != nil
+    }
+
+    var paginationTaskID: String? {
+        nextPage
     }
 
     var displayedItems: [LibraryItem] {
@@ -82,8 +93,17 @@ final class LibraryViewModel {
     func bootstrap(selectedMediaType: String? = nil) async {
         guard !didBootstrap else { return }
         didBootstrap = true
+        defer {
+            if Task.isCancelled {
+                didBootstrap = false
+            } else {
+                isBootstrapping = false
+            }
+        }
         await loadMeta(selectedMediaType: selectedMediaType)
+        guard !Task.isCancelled else { return }
         await loadFilterOptions()
+        guard !Task.isCancelled else { return }
         await reload()
     }
 
@@ -91,6 +111,8 @@ final class LibraryViewModel {
         do {
             let meta = try await mediaRepository.meta()
             mediaTypes = Self.libraryMediaTypes(from: meta.mediaTypes)
+        } catch is CancellationError {
+            return
         } catch {
             mediaTypes = Self.libraryMediaTypes(from: APIConstants.fallbackMediaTypes)
         }
@@ -134,29 +156,34 @@ final class LibraryViewModel {
     func reload() async {
         requestGeneration += 1
         let generation = requestGeneration
-        let selectedType = mediaType
-        let selectedStatus = statusFilter
-        let selectedQuery = query
-        var requestFilter = filter
-        requestFilter.q = selectedQuery
-        requestFilter.status = selectedStatus
+        let scope = currentRequestScope
+        let preservesLastGoodContent = presentedScope == scope && !items.isEmpty
 
-        items = []
-        totalCount = 0
-        nextPage = nil
+        if !preservesLastGoodContent {
+            items = []
+            totalCount = 0
+            nextPage = nil
+        }
+        presentedScope = scope
         errorMessage = nil
         nextPageErrorMessage = nil
         isLoadingInitial = true
+        isLoadingNextPage = false
+        defer {
+            if generation == requestGeneration, scope == currentRequestScope {
+                isLoadingInitial = false
+            }
+        }
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: nil, filter: requestFilter)
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            let response = try await trackingRepository.list(mediaType: scope.mediaType, page: nil, filter: scope.filter)
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             apply(response, replacingItems: true)
-            isLoadingInitial = false
+        } catch is CancellationError {
+            return
         } catch {
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             errorMessage = error.localizedDescription
-            isLoadingInitial = false
             handleUnauthorized(error)
         }
     }
@@ -175,24 +202,24 @@ final class LibraryViewModel {
         guard !isLoadingInitial, !isLoadingNextPage, let page = nextPage else { return }
 
         let generation = requestGeneration
-        let selectedType = mediaType
-        let selectedStatus = statusFilter
-        let selectedQuery = query
-        var requestFilter = filter
-        requestFilter.q = selectedQuery
-        requestFilter.status = selectedStatus
+        let scope = currentRequestScope
         isLoadingNextPage = true
         nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, scope == currentRequestScope {
+                isLoadingNextPage = false
+            }
+        }
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: page, filter: requestFilter)
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            let response = try await trackingRepository.list(mediaType: scope.mediaType, page: page, filter: scope.filter)
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             apply(response, replacingItems: false)
-            isLoadingNextPage = false
+        } catch is CancellationError {
+            return
         } catch {
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             nextPageErrorMessage = error.localizedDescription
-            isLoadingNextPage = false
             handleUnauthorized(error)
         }
     }
@@ -211,17 +238,42 @@ final class LibraryViewModel {
     }
 
     func loadFilterOptions() async {
+        prepareForScopeChangeIfNeeded()
         do {
-            var requestFilter = filter
-            requestFilter.q = query
-            requestFilter.status = statusFilter
-            filterOptions = try await filterOptionsRepository.options(
-                scope: .tracking(mediaType: mediaType),
-                filter: requestFilter
+            let scope = currentRequestScope
+            let options = try await filterOptionsRepository.options(
+                scope: .tracking(mediaType: scope.mediaType),
+                filter: scope.filter
             )
+            guard scope == currentRequestScope else { return }
+            filterOptions = options
+        } catch is CancellationError {
+            return
         } catch {
             filterOptions = .empty
         }
+    }
+
+    private var currentRequestScope: RequestScope {
+        var requestFilter = filter
+        requestFilter.q = query
+        requestFilter.status = statusFilter
+        return RequestScope(mediaType: mediaType, filter: requestFilter)
+    }
+
+    private func prepareForScopeChangeIfNeeded() {
+        let scope = currentRequestScope
+        guard presentedScope != scope else { return }
+
+        requestGeneration += 1
+        presentedScope = scope
+        items = []
+        totalCount = 0
+        nextPage = nil
+        errorMessage = nil
+        nextPageErrorMessage = nil
+        isLoadingInitial = true
+        isLoadingNextPage = false
     }
 
     private func handleUnauthorized(_ error: Error) {
@@ -290,6 +342,7 @@ struct LibraryView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         header
                         content
+                            .spineContentTransition(value: contentPhase)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 18)
@@ -431,7 +484,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var content: some View {
         let displayedItems = viewModel.displayedItems
-        if viewModel.isLoadingInitial, viewModel.items.isEmpty {
+        if viewModel.isBootstrapping || (viewModel.isLoadingInitial && viewModel.items.isEmpty) {
             LibrarySkeleton(mode: viewModel.viewMode)
         } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
             LibraryStateCard(
@@ -442,11 +495,20 @@ struct LibraryView: View {
             ) {
                 Task { await viewModel.reload() }
             }
+        } else if let error = viewModel.nextPageErrorMessage, displayedItems.isEmpty {
+            LibraryStateCard(
+                title: "Could not load more library items",
+                systemImage: "exclamationmark.triangle",
+                message: error,
+                actionTitle: "Retry"
+            ) {
+                Task { await viewModel.loadNextPage() }
+            }
         } else if displayedItems.isEmpty, viewModel.hasMorePages || viewModel.isLoadingNextPage {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 260)
-                .task {
+                .task(id: viewModel.paginationTaskID) {
                     await viewModel.loadNextPage()
                 }
         } else if displayedItems.isEmpty {
@@ -465,6 +527,18 @@ struct LibraryView: View {
 
             paginationFooter
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        let hasContent = !viewModel.displayedItems.isEmpty
+        let hasPaginationError = viewModel.nextPageErrorMessage != nil
+        return .resolve(
+            isLoading: viewModel.isBootstrapping
+                || viewModel.isLoadingInitial
+                || (!hasContent && !hasPaginationError && (viewModel.hasMorePages || viewModel.isLoadingNextPage)),
+            hasContent: hasContent,
+            hasError: viewModel.errorMessage != nil || hasPaginationError
+        )
     }
 
     private var emptyTitle: String {

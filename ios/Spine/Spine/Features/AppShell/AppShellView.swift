@@ -99,6 +99,7 @@ struct AppShellView: View {
                     listRepository: session.repositories.lists,
                     importCoordinator: session.letterboxdImportCoordinator,
                     storygraphImportCoordinator: session.storygraphImportCoordinator,
+                    goodreadsImportCoordinator: session.goodreadsImportCoordinator,
                     currentUserId: currentUserId,
                     onLogout: {
                         Task { await session.logout() }
@@ -131,6 +132,7 @@ struct AppShellView: View {
             guard scenePhase == .active else { return }
             session.letterboxdImportCoordinator.resumeIfNeeded()
             session.storygraphImportCoordinator.resumeIfNeeded()
+            session.goodreadsImportCoordinator.resumeIfNeeded()
         }
     }
 
@@ -253,17 +255,22 @@ private struct LazyTab<Content: View>: View {
 
     var body: some View {
         Group {
-            if isSelected || hasLoaded {
+            if isLoaded {
                 content()
             } else {
                 Color.clear
             }
         }
+        .spineContentTransition(value: isLoaded)
         .onChange(of: isSelected, initial: true) {
             if isSelected {
                 hasLoaded = true
             }
         }
+    }
+
+    private var isLoaded: Bool {
+        isSelected || hasLoaded
     }
 }
 

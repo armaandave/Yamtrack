@@ -1013,7 +1013,11 @@ def process_episodes(season_metadata, episodes_in_db):
                 "season_number": season_metadata["season_number"],
                 "episode_number": episode_number,
                 "air_date": episode["air_date"],  # when unknown, response returns null
-                "image": get_image_url(episode["still_path"]),
+                "image": (
+                    get_image_url(episode["still_path"])
+                    if episode.get("still_path")
+                    else None
+                ),
                 "title": episode["name"],
                 "overview": episode["overview"],
                 "history": tracked_episodes.get(episode_number, []),
@@ -1048,33 +1052,135 @@ def find_next_episode(episode_number, episodes_metadata):
 
 def episode(media_id, season_number, episode_number):
     """Return the metadata for the selected episode from The Movie Database."""
+    season_number = int(season_number)
+    episode_number = int(episode_number)
+    cache_key = (
+        f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.EPISODE.value}_"
+        f"{media_id}_{season_number}_{episode_number}"
+    )
+    data = cache.get(cache_key)
+    if data is not None:
+        return data
+
+    url = (
+        f"{base_url}/tv/{media_id}/season/{season_number}/"
+        f"episode/{episode_number}"
+    )
+    params = {
+        **base_params,
+        "append_to_response": "external_ids",
+    }
+    try:
+        response = services.api_request(
+            Sources.TMDB.value,
+            "GET",
+            url,
+            params=params,
+        )
+    except requests.exceptions.HTTPError as error:
+        if error.response is None or error.response.status_code != 404:
+            handle_error(error)
+        msg = (
+            f"Episode {episode_number} not found in season {season_number} "
+            f"for {Sources.TMDB.label} with ID {media_id}"
+        )
+        raise services.ProviderAPIError(
+            Sources.TMDB.value,
+            error=error,
+            details=msg,
+        ) from None
+
     tv_metadata = tv_with_seasons(media_id, [season_number])
     season_metadata = tv_metadata[f"season/{season_number}"]
+    series_title = season_metadata.get("title") or tv_metadata.get("title") or ""
+    season_title = season_metadata.get("season_title") or f"Season {season_number}"
+    # An episode's TVDB ID is not a series ID, so the shared TMDB link helper's
+    # series dereferrer would be misleading here. IMDb and Wikidata identifiers
+    # have media-agnostic destination formats and are safe to expose.
+    external_links = {
+        name: url
+        for name, url in get_external_links(response.get("external_ids", {})).items()
+        if name in {"IMDb", "Wikidata"}
+    }
+    imdb_url = external_links.get("IMDb")
+    still_path = response.get("still_path")
 
-    for episode in season_metadata["episodes"]:
-        if episode["episode_number"] == int(episode_number):
-            return {
-                "title": season_metadata["title"],
-                "season_title": season_metadata["season_title"],
-                "episode_title": episode["name"],
-                "image": get_image_url(episode["still_path"]),
-            }
-
-    # Episode not found - throw ProviderAPIError
-    msg = (
-        f"Episode {episode_number} not found in season {season_number} "
-        f"for {Sources.TMDB.label} with ID {media_id}"
-    )
-    # Create a new response object with 404 status
-    not_found_response = requests.Response()
-    not_found_response.status_code = 404
-    # Set the error attribute to match what ProviderAPIError expects
-    not_found_error = type("Error", (), {"response": not_found_response})
-    raise services.ProviderAPIError(
-        Sources.TMDB.value,
-        error=not_found_error,
-        details=msg,
-    )
+    data = {
+        "media_id": str(media_id),
+        "source": Sources.TMDB.value,
+        "source_url": (
+            f"https://www.themoviedb.org/tv/{media_id}/season/"
+            f"{season_number}/episode/{episode_number}"
+        ),
+        "media_type": MediaTypes.EPISODE.value,
+        "title": response.get("name") or f"Episode {episode_number}",
+        "subtitle": f"{series_title} • S{season_number} E{episode_number}",
+        "series_title": series_title,
+        "season_title": season_title,
+        "episode_title": response.get("name") or f"Episode {episode_number}",
+        "season_number": season_number,
+        "episode_number": episode_number,
+        "max_progress": 1,
+        # Keep the still available to Item persistence while the API serializer
+        # presents episode artwork as a backdrop rather than a poster.
+        "image": get_image_url(still_path),
+        "backdrop_path": still_path,
+        "synopsis": get_synopsis(response.get("overview", "")),
+        "release_date": get_start_date(response.get("air_date", "")),
+        "score": get_score(response.get("vote_average", 0)),
+        "score_count": response.get("vote_count"),
+        "details": {
+            "format": "Episode",
+            "series_title": series_title,
+            "season_title": season_title,
+            "season_number": season_number,
+            "episode_number": episode_number,
+            "air_date": get_start_date(response.get("air_date", "")),
+            "runtime": get_readable_duration(response.get("runtime")),
+            "production_code": response.get("production_code") or None,
+        },
+        "cast": get_cast({"cast": response.get("guest_stars", [])}),
+        "crew": get_crew({"crew": response.get("crew", [])}),
+        "external_links": external_links,
+        # MDBList does not resolve episode ratings. This provider-owned shape
+        # keeps the IMDb destination truthful now and can accept a real value
+        # later without changing the public media-detail contract.
+        "external_ratings": {
+            "imdb": {
+                "value": None,
+                "votes": None,
+                "url": imdb_url,
+            },
+        }
+        if imdb_url
+        else {},
+        "parent": {
+            "show": {
+                "title": series_title,
+                "ref": {
+                    "item_id": None,
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.TV.value,
+                    "media_id": str(media_id),
+                    "season_number": None,
+                    "episode_number": None,
+                },
+            },
+            "season": {
+                "title": season_title,
+                "ref": {
+                    "item_id": None,
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.SEASON.value,
+                    "media_id": str(media_id),
+                    "season_number": season_number,
+                    "episode_number": None,
+                },
+            },
+        },
+    }
+    cache.set(cache_key, data)
+    return data
 
 
 def get_creator(creators):

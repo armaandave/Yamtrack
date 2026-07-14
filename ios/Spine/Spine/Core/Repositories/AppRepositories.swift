@@ -68,6 +68,13 @@ protocol TrackingRepository {
     func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState
     func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState
     func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState
+    func watchEpisode(
+        source: String,
+        mediaId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        watchedAt: Date?
+    ) async throws -> TrackingState
     func updateBookProgress(source: String, mediaId: String, progressType: String, value: Decimal, notes: String) async throws -> TrackingState
     func completeBook(source: String, mediaId: String, completedAt: Date?) async throws -> TrackingState
 }
@@ -88,6 +95,16 @@ extension TrackingRepository {
 
     func list(mediaType: String, page: String?) async throws -> PagedResponse<LibraryItem> {
         try await list(mediaType: mediaType, page: page, status: nil, query: nil)
+    }
+
+    func watchEpisode(
+        source _: String,
+        mediaId _: String,
+        seasonNumber _: Int,
+        episodeNumber _: Int,
+        watchedAt _: Date?
+    ) async throws -> TrackingState {
+        fatalError("Not implemented")
     }
 }
 
@@ -244,6 +261,12 @@ protocol ImportRepository {
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse
     func queueStoryGraphImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse
+    func queueGoodreadsImport(
         fileData: Data,
         fileName: String,
         mode: ImportMode,
@@ -556,8 +579,16 @@ struct APITrackingRepository: TrackingRepository {
     }
 
     func detail(ref: MediaRef) async throws -> TrackingState {
-        try await client.get(
+        var query: [URLQueryItem] = []
+        if let seasonNumber = ref.seasonNumber {
+            query.append(URLQueryItem(name: "season_number", value: String(seasonNumber)))
+        }
+        if let episodeNumber = ref.episodeNumber {
+            query.append(URLQueryItem(name: "episode_number", value: String(episodeNumber)))
+        }
+        return try await client.get(
             "/tracking/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/",
+            query: query,
             authenticated: true
         )
     }
@@ -574,6 +605,20 @@ struct APITrackingRepository: TrackingRepository {
         try await client.post(
             "/tracking/\(source)/tv/\(mediaId)/seasons/\(seasonNumber)/watch/",
             body: EmptyResponse(),
+            authenticated: true
+        )
+    }
+
+    func watchEpisode(
+        source: String,
+        mediaId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        watchedAt: Date?
+    ) async throws -> TrackingState {
+        try await client.post(
+            "/tracking/\(source)/tv/\(mediaId)/seasons/\(seasonNumber)/episodes/\(episodeNumber)/watch/",
+            body: EpisodeWatchRequest(watchedAt: watchedAt),
             authenticated: true
         )
     }
@@ -923,6 +968,24 @@ struct APIImportRepository: ImportRepository {
     ) async throws -> ImportQueueResponse {
         try await client.uploadMultipart(
             "/imports/storygraph/",
+            formFields: ["mode": mode.rawValue],
+            fileFieldName: "file",
+            fileName: fileName,
+            fileData: fileData,
+            mimeType: "text/csv",
+            authenticated: true,
+            progressHandler: progressHandler
+        )
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)? = nil
+    ) async throws -> ImportQueueResponse {
+        try await client.uploadMultipart(
+            "/imports/goodreads/",
             formFields: ["mode": mode.rawValue],
             fileFieldName: "file",
             fileName: fileName,

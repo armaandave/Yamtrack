@@ -6,7 +6,7 @@ final class HomeViewModel {
     var profile: UserProfile?
     var inProgressItems: [LibraryItem] = []
     var activityItems: [ActivityItem] = []
-    var isLoading = false
+    var isLoading = true
     var isLoadingInProgress = false
     var isLoadingActivity = false
     var profileErrorMessage: String?
@@ -33,18 +33,20 @@ final class HomeViewModel {
     func load() async {
         isLoading = true
         profileErrorMessage = nil
-        inProgressErrorMessage = nil
-        activityErrorMessage = nil
         defer { isLoading = false }
 
         do {
             profile = try await profileRepository.me()
+        } catch is CancellationError {
+            return
         } catch {
             profileErrorMessage = error.localizedDescription
             handleUnauthorized(error)
             return
         }
 
+        isLoadingInProgress = inProgressItems.isEmpty
+        isLoadingActivity = activityItems.isEmpty
         await loadInProgress()
         await loadActivity()
     }
@@ -57,6 +59,8 @@ final class HomeViewModel {
         let mediaTypes = InProgressLibraryLoader.mediaTypes(from: profile)
         guard !mediaTypes.isEmpty else {
             inProgressItems = []
+            inProgressErrorMessage = nil
+            isLoadingInProgress = false
             return
         }
 
@@ -70,8 +74,9 @@ final class HomeViewModel {
                 trackingRepository: trackingRepository,
                 limit: 10
             )
+        } catch is CancellationError {
+            return
         } catch {
-            inProgressItems = []
             inProgressErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -80,6 +85,8 @@ final class HomeViewModel {
     func loadActivity() async {
         guard let username = profile?.username else {
             activityItems = []
+            activityErrorMessage = nil
+            isLoadingActivity = false
             return
         }
         isLoadingActivity = true
@@ -88,8 +95,9 @@ final class HomeViewModel {
 
         do {
             activityItems = try await activityRepository.userActivity(username: username, limit: 6)
+        } catch is CancellationError {
+            return
         } catch {
-            activityItems = []
             activityErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -158,6 +166,7 @@ struct HomeView: View {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         header
                         content
+                            .spineContentTransition(value: contentPhase)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 18)
@@ -268,96 +277,126 @@ struct HomeView: View {
 
     private var inProgressSection: some View {
         HomeSection(title: "In Progress") {
-            if viewModel.isLoadingInProgress {
-                HomeInProgressSkeleton()
-            } else if let error = viewModel.inProgressErrorMessage {
-                HomeInlineState(
-                    title: "Could not load progress",
-                    systemImage: "exclamationmark.triangle",
-                    message: error,
-                    actionTitle: "Retry"
-                ) {
-                    Task { await viewModel.loadInProgress() }
-                }
-            } else if viewModel.inProgressItems.isEmpty {
-                HomeInlineState(
-                    title: "Nothing in progress",
-                    systemImage: "play.circle",
-                    message: "Current watches, reads, and plays will appear here.",
-                    actionTitle: "Find something"
-                ) {
-                    onSelectTab(.search)
-                }
-            } else {
-                HomeInProgressRail(items: viewModel.inProgressItems) { item in
-                    selectedRef = item.media.ref
+            Group {
+                if viewModel.isLoadingInProgress, viewModel.inProgressItems.isEmpty {
+                    HomeInProgressSkeleton()
+                } else if let error = viewModel.inProgressErrorMessage, viewModel.inProgressItems.isEmpty {
+                    HomeInlineState(
+                        title: "Could not load progress",
+                        systemImage: "exclamationmark.triangle",
+                        message: error,
+                        actionTitle: "Retry"
+                    ) {
+                        Task { await viewModel.loadInProgress() }
+                    }
+                } else if viewModel.inProgressItems.isEmpty {
+                    HomeInlineState(
+                        title: "Nothing in progress",
+                        systemImage: "play.circle",
+                        message: "Current watches, reads, and plays will appear here.",
+                        actionTitle: "Find something"
+                    ) {
+                        onSelectTab(.search)
+                    }
+                } else {
+                    HomeInProgressRail(items: viewModel.inProgressItems) { item in
+                        selectedRef = item.media.ref
+                    }
                 }
             }
+            .spineContentTransition(value: inProgressPhase)
         }
     }
 
     private var activitySection: some View {
         HomeSection(title: "Activity") {
-            if viewModel.isLoadingActivity {
-                ActivityFeedSkeleton()
-            } else if let error = viewModel.activityErrorMessage {
-                HomeInlineState(
-                    title: "Could not load activity",
-                    systemImage: "exclamationmark.triangle",
-                    message: error,
-                    actionTitle: "Retry"
-                ) {
-                    Task { await viewModel.loadActivity() }
-                }
-            } else if viewModel.activityItems.isEmpty {
-                HomeInlineState(
-                    title: "No activity yet",
-                    systemImage: "clock.arrow.circlepath",
-                    message: "Diary logs and progress updates will appear here."
-                )
-            } else {
-                LazyVStack(spacing: 0) {
-                    ForEach(viewModel.activityItems) { activity in
-                        Button {
-                            handleActivityTap(activity)
-                        } label: {
-                            ActivityFeedRow(activity: activity)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint(ActivityFeedPresentation.destinationHint(for: activity))
-
-                        if activity.id != viewModel.activityItems.last?.id {
-                            ActivityFeedDivider()
-                        }
+            Group {
+                if viewModel.isLoadingActivity, viewModel.activityItems.isEmpty {
+                    ActivityFeedSkeleton()
+                } else if let error = viewModel.activityErrorMessage, viewModel.activityItems.isEmpty {
+                    HomeInlineState(
+                        title: "Could not load activity",
+                        systemImage: "exclamationmark.triangle",
+                        message: error,
+                        actionTitle: "Retry"
+                    ) {
+                        Task { await viewModel.loadActivity() }
                     }
-
-                    if let username = viewModel.profile?.username {
-                        ActivityFeedDivider()
-
-                        NavigationLink {
-                            ActivityFeedView(
-                                username: username,
-                                activityRepository: activityRepository,
-                                onUnauthorized: onUnauthorized,
-                                onSelectActivity: handleActivityTap
-                            )
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text("View all activity")
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.bold))
+                } else if viewModel.activityItems.isEmpty {
+                    HomeInlineState(
+                        title: "No activity yet",
+                        systemImage: "clock.arrow.circlepath",
+                        message: "Diary logs and progress updates will appear here."
+                    )
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(viewModel.activityItems) { activity in
+                            Button {
+                                handleActivityTap(activity)
+                            } label: {
+                                ActivityFeedRow(activity: activity)
                             }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.74))
-                            .padding(.vertical, 15)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .accessibilityHint(ActivityFeedPresentation.destinationHint(for: activity))
+
+                            if activity.id != viewModel.activityItems.last?.id {
+                                ActivityFeedDivider()
+                            }
                         }
-                        .buttonStyle(.plain)
+
+                        if let username = viewModel.profile?.username {
+                            ActivityFeedDivider()
+
+                            NavigationLink {
+                                ActivityFeedView(
+                                    username: username,
+                                    activityRepository: activityRepository,
+                                    onUnauthorized: onUnauthorized,
+                                    onSelectActivity: handleActivityTap
+                                )
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text("View all activity")
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.bold))
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.74))
+                                .padding(.vertical, 15)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
             }
+            .spineContentTransition(value: activityPhase)
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.profile != nil,
+            hasError: viewModel.profileErrorMessage != nil
+        )
+    }
+
+    private var inProgressPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingInProgress,
+            hasContent: !viewModel.inProgressItems.isEmpty,
+            hasError: viewModel.inProgressErrorMessage != nil
+        )
+    }
+
+    private var activityPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingActivity,
+            hasContent: !viewModel.activityItems.isEmpty,
+            hasError: viewModel.activityErrorMessage != nil
+        )
     }
 
     private func handleActivityTap(_ activity: ActivityItem) {
@@ -380,7 +419,7 @@ private struct HomeArtworkAtmosphere: View {
         GeometryReader { proxy in
             ZStack {
                 if let artworkURL {
-                    AsyncImage(url: artworkURL) { phase in
+                    SpineAsyncImage(url: artworkURL) { phase in
                         if case let .success(image) = phase {
                             image
                                 .resizable()
@@ -435,7 +474,7 @@ private struct HomeAvatar: View {
     var size: CGFloat = 42
 
     var body: some View {
-        AsyncImage(url: URL(string: profile?.avatarUrl ?? "")) { phase in
+        SpineAsyncImage(url: URL(string: profile?.avatarUrl ?? "")) { phase in
             if case let .success(image) = phase {
                 image
                     .resizable()

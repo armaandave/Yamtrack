@@ -1,47 +1,82 @@
 import SwiftUI
 
+enum DiaryMonthDisplayMode {
+    case expanded
+    case collapsed
+}
+
 struct DiaryEntryList<Destination: View>: View {
     let entries: [DiaryEntry]
     let artworkOverride: DiaryEntryArtworkOverride?
+    let monthDisplayMode: DiaryMonthDisplayMode
+    let onMonthHeaderTap: ((String) -> Void)?
     @ViewBuilder let destination: (DiaryEntry) -> Destination
 
     init(
         entries: [DiaryEntry],
         artworkOverride: DiaryEntryArtworkOverride? = nil,
+        monthDisplayMode: DiaryMonthDisplayMode = .expanded,
+        onMonthHeaderTap: ((String) -> Void)? = nil,
         @ViewBuilder destination: @escaping (DiaryEntry) -> Destination
     ) {
         self.entries = entries
         self.artworkOverride = artworkOverride
+        self.monthDisplayMode = monthDisplayMode
+        self.onMonthHeaderTap = onMonthHeaderTap
         self.destination = destination
     }
 
     var body: some View {
         ForEach(monthSections) { section in
-            Section {
-                VStack(spacing: 0) {
-                    ForEach(section.entries) { entry in
-                        NavigationLink {
-                            destination(entry)
-                        } label: {
-                            DiaryEntryRow(entry: entry, artworkOverride: artworkOverride)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .clipShape(UnevenRoundedRectangle(
-                    cornerRadii: RectangleCornerRadii(
-                        topLeading: 0,
-                        bottomLeading: 16,
-                        bottomTrailing: 16,
-                        topTrailing: 0
-                    ),
-                    style: .continuous
-                ))
-                .padding(.bottom, 14)
-            } header: {
-                DiaryMonthHeader(title: section.title)
+            if monthDisplayMode == .collapsed {
+                monthHeader(for: section)
+                    .padding(.bottom, 8)
+                    .id(section.id)
+            } else {
+                expandedSection(section)
             }
         }
+    }
+
+    private func expandedSection(_ section: DiaryMonthSection) -> some View {
+        Section {
+            VStack(spacing: 0) {
+                ForEach(section.entries) { entry in
+                    NavigationLink {
+                        destination(entry)
+                    } label: {
+                        DiaryEntryRow(entry: entry, artworkOverride: artworkOverride)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .clipShape(UnevenRoundedRectangle(
+                cornerRadii: RectangleCornerRadii(
+                    topLeading: 0,
+                    bottomLeading: 16,
+                    bottomTrailing: 16,
+                    topTrailing: 0
+                ),
+                style: .continuous
+            ))
+            .padding(.bottom, 14)
+        } header: {
+            monthHeader(for: section)
+                .id(section.id)
+        }
+    }
+
+    private func monthHeader(for section: DiaryMonthSection) -> some View {
+        DiaryMonthHeader(
+            title: section.title,
+            isCollapsed: monthDisplayMode == .collapsed,
+            action: headerAction(for: section)
+        )
+    }
+
+    private func headerAction(for section: DiaryMonthSection) -> (() -> Void)? {
+        guard let onMonthHeaderTap else { return nil }
+        return { onMonthHeaderTap(section.id) }
     }
 
     private var monthSections: [DiaryMonthSection] {
@@ -69,29 +104,58 @@ struct DiaryMonthSection: Identifiable {
 
 struct DiaryMonthHeader: View {
     let title: String
+    var isCollapsed = false
+    var action: (() -> Void)? = nil
 
+    @ViewBuilder
     var body: some View {
-        Text(title)
-            .font(.system(size: 13, weight: .heavy))
-            .foregroundStyle(.white.opacity(0.78))
-            .textCase(.uppercase)
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .background(Color(red: 0.115, green: 0.108, blue: 0.095))
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(.white.opacity(0.08))
-                    .frame(height: 1)
+        if let action {
+            Button(action: action) {
+                label
             }
-            .clipShape(UnevenRoundedRectangle(
-                cornerRadii: RectangleCornerRadii(
-                    topLeading: 16,
-                    bottomLeading: 0,
-                    bottomTrailing: 0,
-                    topTrailing: 16
-                ),
-                style: .continuous
-            ))
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+            .accessibilityHint(isCollapsed ? "Shows diary entries for all months" : "Hides diary entries for all months")
+        } else {
+            label
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 10) {
+            Text(title)
+
+            Spacer()
+
+            if action != nil {
+                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.44))
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(.system(size: 13, weight: .heavy))
+        .foregroundStyle(.white.opacity(0.78))
+        .textCase(.uppercase)
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        .background(Color(red: 0.115, green: 0.108, blue: 0.095))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.white.opacity(0.08))
+                .frame(height: 1)
+        }
+        .clipShape(UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(
+                topLeading: 16,
+                bottomLeading: isCollapsed ? 16 : 0,
+                bottomTrailing: isCollapsed ? 16 : 0,
+                topTrailing: 16
+            ),
+            style: .continuous
+        ))
+        .contentShape(Rectangle())
     }
 }
 

@@ -1,13 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct StoryGraphImportView: View {
+struct GoodreadsImportView: View {
     @State private var mode: ImportMode = .new
     @State private var isFileImporterPresented = false
     @State private var isOverwriteConfirmationPresented = false
     @State private var isUploadScreenPresented = false
 
-    let coordinator: StoryGraphImportCoordinator
+    let coordinator: GoodreadsImportCoordinator
 
     private var isBusy: Bool {
         switch coordinator.phase {
@@ -21,8 +21,8 @@ struct StoryGraphImportView: View {
     var body: some View {
         List {
             Section {
-                Text("Export your library from StoryGraph, then upload the .csv file here.")
-                Link("Open StoryGraph", destination: URL(string: "https://app.thestorygraph.com/")!)
+                Text("Export your library from Goodreads, then upload the .csv file here.")
+                Link("Open Goodreads Import/Export", destination: URL(string: "https://www.goodreads.com/review/import")!)
             }
 
             Section("Import Mode") {
@@ -43,12 +43,12 @@ struct StoryGraphImportView: View {
                 Button {
                     chooseFile()
                 } label: {
-                    Label("Choose StoryGraph CSV", systemImage: "doc.text")
+                    Label("Choose Goodreads CSV", systemImage: "doc.text")
                 }
                 .disabled(isBusy)
             }
         }
-        .navigationTitle("StoryGraph Import")
+        .navigationTitle("Goodreads Import")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
             "This replaces existing book tracking and book diary entries before importing. This can't be undone.",
@@ -68,7 +68,7 @@ struct StoryGraphImportView: View {
             onCompletion: handleFileImporterResult
         )
         .fullScreenCover(isPresented: $isUploadScreenPresented) {
-            StoryGraphImportUploadView(
+            GoodreadsImportUploadView(
                 coordinator: coordinator,
                 onDone: { isUploadScreenPresented = false }
             )
@@ -121,8 +121,7 @@ private struct MockImportRepository: ImportRepository {
         mode: ImportMode,
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse {
-        progressHandler?(1)
-        return ImportQueueResponse(taskId: "preview-task", status: "queued")
+        fatalError("Not used")
     }
 
     func queueGoodreadsImport(
@@ -131,13 +130,14 @@ private struct MockImportRepository: ImportRepository {
         mode: ImportMode,
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse {
-        fatalError("Not used")
+        progressHandler?(1)
+        return ImportQueueResponse(taskId: "preview-task", status: "queued")
     }
 
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
         ImportTaskStatus(
             taskId: taskId,
-            taskName: "Import from StoryGraph",
+            taskName: "Import from Goodreads",
             status: "SUCCESS",
             dateCreated: nil,
             dateDone: nil,
@@ -148,8 +148,8 @@ private struct MockImportRepository: ImportRepository {
 
 #Preview {
     NavigationStack {
-        StoryGraphImportView(
-            coordinator: StoryGraphImportCoordinator(importRepository: MockImportRepository())
+        GoodreadsImportView(
+            coordinator: GoodreadsImportCoordinator(importRepository: MockImportRepository())
         )
     }
 }

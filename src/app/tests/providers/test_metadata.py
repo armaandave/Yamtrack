@@ -461,8 +461,42 @@ class Metadata(TestCase):
         self.assertFalse(result[2]["history"], [])
 
     @patch("app.providers.tmdb.tv_with_seasons")
-    def test_tmdb_episode(self, mock_tv_with_seasons):
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode(self, mock_api_request, mock_tv_with_seasons):
         """Test the episode method for TMDB episodes."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "id": 62085,
+            "name": "Pilot",
+            "overview": "A chemistry teacher receives life-changing news.",
+            "air_date": "2008-01-20",
+            "runtime": 58,
+            "production_code": "101",
+            "still_path": "/path/to/still1.jpg",
+            "vote_average": 8.9,
+            "vote_count": 421,
+            "guest_stars": [
+                {
+                    "id": 1,
+                    "name": "Guest Actor",
+                    "character": "Guest",
+                    "profile_path": "/guest.jpg",
+                    "order": 0,
+                },
+            ],
+            "crew": [
+                {
+                    "id": 2,
+                    "name": "Episode Director",
+                    "job": "Director",
+                    "profile_path": "/director.jpg",
+                },
+            ],
+            "external_ids": {
+                "imdb_id": "tt0959621",
+                "tvdb_id": 349232,
+            },
+        }
         mock_tv_with_seasons.return_value = {
             "title": "Breaking Bad",
             "season/1": {
@@ -485,18 +519,87 @@ class Metadata(TestCase):
 
         result = tmdb.episode("1396", "1", "1")
 
-        self.assertEqual(result["title"], "Breaking Bad")
+        self.assertEqual(result["title"], "Pilot")
+        self.assertEqual(result["subtitle"], "Breaking Bad • S1 E1")
+        self.assertEqual(result["series_title"], "Breaking Bad")
         self.assertEqual(result["season_title"], "Season 1")
         self.assertEqual(result["episode_title"], "Pilot")
         self.assertEqual(result["image"], tmdb.get_image_url("/path/to/still1.jpg"))
+        self.assertEqual(result["backdrop_path"], "/path/to/still1.jpg")
+        self.assertEqual(result["synopsis"], "A chemistry teacher receives life-changing news.")
+        self.assertEqual(result["release_date"], "2008-01-20")
+        self.assertEqual(result["score"], 8.9)
+        self.assertEqual(result["score_count"], 421)
+        self.assertEqual(result["details"]["runtime"], "58m")
+        self.assertEqual(result["details"]["production_code"], "101")
+        self.assertEqual(result["cast"][0]["name"], "Guest Actor")
+        self.assertEqual(result["crew"][0]["name"], "Episode Director")
+        self.assertEqual(
+            result["external_links"]["IMDb"],
+            "https://www.imdb.com/title/tt0959621/",
+        )
+        self.assertNotIn("TVDB", result["external_links"])
+        self.assertIsNone(result["external_ratings"]["imdb"]["value"])
+        self.assertEqual(result["parent"]["show"]["ref"]["media_type"], "tv")
+        self.assertEqual(result["parent"]["season"]["ref"]["season_number"], 1)
+
+        request_args, request_kwargs = mock_api_request.call_args
+        self.assertEqual(request_args[:3], (Sources.TMDB.value, "GET", "https://api.themoviedb.org/3/tv/1396/season/1/episode/1"))
+        self.assertEqual(request_kwargs["params"]["append_to_response"], "external_ids")
+        mock_tv_with_seasons.assert_called_once_with("1396", [1])
+
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_not_found(self, mock_api_request, mock_tv_with_seasons):
+        """TMDB episode 404s retain useful season and episode context."""
+        cache.clear()
+        response = requests.Response()
+        response.status_code = 404
+        response._content = b'{"status_message":"Not found"}'
+        mock_api_request.side_effect = requests.exceptions.HTTPError(response=response)
 
         with self.assertRaises(services.ProviderAPIError) as cm:
             tmdb.episode("1396", "1", "3")
 
+        self.assertEqual(cm.exception.status_code, 404)
         self.assertIn("Episode 3 not found in season 1", str(cm.exception))
         self.assertIn("The Movie Database with ID 1396", str(cm.exception))
+        mock_tv_with_seasons.assert_not_called()
 
-        mock_tv_with_seasons.assert_called_with("1396", ["1"])
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_without_still_keeps_persistence_placeholder(
+        self,
+        mock_api_request,
+        mock_tv_with_seasons,
+    ):
+        """Provider metadata distinguishes missing stills from stored placeholders."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "name": "No Still",
+            "overview": "",
+            "air_date": "2025-01-01",
+            "runtime": 42,
+            "still_path": None,
+            "vote_average": 0,
+            "vote_count": 0,
+            "guest_stars": [],
+            "crew": [],
+            "external_ids": {},
+        }
+        mock_tv_with_seasons.return_value = {
+            "title": "Example Show",
+            "season/1": {
+                "title": "Example Show",
+                "season_title": "Season 1",
+                "episodes": [],
+            },
+        }
+
+        result = tmdb.episode("123", 1, 1)
+
+        self.assertEqual(result["image"], settings.IMG_NONE)
+        self.assertIsNone(result["backdrop_path"])
 
     def test_tmdb_find_next_episode(self):
         """Test the find_next_episode function."""

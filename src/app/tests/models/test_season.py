@@ -299,6 +299,27 @@ class SeasonModel(TestCase):
         )
         self.assertIsNone(episode.end_date)
 
+    def test_get_episode_item_uses_episode_title_and_still(self):
+        """Materialized episode Items preserve episode-specific artwork and title."""
+        item = self.season.get_episode_item(
+            7,
+            {
+                "episodes": [
+                    {
+                        "episode_number": 7,
+                        "name": "The One with the Race Car Bed",
+                        "still_path": "/race-car-bed.jpg",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(item.title, "The One with the Race Car Bed")
+        self.assertEqual(
+            item.image,
+            "https://image.tmdb.org/t/p/original/race-car-bed.jpg",
+        )
+
     @patch("app.models.Season.get_episode_item")
     def test_unwatch_method(self, mock_get_episode_item):
         """Test the unwatch method of the Season model."""

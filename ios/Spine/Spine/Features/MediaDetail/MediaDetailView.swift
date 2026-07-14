@@ -7,7 +7,7 @@ final class MediaDetailViewModel {
     var detail: MediaDetail?
     var reviews: [MediaReview] = []
     var tracking: TrackingState?
-    var isLoading = false
+    var isLoading = true
     var isLoadingReviews = false
     var isSavingQuickAction = false
     var isSavingProgress = false
@@ -41,7 +41,6 @@ final class MediaDetailViewModel {
     func load() async {
         isLoading = true
         errorMessage = nil
-        tracking = nil
         defer { isLoading = false }
 
         do {
@@ -50,6 +49,8 @@ final class MediaDetailViewModel {
             reviews = loaded.reviews ?? []
             await loadTrackingIfNeeded(for: loaded)
             await loadReviews()
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -59,7 +60,10 @@ final class MediaDetailViewModel {
     }
 
     private func loadTrackingIfNeeded(for detail: MediaDetail) async {
-        guard detail.userState?.isTracked == true || detail.userState?.status != nil else { return }
+        guard detail.userState?.isTracked == true || detail.userState?.status != nil else {
+            tracking = nil
+            return
+        }
         do {
             tracking = try await trackingRepository.detail(ref: detail.ref)
         } catch APIError.httpStatus(404, _) {
@@ -153,6 +157,46 @@ final class MediaDetailViewModel {
                 )
             }
             tracking = state
+            return true
+        } catch {
+            quickActionErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+            return false
+        }
+    }
+
+    func watchEpisode(_ detail: MediaDetail, watchedAt: Date = Date()) async -> Bool {
+        guard
+            !isSavingQuickAction,
+            let seasonNumber = detail.ref.seasonNumber,
+            let episodeNumber = detail.ref.episodeNumber
+        else { return false }
+        isSavingQuickAction = true
+        quickActionErrorMessage = nil
+        defer { isSavingQuickAction = false }
+
+        do {
+            _ = try await trackingRepository.watchEpisode(
+                source: detail.ref.source,
+                mediaId: detail.ref.mediaId,
+                seasonNumber: seasonNumber,
+                episodeNumber: episodeNumber,
+                watchedAt: watchedAt
+            )
+            self.detail = detail.replacingIsTracked(true)
+
+            do {
+                let refreshed = try await mediaRepository.detail(ref: detail.ref)
+                self.detail = refreshed.replacingIsTracked(true)
+            } catch is CancellationError {
+                // The watch mutation succeeded; cancellation only stops the best-effort refresh.
+            } catch {
+                if case APIError.unauthorized = error {
+                    onUnauthorized()
+                }
+            }
             return true
         } catch {
             quickActionErrorMessage = error.localizedDescription
@@ -394,7 +438,10 @@ private struct TopSafeAreaInsetKey: PreferenceKey {
 }
 
 struct MediaDetailView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var posterTransitionNamespace
     @State private var selectedID: MediaRef.ID?
+    @State private var presentedPoster: PosterViewerItem?
 
     private let ref: MediaRef
     private let browsingContext: MediaBrowsingContext?
@@ -408,6 +455,7 @@ struct MediaDetailView: View {
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
+    private let onReturnToOriginSeason: (() -> Void)?
 
     init(
         ref: MediaRef,
@@ -421,7 +469,8 @@ struct MediaDetailView: View {
         currentUserId: Int? = nil,
         selectedTab: AppTab = .home,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
-        onUnauthorized: @escaping () -> Void = {}
+        onUnauthorized: @escaping () -> Void = {},
+        onReturnToOriginSeason: (() -> Void)? = nil
     ) {
         self.ref = ref
         self.browsingContext = browsingContext
@@ -435,34 +484,48 @@ struct MediaDetailView: View {
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
+        self.onReturnToOriginSeason = onReturnToOriginSeason
         _selectedID = State(initialValue: browsingContext?.selectedID ?? ref.id)
     }
 
     var body: some View {
-        Group {
-            if let browsingContext, browsingContext.refs.count > 1 {
-                GeometryReader { proxy in
-                    ScrollView(.horizontal) {
-                        LazyHStack(spacing: 0) {
-                            ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
-                                detailPage(
-                                    ref: pageRef,
-                                    shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
-                                    topSafeAreaInset: proxy.safeAreaInsets.top
-                                )
-                                .containerRelativeFrame(.horizontal)
-                                .id(pageRef.id)
+        ZStack {
+            Group {
+                if let browsingContext, browsingContext.refs.count > 1 {
+                    GeometryReader { proxy in
+                        ScrollView(.horizontal) {
+                            LazyHStack(spacing: 0) {
+                                ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
+                                    detailPage(
+                                        ref: pageRef,
+                                        shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
+                                        topSafeAreaInset: proxy.safeAreaInsets.top
+                                    )
+                                    .containerRelativeFrame(.horizontal)
+                                    .id(pageRef.id)
+                                }
                             }
+                            .scrollTargetLayout()
                         }
-                        .scrollTargetLayout()
+                        .scrollIndicators(.hidden)
+                        .scrollTargetBehavior(.paging)
+                        .scrollPosition(id: $selectedID)
+                        .ignoresSafeArea(edges: .top)
                     }
-                    .scrollIndicators(.hidden)
-                    .scrollTargetBehavior(.paging)
-                    .scrollPosition(id: $selectedID)
-                    .ignoresSafeArea(edges: .top)
+                } else {
+                    detailPage(ref: ref, shouldLoad: true)
                 }
-            } else {
-                detailPage(ref: ref, shouldLoad: true)
+            }
+            .scrollDisabled(presentedPoster != nil)
+            .accessibilityHidden(presentedPoster != nil)
+
+            if let presentedPoster {
+                PosterViewer(
+                    item: presentedPoster,
+                    namespace: posterTransitionNamespace,
+                    onDismiss: dismissPoster
+                )
+                .zIndex(100)
             }
         }
         .toolbar(.hidden, for: .tabBar)
@@ -489,17 +552,35 @@ struct MediaDetailView: View {
             companyRepository: companyRepository,
             currentUserId: currentUserId,
             selectedTab: selectedTab,
+            posterTransitionNamespace: posterTransitionNamespace,
+            presentedPosterID: presentedPoster?.id,
+            onOpenPoster: presentPoster,
             onSelectTab: onSelectTab,
-            onUnauthorized: onUnauthorized
+            onUnauthorized: onUnauthorized,
+            onReturnToOriginSeason: onReturnToOriginSeason
         )
+    }
+
+    private func presentPoster(_ poster: PosterViewerItem) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.88)) {
+            presentedPoster = poster
+        }
+    }
+
+    private func dismissPoster() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.9)) {
+            presentedPoster = nil
+        }
     }
 }
 
 private struct MediaDetailPageView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var viewModel: MediaDetailViewModel
     @State private var presentedSheet: MediaDetailSheet?
     @State private var presentedRef: MediaRef?
+    @State private var presentedMediaSelection: MediaBrowsingSelection?
     @State private var presentedDiaryEntry: PresentedDiaryEntry?
     @State private var presentedMediaDiary: PresentedMediaDiary?
     @State private var presentedDiscover: MediaDiscoverRequest?
@@ -508,6 +589,9 @@ private struct MediaDetailPageView: View {
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
     @State private var isLogoPickerPresented = false
+    @State private var pendingPosterSave: PosterSaveResponse?
+    @State private var pendingBackdropSave: BackdropSaveResponse?
+    @State private var pendingLogoSave: LogoSaveResponse?
     @State private var isLogPresented = false
     @State private var progressUpdateDetail: MediaDetail?
     @State private var isQuickActionAlertPresented = false
@@ -524,8 +608,13 @@ private struct MediaDetailPageView: View {
     private let companyRepository: CompanyRepository
     private let currentUserId: Int?
     private let selectedTab: AppTab
+    private let posterTransitionNamespace: Namespace.ID
+    private let presentedPosterID: PosterViewerItem.ID?
+    private let onOpenPoster: (PosterViewerItem) -> Void
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
+    private let onReturnToOriginSeason: (() -> Void)?
+    private let ref: MediaRef
     private let shouldLoad: Bool
     private let topSafeAreaInsetOverride: CGFloat?
 
@@ -541,9 +630,14 @@ private struct MediaDetailPageView: View {
         companyRepository: CompanyRepository = AppRepositories.current().companies,
         currentUserId: Int? = nil,
         selectedTab: AppTab = .home,
+        posterTransitionNamespace: Namespace.ID,
+        presentedPosterID: PosterViewerItem.ID?,
+        onOpenPoster: @escaping (PosterViewerItem) -> Void,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
-        onUnauthorized: @escaping () -> Void = {}
+        onUnauthorized: @escaping () -> Void = {},
+        onReturnToOriginSeason: (() -> Void)? = nil
     ) {
+        self.ref = ref
         self.shouldLoad = shouldLoad
         topSafeAreaInsetOverride = topSafeAreaInset
         self.mediaRepository = mediaRepository
@@ -554,8 +648,12 @@ private struct MediaDetailPageView: View {
         self.companyRepository = companyRepository
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
+        self.posterTransitionNamespace = posterTransitionNamespace
+        self.presentedPosterID = presentedPosterID
+        self.onOpenPoster = onOpenPoster
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
+        self.onReturnToOriginSeason = onReturnToOriginSeason
         _viewModel = State(initialValue: MediaDetailViewModel(
             ref: ref,
             mediaRepository: mediaRepository,
@@ -570,24 +668,8 @@ private struct MediaDetailPageView: View {
             SpinePageBackground()
 
             ScrollView(showsIndicators: false) {
-                Group {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 520)
-                    } else if let detail = viewModel.detail {
-                        VStack(spacing: 0) {
-                            hero(detail)
-                                .padding(.top, -resolvedTopSafeAreaInset)
-                            content(detail)
-                        }
-                    } else if let error = viewModel.errorMessage {
-                        ContentUnavailableView("Could not load media", systemImage: "exclamationmark.triangle", description: Text(error))
-                            .foregroundStyle(.white)
-                            .padding()
-                    }
-                }
-                .padding(.bottom, 116)
+                pageScrollContent
+                    .spineContentTransition(value: contentPhase)
             }
             .scrollContentBackground(.hidden)
             .ignoresSafeArea(edges: .top)
@@ -606,10 +688,12 @@ private struct MediaDetailPageView: View {
         .navigationBarBackButtonHidden()
         .offset(x: edgeDragOffset)
         .overlay(alignment: .leading) {
-            Color.clear
-                .frame(width: 28)
-                .contentShape(Rectangle())
-                .gesture(edgeSwipeBackGesture)
+            if presentedPosterID == nil {
+                Color.clear
+                    .frame(width: 28)
+                    .contentShape(Rectangle())
+                    .gesture(edgeSwipeBackGesture)
+            }
         }
         .overlay {
             if let detail = progressUpdateDetail {
@@ -642,10 +726,18 @@ private struct MediaDetailPageView: View {
             case .posterMenu:
                 PosterMenuSheet(
                     posterLabel: "Customize Poster",
+                    showsSeasonOption: parentSeasonRef(viewModel.detail) != nil,
                     showsTVShowOption: parentTVRef(viewModel.detail) != nil,
                     showsPosterOption: canCustomizePoster(viewModel.detail),
                     showsBackdropOption: canCustomizeBackdrop(viewModel.detail),
                     showsLogoOption: canCustomizeLogo(viewModel.detail),
+                    onViewSeason: {
+                        guard let ref = parentSeasonRef(viewModel.detail) else { return }
+                        presentedSheet = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            navigateToParent(ref)
+                        }
+                    },
                     onViewTVShow: {
                         guard let ref = parentTVRef(viewModel.detail) else { return }
                         presentedSheet = nil
@@ -724,30 +816,27 @@ private struct MediaDetailPageView: View {
         } message: {
             Text(viewModel.likeErrorMessage ?? "")
         }
-        .fullScreenCover(isPresented: $isBackdropPickerPresented) {
+        .fullScreenCover(isPresented: $isBackdropPickerPresented, onDismiss: applyPendingBackdropSave) {
             if let detail = viewModel.detail {
                 BackdropPickerView(
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
                     onUnauthorized: onUnauthorized
                 ) { response in
-                    viewModel.applyBackdropSave(response)
+                    pendingBackdropSave = response
                     presentedSheet = nil
-                    isBackdropPickerPresented = false
                 }
             }
         }
-        .fullScreenCover(isPresented: $isLogoPickerPresented) {
+        .fullScreenCover(isPresented: $isLogoPickerPresented, onDismiss: applyPendingLogoSave) {
             if let detail = viewModel.detail {
                 LogoPickerView(
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
                     onUnauthorized: onUnauthorized
                 ) { response in
-                    viewModel.applyLogoSave(response)
-                    showsTitleLogo = true
+                    pendingLogoSave = response
                     presentedSheet = nil
-                    isLogoPickerPresented = false
                 }
             }
         }
@@ -765,7 +854,7 @@ private struct MediaDetailPageView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $isPosterPickerPresented) {
+        .fullScreenCover(isPresented: $isPosterPickerPresented, onDismiss: applyPendingPosterSave) {
             if let detail = viewModel.detail {
                 PosterPickerView(
                     ref: detail.ref,
@@ -775,9 +864,8 @@ private struct MediaDetailPageView: View {
                     contentMode: isBook(detail) ? .fit : .fill,
                     onUnauthorized: onUnauthorized
                 ) { response in
-                    viewModel.applyPosterSave(response)
+                    pendingPosterSave = response
                     presentedSheet = nil
-                    isPosterPickerPresented = false
                 }
             }
         }
@@ -794,6 +882,25 @@ private struct MediaDetailPageView: View {
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
                 onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedMediaSelection) { selection in
+            MediaDetailView(
+                ref: selection.ref,
+                browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
+                companyRepository: companyRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized,
+                onReturnToOriginSeason: {
+                    presentedMediaSelection = nil
+                }
             )
         }
         .fullScreenCover(item: $presentedPerson) { person in
@@ -877,6 +984,67 @@ private struct MediaDetailPageView: View {
         }
     }
 
+    @ViewBuilder
+    private var pageScrollContent: some View {
+        Group {
+            if viewModel.isLoading, viewModel.detail == nil {
+                if ref.mediaType == "episode" {
+                    EpisodeDetailLoadingView()
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(maxWidth: .infinity, minHeight: 520)
+                }
+            } else if let detail = viewModel.detail {
+                VStack(spacing: 0) {
+                    hero(detail)
+                        .padding(.top, -resolvedTopSafeAreaInset)
+                    content(detail)
+                }
+            } else if let error = viewModel.errorMessage, viewModel.detail == nil {
+                VStack(spacing: 18) {
+                    ContentUnavailableView("Could not load media", systemImage: "exclamationmark.triangle", description: Text(error))
+                        .foregroundStyle(.white)
+                    Button("Try Again") {
+                        Task { await viewModel.load() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.white.opacity(0.16))
+                }
+                .padding()
+                .frame(maxWidth: .infinity, minHeight: 520)
+            }
+        }
+        .padding(.bottom, 116)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.detail != nil,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
+    private func applyPendingPosterSave() {
+        guard let response = pendingPosterSave else { return }
+        pendingPosterSave = nil
+        viewModel.applyPosterSave(response)
+    }
+
+    private func applyPendingBackdropSave() {
+        guard let response = pendingBackdropSave else { return }
+        pendingBackdropSave = nil
+        viewModel.applyBackdropSave(response)
+    }
+
+    private func applyPendingLogoSave() {
+        guard let response = pendingLogoSave else { return }
+        pendingLogoSave = nil
+        viewModel.applyLogoSave(response)
+        showsTitleLogo = true
+    }
+
     private var edgeSwipeBackGesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
@@ -914,6 +1082,7 @@ private struct MediaDetailPageView: View {
 
     private func posterMenuHeight(for detail: MediaDetail?) -> CGFloat {
         let optionalRows = [
+            parentSeasonRef(detail) != nil,
             parentTVRef(detail) != nil,
             canCustomizePoster(detail),
             canCustomizeBackdrop(detail),
@@ -951,7 +1120,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func parentTVRef(_ detail: MediaDetail?) -> MediaRef? {
-        guard let detail, detail.ref.mediaType == "season" else { return nil }
+        guard let detail, ["season", "episode"].contains(detail.ref.mediaType) else { return nil }
         return MediaRef(
             itemId: nil,
             source: detail.ref.source,
@@ -960,6 +1129,30 @@ private struct MediaDetailPageView: View {
             seasonNumber: nil,
             episodeNumber: nil
         )
+    }
+
+    private func parentSeasonRef(_ detail: MediaDetail?) -> MediaRef? {
+        guard
+            let detail,
+            detail.ref.mediaType == "episode",
+            let seasonNumber = detail.ref.seasonNumber
+        else { return nil }
+        return MediaRef(
+            itemId: nil,
+            source: detail.ref.source,
+            mediaType: "season",
+            mediaId: detail.ref.mediaId,
+            seasonNumber: seasonNumber,
+            episodeNumber: nil
+        )
+    }
+
+    private func navigateToParent(_ ref: MediaRef) {
+        if ref.mediaType == "season", let onReturnToOriginSeason {
+            onReturnToOriginSeason()
+        } else {
+            presentedRef = ref
+        }
     }
 
     private func usesBookGameActions(_ detail: MediaDetail) -> Bool {
@@ -975,6 +1168,16 @@ private struct MediaDetailPageView: View {
     }
 
     private func eyeAction(for detail: MediaDetail) {
+        if detail.ref.mediaType == "episode" {
+            guard detail.userState?.isTracked != true else { return }
+            Task {
+                let succeeded = await viewModel.watchEpisode(detail)
+                if !succeeded {
+                    isQuickActionAlertPresented = true
+                }
+            }
+            return
+        }
         guard usesBookGameActions(detail) else { return }
         Task {
             await performQuickAction(.finished, for: detail, dismissSheet: false)
@@ -1036,25 +1239,219 @@ private struct MediaDetailPageView: View {
         showsTitleLogo && supportsTitleLogo(detail)
     }
 
+    @ViewBuilder
     private func hero(_ detail: MediaDetail) -> some View {
-        ZStack(alignment: .top) {
-            HeroArtwork(detail: detail)
-                .frame(height: heroHeight(for: detail))
+        if detail.ref.mediaType == "episode" {
+            episodeHero(detail)
+        } else {
+            ZStack(alignment: .top) {
+                HeroArtwork(detail: detail)
+                    .frame(height: heroHeight(for: detail))
 
-            if let backdropURL = backdropURLString(for: detail) {
-                BackdropArtwork(urlString: backdropURL)
-                    .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
-                    .onLongPressGesture {
-                        openBackdropPicker(for: detail)
+                if let backdropURL = backdropURLString(for: detail) {
+                    BackdropArtwork(urlString: backdropURL)
+                        .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
+                        .onLongPressGesture {
+                            openBackdropPicker(for: detail)
+                        }
+                }
+
+                heroHeader(detail)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 18)
+                    .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
+                    .frame(minHeight: heroHeight(for: detail), alignment: .top)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func episodeHero(_ detail: MediaDetail) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 0) {
+                EpisodeHeroArtwork(
+                    urlString: detail.episodeStillURL,
+                    title: detail.title
+                )
+                .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.episodeAccessibilityArtworkHeight)
+
+                episodeHeroContent(detail, overlaysArtwork: false)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+            }
+        } else {
+            ZStack(alignment: .bottomLeading) {
+                EpisodeHeroArtwork(
+                    urlString: detail.episodeStillURL,
+                    title: detail.title
+                )
+                .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.episodeHeroHeight)
+
+                episodeHeroContent(detail, overlaysArtwork: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+            }
+            .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.episodeHeroHeight)
+        }
+    }
+
+    private func episodeHeroContent(_ detail: MediaDetail, overlaysArtwork: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(episodeEyebrow(detail))
+                .font(.caption.weight(.heavy))
+                .foregroundStyle(.white.opacity(0.7))
+                .textCase(.uppercase)
+                .tracking(0.7)
+
+            Text(detail.title)
+                .font(.largeTitle.weight(.black))
+                .foregroundStyle(.white)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
+                .minimumScaleFactor(0.72)
+                .accessibilityAddTraits(.isHeader)
+
+            if let context = episodeParentContext(detail) {
+                Group {
+                    if let parent = parentSeasonRef(detail) ?? parentTVRef(detail) {
+                        Button {
+                            navigateToParent(parent)
+                        } label: {
+                            episodeParentLabel(context)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(context)")
+                    } else {
+                        episodeParentLabel(context)
                     }
+                }
             }
 
-            heroHeader(detail)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 18)
-            .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
-            .frame(minHeight: heroHeight(for: detail), alignment: .top)
+            episodeMetadata(detail)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .bottom, spacing: 12) {
+                    episodeRatings(detail)
+                    Spacer(minLength: 8)
+                    episodeActionRail(detail)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    episodeRatings(detail)
+                    episodeActionRail(detail)
+                }
+            }
         }
+        .padding(.top, overlaysArtwork ? 56 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func episodeParentLabel(_ context: String) -> some View {
+        HStack(spacing: 6) {
+            Text(context)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+        }
+        .foregroundStyle(.white.opacity(0.78))
+    }
+
+    @ViewBuilder
+    private func episodeMetadata(_ detail: MediaDetail) -> some View {
+        let values = [
+            formattedDate(detailString(detail, "air_date") ?? detail.releaseDate),
+            detailString(detail, "runtime"),
+        ].compactMap { $0?.nilIfEmpty }
+
+        if !values.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 7) {
+                    ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                        if index > 0 {
+                            Circle()
+                                .fill(.white.opacity(0.42))
+                                .frame(width: 3, height: 3)
+                        }
+                        Text(value)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(values, id: \.self) { value in
+                        Text(value)
+                    }
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.66))
+        }
+    }
+
+    @ViewBuilder
+    private func episodeRatings(_ detail: MediaDetail) -> some View {
+        let chips = ratingChips(detail)
+        let hasIMDbRating = (detail.externalRatings ?? []).contains {
+            $0.source.caseInsensitiveCompare("IMDb") == .orderedSame && !$0.value.isEmpty
+        }
+
+        HStack(spacing: 8) {
+            RatingChipRow(chips: chips, stacked: false)
+            if !hasIMDbRating, let destination = episodeIMDbURL(detail) {
+                IMDbExternalLinkPill(destination: destination)
+            }
+        }
+    }
+
+    private func episodeActionRail(_ detail: MediaDetail) -> some View {
+        let isWatched = detail.userState?.isTracked == true
+        return ActionRail(
+            isTracked: isWatched,
+            isLiked: detail.userState?.hasLiked ?? false,
+            isHorizontal: true,
+            trackLabel: "Log episode",
+            eyeLabel: isWatched ? "Episode watched" : "Mark episode watched",
+            isEyeSelected: isWatched,
+            isEyeDisabled: isWatched,
+            isEyeLoading: viewModel.isSavingQuickAction,
+            isLikeLoading: viewModel.isSavingLike,
+            onTrack: { trackAction(for: detail) },
+            onLike: { likeAction(for: detail) },
+            onEye: { eyeAction(for: detail) }
+        )
+    }
+
+    private func episodeEyebrow(_ detail: MediaDetail) -> String {
+        let season = detail.ref.seasonNumber.map { "S\($0)" }
+        let episode = detail.ref.episodeNumber.map { "E\($0)" }
+        return [season, episode].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func episodeParentContext(_ detail: MediaDetail) -> String? {
+        let showTitle = detailString(detail, "show_title")
+            ?? detailString(detail, "series_title")
+            ?? detailString(detail, "parent_title")
+            ?? detail.subtitle
+        let seasonTitle = detailString(detail, "season_title")
+            ?? detail.ref.seasonNumber.map { "Season \($0)" }
+        return [showTitle, seasonTitle]
+            .compactMap { $0?.nilIfEmpty }
+            .joined(separator: " · ")
+            .nilIfEmpty
+    }
+
+    private func episodeIMDbURL(_ detail: MediaDetail) -> URL? {
+        if let destination = detail.externalRatings?.first(where: {
+            $0.source.caseInsensitiveCompare("IMDb") == .orderedSame
+        })?.destinationURL {
+            return destination
+        }
+        for key in ["imdb_url", "imdb_link"] {
+            if let value = detailString(detail, key), let destination = URL(string: value) {
+                return destination
+            }
+        }
+        return nil
     }
 
     private func titleDisplay(
@@ -1113,17 +1510,7 @@ private struct MediaDetailPageView: View {
                 .padding(.top, 10)
 
                 VStack(spacing: 14) {
-                    MediaArtwork(
-                        url: detail.displayPosterURL,
-                        title: detail.title,
-                        slot: .hero,
-                        mediaType: detail.ref.mediaType,
-                        orientation: detail.posterOrientation
-                    )
-                        .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
-                        .onLongPressGesture {
-                            openPosterPicker(for: detail)
-                        }
+                    heroPoster(detail)
 
                     ActionRail(
                         isTracked: currentStatus(detail) != nil,
@@ -1142,17 +1529,7 @@ private struct MediaDetailPageView: View {
             }
         } else {
             VStack(spacing: 0) {
-                MediaArtwork(
-                    url: detail.displayPosterURL,
-                    title: detail.title,
-                    slot: .hero,
-                    mediaType: detail.ref.mediaType,
-                    orientation: detail.posterOrientation
-                )
-                    .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
-                    .onLongPressGesture {
-                        openPosterPicker(for: detail)
-                    }
+                heroPoster(detail)
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 16)
 
@@ -1195,6 +1572,47 @@ private struct MediaDetailPageView: View {
                     )
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func heroPoster(_ detail: MediaDetail) -> some View {
+        let poster = PosterViewerItem(detail: detail)
+        let artwork = MediaArtwork(
+            url: detail.displayPosterURL,
+            title: detail.title,
+            slot: .hero,
+            mediaType: detail.ref.mediaType,
+            orientation: detail.posterOrientation
+        )
+        .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
+        .onLongPressGesture {
+            openPosterPicker(for: detail)
+        }
+
+        if presentedPosterID == detail.ref.id {
+            Color.clear
+                .frame(width: PosterSlot.hero.size.width, height: PosterSlot.hero.size.height)
+        } else if let poster {
+            artwork
+                .matchedGeometryEffect(
+                    id: detail.ref.id,
+                    in: posterTransitionNamespace,
+                    isSource: true
+                )
+                .onTapGesture {
+                    onOpenPoster(poster)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("View poster for \(detail.displayTitle)")
+                .accessibilityHint("Opens the poster full screen")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    onOpenPoster(poster)
+                }
+                .accessibilityIdentifier("media-detail.poster")
+        } else {
+            artwork
         }
     }
 
@@ -1304,7 +1722,9 @@ private struct MediaDetailPageView: View {
         VStack(alignment: .leading, spacing: 28) {
             SynopsisText(text: synopsisPreview(detail))
             trackingSummarySection(detail)
-            SpineRatingDistributionSection(community: detail.community)
+            if detail.ref.mediaType != "episode" || (detail.community?.ratingCount ?? 0) > 0 {
+                SpineRatingDistributionSection(community: detail.community)
+            }
 
             if detail.ref.mediaType == "tv" {
                 seasonsSection(detail)
@@ -1315,7 +1735,9 @@ private struct MediaDetailPageView: View {
                 CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
                     presentedPerson = person
                 }
-                seasonsSection(detail)
+                if detail.ref.mediaType != "episode" {
+                    seasonsSection(detail)
+                }
             }
 
             MediaFactsSection(
@@ -1327,7 +1749,11 @@ private struct MediaDetailPageView: View {
                     presentedCompany = company
                 }
             )
-            EpisodesSection(episodes: detail.episodes ?? [])
+            if detail.ref.mediaType == "season" {
+                EpisodesSection(episodes: detail.episodes ?? []) { episode in
+                    presentEpisode(episode, from: detail)
+                }
+            }
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
             RecommendationsSection(sections: relatedSections(detail)) { item in
                 presentedRef = item.ref
@@ -1335,6 +1761,29 @@ private struct MediaDetailPageView: View {
         }
         .padding(.horizontal, 14)
         .padding(.top, 8)
+    }
+
+    private func presentEpisode(_ episode: EpisodeSummary, from season: MediaDetail) {
+        guard let seasonNumber = season.ref.seasonNumber else { return }
+        let refs = (season.episodes ?? []).map {
+            MediaRef(
+                itemId: nil,
+                source: season.ref.source,
+                mediaType: "episode",
+                mediaId: season.ref.mediaId,
+                seasonNumber: seasonNumber,
+                episodeNumber: $0.episodeNumber
+            )
+        }
+        let selected = MediaRef(
+            itemId: nil,
+            source: season.ref.source,
+            mediaType: "episode",
+            mediaId: season.ref.mediaId,
+            seasonNumber: seasonNumber,
+            episodeNumber: episode.episodeNumber
+        )
+        presentedMediaSelection = MediaBrowsingSelection(ref: selected, within: refs)
     }
 
     @ViewBuilder
@@ -1429,10 +1878,23 @@ private struct MediaDetailPageView: View {
 
         return AnyView(
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    ForEach(Array(chips.prefix(3))) { chip in
-                        genreChip(chip)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(chips.prefix(3))) { chip in
+                            genreChip(chip)
+                        }
                     }
+                }
+                .mask(alignment: .trailing) {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.88),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
                 }
 
                 if chips.count > 3 {
@@ -1579,7 +2041,7 @@ private struct MediaDetailPageView: View {
             if rating.source.lowercased() == "spine" {
                 continue
             }
-            if ["movie", "tv", "season"].contains(detail.ref.mediaType), rating.source.lowercased() == "tmdb" {
+            if ["movie", "tv", "season", "episode"].contains(detail.ref.mediaType), rating.source.lowercased() == "tmdb" {
                 continue
             }
             chips.append(RatingChip(
@@ -1677,6 +2139,14 @@ private struct MediaDetailPageView: View {
                 DetailFactRow(label: "Seasons", value: detailString(detail, "seasons")),
                 DetailFactRow(label: "Episodes", value: detailString(detail, "episodes")),
                 creditDetailRow(MediaCreditPresentation.make(for: detail)),
+            ]
+        case "episode":
+            rows += [
+                DetailFactRow(label: "Aired", value: formattedDate(detailString(detail, "air_date") ?? detail.releaseDate)),
+                DetailFactRow(label: "Runtime", value: detailString(detail, "runtime")),
+                DetailFactRow(label: "Season", value: detailString(detail, "season_title") ?? detail.ref.seasonNumber.map { "Season \($0)" }),
+                DetailFactRow(label: "Episode", value: detail.ref.episodeNumber.map(String.init)),
+                DetailFactRow(label: "Production Code", value: detailString(detail, "production_code")),
             ]
         case "anime":
             rows += [
@@ -1782,7 +2252,7 @@ private struct MediaDetailPageView: View {
         if detail.ref.mediaType == "book" {
             return bookAuthorCredits(detail)
         }
-        let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
+        let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv", "episode"].contains(detail.ref.mediaType)
         let credits = (detail.cast ?? []).map {
             CreditDisplay(
                 name: $0.name,
@@ -1798,7 +2268,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func crewCredits(_ detail: MediaDetail) -> [CreditDisplay] {
-        let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
+        let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv", "episode"].contains(detail.ref.mediaType)
         return (detail.crew ?? []).map {
             CreditDisplay(
                 name: $0.name,
@@ -2013,6 +2483,8 @@ private enum MediaDetailLayout {
     static let heroPosterWidth: CGFloat = 191
     static let heroHeight: CGFloat = 455
     static let legacyHeroHeight: CGFloat = 535
+    static let episodeHeroHeight: CGFloat = 520
+    static let episodeAccessibilityArtworkHeight: CGFloat = 280
     static let heroPosterTopOffset: CGFloat = 108
     static let backdropTopSpacing: CGFloat = 137.5
     static let backdropHeight: CGFloat = 352.34375
@@ -2062,10 +2534,12 @@ private func bookGameCopy(for mediaType: String) -> (currently: String, finished
 
 private struct PosterMenuSheet: View {
     let posterLabel: String
+    let showsSeasonOption: Bool
     let showsTVShowOption: Bool
     let showsPosterOption: Bool
     let showsBackdropOption: Bool
     let showsLogoOption: Bool
+    let onViewSeason: () -> Void
     let onViewTVShow: () -> Void
     let onAddToList: () -> Void
     let onCustomizePoster: () -> Void
@@ -2074,6 +2548,19 @@ private struct PosterMenuSheet: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            if showsSeasonOption {
+                Button(action: onViewSeason) {
+                    Label("View Season", systemImage: "rectangle.stack")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .frame(height: 54)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+            }
+
             if showsTVShowOption {
                 Button(action: onViewTVShow) {
                     Label("View TV Show", systemImage: "tv")
@@ -2435,6 +2922,132 @@ private struct AddToListSheet: View {
     }
 }
 
+private struct EpisodeDetailLoadingView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            RoundedRectangle(cornerRadius: 0)
+                .fill(.white.opacity(0.08))
+                .frame(height: 330)
+
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(.white.opacity(0.1))
+                    .frame(width: 74, height: 12)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(0.12))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 34)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(.white.opacity(0.08))
+                    .frame(width: 210, height: 16)
+                HStack(spacing: 10) {
+                    Capsule().fill(.white.opacity(0.1)).frame(width: 112, height: 38)
+                    Spacer()
+                    ForEach(0 ..< 3, id: \.self) { _ in
+                        Circle().fill(.white.opacity(0.1)).frame(width: 42, height: 42)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .redacted(reason: .placeholder)
+        .accessibilityLabel("Loading episode details")
+        .frame(maxWidth: .infinity, minHeight: 520, alignment: .top)
+    }
+}
+
+private struct EpisodeHeroArtwork: View {
+    let urlString: String?
+    let title: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                placeholder
+
+                if let urlString, let url = URL(string: urlString) {
+                    SpineAsyncImage(url: url) { phase in
+                        if case let .success(image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .clipped()
+                        }
+                    }
+                }
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.5), location: 0),
+                        .init(color: .black.opacity(0.12), location: 0.3),
+                        .init(color: .clear, location: 0.48),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.25),
+                        .init(color: .black.opacity(0.2), location: 0.5),
+                        .init(color: SpinePalette.pageBackground.opacity(0.72), location: 0.72),
+                        .init(color: SpinePalette.pageBackground, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    colors: [.black.opacity(0.28), .clear, .black.opacity(0.08)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .clipped()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Episode still for \(title)")
+    }
+
+    private var placeholder: some View {
+        let theme = MediaTypeTheme.theme(for: "episode")
+        return LinearGradient(
+            colors: theme.gradientColors.map { $0.opacity(0.52) } + [SpinePalette.pageBackground],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+private struct IMDbExternalLinkPill: View {
+    let destination: URL
+
+    var body: some View {
+        Link(destination: destination) {
+            HStack(spacing: 6) {
+                Image("RatingIMDb")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 24, height: 24)
+                    .clipShape(Circle())
+                Text("IMDb")
+                    .font(.caption.weight(.heavy))
+                Image(systemName: "arrow.up.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, MediaDetailLayout.ratingPillVerticalPadding)
+            .background(.white.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("View this episode on IMDb")
+    }
+}
+
 struct HeroArtwork: View {
     let detail: MediaDetail
 
@@ -2443,7 +3056,7 @@ struct HeroArtwork: View {
             SpinePalette.pageBackground
 
             GeometryReader { proxy in
-                AsyncImage(url: artworkURL) { phase in
+                SpineAsyncImage(url: artworkURL) { phase in
                     switch phase {
                     case let .success(image):
                         image
@@ -2527,7 +3140,7 @@ struct BackdropArtwork: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                AsyncImage(url: URL(string: urlString)) { phase in
+                SpineAsyncImage(url: URL(string: urlString)) { phase in
                     switch phase {
                     case let .success(image):
                         image
@@ -2576,6 +3189,8 @@ private struct ActionRail: View {
     let isHorizontal: Bool
     var trackLabel: String?
     var eyeLabel: String?
+    var isEyeSelected = false
+    var isEyeDisabled = false
     var isEyeLoading = false
     var isLikeLoading = false
     let onTrack: () -> Void
@@ -2600,10 +3215,11 @@ private struct ActionRail: View {
                         action: onLike
                     )
                     railButton(
-                        systemName: "eye",
+                        systemName: isEyeSelected ? "eye.fill" : "eye",
                         label: eyeLabel ?? "Mark as watched",
                         usesLargePlus: false,
                         isLoading: isEyeLoading,
+                        isDisabled: isEyeDisabled,
                         action: onEye
                     )
                 }
@@ -2617,10 +3233,11 @@ private struct ActionRail: View {
                         action: onLike
                     )
                     railButton(
-                        systemName: "eye",
+                        systemName: isEyeSelected ? "eye.fill" : "eye",
                         label: eyeLabel ?? "Mark as watched",
                         usesLargePlus: false,
                         isLoading: isEyeLoading,
+                        isDisabled: isEyeDisabled,
                         action: onEye
                     )
                     railButton(
@@ -2639,6 +3256,7 @@ private struct ActionRail: View {
         label: String,
         usesLargePlus: Bool,
         isLoading: Bool = false,
+        isDisabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -2661,7 +3279,8 @@ private struct ActionRail: View {
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
-        .disabled(isLoading)
+        .disabled(isLoading || isDisabled)
+        .opacity(isDisabled ? 0.62 : 1)
         .accessibilityLabel(label)
     }
 
@@ -2873,16 +3492,18 @@ private struct TrackingSummarySection: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionLabel(title: "Your Tracking")
                 HStack(alignment: .top, spacing: 10) {
-                    MediaArtwork(
-                        url: detail.displayPosterURL,
-                        title: detail.title,
-                        slot: .libraryRow,
-                        mediaType: detail.ref.mediaType,
-                        orientation: detail.posterOrientation
-                    )
-                    .onTapGesture(perform: onOpenDiaryEntry)
-                    .accessibilityLabel("View diary log for \(detail.title)")
-                    .accessibilityAddTraits(.isButton)
+                    if detail.ref.mediaType != "episode" {
+                        MediaArtwork(
+                            url: detail.displayPosterURL,
+                            title: detail.title,
+                            slot: .libraryRow,
+                            mediaType: detail.ref.mediaType,
+                            orientation: detail.posterOrientation
+                        )
+                        .onTapGesture(perform: onOpenDiaryEntry)
+                        .accessibilityLabel("View diary log for \(detail.title)")
+                        .accessibilityAddTraits(.isButton)
+                    }
 
                     VStack(alignment: .leading, spacing: 4) {
                         if let status {
@@ -2927,7 +3548,11 @@ private struct TrackingSummarySection: View {
         }
     }
 
-    private var status: String? { tracking?.status ?? userState?.status }
+    private var status: String? {
+        tracking?.status
+            ?? userState?.status
+            ?? (detail.ref.isEpisode && userState?.isTracked == true ? "Watched" : nil)
+    }
     private var hasState: Bool { status != nil || !lines.isEmpty }
     private var showsUpdateProgressButton: Bool {
         status == "In progress" && ["book", "game"].contains(detail.ref.mediaType)
@@ -3283,7 +3908,7 @@ private struct CreditSection: View {
 
     private func creditRowContent(_ person: CreditDisplay, showsChevron: Bool) -> some View {
         HStack(spacing: 10) {
-            AsyncImage(url: URL(string: person.imageUrl ?? "")) { phase in
+            SpineAsyncImage(url: URL(string: person.imageUrl ?? "")) { phase in
                 switch phase {
                 case let .success(image):
                     image.resizable().scaledToFill()
@@ -3395,53 +4020,189 @@ private struct SeasonsSection: View {
 
 private struct EpisodesSection: View {
     let episodes: [EpisodeSummary]
+    let onSelect: (EpisodeSummary) -> Void
 
     var body: some View {
-        if !episodes.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionLabel(title: "Episodes")
-                VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionLabel(title: "Episodes")
+            if episodes.isEmpty {
+                ContentUnavailableView(
+                    "No episodes available",
+                    systemImage: "play.rectangle",
+                    description: Text("Episode information has not been released yet.")
+                )
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 130)
+                .mediaDetailSurface(cornerRadius: 18)
+            } else {
+                LazyVStack(spacing: 10) {
                     ForEach(episodes) { episode in
-                        HStack(spacing: 10) {
-                            Text("\(episode.episodeNumber)")
-                                .font(.system(size: 12, weight: .heavy))
-                                .foregroundStyle(.white.opacity(0.56))
-                                .frame(width: 24)
-                            if episode.imageUrl != nil {
-                                MediaArtwork(
-                                    url: episode.imageUrl,
-                                    title: episode.title,
-                                    slot: .episodeStill,
-                                    mediaType: "episode"
-                                )
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(episode.title)
-                                    .font(.system(size: 14, weight: .heavy))
-                                    .foregroundStyle(.white)
-                                let metadata = [episode.airDate?.longDateLabel, episode.runtime, episode.rating?.oneDecimalLabel].compactMap { $0 }.joined(separator: " - ")
-                                if !metadata.isEmpty {
-                                    Text(metadata)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(.white.opacity(0.56))
-                                }
-                                if let overview = episode.overview, !overview.isEmpty {
-                                    Text(overview)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                        .lineLimit(3)
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(12)
-                        if episode.id != episodes.last?.id {
-                            Divider().overlay(.white.opacity(0.05))
+                        EpisodeCard(episode: episode) {
+                            onSelect(episode)
                         }
                     }
                 }
-                .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 4))
             }
+        }
+    }
+}
+
+private struct EpisodeCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let episode: EpisodeSummary
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    accessibilityLayout
+                } else {
+                    compactLayout
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(cardBackground)
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Opens episode details")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var compactLayout: some View {
+        HStack(alignment: .center, spacing: 12) {
+            EpisodeCardStill(episode: episode, fillsWidth: false)
+
+            episodeCopy
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white.opacity(0.32))
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var accessibilityLayout: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            EpisodeCardStill(episode: episode, fillsWidth: true)
+            episodeCopy
+        }
+    }
+
+    private var episodeCopy: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(episode.title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !metadata.isEmpty {
+                Text(metadata)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            }
+
+            if let overview = episode.overview?.nilIfEmpty {
+                Text(overview)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
+                    .padding(.top, 1)
+            }
+        }
+    }
+
+    private var metadata: String {
+        [episode.airDate?.longDateLabel, episode.runtime]
+            .compactMap { $0?.nilIfEmpty }
+            .joined(separator: " · ")
+    }
+
+    private var accessibilityDescription: String {
+        var components = ["Episode \(episode.episodeNumber), \(episode.title)"]
+        if let airDate = episode.airDate?.longDateLabel.nilIfEmpty {
+            components.append("Aired \(airDate)")
+        }
+        if let runtime = episode.runtime?.nilIfEmpty {
+            components.append(runtime)
+        }
+        if let overview = episode.overview?.nilIfEmpty {
+            components.append(overview)
+        }
+        return components.joined(separator: ". ")
+    }
+
+    private var cardBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return shape
+            .fill(.white.opacity(0.045))
+            .overlay { shape.stroke(.white.opacity(0.065), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.12), radius: 10, y: 5)
+    }
+}
+
+private struct EpisodeCardStill: View {
+    let episode: EpisodeSummary
+    let fillsWidth: Bool
+
+    var body: some View {
+        artwork
+            .aspectRatio(16 / 9, contentMode: .fill)
+            .frame(maxWidth: fillsWidth ? .infinity : nil)
+            .frame(width: fillsWidth ? nil : 116, height: fillsWidth ? nil : 66)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomLeading) {
+                Text("E\(episode.episodeNumber)")
+                    .font(.caption2.weight(.black))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.62), in: Capsule())
+                    .padding(7)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(.white.opacity(0.1), lineWidth: 0.75)
+            }
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let urlString = episode.imageUrl, let url = URL(string: urlString) {
+            SpineAsyncImage(url: url) { phase in
+                switch phase {
+                case let .success(image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                default:
+                    placeholder
+                }
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    private var placeholder: some View {
+        let theme = MediaTypeTheme.theme(for: "episode")
+        return ZStack {
+            LinearGradient(
+                colors: theme.gradientColors.map { $0.opacity(0.78) },
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: "play.rectangle.fill")
+                .font(.title2)
+                .foregroundStyle(.white.opacity(0.56))
         }
     }
 }
@@ -3705,7 +4466,7 @@ private struct MediaTitleDisplay: View {
     var body: some View {
         Group {
             if canToggle, showsLogo, let logoUrl = detail.displayLogoURL, let url = URL(string: logoUrl) {
-                AsyncImage(url: url) { phase in
+                SpineAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
                         TitleLogoLayout(maxLogoHeight: maxLogoHeight, aspectRatio: aspectRatio) {

@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -6,7 +7,8 @@ from api.serializers.common import (
     media_summary_from_item,
     user_summary,
 )
-from app.models import MediaLike, Tag
+from api.services import tracking as tracking_service
+from app.models import MediaLike, MediaTypes, Tag
 from app.providers import services as provider_services
 from app.services import create_diary_entry, update_diary_entry
 from social.models import Activity, ContentLike
@@ -62,34 +64,50 @@ def create_entry(user, data):
         [ref.get("season_number")] if ref.get("season_number") is not None else None,
         ref.get("episode_number"),
     )
-    item = get_or_create_item_from_metadata(ref, metadata)
-    entry = create_diary_entry(
-        user=user,
-        item=item,
-        consumed_at=data.get("consumed_at") or timezone.now(),
-        rating=data.get("rating"),
-        review=data.get("review", ""),
-        liked=data.get("liked", False),
-        is_rewatch=data.get("is_rewatch", False),
-        auto_mark_consumed=data.get("auto_mark_consumed", False),
-        tags=data.get("tags", []),
-    )
-    entry.visibility = data.get("visibility", "public")
-    entry.contains_spoilers = data.get("contains_spoilers", False)
-    entry.review_title = data.get("review_title", "")
-    entry.save(update_fields=["visibility", "contains_spoilers", "review_title", "updated_at"])
-    Activity.objects.create(
-        actor=user,
-        verb="diary_created",
-        target_type="diary",
-        target_id=entry.id,
-        item=item,
-        visibility=entry.visibility,
-        snapshot={
-            "rating": str(entry.rating) if entry.rating is not None else None,
-            "liked": bool(entry.liked),
-        },
-    )
+    consumed_at = data.get("consumed_at") or timezone.now()
+    auto_mark_consumed = data.get("auto_mark_consumed", False)
+    watch_episode = auto_mark_consumed and ref["media_type"] == MediaTypes.EPISODE.value
+
+    with transaction.atomic():
+        item = get_or_create_item_from_metadata(ref, metadata)
+        entry = create_diary_entry(
+            user=user,
+            item=item,
+            consumed_at=consumed_at,
+            rating=data.get("rating"),
+            review=data.get("review", ""),
+            liked=data.get("liked", False),
+            is_rewatch=data.get("is_rewatch", False),
+            # Episodes use Season.watch below so every rewatch remains a distinct
+            # Episode row instead of rewriting all repeats for the same Item.
+            auto_mark_consumed=auto_mark_consumed and not watch_episode,
+            tags=data.get("tags", []),
+        )
+        if watch_episode:
+            tracking_service.watch_episode(
+                user,
+                source=ref["source"],
+                media_id=ref["media_id"],
+                season_number=ref["season_number"],
+                episode_number=ref["episode_number"],
+                watched_at=consumed_at,
+            )
+        entry.visibility = data.get("visibility", "public")
+        entry.contains_spoilers = data.get("contains_spoilers", False)
+        entry.review_title = data.get("review_title", "")
+        entry.save(update_fields=["visibility", "contains_spoilers", "review_title", "updated_at"])
+        Activity.objects.create(
+            actor=user,
+            verb="diary_created",
+            target_type="diary",
+            target_id=entry.id,
+            item=item,
+            visibility=entry.visibility,
+            snapshot={
+                "rating": str(entry.rating) if entry.rating is not None else None,
+                "liked": bool(entry.liked),
+            },
+        )
     return entry
 
 

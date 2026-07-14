@@ -6,7 +6,7 @@ final class PosterPickerViewModel {
     var posters: [PosterOption] = []
     var selectedLanguage = "en"
     var selectedPosterURL: String?
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
@@ -155,14 +155,17 @@ struct PosterPickerView: View {
                             .padding()
                     } else {
                         posterGrid
+                            .allowsHitTesting(!viewModel.isSaving)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(viewModel.isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -186,6 +189,15 @@ struct PosterPickerView: View {
                 await viewModel.load()
             }
         }
+        .interactiveDismissDisabled(viewModel.isSaving)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.posters.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var posterGrid: some View {

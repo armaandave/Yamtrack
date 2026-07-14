@@ -1856,17 +1856,22 @@ class Season(Media):
             )
 
         image = settings.IMG_NONE
+        title = self.item.title
         for episode in season_metadata["episodes"]:
             if episode["episode_number"] == int(episode_number):
+                title = (
+                    episode.get("title")
+                    or episode.get("name")
+                    or episode.get("episode_title")
+                    or title
+                )
                 if episode.get("still_path"):
                     image = (
                         f"https://image.tmdb.org/t/p/original{episode['still_path']}"
                     )
-                elif "image" in episode:
+                elif episode.get("image"):
                     # for manual seasons
                     image = episode["image"]
-                else:
-                    image = settings.IMG_NONE
                 break
 
         item, _ = Item.objects.get_or_create(
@@ -1876,7 +1881,7 @@ class Season(Media):
             season_number=self.item.season_number,
             episode_number=episode_number,
             defaults={
-                "title": self.item.title,
+                "title": title,
                 "image": image,
             },
         )

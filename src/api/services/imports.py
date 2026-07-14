@@ -1,5 +1,7 @@
 import os
 import tempfile
+from contextlib import suppress
+from pathlib import Path
 
 from django_celery_results.models import TaskResult
 
@@ -25,17 +27,22 @@ def queue_import(source, user, data, files=None):
     task = TASKS_BY_SOURCE[source]
     mode = data["mode"]
     username = data.get("username")
-    if source in {"letterboxd", "storygraph"}:
+    if source in {"letterboxd", "storygraph", "goodreads"}:
         uploaded_file = data.get("file") or (files.get("file") if files else None)
         fd, path = tempfile.mkstemp(suffix=".zip" if source == "letterboxd" else ".csv")
-        with os.fdopen(fd, "wb") as tmp:
-            if hasattr(uploaded_file, "chunks"):
-                for chunk in uploaded_file.chunks():
-                    tmp.write(chunk)
-            else:
-                tmp.write(uploaded_file.read())
-        result = task.delay(file_path=path, user_id=user.id, mode=mode)
-    elif source in {"yamtrack", "hltb", "imdb", "goodreads"}:
+        try:
+            with os.fdopen(fd, "wb") as tmp:
+                if hasattr(uploaded_file, "chunks"):
+                    for chunk in uploaded_file.chunks():
+                        tmp.write(chunk)
+                else:
+                    tmp.write(uploaded_file.read())
+            result = task.delay(file_path=path, user_id=user.id, mode=mode)
+        except Exception:
+            with suppress(OSError):
+                Path(path).unlink()
+            raise
+    elif source in {"yamtrack", "hltb", "imdb"}:
         uploaded_file = data.get("file") or (files.get("file") if files else None)
         result = task.delay(file=uploaded_file, user_id=user.id, mode=mode)
     elif source == "trakt" or source == "anilist":

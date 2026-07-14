@@ -51,11 +51,12 @@ def handle_error(error):
     raise services.ProviderAPIError(Sources.HARDCOVER.value, error)
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False):
     """Search for books on Hardcover."""
     query = cap_search_query(query)
+    match_suffix = "_match" if preserve_ranking_fields else ""
     cache_key = (
-        f"search_{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{query}_{page}"
+        f"search_{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{query}_{page}{match_suffix}"
     )
     data = cache.get(cache_key)
 
@@ -107,7 +108,12 @@ def search(query, page):
             for hit in hits
         ]
         total_results = response["data"]["search"]["results"]["found"]
-        results = rank_results(query, results, MediaTypes.BOOK.value)
+        results = rank_results(
+            query,
+            results,
+            MediaTypes.BOOK.value,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         data = helpers.format_search_response(
             page,
@@ -119,6 +125,89 @@ def search(query, page):
         cache.set(cache_key, data)
 
     return data
+
+
+def lookup_book_by_isbn(isbn):
+    """Return the Hardcover book related to an exact edition ISBN."""
+    normalized = str(isbn or "").strip().upper()
+    if not normalized:
+        return None
+
+    cache_key = f"isbn_{Sources.HARDCOVER.value}_{normalized}"
+    cached = cache.get(cache_key)
+    if cached is False:
+        return None
+    if cached is not None:
+        return cached
+
+    query = """
+    query BookByISBN($isbn: String!) {
+      editions(
+        where: {
+          _or: [
+            {isbn_13: {_eq: $isbn}},
+            {isbn_10: {_eq: $isbn}}
+          ]
+        },
+        order_by: {users_count: desc},
+        limit: 1
+      ) {
+        isbn_10
+        isbn_13
+        pages
+        book {
+          id
+          title
+          pages
+          cached_image(path: "url")
+          cached_contributors(path: "[0]['author']['name']")
+        }
+      }
+    }
+    """
+
+    try:
+        response = services.api_request(
+            Sources.HARDCOVER.value,
+            "POST",
+            base_url,
+            params={"query": query, "variables": {"isbn": normalized}},
+            headers={"Authorization": settings.HARDCOVER_API},
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+    except requests.RequestException as error:
+        raise services.ProviderAPIError(Sources.HARDCOVER.value, error) from error
+
+    if response.get("errors"):
+        logger.warning("Hardcover ISBN lookup failed for %s: %s", normalized, response["errors"])
+        return None
+
+    editions = response.get("data", {}).get("editions") or []
+    if not editions:
+        cache.set(cache_key, False, timeout=24 * 60 * 60)
+        return None
+
+    edition = editions[0]
+    book_data = edition.get("book") or {}
+    if not book_data.get("id"):
+        cache.set(cache_key, False, timeout=24 * 60 * 60)
+        return None
+
+    total_pages = edition.get("pages") or book_data.get("pages")
+    result = {
+        "media_id": str(book_data["id"]),
+        "source": Sources.HARDCOVER.value,
+        "media_type": MediaTypes.BOOK.value,
+        "title": book_data.get("title") or normalized,
+        "image": book_data.get("cached_image") or settings.IMG_NONE,
+        "max_progress": total_pages,
+        "total_pages": total_pages,
+        "author_name": book_data.get("cached_contributors"),
+        "matched_isbn": normalized,
+    }
+    cache.set(cache_key, result)
+    return result
 
 
 def discover(*, page=1, page_size=None, genre=None, year=None):

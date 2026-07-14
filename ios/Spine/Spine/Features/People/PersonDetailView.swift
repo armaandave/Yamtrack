@@ -8,12 +8,14 @@ final class PersonDetailViewModel {
     var filmography: [MediaSummary] = []
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .empty
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let ref: PersonRef
     private let peopleRepository: PeopleRepository
     private let onUnauthorized: () -> Void
+    private var requestGeneration = 0
+    private var presentedFilter: MediaFilterState?
 
     init(
         ref: PersonRef,
@@ -26,21 +28,35 @@ final class PersonDetailViewModel {
     }
 
     func load() async {
+        requestGeneration += 1
+        let generation = requestGeneration
+        let requestFilter = filter
+        if presentedFilter != requestFilter {
+            detail = nil
+            filmography = []
+        }
+        presentedFilter = requestFilter
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration, requestFilter == filter {
+                isLoading = false
+            }
+        }
 
         do {
-            let loaded = try await peopleRepository.detail(ref: ref, filter: filter)
+            let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
             let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
             detail = loaded
             filmography = loadedFilmography
             if !filter.isActive || filterOptions == .empty {
                 filterOptions = Self.options(from: loadedFilmography)
             }
+        } catch is CancellationError {
+            return
         } catch {
-            detail = nil
-            filmography = []
+            guard generation == requestGeneration, requestFilter == filter else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -119,14 +135,8 @@ struct PersonDetailView: View {
         ZStack(alignment: .topLeading) {
             SpinePageBackground()
 
-            if let detail = viewModel.detail {
-                PersonHeroArtwork(urlString: detail.profileUrl)
-                    .frame(height: 390)
-                    .ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
-            }
-
             content
+                .spineContentTransition(value: contentPhase)
 
             PersonBackButton {
                 dismiss()
@@ -189,27 +199,34 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading {
+        if viewModel.isLoading, viewModel.detail == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let detail = viewModel.detail {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 26) {
-                    hero(detail)
-                    biographySection(detail)
-                    filmographySection
+                ZStack(alignment: .top) {
+                    PersonHeroArtwork(urlString: detail.profileUrl)
+                        .frame(height: 390)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+
+                    VStack(alignment: .leading, spacing: 26) {
+                        hero(detail)
+                        biographySection(detail)
+                        filmographySection
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 44)
+                    .padding(.bottom, 36)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 44)
-                .padding(.bottom, 36)
             }
             .scrollContentBackground(.hidden)
             .refreshable {
                 await viewModel.load()
                 syncSelectedFilmographyType()
             }
-        } else if let error = viewModel.errorMessage {
+        } else if let error = viewModel.errorMessage, viewModel.detail == nil {
             ContentUnavailableView(
                 "Could not load person",
                 systemImage: "exclamationmark.triangle",
@@ -218,6 +235,14 @@ struct PersonDetailView: View {
             .foregroundStyle(.white)
             .padding()
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.detail != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private func hero(_ detail: PersonDetail) -> some View {
@@ -592,7 +617,7 @@ private struct PersonProfileImage: View {
     let name: String
 
     var body: some View {
-        AsyncImage(url: imageURL) { phase in
+        SpineAsyncImage(url: imageURL) { phase in
             switch phase {
             case let .success(image):
                 image
@@ -629,7 +654,7 @@ private struct PersonHeroArtwork: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                AsyncImage(url: imageURL) { phase in
+                SpineAsyncImage(url: imageURL) { phase in
                     switch phase {
                     case let .success(image):
                         image

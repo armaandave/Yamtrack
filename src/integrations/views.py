@@ -2,7 +2,9 @@
 
 import json
 import logging
+import os
 import secrets
+import tempfile
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -451,11 +453,22 @@ def import_goodreads(request):
         return redirect("import_data")
 
     mode = request.POST["mode"]
-    tasks.import_goodreads.delay(
-        file=request.FILES["goodreads_csv"],
-        user_id=request.user.id,
-        mode=mode,
-    )
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    try:
+        with os.fdopen(fd, "wb") as temporary_file:
+            for chunk in file.chunks():
+                temporary_file.write(chunk)
+        tasks.import_goodreads.delay(
+            file_path=path,
+            user_id=request.user.id,
+            mode=mode,
+        )
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            logger.warning("Could not delete temporary Goodreads import file: %s", path)
+        raise
     messages.info(
         request,
         "The task to import media from GoodReads CSV file has been queued.",

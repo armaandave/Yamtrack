@@ -8,8 +8,9 @@ final class ProfileViewModel {
     var profile: UserProfile?
     var recentActivityItems: [ActivityItem] = []
     var inProgressItems: [LibraryItem] = []
-    var isLoading = false
+    var isLoading = true
     var isLoadingInProgress = false
+    var isLoadingActivity = false
     var errorMessage: String?
     var activityErrorMessage: String?
     var inProgressErrorMessage: String?
@@ -42,9 +43,8 @@ final class ProfileViewModel {
         let generation = requestGeneration
         isLoading = profile == nil
         errorMessage = nil
-        activityErrorMessage = nil
-        inProgressErrorMessage = nil
         isLoadingInProgress = false
+        isLoadingActivity = false
         defer {
             if generation == requestGeneration {
                 isLoading = false
@@ -60,6 +60,10 @@ final class ProfileViewModel {
             }
             guard generation == requestGeneration else { return }
             profile = loadedProfile
+            if username == nil {
+                isLoadingInProgress = inProgressItems.isEmpty
+            }
+            isLoadingActivity = recentActivityItems.isEmpty
         } catch is CancellationError {
             return
         } catch {
@@ -88,7 +92,17 @@ final class ProfileViewModel {
     private func loadRecentActivity(generation: Int) async {
         guard let username = profile?.username else {
             recentActivityItems = []
+            activityErrorMessage = nil
+            isLoadingActivity = false
             return
+        }
+
+        isLoadingActivity = true
+        activityErrorMessage = nil
+        defer {
+            if generation == requestGeneration {
+                isLoadingActivity = false
+            }
         }
 
         do {
@@ -99,7 +113,6 @@ final class ProfileViewModel {
             return
         } catch {
             guard generation == requestGeneration else { return }
-            recentActivityItems = []
             activityErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -109,10 +122,13 @@ final class ProfileViewModel {
         let mediaTypes = InProgressLibraryLoader.mediaTypes(from: profile)
         guard !mediaTypes.isEmpty else {
             inProgressItems = []
+            inProgressErrorMessage = nil
+            isLoadingInProgress = false
             return
         }
 
         isLoadingInProgress = true
+        inProgressErrorMessage = nil
         defer {
             if generation == requestGeneration {
                 isLoadingInProgress = false
@@ -131,7 +147,6 @@ final class ProfileViewModel {
             return
         } catch {
             guard generation == requestGeneration else { return }
-            inProgressItems = []
             inProgressErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -491,6 +506,7 @@ struct ProfileView: View {
     private let listRepository: ListRepository
     private let importCoordinator: LetterboxdImportCoordinator?
     private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
     private let currentUserId: Int?
     private let onLogout: () -> Void
     private let onOpenDiary: () -> Void
@@ -514,6 +530,7 @@ struct ProfileView: View {
         listRepository: ListRepository,
         importCoordinator: LetterboxdImportCoordinator? = nil,
         storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
         currentUserId: Int? = nil,
         onLogout: @escaping () -> Void,
         onOpenDiary: @escaping () -> Void,
@@ -539,6 +556,7 @@ struct ProfileView: View {
         self.listRepository = listRepository
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.currentUserId = currentUserId
         self.onLogout = onLogout
         self.onOpenDiary = onOpenDiary
@@ -576,6 +594,9 @@ struct ProfileView: View {
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
                 Swift.Task<Void, Never> { await viewModel.reload() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .goodreadsImportDidSucceed)) { _ in
+                Swift.Task<Void, Never> { await viewModel.reload() }
+            }
             .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
                 MediaDetailView(
                     ref: ref,
@@ -590,7 +611,7 @@ struct ProfileView: View {
                 )
             }
             .sheet(isPresented: $isSettingsPresented) {
-                if let importCoordinator, let storygraphImportCoordinator {
+                if let importCoordinator, let storygraphImportCoordinator, let goodreadsImportCoordinator {
                     ProfileSettingsSheet(
                         profile: viewModel.profile,
                         profileRepository: profileRepository,
@@ -602,6 +623,7 @@ struct ProfileView: View {
                         onUnauthorized: onUnauthorized,
                         importCoordinator: importCoordinator,
                         storygraphImportCoordinator: storygraphImportCoordinator,
+                        goodreadsImportCoordinator: goodreadsImportCoordinator,
                         onLogout: onLogout
                     )
                 }
@@ -644,11 +666,11 @@ struct ProfileView: View {
 
             ScrollView(showsIndicators: false) {
                 Group {
-                    if viewModel.isLoading {
+                    if viewModel.isLoading, viewModel.profile == nil {
                         ProgressView()
                             .tint(.white)
                             .frame(maxWidth: .infinity, minHeight: 520)
-                    } else if let error = viewModel.errorMessage {
+                    } else if let error = viewModel.errorMessage, viewModel.profile == nil {
                         ContentUnavailableView("Could not load profile", systemImage: "exclamationmark.triangle", description: Text(error))
                             .foregroundStyle(.white)
                             .padding(.top, 120)
@@ -669,6 +691,7 @@ struct ProfileView: View {
                         .padding(.bottom, 100)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .scrollContentBackground(.hidden)
             .ignoresSafeArea(edges: .top)
@@ -862,7 +885,7 @@ struct ProfileView: View {
     }
 
     private func avatar(_ profile: UserProfile) -> some View {
-        AsyncImage(url: URL(string: profile.avatarUrl ?? "")) { phase in
+        SpineAsyncImage(url: URL(string: profile.avatarUrl ?? "")) { phase in
             if case let .success(image) = phase {
                 image
                     .resizable()
@@ -891,7 +914,7 @@ struct ProfileView: View {
         var body: some View {
             GeometryReader { proxy in
                 ZStack {
-                    AsyncImage(url: URL(string: urlString)) { phase in
+                    SpineAsyncImage(url: URL(string: urlString)) { phase in
                         switch phase {
                         case let .success(image):
                             image
@@ -950,50 +973,79 @@ struct ProfileView: View {
     }
 
     private func statsGrid(_ counts: ProfileCounts) -> some View {
-        HStack(spacing: 8) {
-            ProfileStatChip(value: counts.diaryEntries, title: "Logs", systemName: "calendar")
-            ProfileStatChip(value: counts.followers, title: "Followers", systemName: "person.2")
-            ProfileStatChip(value: counts.following, title: "Following", systemName: "person.crop.circle.badge.checkmark")
-            if isOwnProfile {
-                NavigationLink {
-                    ProfileListsView(
-                        profileRepository: profileRepository,
-                        listRepository: listRepository,
-                        mediaRepository: mediaRepository,
-                        trackingRepository: trackingRepository,
-                        diaryRepository: diaryRepository,
-                        activityRepository: activityRepository,
-                        importCoordinator: importCoordinator,
-                        storygraphImportCoordinator: storygraphImportCoordinator,
-                        currentUserId: currentUserId ?? viewModel.profile?.id,
-                        onLogout: onLogout,
-                        onOpenDiary: onOpenDiary,
-                        onOpenLibrary: onOpenLibrary,
-                        selectedTab: selectedTab,
-                        onSelectTab: onSelectTab,
-                        onUnauthorized: onUnauthorized
-                    )
-                } label: {
+        GlassEffectContainer(spacing: 4) {
+            HStack(spacing: 8) {
+                if isOwnProfile {
+                    Button(action: onOpenDiary) {
+                        ProfileStatChip(
+                            value: counts.diaryEntries,
+                            title: "Logs",
+                            systemName: "calendar",
+                            isInteractive: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("profile.logs")
+                    .accessibilityHint("Opens Diary")
+                } else {
+                    ProfileStatChip(value: counts.diaryEntries, title: "Logs", systemName: "calendar")
+                }
+
+                ProfileStatChip(value: counts.followers, title: "Followers", systemName: "person.2")
+                ProfileStatChip(value: counts.following, title: "Following", systemName: "person.crop.circle.badge.checkmark")
+
+                if isOwnProfile {
+                    NavigationLink {
+                        ProfileListsView(
+                            profileRepository: profileRepository,
+                            listRepository: listRepository,
+                            mediaRepository: mediaRepository,
+                            trackingRepository: trackingRepository,
+                            diaryRepository: diaryRepository,
+                            activityRepository: activityRepository,
+                            importCoordinator: importCoordinator,
+                            storygraphImportCoordinator: storygraphImportCoordinator,
+                            goodreadsImportCoordinator: goodreadsImportCoordinator,
+                            currentUserId: currentUserId ?? viewModel.profile?.id,
+                            onLogout: onLogout,
+                            onOpenDiary: onOpenDiary,
+                            onOpenLibrary: onOpenLibrary,
+                            selectedTab: selectedTab,
+                            onSelectTab: onSelectTab,
+                            onUnauthorized: onUnauthorized
+                        )
+                    } label: {
+                        ProfileStatChip(
+                            value: counts.lists,
+                            title: "Lists",
+                            systemName: "list.bullet.rectangle",
+                            isInteractive: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
                     ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
                 }
-                .buttonStyle(.plain)
-            } else {
-                ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
             }
         }
     }
 
     private var activitySection: some View {
         ProfileSection(title: "Recent Activity") {
-            if let activityError = viewModel.activityErrorMessage {
-                EmptyProfileCard(title: activityError, systemName: "exclamationmark.triangle")
-            } else if ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).isEmpty {
-                EmptyProfileCard(title: "No activity yet", systemName: "bolt")
-            } else {
-                RecentActivityRail(items: viewModel.recentActivityItems) { item in
-                    selectedRef = item.media.ref
+            Group {
+                if viewModel.isLoadingActivity, viewModel.recentActivityItems.isEmpty {
+                    ProfileRailLoadingView()
+                } else if let activityError = viewModel.activityErrorMessage, viewModel.recentActivityItems.isEmpty {
+                    EmptyProfileCard(title: activityError, systemName: "exclamationmark.triangle")
+                } else if ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).isEmpty {
+                    EmptyProfileCard(title: "No activity yet", systemName: "bolt")
+                } else {
+                    RecentActivityRail(items: viewModel.recentActivityItems) { item in
+                        selectedRef = item.media.ref
+                    }
                 }
             }
+            .spineContentTransition(value: activityPhase)
         }
     }
 
@@ -1057,6 +1109,7 @@ struct ProfileView: View {
                     activityRepository: activityRepository,
                     importCoordinator: importCoordinator,
                     storygraphImportCoordinator: storygraphImportCoordinator,
+                    goodreadsImportCoordinator: goodreadsImportCoordinator,
                     currentUserId: currentUserId ?? viewModel.profile?.id,
                     onLogout: onLogout,
                     onOpenDiary: onOpenDiary,
@@ -1112,18 +1165,45 @@ struct ProfileView: View {
 
     private var inProgressSection: some View {
         ProfileSection(title: "In Progress") {
-            if viewModel.isLoadingInProgress {
-                ProfileRailLoadingView()
-            } else if let inProgressError = viewModel.inProgressErrorMessage {
-                EmptyProfileCard(title: inProgressError, systemName: "exclamationmark.triangle")
-            } else if viewModel.inProgressItems.isEmpty {
-                EmptyProfileCard(title: "Nothing in progress yet", systemName: "play.circle")
-            } else {
-                InProgressRail(items: viewModel.inProgressItems) { item in
-                    selectedRef = item.media.ref
+            Group {
+                if viewModel.isLoadingInProgress, viewModel.inProgressItems.isEmpty {
+                    ProfileRailLoadingView()
+                } else if let inProgressError = viewModel.inProgressErrorMessage, viewModel.inProgressItems.isEmpty {
+                    EmptyProfileCard(title: inProgressError, systemName: "exclamationmark.triangle")
+                } else if viewModel.inProgressItems.isEmpty {
+                    EmptyProfileCard(title: "Nothing in progress yet", systemName: "play.circle")
+                } else {
+                    InProgressRail(items: viewModel.inProgressItems) { item in
+                        selectedRef = item.media.ref
+                    }
                 }
             }
+            .spineContentTransition(value: inProgressPhase)
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.profile != nil,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
+    private var activityPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingActivity,
+            hasContent: !viewModel.recentActivityItems.isEmpty,
+            hasError: viewModel.activityErrorMessage != nil
+        )
+    }
+
+    private var inProgressPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingInProgress,
+            hasContent: !viewModel.inProgressItems.isEmpty,
+            hasError: viewModel.inProgressErrorMessage != nil
+        )
     }
 
     private func favoriteSlots(from profile: UserProfile) -> [FavoriteSlot] {
@@ -1388,31 +1468,70 @@ private struct HallOfFamePickerRow: View {
 }
 
 private struct ProfileStatChip: View {
+    private static let cornerRadius: CGFloat = 12
+
     let value: Int
     let title: String
     let systemName: String
+    var isInteractive = false
 
     var body: some View {
-        VStack(spacing: 5) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white.opacity(0.62))
+        glassSurface
+            .overlay {
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(value.formatted()) \(title)")
+    }
 
-            Text(value.formatted())
-                .font(.system(size: 18, weight: .black))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+    @ViewBuilder
+    private var glassSurface: some View {
+        if isInteractive {
+            content
+                .glassEffect(
+                    .regular.tint(.white.opacity(0.06)).interactive(),
+                    in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                )
+        } else {
+            content
+                .glassEffect(
+                    .regular.tint(.white.opacity(0.06)),
+                    in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                )
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: systemName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+
+                Text(value.formatted())
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .contentTransition(.numericText())
+            }
 
             Text(title)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.52))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
                 .lineLimit(1)
-                .minimumScaleFactor(0.68)
+                .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 70)
-        .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(height: 56)
+        .background(
+            .white.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+        )
     }
 }
 
@@ -1798,6 +1917,7 @@ private struct EmptyProfileCard: View {
 private enum ImportStatusSource: Hashable, Identifiable {
     case letterboxd
     case storygraph
+    case goodreads
 
     var id: Self { self }
 }
@@ -1813,6 +1933,7 @@ private struct ProfileSettingsSheet: View {
     let onProfileUpdated: (UserProfile) -> Void
     let importCoordinator: LetterboxdImportCoordinator
     let storygraphImportCoordinator: StoryGraphImportCoordinator
+    let goodreadsImportCoordinator: GoodreadsImportCoordinator
     let onLogout: () -> Void
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
@@ -1826,12 +1947,14 @@ private struct ProfileSettingsSheet: View {
         onUnauthorized: @escaping () -> Void,
         importCoordinator: LetterboxdImportCoordinator,
         storygraphImportCoordinator: StoryGraphImportCoordinator,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator,
         onLogout: @escaping () -> Void
     ) {
         self.profile = profile
         self.onProfileUpdated = onProfileUpdated
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.onLogout = onLogout
         self.profileRepository = profileRepository
         self.mediaRepository = mediaRepository
@@ -1901,6 +2024,11 @@ private struct ProfileSettingsSheet: View {
                         coordinator: storygraphImportCoordinator,
                         onDone: { importStatusSource = nil }
                     )
+                case .goodreads:
+                    GoodreadsImportUploadView(
+                        coordinator: goodreadsImportCoordinator,
+                        onDone: { importStatusSource = nil }
+                    )
                 }
             }
             .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
@@ -1922,7 +2050,7 @@ private struct ProfileSettingsSheet: View {
 
         return Section("Account") {
             HStack(spacing: 14) {
-                AsyncImage(url: URL(string: avatarUrl ?? "")) { phase in
+                SpineAsyncImage(url: URL(string: avatarUrl ?? "")) { phase in
                     if case let .success(image) = phase {
                         image.resizable().scaledToFill()
                     } else {
@@ -2063,7 +2191,9 @@ private struct ProfileSettingsSheet: View {
 
     @ViewBuilder
     private var importSectionContent: some View {
-        if importCoordinator.phase == .idle && storygraphImportCoordinator.phase == .idle {
+        if importCoordinator.phase == .idle &&
+            storygraphImportCoordinator.phase == .idle &&
+            goodreadsImportCoordinator.phase == .idle {
             NavigationLink {
                 LetterboxdImportView(coordinator: importCoordinator)
             } label: {
@@ -2074,10 +2204,17 @@ private struct ProfileSettingsSheet: View {
             } label: {
                 Label("Import from StoryGraph", systemImage: "doc.text")
             }
+            NavigationLink {
+                GoodreadsImportView(coordinator: goodreadsImportCoordinator)
+            } label: {
+                Label("Import from Goodreads", systemImage: "doc.text")
+            }
         } else if importCoordinator.phase != .idle {
             letterboxdImportStatus
-        } else {
+        } else if storygraphImportCoordinator.phase != .idle {
             storygraphImportStatus
+        } else {
+            goodreadsImportStatus
         }
     }
 
@@ -2193,6 +2330,62 @@ private struct ProfileSettingsSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var goodreadsImportStatus: some View {
+        switch goodreadsImportCoordinator.phase {
+        case .idle:
+            EmptyView()
+        case let .uploading(_, progress):
+            Button {
+                importStatusSource = .goodreads
+            } label: {
+                HStack(spacing: 12) {
+                    ProgressView(value: progress)
+                        .frame(width: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Uploading...")
+                        Text("Tap for details")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        case let .processing(_, statusLabel, _):
+            Button {
+                importStatusSource = .goodreads
+            } label: {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(statusLabel)
+                        Text("Tap for details")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            goodreadsCheckStatusButton
+        case let .succeeded(message):
+            importResultRow(systemName: "checkmark.circle.fill", tint: .green, message: message)
+            Button("Dismiss") {
+                goodreadsImportCoordinator.clearFinishedJob()
+            }
+        case let .failed(message):
+            importResultRow(systemName: "exclamationmark.triangle.fill", tint: .red, message: message)
+            if goodreadsImportCoordinator.canCheckStatus {
+                goodreadsCheckStatusButton
+            }
+            NavigationLink {
+                GoodreadsImportView(coordinator: goodreadsImportCoordinator)
+            } label: {
+                Label("Try Again", systemImage: "arrow.clockwise")
+            }
+            Button("Dismiss") {
+                goodreadsImportCoordinator.clearFinishedJob()
+            }
+        }
+    }
+
     private var letterboxdCheckStatusButton: some View {
         Button {
             importCoordinator.checkStatusOnce()
@@ -2217,6 +2410,19 @@ private struct ProfileSettingsSheet: View {
             }
         }
         .disabled(storygraphImportCoordinator.isCheckingStatus)
+    }
+
+    private var goodreadsCheckStatusButton: some View {
+        Button {
+            goodreadsImportCoordinator.checkStatusOnce()
+        } label: {
+            if goodreadsImportCoordinator.isCheckingStatus {
+                Label("Checking Status", systemImage: "clock.arrow.circlepath")
+            } else {
+                Label("Check Status", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(goodreadsImportCoordinator.isCheckingStatus)
     }
 
     private func importResultRow(systemName: String, tint: Color, message: String) -> some View {

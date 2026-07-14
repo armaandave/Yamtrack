@@ -91,6 +91,8 @@ final class MediaLogViewModel {
             "Log TV Show"
         case "season":
             "Log Season"
+        case "episode":
+            "Log Episode"
         case "anime":
             "Log Anime"
         case "manga":
@@ -214,7 +216,19 @@ final class MediaLogViewModel {
     func markOnly() async -> Bool {
         await performSave {
             let ref = selectedRef
-            if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
+            if
+                ref.mediaType == "episode",
+                let seasonNumber = ref.seasonNumber,
+                let episodeNumber = ref.episodeNumber
+            {
+                _ = try await trackingRepository.watchEpisode(
+                    source: ref.source,
+                    mediaId: ref.mediaId,
+                    seasonNumber: seasonNumber,
+                    episodeNumber: episodeNumber,
+                    watchedAt: consumedAt
+                )
+            } else if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
                 _ = try await trackingRepository.watchSeason(source: ref.source, mediaId: ref.mediaId, seasonNumber: seasonNumber)
             } else if ref.mediaType == "book" {
                 _ = try await trackingRepository.completeBook(source: ref.source, mediaId: ref.mediaId, completedAt: consumedAt)
@@ -374,14 +388,16 @@ struct MediaLogView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .bottom, spacing: 14) {
-                MediaArtwork(
-                    url: viewModel.detail.displayPosterURL,
-                    title: viewModel.detail.title,
-                    slot: .logSheet,
-                    mediaType: viewModel.detail.ref.mediaType,
-                    orientation: viewModel.detail.posterOrientation
-                )
+                if viewModel.detail.ref.mediaType != "episode" {
+                    MediaArtwork(
+                        url: viewModel.detail.displayPosterURL,
+                        title: viewModel.detail.title,
+                        slot: .logSheet,
+                        mediaType: viewModel.detail.ref.mediaType,
+                        orientation: viewModel.detail.posterOrientation
+                    )
                     .shadow(color: .black.opacity(0.42), radius: 16, y: 8)
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(viewModel.mode == .progress ? "Update Progress" : viewModel.primaryActionTitle)

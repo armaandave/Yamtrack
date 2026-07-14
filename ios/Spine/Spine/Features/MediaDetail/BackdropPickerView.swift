@@ -6,7 +6,7 @@ final class BackdropPickerViewModel {
     var backdrops: [PosterOption] = []
     var selectedLanguage = "all"
     var selectedBackdropURL: String?
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
@@ -178,14 +178,17 @@ struct BackdropPickerView: View {
                             .padding()
                     } else {
                         backdropGrid
+                            .allowsHitTesting(!viewModel.isSaving)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .navigationTitle("Customize Backdrop")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(viewModel.isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -209,6 +212,15 @@ struct BackdropPickerView: View {
                 await viewModel.load()
             }
         }
+        .interactiveDismissDisabled(viewModel.isSaving)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.backdrops.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var backdropGrid: some View {
@@ -292,7 +304,7 @@ private struct BackdropOptionCell: View {
             .aspectRatio(16.0 / 9.0, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .overlay {
-                AsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
+                SpineAsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
                     if case let .success(image) = phase {
                         image
                             .resizable()

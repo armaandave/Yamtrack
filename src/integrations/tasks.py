@@ -165,9 +165,16 @@ def import_imdb(file, user_id, mode):
 
 
 @shared_task(name="Import from GoodReads")
-def import_goodreads(file, user_id, mode):
+def import_goodreads(file_path, user_id, mode):
     """Celery task for importing media data from GoodReads."""
-    return import_media(goodreads.importer, file, user_id, mode)
+    try:
+        with open(file_path, "rb") as export_file:
+            return import_media(goodreads.importer, export_file, user_id, mode)
+    finally:
+        try:
+            os.unlink(file_path)
+        except OSError:
+            logger.warning("Could not delete temporary Goodreads import file: %s", file_path)
 
 
 @shared_task(name="Import from Letterboxd")

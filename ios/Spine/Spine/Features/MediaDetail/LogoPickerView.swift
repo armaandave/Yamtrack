@@ -6,7 +6,7 @@ final class LogoPickerViewModel {
     var logos: [LogoOption] = []
     var selectedLanguage = "en"
     var selectedLogoURL: String?
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
@@ -145,14 +145,17 @@ struct LogoPickerView: View {
                             .padding()
                     } else {
                         logoList
+                            .allowsHitTesting(!viewModel.isSaving)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .navigationTitle("Customize Logo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(viewModel.isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -176,6 +179,15 @@ struct LogoPickerView: View {
                 await viewModel.load()
             }
         }
+        .interactiveDismissDisabled(viewModel.isSaving)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.logos.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var logoList: some View {
@@ -200,7 +212,13 @@ struct LogoPickerView: View {
             }
 
             ScrollView {
-                LazyVStack(spacing: 12) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible()),
+                    ],
+                    spacing: 12
+                ) {
                     ForEach(viewModel.filteredLogos) { logo in
                         LogoOptionRow(
                             logo: logo,
@@ -232,8 +250,8 @@ private struct LogoOptionRow: View {
                 }
 
                 LogoRemoteImage(thumbnailURL: logo.thumbnailUrl, fullURL: logo.url)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 20)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 18)
 
                 if logo.isSelected {
                     Text("Current")
@@ -256,7 +274,7 @@ private struct LogoOptionRow: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 112)
+            .frame(height: 88)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
@@ -288,7 +306,7 @@ private struct LogoRemoteImage: View {
 
     var body: some View {
         if let thumbnailURL, thumbnailURL != fullURL {
-            AsyncImage(url: URL(string: thumbnailURL)) { phase in
+            SpineAsyncImage(url: URL(string: thumbnailURL)) { phase in
                 switch phase {
                 case .success(let image):
                     logoImage(image)
@@ -304,7 +322,7 @@ private struct LogoRemoteImage: View {
     }
 
     private var fullImage: some View {
-        AsyncImage(url: URL(string: fullURL)) { phase in
+        SpineAsyncImage(url: URL(string: fullURL)) { phase in
             switch phase {
             case .success(let image):
                 logoImage(image)

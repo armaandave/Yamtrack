@@ -62,6 +62,20 @@ def artwork_from_payload(payload, media_type=None, request=None):
     orientation = _orientation(width, height)
 
     backdrop = _backdrop_url(payload, request=request)
+    if media_type == MediaTypes.EPISODE.value:
+        if backdrop is None and poster_value:
+            still = _provider_image_value(poster_value)
+            if still and str(still) != settings.IMG_NONE:
+                backdrop = absolute_url(request, still)
+        return {
+            "image_url": None,
+            "poster_url": None,
+            "backdrop_url": backdrop,
+            "poster_aspect_ratio": None,
+            "poster_width": None,
+            "poster_height": None,
+            "poster_orientation": None,
+        }
     return {
         "image_url": poster,
         "poster_url": poster,

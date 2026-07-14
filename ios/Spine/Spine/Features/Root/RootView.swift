@@ -18,10 +18,25 @@ struct RootView: View {
                 AppShellView(session: session)
             }
         }
+        .spineContentTransition(value: presentationPhase)
         .task {
             await session.start()
         }
     }
+
+    private var presentationPhase: RootPresentationPhase {
+        switch session.state {
+        case .checking: .checking
+        case .signedOut: .signedOut
+        case .signedIn: .signedIn
+        }
+    }
+}
+
+private enum RootPresentationPhase: Hashable {
+    case checking
+    case signedOut
+    case signedIn
 }
 
 #Preview {

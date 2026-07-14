@@ -6,6 +6,7 @@ final class DiaryViewModel {
     var entries: [DiaryEntry] = []
     var filter: MediaFilterState
     var filterOptions: MediaFilterOptionsResponse = .empty
+    var isBootstrapping = true
     var isLoading = false
     var isLoadingNextPage = false
     var errorMessage: String?
@@ -17,6 +18,8 @@ final class DiaryViewModel {
     private var nextPage: String?
     private var requestGeneration = 0
     private var didLoad = false
+    private var isInitialLoadInFlight = false
+    private var presentedFilter: MediaFilterState?
 
     init(
         diaryRepository: DiaryRepository,
@@ -35,8 +38,15 @@ final class DiaryViewModel {
         self.onUnauthorized = onUnauthorized
     }
 
-    func loadIfNeeded() async {
-        guard !didLoad, !isLoading else { return }
+    func loadIfNeeded(loadsFilterOptions: Bool = false) async {
+        guard !didLoad, !isInitialLoadInFlight else { return }
+        isInitialLoadInFlight = true
+        defer { isInitialLoadInFlight = false }
+
+        if loadsFilterOptions {
+            await loadFilterOptions()
+            guard !Task.isCancelled else { return }
+        }
         await load()
     }
 
@@ -44,12 +54,22 @@ final class DiaryViewModel {
         requestGeneration += 1
         let generation = requestGeneration
         let requestFilter = diaryRequestFilter
+        let preservesLastGoodContent = presentedFilter == requestFilter && !entries.isEmpty
+        if !preservesLastGoodContent {
+            entries = []
+            nextPage = nil
+        }
+        presentedFilter = requestFilter
         isLoading = true
         errorMessage = nil
         nextPageErrorMessage = nil
+        var wasCancelled = false
         defer {
             if generation == requestGeneration, requestFilter == diaryRequestFilter {
                 isLoading = false
+                if !wasCancelled {
+                    isBootstrapping = false
+                }
             }
         }
 
@@ -60,6 +80,7 @@ final class DiaryViewModel {
             nextPage = APIPageCursor.nextPage(from: response.next)
             didLoad = true
         } catch is CancellationError {
+            wasCancelled = true
             return
         } catch {
             guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
@@ -110,11 +131,31 @@ final class DiaryViewModel {
 
     func loadFilterOptions() async {
         guard filter.itemId == nil else { return }
+        prepareForFilterChangeIfNeeded()
         do {
-            filterOptions = try await filterOptionsRepository.options(scope: .diary, filter: diaryRequestFilter)
+            let requestFilter = diaryRequestFilter
+            let options = try await filterOptionsRepository.options(scope: .diary, filter: requestFilter)
+            guard requestFilter == diaryRequestFilter else { return }
+            filterOptions = options
+        } catch is CancellationError {
+            return
         } catch {
             filterOptions = .empty
         }
+    }
+
+    private func prepareForFilterChangeIfNeeded() {
+        let requestFilter = diaryRequestFilter
+        guard presentedFilter != requestFilter else { return }
+
+        requestGeneration += 1
+        presentedFilter = requestFilter
+        entries = []
+        nextPage = nil
+        errorMessage = nil
+        nextPageErrorMessage = nil
+        isLoading = true
+        isLoadingNextPage = false
     }
 
     private var diaryRequestFilter: MediaFilterState {
@@ -180,37 +221,40 @@ struct MediaDiaryView: View {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         header
 
-                        if viewModel.isLoading, viewModel.entries.isEmpty {
-                            ProgressView()
-                                .tint(.white)
-                                .frame(maxWidth: .infinity, minHeight: 320)
-                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
-                            DiaryStateCard(
-                                title: "Could not load logs",
-                                systemImage: "exclamationmark.triangle",
-                                message: error
-                            )
-                        } else if viewModel.entries.isEmpty {
-                            DiaryStateCard(
-                                title: "No logs",
-                                systemImage: "calendar",
-                                message: "Logs for this media will appear here."
-                            )
-                        } else {
-                            DiaryEntryList(entries: viewModel.entries, artworkOverride: artworkOverride) { entry in
-                                DiaryLogDetailView(
-                                    entryId: entry.id,
-                                    diaryRepository: diaryRepository,
-                                    mediaRepository: mediaRepository,
-                                    trackingRepository: trackingRepository,
-                                    currentUserId: currentUserId,
-                                    selectedTab: selectedTab,
-                                    onSelectTab: onSelectTab,
-                                    onUnauthorized: onUnauthorized
+                        Group {
+                            if viewModel.isBootstrapping || (viewModel.isLoading && viewModel.entries.isEmpty) {
+                                ProgressView()
+                                    .tint(.white)
+                                    .frame(maxWidth: .infinity, minHeight: 320)
+                            } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
+                                DiaryStateCard(
+                                    title: "Could not load logs",
+                                    systemImage: "exclamationmark.triangle",
+                                    message: error
                                 )
+                            } else if viewModel.entries.isEmpty {
+                                DiaryStateCard(
+                                    title: "No logs",
+                                    systemImage: "calendar",
+                                    message: "Logs for this media will appear here."
+                                )
+                            } else {
+                                DiaryEntryList(entries: viewModel.entries, artworkOverride: artworkOverride) { entry in
+                                    DiaryLogDetailView(
+                                        entryId: entry.id,
+                                        diaryRepository: diaryRepository,
+                                        mediaRepository: mediaRepository,
+                                        trackingRepository: trackingRepository,
+                                        currentUserId: currentUserId,
+                                        selectedTab: selectedTab,
+                                        onSelectTab: onSelectTab,
+                                        onUnauthorized: onUnauthorized
+                                    )
+                                }
+                                paginationFooter
                             }
-                            paginationFooter
                         }
+                        .spineContentTransition(value: contentPhase)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 18)
@@ -266,6 +310,14 @@ struct MediaDiaryView: View {
             }
     }
 
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isBootstrapping || viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 10) {
@@ -312,7 +364,10 @@ struct MediaDiaryView: View {
 }
 
 struct DiaryView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: DiaryViewModel
+    @State private var monthDisplayMode: DiaryMonthDisplayMode = .expanded
+    @State private var pendingMonthAnchor: String?
 
     private let diaryRepository: DiaryRepository
     private let mediaRepository: MediaRepository
@@ -346,49 +401,60 @@ struct DiaryView: View {
             ZStack {
                 SpinePageBackground()
 
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        header
-                        mediaPicker
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            header
+                            mediaPicker
 
-                        if viewModel.isLoading, viewModel.entries.isEmpty {
-                            ProgressView()
-                                .tint(.white)
-                                .frame(maxWidth: .infinity, minHeight: 320)
-                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
-                            DiaryStateCard(
-                                title: "Could not load diary",
-                                systemImage: "exclamationmark.triangle",
-                                message: error
-                            )
-                        } else if viewModel.entries.isEmpty {
-                            DiaryStateCard(
-                                title: "No diary entries",
-                                systemImage: "calendar",
-                                message: "Logs you create from media pages will appear here."
-                            )
-                        } else {
-                            DiaryEntryList(entries: viewModel.entries) { entry in
-                                DiaryLogDetailView(
-                                    entryId: entry.id,
-                                    diaryRepository: diaryRepository,
-                                    mediaRepository: mediaRepository,
-                                    trackingRepository: trackingRepository,
-                                    currentUserId: currentUserId,
-                                    selectedTab: selectedTab,
-                                    onSelectTab: onSelectTab,
-                                    onUnauthorized: onUnauthorized
-                                )
+                            Group {
+                                if viewModel.isBootstrapping || (viewModel.isLoading && viewModel.entries.isEmpty) {
+                                    ProgressView()
+                                        .tint(.white)
+                                        .frame(maxWidth: .infinity, minHeight: 320)
+                                } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
+                                    DiaryStateCard(
+                                        title: "Could not load diary",
+                                        systemImage: "exclamationmark.triangle",
+                                        message: error
+                                    )
+                                } else if viewModel.entries.isEmpty {
+                                    DiaryStateCard(
+                                        title: "No diary entries",
+                                        systemImage: "calendar",
+                                        message: "Logs you create from media pages will appear here."
+                                    )
+                                } else {
+                                    DiaryEntryList(
+                                        entries: viewModel.entries,
+                                        monthDisplayMode: monthDisplayMode,
+                                        onMonthHeaderTap: { sectionID in
+                                            toggleMonthDisplay(for: sectionID, proxy: proxy)
+                                        }
+                                    ) { entry in
+                                        DiaryLogDetailView(
+                                            entryId: entry.id,
+                                            diaryRepository: diaryRepository,
+                                            mediaRepository: mediaRepository,
+                                            trackingRepository: trackingRepository,
+                                            currentUserId: currentUserId,
+                                            selectedTab: selectedTab,
+                                            onSelectTab: onSelectTab,
+                                            onUnauthorized: onUnauthorized
+                                        )
+                                    }
+                                    paginationFooter
+                                }
                             }
-                            paginationFooter
+                            .spineContentTransition(value: contentPhase)
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.top, 18)
+                        .padding(.bottom, 28)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 18)
-                    .padding(.bottom, 28)
-                }
-                .refreshable {
-                    await viewModel.load()
+                    .refreshable {
+                        await viewModel.load()
+                    }
                 }
             }
             .overlay(alignment: .top) {
@@ -397,8 +463,7 @@ struct DiaryView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .task {
-                await viewModel.loadFilterOptions()
-                await viewModel.loadIfNeeded()
+                await viewModel.loadIfNeeded(loadsFilterOptions: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .letterboxdImportDidSucceed)) { _ in
                 Task { await viewModel.load() }
@@ -410,6 +475,33 @@ struct DiaryView: View {
                 Task { await viewModel.load() }
             }
         }
+    }
+
+    private func toggleMonthDisplay(for sectionID: String, proxy: ScrollViewProxy) {
+        pendingMonthAnchor = sectionID
+        let animation: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.2)
+
+        withAnimation(animation) {
+            monthDisplayMode = monthDisplayMode == .expanded ? .collapsed : .expanded
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            guard pendingMonthAnchor == sectionID else { return }
+
+            withAnimation(animation) {
+                proxy.scrollTo(sectionID, anchor: .top)
+            }
+            pendingMonthAnchor = nil
+        }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isBootstrapping || viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var header: some View {
@@ -474,7 +566,7 @@ struct DiaryView: View {
             Color.clear
                 .frame(height: 1)
         }
-        .task {
+        .task(id: viewModel.entries.last?.id) {
             guard let last = viewModel.entries.last else { return }
             await viewModel.loadNextPageIfNeeded(currentEntry: last)
         }

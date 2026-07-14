@@ -45,13 +45,15 @@ def normalize_search_text(value):
     return " ".join("".join(chars).split())
 
 
-def rank_results(query, results, media_type=None):
+def rank_results(query, results, media_type=None, *, preserve_ranking_fields=False):
     """Return results ordered by relevance, popularity, and metadata quality."""
     ranked = [
         (_score(query, result, media_type), -index, result)
         for index, result in enumerate(results)
     ]
     ranked.sort(reverse=True)
+    if preserve_ranking_fields:
+        return [result for _, _, result in ranked]
     return [_without_ranking_fields(result) for _, _, result in ranked]
 
 

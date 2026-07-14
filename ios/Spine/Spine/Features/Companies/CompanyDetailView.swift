@@ -9,7 +9,7 @@ final class CompanyDetailViewModel {
     var nextPageByRole: [CompanyCatalogRole: String] = [:]
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .companyFallback
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let ref: CompanyRef
@@ -35,12 +35,10 @@ final class CompanyDetailViewModel {
             detail = loaded
             let role = preferredRole(for: loaded)
             filterRevision += 1
-            gamesByRole = [:]
-            nextPageByRole = [:]
             await loadGames(for: role, reset: true)
+        } catch is CancellationError {
+            return
         } catch {
-            detail = nil
-            gamesByRole = [:]
             errorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -49,6 +47,8 @@ final class CompanyDetailViewModel {
     func loadFilterOptions() async {
         do {
             filterOptions = try await companyRepository.gameFilterOptions(ref: ref)
+        } catch is CancellationError {
+            return
         } catch {
             handleUnauthorized(error)
         }
@@ -59,10 +59,6 @@ final class CompanyDetailViewModel {
         let requestRevision = filterRevision
         let requestFilter = filter
         loadingRevisionByRole[role] = requestRevision
-        if reset {
-            gamesByRole[role] = []
-            nextPageByRole[role] = nil
-        }
         defer {
             if loadingRevisionByRole[role] == requestRevision {
                 loadingRevisionByRole[role] = nil
@@ -79,6 +75,8 @@ final class CompanyDetailViewModel {
             guard requestRevision == filterRevision, requestFilter == filter else { return }
             gamesByRole[role] = response.results
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+        } catch is CancellationError {
+            return
         } catch {
             guard requestRevision == filterRevision else { return }
             errorMessage = error.localizedDescription
@@ -110,6 +108,8 @@ final class CompanyDetailViewModel {
             games += response.results.filter { seen.insert($0.id).inserted }
             gamesByRole[role] = games
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+        } catch is CancellationError {
+            return
         } catch {
             guard requestRevision == filterRevision else { return }
             errorMessage = error.localizedDescription
@@ -201,6 +201,7 @@ struct CompanyDetailView: View {
         ZStack(alignment: .topLeading) {
             SpinePageBackground()
             content
+                .spineContentTransition(value: contentPhase)
             CompanyBackButton { dismiss() }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
@@ -271,7 +272,7 @@ struct CompanyDetailView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading {
+        if viewModel.isLoading, viewModel.detail == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -293,7 +294,7 @@ struct CompanyDetailView: View {
                 await viewModel.load()
                 expandPrimaryRole()
             }
-        } else if let error = viewModel.errorMessage {
+        } else if let error = viewModel.errorMessage, viewModel.detail == nil {
             ContentUnavailableView(
                 "Could not load studio",
                 systemImage: "building.2.crop.circle",
@@ -302,6 +303,14 @@ struct CompanyDetailView: View {
             .foregroundStyle(.white)
             .padding()
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.detail != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private func hero(_ detail: CompanyDetail) -> some View {
@@ -409,7 +418,7 @@ struct CompanyDetailView: View {
     private func roleGames(_ role: CompanyCatalogRole) -> some View {
         let games = viewModel.gamesByRole[role] ?? []
 
-        if viewModel.isLoadingGames(for: role), viewModel.errorMessage == nil {
+        if viewModel.isLoadingGames(for: role), games.isEmpty, viewModel.errorMessage == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 120)
@@ -549,7 +558,7 @@ private struct CompanyLogo: View {
     let name: String
 
     var body: some View {
-        AsyncImage(url: URL(string: urlString ?? "")) { phase in
+        SpineAsyncImage(url: URL(string: urlString ?? "")) { phase in
             switch phase {
             case let .success(image):
                 image

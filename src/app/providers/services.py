@@ -256,7 +256,14 @@ def get_media_metadata(
     return metadata_retrievers[media_type]()
 
 
-def search(media_type, query, page, source=None):
+def search(
+    media_type,
+    query,
+    page,
+    source=None,
+    *,
+    preserve_ranking_fields=False,
+):
     """Search for media based on the query and return the results."""
     search_handlers = {
         MediaTypes.MANGA.value: lambda: (
@@ -271,8 +278,20 @@ def search(media_type, query, page, source=None):
         MediaTypes.EPISODE.value: lambda: tmdb.search(MediaTypes.TV.value, query, page),
         MediaTypes.GAME.value: lambda: igdb.search(query, page),
         MediaTypes.BOOK.value: lambda: (
-            openlibrary.search(query, page)
+            openlibrary.search(
+                query,
+                page,
+                preserve_ranking_fields=True,
+            )
+            if source == Sources.OPENLIBRARY.value and preserve_ranking_fields
+            else openlibrary.search(query, page)
             if source == Sources.OPENLIBRARY.value
+            else hardcover.search(
+                query,
+                page,
+                preserve_ranking_fields=True,
+            )
+            if preserve_ranking_fields
             else hardcover.search(query, page)
         ),
         MediaTypes.COMIC.value: lambda: comicvine.search(query, page),

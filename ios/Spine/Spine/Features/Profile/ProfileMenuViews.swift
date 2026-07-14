@@ -5,7 +5,7 @@ import UIKit
 @Observable
 private final class ProfileDiaryFilterViewModel {
     var entries: [DiaryEntry] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let filter: DiaryFilter
@@ -125,17 +125,20 @@ struct ProfileLikesView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load likes", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.media.isEmpty {
-                        DiaryStateCard(title: "No liked media yet", systemImage: "heart", message: "Media you like while logging will appear here.")
-                    } else {
-                        mediaGrid(viewModel.media)
+                    Group {
+                        if viewModel.isLoading, viewModel.media.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.media.isEmpty {
+                            DiaryStateCard(title: "Could not load likes", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.media.isEmpty {
+                            DiaryStateCard(title: "No liked media yet", systemImage: "heart", message: "Media you like while logging will appear here.")
+                        } else {
+                            mediaGrid(viewModel.media)
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -155,6 +158,14 @@ struct ProfileLikesView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.media.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private func mediaGrid(_ media: [MediaSummary]) -> some View {
@@ -197,7 +208,7 @@ struct ProfileLikesView: View {
 @Observable
 private final class ProfileLikesViewModel {
     var media: [MediaSummary] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let profileRepository: ProfileRepository
@@ -243,28 +254,31 @@ private struct ProfileDiaryEntriesScreen: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load \(title.lowercased())", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.entries.isEmpty {
-                        DiaryStateCard(title: emptyTitle, systemImage: "text.bubble", message: emptyMessage)
-                    } else {
-                        DiaryEntryList(entries: viewModel.entries) { entry in
-                            DiaryLogDetailView(
-                                entryId: entry.id,
-                                diaryRepository: diaryRepository,
-                                mediaRepository: mediaRepository,
-                                trackingRepository: trackingRepository,
-                                currentUserId: currentUserId,
-                                selectedTab: selectedTab,
-                                onSelectTab: onSelectTab,
-                                onUnauthorized: onUnauthorized
-                            )
+                    Group {
+                        if viewModel.isLoading, viewModel.entries.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
+                            DiaryStateCard(title: "Could not load \(title.lowercased())", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.entries.isEmpty {
+                            DiaryStateCard(title: emptyTitle, systemImage: "text.bubble", message: emptyMessage)
+                        } else {
+                            DiaryEntryList(entries: viewModel.entries) { entry in
+                                DiaryLogDetailView(
+                                    entryId: entry.id,
+                                    diaryRepository: diaryRepository,
+                                    mediaRepository: mediaRepository,
+                                    trackingRepository: trackingRepository,
+                                    currentUserId: currentUserId,
+                                    selectedTab: selectedTab,
+                                    onSelectTab: onSelectTab,
+                                    onUnauthorized: onUnauthorized
+                                )
+                            }
                         }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -285,13 +299,21 @@ private struct ProfileDiaryEntriesScreen: View {
             }
         }
     }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
 }
 
 @MainActor
 @Observable
 private final class ProfileTagsViewModel {
     var tags: [DiaryTagSuggestion] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
     var totalTagUses: Int {
         tags.reduce(0) { $0 + $1.usageCount }
@@ -369,17 +391,20 @@ struct ProfileTagsView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load tags", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.tags.isEmpty {
-                        DiaryStateCard(title: "No tags yet", systemImage: "tag", message: "Tags you add while logging will appear here.")
-                    } else {
-                        tagsContent
+                    Group {
+                        if viewModel.isLoading, viewModel.tags.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.tags.isEmpty {
+                            DiaryStateCard(title: "Could not load tags", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.tags.isEmpty {
+                            DiaryStateCard(title: "No tags yet", systemImage: "tag", message: "Tags you add while logging will appear here.")
+                        } else {
+                            tagsContent
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -399,6 +424,14 @@ struct ProfileTagsView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.tags.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     @ViewBuilder
@@ -531,7 +564,7 @@ private struct ProfileTagRow: View {
 @Observable
 private final class ProfileListsViewModel {
     var lists: [CustomListSummary] = []
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
@@ -596,6 +629,7 @@ struct ProfileListsView: View {
     private let activityRepository: ActivityRepository
     private let importCoordinator: LetterboxdImportCoordinator?
     private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
     private let currentUserId: Int?
     private let onLogout: () -> Void
     private let onOpenDiary: () -> Void
@@ -613,6 +647,7 @@ struct ProfileListsView: View {
         activityRepository: ActivityRepository,
         importCoordinator: LetterboxdImportCoordinator? = nil,
         storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
         currentUserId: Int? = nil,
         onLogout: @escaping () -> Void = {},
         onOpenDiary: @escaping () -> Void = {},
@@ -629,6 +664,7 @@ struct ProfileListsView: View {
         self.activityRepository = activityRepository
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.currentUserId = currentUserId
         self.onLogout = onLogout
         self.onOpenDiary = onOpenDiary
@@ -645,17 +681,20 @@ struct ProfileListsView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 12) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load lists", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.lists.isEmpty {
-                        DiaryStateCard(title: "No lists yet", systemImage: "list.bullet.rectangle", message: "Custom lists you create will appear here.")
-                    } else {
-                        listsContent
+                    Group {
+                        if viewModel.isLoading, viewModel.lists.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.lists.isEmpty {
+                            DiaryStateCard(title: "Could not load lists", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.lists.isEmpty {
+                            DiaryStateCard(title: "No lists yet", systemImage: "list.bullet.rectangle", message: "Custom lists you create will appear here.")
+                        } else {
+                            listsContent
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -700,6 +739,14 @@ struct ProfileListsView: View {
         }
     }
 
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.lists.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
     @ViewBuilder
     private var listsContent: some View {
         ProfileTagSearchField(text: $searchText, placeholder: "Search lists")
@@ -723,6 +770,7 @@ struct ProfileListsView: View {
                         activityRepository: activityRepository,
                         importCoordinator: importCoordinator,
                         storygraphImportCoordinator: storygraphImportCoordinator,
+                        goodreadsImportCoordinator: goodreadsImportCoordinator,
                         currentUserId: currentUserId,
                         onLogout: onLogout,
                         onOpenDiary: onOpenDiary,
@@ -762,6 +810,7 @@ struct ProfileListsView: View {
             activityRepository: activityRepository,
             importCoordinator: importCoordinator,
             storygraphImportCoordinator: storygraphImportCoordinator,
+            goodreadsImportCoordinator: goodreadsImportCoordinator,
             currentUserId: currentUserId,
             onLogout: onLogout,
             onOpenDiary: onOpenDiary,
@@ -858,7 +907,7 @@ private final class ProfileListDetailViewModel {
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .empty
     var filteredItems: [MediaSummary] = []
-    var isLoading = false
+    var isLoading = true
     var isLoadingFilteredItems = false
     var isSaving = false
     var errorMessage: String?
@@ -1120,6 +1169,7 @@ private struct ProfileListDetailView: View {
     private let activityRepository: ActivityRepository
     private let importCoordinator: LetterboxdImportCoordinator?
     private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
     private let currentUserId: Int?
     private let onLogout: () -> Void
     private let onOpenDiary: () -> Void
@@ -1138,6 +1188,7 @@ private struct ProfileListDetailView: View {
         activityRepository: ActivityRepository,
         importCoordinator: LetterboxdImportCoordinator? = nil,
         storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
         currentUserId: Int? = nil,
         onLogout: @escaping () -> Void = {},
         onOpenDiary: @escaping () -> Void = {},
@@ -1154,6 +1205,7 @@ private struct ProfileListDetailView: View {
         self.activityRepository = activityRepository
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.currentUserId = currentUserId
         self.onLogout = onLogout
         self.onOpenDiary = onOpenDiary
@@ -1170,33 +1222,36 @@ private struct ProfileListDetailView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
-                    } else if let list = viewModel.list {
-                        listHeader(list)
-                            .padding(.top, -(topSafeAreaInset + 32))
-                        if viewModel.displayedItems.isEmpty {
-                            DiaryStateCard(
-                                title: viewModel.filter.isActive ? "No matching items" : "No items yet",
-                                systemImage: "square.grid.2x2",
-                                message: viewModel.filter.isActive ? "Try changing or resetting the filters." : "Add items from any media detail page."
-                            )
+                    Group {
+                        if viewModel.isLoading, viewModel.list == nil {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
                                 .padding(.horizontal, 14)
-                        } else {
-                            mediaGrid(viewModel.displayedItems)
+                                .padding(.top, 12)
+                        } else if let error = viewModel.errorMessage, viewModel.list == nil {
+                            DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
                                 .padding(.horizontal, 14)
-                            filteredPaginationFooter
-                                .padding(.horizontal, 14)
+                                .padding(.top, 12)
+                        } else if let list = viewModel.list {
+                            listHeader(list)
+                                .padding(.top, -(topSafeAreaInset + 32))
+                            if viewModel.displayedItems.isEmpty {
+                                DiaryStateCard(
+                                    title: viewModel.filter.isActive ? "No matching items" : "No items yet",
+                                    systemImage: "square.grid.2x2",
+                                    message: viewModel.filter.isActive ? "Try changing or resetting the filters." : "Add items from any media detail page."
+                                )
+                                    .padding(.horizontal, 14)
+                            } else {
+                                mediaGrid(viewModel.displayedItems)
+                                    .padding(.horizontal, 14)
+                                filteredPaginationFooter
+                                    .padding(.horizontal, 14)
+                            }
                         }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.bottom, 28)
             }
@@ -1264,6 +1319,14 @@ private struct ProfileListDetailView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.list != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var edgeSwipeBackGesture: some Gesture {
@@ -1354,6 +1417,7 @@ private struct ProfileListDetailView: View {
                     listRepository: listRepository,
                     importCoordinator: importCoordinator,
                     storygraphImportCoordinator: storygraphImportCoordinator,
+                    goodreadsImportCoordinator: goodreadsImportCoordinator,
                     currentUserId: currentUserId,
                     onLogout: onLogout,
                     onOpenDiary: onOpenDiary,
@@ -1366,7 +1430,7 @@ private struct ProfileListDetailView: View {
                 )
             } label: {
                 HStack(spacing: 9) {
-                    AsyncImage(url: URL(string: list.owner.avatarUrl ?? "")) { phase in
+                    SpineAsyncImage(url: URL(string: list.owner.avatarUrl ?? "")) { phase in
                         if case let .success(image) = phase {
                             image
                                 .resizable()
@@ -1537,7 +1601,7 @@ private struct ProfileListBackdropArtwork: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                AsyncImage(url: URL(string: urlString)) { phase in
+                SpineAsyncImage(url: URL(string: urlString)) { phase in
                     switch phase {
                     case let .success(image):
                         image

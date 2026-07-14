@@ -22,6 +22,51 @@ struct MediaRef: Codable, Hashable, Identifiable {
         guard mediaType == "season", let seasonNumber else { return title }
         return "\(title) S\(seasonNumber)"
     }
+
+    var isEpisode: Bool {
+        mediaType == "episode"
+    }
+
+    var episodeCode: String? {
+        guard isEpisode, let seasonNumber, let episodeNumber else { return nil }
+        return String(format: "S%02dE%02d", seasonNumber, episodeNumber)
+    }
+
+    var parentTVRef: MediaRef? {
+        guard mediaType == "season" || isEpisode else { return nil }
+        return MediaRef(
+            itemId: nil,
+            source: source,
+            mediaType: "tv",
+            mediaId: mediaId,
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+    }
+
+    var parentSeasonRef: MediaRef? {
+        guard isEpisode, let seasonNumber else { return nil }
+        return MediaRef(
+            itemId: nil,
+            source: source,
+            mediaType: "season",
+            mediaId: mediaId,
+            seasonNumber: seasonNumber,
+            episodeNumber: nil
+        )
+    }
+
+    func episodeRef(episodeNumber: Int, itemId: Int? = nil) -> MediaRef? {
+        guard mediaType == "season", let seasonNumber else { return nil }
+        return MediaRef(
+            itemId: itemId,
+            source: source,
+            mediaType: "episode",
+            mediaId: mediaId,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber
+        )
+    }
 }
 
 struct MediaBrowsingContext: Hashable {
@@ -343,6 +388,11 @@ struct MediaDetail: Decodable, Identifiable {
         ref.displayTitle(title)
     }
 
+    var episodeStillURL: String? {
+        guard ref.isEpisode else { return nil }
+        return displayBackdropURL ?? imageUrl ?? posterUrl
+    }
+
     enum CodingKeys: String, CodingKey {
         case ref
         case title
@@ -649,6 +699,45 @@ struct MediaDetail: Decodable, Identifiable {
         )
     }
 
+    func replacingIsTracked(_ isTracked: Bool) -> MediaDetail {
+        MediaDetail(
+            ref: ref,
+            title: title,
+            subtitle: subtitle,
+            overview: overview,
+            synopsis: synopsis,
+            imageUrl: imageUrl,
+            posterUrl: posterUrl,
+            posterOrientation: posterOrientation,
+            posterAspectRatio: posterAspectRatio,
+            posterWidth: posterWidth,
+            posterHeight: posterHeight,
+            posterAccentColor: posterAccentColor,
+            logoUrl: logoUrl,
+            logoWidth: logoWidth,
+            logoHeight: logoHeight,
+            logoAspectRatio: logoAspectRatio,
+            releaseDate: releaseDate,
+            defaultSource: defaultSource,
+            userState: (userState ?? UserMediaState(isTracked: false)).replacingIsTracked(isTracked),
+            backdropUrl: backdropUrl,
+            details: details,
+            related: related,
+            providers: providers,
+            community: community,
+            externalRatings: externalRatings,
+            reviews: reviews,
+            cast: cast,
+            crew: crew,
+            relatedSections: relatedSections,
+            episodes: episodes,
+            seasons: seasons,
+            customPosterUrl: customPosterUrl,
+            customBackdropUrl: customBackdropUrl,
+            customLogoUrl: customLogoUrl
+        )
+    }
+
     var displaySynopsis: String? {
         let placeholder = "No synopsis available."
         let candidates = [
@@ -861,6 +950,22 @@ struct UserMediaState: Codable, Hashable {
             diaryConsumedAt: diaryConsumedAt,
             inLists: inLists,
             hasLiked: liked
+        )
+    }
+
+    func replacingIsTracked(_ isTracked: Bool) -> UserMediaState {
+        UserMediaState(
+            isTracked: isTracked,
+            trackingId: trackingId,
+            status: status,
+            rating: rating,
+            progress: progress,
+            diaryEntryId: diaryEntryId,
+            diaryCount: diaryCount,
+            diaryRating: diaryRating,
+            diaryConsumedAt: diaryConsumedAt,
+            inLists: inLists,
+            hasLiked: hasLiked
         )
     }
 }

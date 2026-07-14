@@ -5,7 +5,7 @@ import SwiftUI
 @Observable
 final class ActivityFeedViewModel {
     var items: [ActivityItem] = []
-    var isLoadingInitial = false
+    var isLoadingInitial = true
     var isLoadingNextPage = false
     var errorMessage: String?
     var nextPageErrorMessage: String?
@@ -140,6 +140,7 @@ struct ActivityFeedView: View {
 
             ScrollView(showsIndicators: false) {
                 content
+                    .spineContentTransition(value: contentPhase)
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
                     .padding(.bottom, 96)
@@ -201,6 +202,14 @@ struct ActivityFeedView: View {
                 paginationFooter
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingInitial,
+            hasContent: !viewModel.items.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     @ViewBuilder
@@ -490,7 +499,7 @@ private struct ActivityActorAvatar: View {
     let user: UserSummary
 
     var body: some View {
-        AsyncImage(url: URL(string: user.avatarUrl ?? "")) { phase in
+        SpineAsyncImage(url: URL(string: user.avatarUrl ?? "")) { phase in
             if case let .success(image) = phase {
                 image
                     .resizable()
