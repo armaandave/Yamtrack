@@ -36,6 +36,7 @@ final class LibraryViewModel {
     var isLoadingNextPage = false
     var errorMessage: String?
     var nextPageErrorMessage: String?
+    var contentRevision = 0
 
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
@@ -230,6 +231,7 @@ final class LibraryViewModel {
 
         if replacingItems {
             items = response.results
+            contentRevision += 1
             return
         }
 
@@ -284,6 +286,15 @@ final class LibraryViewModel {
 }
 
 struct LibraryView: View {
+    private struct ContentTransitionKey: Hashable {
+        let phase: SpineContentPhase
+        let revision: Int
+        let mediaType: String
+        let shelf: String
+        let query: String
+        let viewMode: String
+    }
+
     @State private var viewModel: LibraryViewModel
     @State private var searchDraftText = ""
     @State private var selectedGridMedia: MediaBrowsingSelection?
@@ -342,7 +353,7 @@ struct LibraryView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         header
                         content
-                            .spineContentTransition(value: contentPhase)
+                            .spineContentTransition(value: contentTransitionKey)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 18)
@@ -541,6 +552,17 @@ struct LibraryView: View {
         )
     }
 
+    private var contentTransitionKey: ContentTransitionKey {
+        ContentTransitionKey(
+            phase: contentPhase,
+            revision: viewModel.contentRevision,
+            mediaType: viewModel.mediaType,
+            shelf: viewModel.shelf.rawValue,
+            query: viewModel.query,
+            viewMode: viewModel.viewMode.rawValue
+        )
+    }
+
     private var emptyTitle: String {
         if !viewModel.query.isEmpty {
             return "No \(MediaTypeTheme.theme(for: viewModel.mediaType).displayName.lowercased()) found"
@@ -612,30 +634,48 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var paginationFooter: some View {
-        if viewModel.isLoadingNextPage {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        } else if let error = viewModel.nextPageErrorMessage {
-            LibraryStateCard(
-                title: "Could not load more",
-                systemImage: "exclamationmark.triangle",
-                message: error,
-                actionTitle: "Retry"
-            ) {
-                Task { await viewModel.loadNextPage() }
-            }
-        } else if viewModel.hasMorePages, let last = viewModel.displayedItems.last {
-            Color.clear
-                .frame(height: 1)
-                .id(last.id)
-                .onAppear {
-                    Task {
-                        await viewModel.loadNextPageIfNeeded(currentItem: last)
+        VStack(spacing: 0) {
+            Group {
+                if viewModel.isLoadingNextPage {
+                    ProgressView()
+                        .tint(.white)
+                } else if let error = viewModel.nextPageErrorMessage {
+                    LibraryStateCard(
+                        title: "Could not load more",
+                        systemImage: "exclamationmark.triangle",
+                        message: error,
+                        actionTitle: "Retry"
+                    ) {
+                        Task { await viewModel.loadNextPage() }
                     }
+                } else {
+                    Color.clear
                 }
+            }
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .spineContentTransition(value: paginationPhase)
+
+            if viewModel.hasMorePages, let last = viewModel.displayedItems.last {
+                Color.clear
+                    .frame(height: 1)
+                    .id(last.id)
+                    .onAppear {
+                        Task {
+                            await viewModel.loadNextPageIfNeeded(currentItem: last)
+                        }
+                    }
+            }
         }
+    }
+
+    private var paginationPhase: String {
+        if viewModel.isLoadingNextPage {
+            return "loading"
+        }
+        if viewModel.nextPageErrorMessage != nil {
+            return "error"
+        }
+        return viewModel.hasMorePages ? "available" : "empty"
     }
 
     private func mediaDestination(

@@ -4468,6 +4468,103 @@ class ApiV1FoundationTests(TestCase):
         self.assertTrue(response.data["backdrops"][1]["is_selected"])
         backdrops_mock.assert_called_once_with("1399", 1)
 
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.providers.tmdb.get_episode_backdrop_images")
+    def test_media_backdrops_endpoint_supports_exact_episode(self, backdrops_mock, metadata_mock):
+        user = get_user_model().objects.create_user(
+            username="episode-backdrop",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            title="The Kingsroad",
+            image="https://example.com/original-episode.jpg",
+            season_number=1,
+            episode_number=2,
+        )
+        CustomBackdropPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/alternate-episode.jpg",
+        )
+        metadata_mock.return_value = {
+            "media_id": "1399",
+            "media_type": MediaTypes.EPISODE.value,
+            "source": Sources.TMDB.value,
+            "title": "The Kingsroad",
+            "image": "https://example.com/original-episode.jpg",
+            "backdrop_path": "/original-episode.jpg",
+            "season_number": 1,
+            "episode_number": 2,
+        }
+        backdrops_mock.return_value = [
+            {
+                "url": "https://image.tmdb.org/t/p/original/original-episode.jpg",
+                "thumbnail_url": "https://image.tmdb.org/t/p/w780/original-episode.jpg",
+                "width": 1920,
+                "height": 1080,
+                "aspect_ratio": 1.778,
+                "vote_average": 8,
+                "vote_count": 5,
+                "language": None,
+                "episode_number": 2,
+            },
+            {
+                "url": "https://example.com/alternate-episode.jpg",
+                "thumbnail_url": "https://example.com/alternate-episode-thumb.jpg",
+                "width": 1280,
+                "height": 720,
+                "aspect_ratio": 1.778,
+                "vote_average": 7,
+                "vote_count": 2,
+                "language": None,
+                "episode_number": 2,
+            },
+        ]
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/backdrops/"
+            "?season_number=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [backdrop["url"] for backdrop in response.data["backdrops"]],
+            [
+                "https://image.tmdb.org/t/p/original/original-episode.jpg",
+                "https://example.com/alternate-episode.jpg",
+            ],
+        )
+        self.assertTrue(response.data["backdrops"][0]["is_original"])
+        self.assertTrue(response.data["backdrops"][1]["is_selected"])
+        metadata_mock.assert_called_once_with(
+            MediaTypes.EPISODE.value,
+            "1399",
+            Sources.TMDB.value,
+            [1],
+            2,
+        )
+        backdrops_mock.assert_called_once_with("1399", 1, 2)
+
+    @patch("app.providers.tmdb.get_episode_backdrop_images")
+    def test_media_episode_backdrops_require_both_coordinates(self, backdrops_mock):
+        user = get_user_model().objects.create_user(
+            username="episode-backdrop-coordinates",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/backdrops/?season_number=1",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("required for episodes", response.data["detail"])
+        backdrops_mock.assert_not_called()
+
     def test_media_backdrops_endpoint_rejects_unsupported_media(self):
         user = get_user_model().objects.create_user(username="backdrop2", password="strong-password-123")
         self.client.force_authenticate(user)
@@ -4646,6 +4743,91 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             CustomBackdropPreference.objects.get(user=user, item=item).custom_image_url,
             "https://example.com/new-season-backdrop.jpg",
+        )
+
+    def test_media_episode_backdrop_save_updates_exact_episode_preference(self):
+        user = get_user_model().objects.create_user(
+            username="episodebackdrop2",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            title="The Kingsroad",
+            image="https://example.com/original-episode.jpg",
+            season_number=1,
+            episode_number=2,
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.put(
+            "/api/v1/media/tmdb/episode/1399/backdrop/",
+            {
+                "backdrop_url": "https://example.com/new-episode-backdrop.jpg",
+                "season_number": 1,
+                "episode_number": 2,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["custom_backdrop_url"],
+            "https://example.com/new-episode-backdrop.jpg",
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.image, "https://example.com/original-episode.jpg")
+        preference = CustomBackdropPreference.objects.get(user=user, item=item)
+        self.assertEqual(
+            preference.custom_image_url,
+            "https://example.com/new-episode-backdrop.jpg",
+        )
+
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_episode_detail_includes_viewer_custom_backdrop(self, metadata_mock):
+        user = get_user_model().objects.create_user(
+            username="episode-custom-backdrop-viewer",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            media_id="1399",
+            title="The Kingsroad",
+            image="https://example.com/original-episode.jpg",
+            season_number=1,
+            episode_number=2,
+        )
+        CustomBackdropPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom-episode-backdrop.jpg",
+        )
+        metadata_mock.return_value = {
+            "media_id": "1399",
+            "media_type": MediaTypes.EPISODE.value,
+            "source": Sources.TMDB.value,
+            "title": "The Kingsroad",
+            "image": "https://example.com/original-episode.jpg",
+            "backdrop_path": "/original-episode.jpg",
+            "season_number": 1,
+            "episode_number": 2,
+        }
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/media/tmdb/episode/1399/?season_number=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(
+            response.data["backdrop_url"],
+            "https://image.tmdb.org/t/p/original/original-episode.jpg",
+        )
+        self.assertEqual(
+            response.data["custom_backdrop_url"],
+            "https://example.com/custom-episode-backdrop.jpg",
         )
 
     @patch("app.providers.tmdb.get_title_logo", return_value=None)

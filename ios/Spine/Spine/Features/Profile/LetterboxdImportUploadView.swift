@@ -2,6 +2,14 @@ import SwiftUI
 import UIKit
 
 struct LetterboxdImportUploadView: View {
+    private enum ContentPhase: Hashable {
+        case idle
+        case uploading
+        case processing
+        case succeeded
+        case failed
+    }
+
     let coordinator: LetterboxdImportCoordinator
     let onDone: () -> Void
 
@@ -14,6 +22,7 @@ struct LetterboxdImportUploadView: View {
 
                 content
                     .frame(maxWidth: 420)
+                    .spineContentTransition(value: contentPhase)
                     .padding(.horizontal, 24)
 
                 Spacer(minLength: 24)
@@ -52,6 +61,16 @@ struct LetterboxdImportUploadView: View {
                 title: "Letterboxd Import",
                 message: "Choose a Letterboxd export to start."
             )
+        }
+    }
+
+    private var contentPhase: ContentPhase {
+        switch coordinator.phase {
+        case .idle: .idle
+        case .uploading: .uploading
+        case .processing: .processing
+        case .succeeded: .succeeded
+        case .failed: .failed
         }
     }
 

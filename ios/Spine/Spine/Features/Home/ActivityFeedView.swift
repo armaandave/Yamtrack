@@ -214,27 +214,39 @@ struct ActivityFeedView: View {
 
     @ViewBuilder
     private var paginationFooter: some View {
-        if viewModel.isLoadingNextPage {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-        } else if let error = viewModel.nextPageErrorMessage {
-            VStack(spacing: 8) {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.52))
-                    .multilineTextAlignment(.center)
+        Group {
+            if viewModel.isLoadingNextPage {
+                ProgressView()
+                    .tint(.white)
+            } else if let error = viewModel.nextPageErrorMessage {
+                VStack(spacing: 8) {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.52))
+                        .multilineTextAlignment(.center)
 
-                Button("Retry") {
-                    Task { await viewModel.loadNextPage() }
+                    Button("Retry") {
+                        Task { await viewModel.loadNextPage() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.86))
                 }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.86))
+            } else {
+                Color.clear
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
         }
+        .frame(maxWidth: .infinity, minHeight: 60)
+        .spineContentTransition(value: paginationPhase)
+    }
+
+    private var paginationPhase: String {
+        if viewModel.isLoadingNextPage {
+            return "loading"
+        }
+        if viewModel.nextPageErrorMessage != nil {
+            return "error"
+        }
+        return viewModel.hasMorePages ? "available" : "empty"
     }
 }
 

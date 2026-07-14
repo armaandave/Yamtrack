@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 final class SpineMotionTests: XCTestCase {
+    func testAppearanceStateStartsConcealed() {
+        let appearance = SpineAppearanceState()
+
+        XCTAssertFalse(appearance.isRevealed)
+        XCTAssertEqual(appearance.opacity, 0)
+    }
+
+    func testAppearanceStateRevealMakesSurfaceOpaque() {
+        var appearance = SpineAppearanceState()
+
+        appearance.reveal()
+
+        XCTAssertTrue(appearance.isRevealed)
+        XCTAssertEqual(appearance.opacity, 1)
+    }
+
+    func testAppearanceStateRevealIsIdempotent() {
+        var appearance = SpineAppearanceState()
+        appearance.reveal()
+        let revealedAppearance = appearance
+
+        appearance.reveal()
+
+        XCTAssertEqual(appearance, revealedAppearance)
+    }
+
     func testStandardDurationIsBriefAndPositive() {
         XCTAssertGreaterThan(SpineMotion.standardDuration, 0)
         XCTAssertLessThanOrEqual(SpineMotion.standardDuration, 0.25)

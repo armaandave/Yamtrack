@@ -902,11 +902,14 @@ private struct DiaryLogEditSheet: View {
         } label: {
             HStack {
                 Spacer()
-                if viewModel.isSaving {
-                    ProgressView().tint(.black)
-                } else {
-                    Text("Save Changes").font(.system(size: 16, weight: .heavy))
+                Group {
+                    if viewModel.isSaving {
+                        ProgressView().tint(.black)
+                    } else {
+                        Text("Save Changes").font(.system(size: 16, weight: .heavy))
+                    }
                 }
+                .spineContentTransition(value: viewModel.isSaving)
                 Spacer()
             }
             .foregroundStyle(.black)

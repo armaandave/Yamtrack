@@ -418,63 +418,88 @@ struct CompanyDetailView: View {
     private func roleGames(_ role: CompanyCatalogRole) -> some View {
         let games = viewModel.gamesByRole[role] ?? []
 
-        if viewModel.isLoadingGames(for: role), games.isEmpty, viewModel.errorMessage == nil {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity, minHeight: 120)
-        } else if games.isEmpty {
-            ContentUnavailableView(
-                "No \(role.title.lowercased()) games",
-                systemImage: "square.grid.2x2",
-                description: Text("Games will appear here when available.")
-            )
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 180)
-        } else {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-                ForEach(games) { game in
-                    Button {
-                        selectedMedia = MediaBrowsingSelection(
-                            ref: game.ref,
-                            within: games.map(\.ref)
-                        )
-                    } label: {
-                        MediaArtwork(
-                            url: game.displayPosterURL,
-                            title: game.title,
-                            slot: .tagGrid,
-                            mediaType: game.ref.mediaType,
-                            orientation: game.posterOrientation
-                        )
-                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("View \(game.title)")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if viewModel.nextPageByRole[role] != nil {
-                Button {
-                    Task { await viewModel.loadMore(for: role) }
-                } label: {
-                    Group {
-                        if viewModel.isLoadingMore(for: role) {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text("Load More")
+        Group {
+            if viewModel.isLoadingGames(for: role), games.isEmpty, viewModel.errorMessage == nil {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else if games.isEmpty {
+                ContentUnavailableView(
+                    "No \(role.title.lowercased()) games",
+                    systemImage: "square.grid.2x2",
+                    description: Text("Games will appear here when available.")
+                )
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 180)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
+                    ForEach(games) { game in
+                        Button {
+                            selectedMedia = MediaBrowsingSelection(
+                                ref: game.ref,
+                                within: games.map(\.ref)
+                            )
+                        } label: {
+                            MediaArtwork(
+                                url: game.displayPosterURL,
+                                title: game.title,
+                                slot: .tagGrid,
+                                mediaType: game.ref.mediaType,
+                                orientation: game.posterOrientation
+                            )
+                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(game.title)")
                     }
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.86))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isLoadingMore(for: role))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Group {
+                    if viewModel.nextPageByRole[role] != nil {
+                        Button {
+                            Task { await viewModel.loadMore(for: role) }
+                        } label: {
+                            Group {
+                                if viewModel.isLoadingMore(for: role) {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Text("Load More")
+                                }
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.86))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 42)
+                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.isLoadingMore(for: role))
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .spineContentTransition(value: rolePaginationPhase(role))
             }
         }
+        .spineContentTransition(value: roleGamesPhase(role))
+    }
+
+    private func roleGamesPhase(_ role: CompanyCatalogRole) -> SpineContentPhase {
+        let games = viewModel.gamesByRole[role] ?? []
+        return .resolve(
+            isLoading: viewModel.isLoadingGames(for: role),
+            hasContent: !games.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
+    private func rolePaginationPhase(_ role: CompanyCatalogRole) -> String {
+        if viewModel.isLoadingMore(for: role) {
+            return "loading"
+        }
+        return viewModel.nextPageByRole[role] == nil ? "empty" : "available"
     }
 
     @ViewBuilder

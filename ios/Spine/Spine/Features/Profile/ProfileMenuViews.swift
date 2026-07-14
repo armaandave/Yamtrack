@@ -1540,14 +1540,26 @@ private struct ProfileListDetailView: View {
 
     @ViewBuilder
     private var filteredPaginationFooter: some View {
-        if viewModel.isLoadingFilteredItems {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        } else if let error = viewModel.nextPageErrorMessage {
-            DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+        Group {
+            if viewModel.isLoadingFilteredItems {
+                ProgressView()
+                    .tint(.white)
+            } else if let error = viewModel.nextPageErrorMessage {
+                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+            } else {
+                Color.clear
+            }
         }
+        .frame(maxWidth: .infinity, minHeight: 56)
+        .spineContentTransition(value: filteredPaginationPhase)
+    }
+
+    private var filteredPaginationPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingFilteredItems,
+            hasContent: false,
+            hasError: viewModel.nextPageErrorMessage != nil
+        )
     }
 }
 

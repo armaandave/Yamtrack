@@ -973,8 +973,8 @@ struct ProfileView: View {
     }
 
     private func statsGrid(_ counts: ProfileCounts) -> some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 8) {
+        GlassEffectContainer(spacing: 3) {
+            HStack(spacing: 6) {
                 if isOwnProfile {
                     Button(action: onOpenDiary) {
                         ProfileStatChip(
@@ -1258,32 +1258,51 @@ private final class HallOfFamePickerViewModel {
     var results: [MediaSummary] = []
     var isLoading = false
     var errorMessage: String?
+    var resultRevision = 0
 
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
+    private var requestGeneration = 0
 
     init(mediaRepository: MediaRepository, onUnauthorized: @escaping () -> Void) {
         self.mediaRepository = mediaRepository
         self.onUnauthorized = onUnauthorized
     }
 
+    func invalidateSearch() {
+        requestGeneration += 1
+        isLoading = false
+    }
+
     func search(mediaType: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        requestGeneration += 1
+        let generation = requestGeneration
         guard !trimmed.isEmpty else {
             results = []
             errorMessage = nil
+            isLoading = false
             return
         }
 
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
-            results = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+            let found = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+            guard generation == requestGeneration,
+                  trimmed == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            results = found
+            resultRevision += 1
         } catch is CancellationError {
             return
         } catch {
+            guard generation == requestGeneration else { return }
             results = []
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -1354,19 +1373,7 @@ private struct HallOfFamePickerSheet: View {
                     if viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ContentUnavailableView("Search \(slot.title)", systemImage: "magnifyingglass")
                             .listRowBackground(Color.clear)
-                    } else if viewModel.isLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                    } else if let error = viewModel.errorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                    } else if viewModel.results.isEmpty {
-                        ContentUnavailableView("No Results", systemImage: "magnifyingglass")
-                            .listRowBackground(Color.clear)
-                    } else {
+                    } else if !viewModel.results.isEmpty {
                         ForEach(viewModel.results) { media in
                             Button {
                                 Swift.Task<Void, Never> { await select(media) }
@@ -1381,8 +1388,21 @@ private struct HallOfFamePickerSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isSaving || savingMediaID != nil)
                         }
+                    } else if viewModel.isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    } else if let error = viewModel.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    } else if viewModel.results.isEmpty {
+                        ContentUnavailableView("No Results", systemImage: "magnifyingglass")
+                            .listRowBackground(Color.clear)
                     }
                 }
+                .spineContentTransition(value: resultsTransitionKey)
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
@@ -1391,6 +1411,7 @@ private struct HallOfFamePickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search \(slot.title)")
             .task(id: viewModel.query) {
+                viewModel.invalidateSearch()
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
                 await viewModel.search(mediaType: slot.id)
@@ -1403,6 +1424,24 @@ private struct HallOfFamePickerSheet: View {
                 }
             }
         }
+    }
+
+    private var resultsPhase: SpineContentPhase {
+        let hasQuery = !viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return .resolve(
+            isLoading: hasQuery && viewModel.isLoading,
+            hasContent: hasQuery && !viewModel.results.isEmpty,
+            hasError: hasQuery && viewModel.errorMessage != nil
+        )
+    }
+
+    private var resultsTransitionKey: ResultsTransitionKey {
+        ResultsTransitionKey(phase: resultsPhase, revision: viewModel.resultRevision)
+    }
+
+    private struct ResultsTransitionKey: Hashable {
+        let phase: SpineContentPhase
+        let revision: Int
     }
 
     private func select(_ media: MediaSummary) async {
@@ -1468,7 +1507,7 @@ private struct HallOfFamePickerRow: View {
 }
 
 private struct ProfileStatChip: View {
-    private static let cornerRadius: CGFloat = 12
+    private static let cornerRadius: CGFloat = 9
 
     let value: Int
     let title: String
@@ -1481,7 +1520,7 @@ private struct ProfileStatChip: View {
                 RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                     .strokeBorder(.white.opacity(0.18), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .shadow(color: .black.opacity(0.12), radius: 3, y: 1.5)
             .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(value.formatted()) \(title)")
@@ -1505,14 +1544,14 @@ private struct ProfileStatChip: View {
     }
 
     private var content: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 4) {
+        VStack(spacing: 2) {
+            HStack(spacing: 3) {
                 Image(systemName: systemName)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.56))
 
                 Text(value.formatted())
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.white.opacity(0.94))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -1521,13 +1560,12 @@ private struct ProfileStatChip: View {
             }
 
             Text(title)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.5))
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 56)
+        .frame(width: 58, height: 44)
         .background(
             .white.opacity(0.055),
             in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
@@ -2161,11 +2199,16 @@ private struct ProfileSettingsSheet: View {
             Swift.Task<Void, Never> { await action() }
         } label: {
             HStack {
-                Text(isSaving ? "Saving..." : title)
-                if isSaving {
-                    Spacer()
-                    ProgressView()
+                Group {
+                    if isSaving {
+                        Text("Saving...")
+                        Spacer()
+                        ProgressView()
+                    } else {
+                        Text(title)
+                    }
                 }
+                .spineContentTransition(value: isSaving)
             }
         }
         .disabled(isDisabled || isSaving)

@@ -450,10 +450,13 @@ final class SpineTests: XCTestCase {
             onUnauthorized: {}
         )
 
+        XCTAssertEqual(viewModel.contentRevision, 0)
         await viewModel.reload()
+        XCTAssertEqual(viewModel.contentRevision, 1)
         await viewModel.loadNextPage()
 
         XCTAssertEqual(viewModel.items.map(\.media.title), ["One", "Two", "Three"])
+        XCTAssertEqual(viewModel.contentRevision, 1)
         XCTAssertEqual(viewModel.totalCount, 3)
         XCTAssertFalse(viewModel.hasMorePages)
         XCTAssertEqual(repository.requests, [
@@ -2017,6 +2020,7 @@ final class SpineTests: XCTestCase {
         XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "anime"))
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "movie"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "episode"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "tv"))
@@ -3704,9 +3708,10 @@ final class SpineTests: XCTestCase {
         _ = try await repository.posters(ref: bookRef)
 
         let seasonRef = MediaRef(itemId: nil, source: "tmdb", mediaType: "season", mediaId: "1399", seasonNumber: 1, episodeNumber: nil)
+        let episodeRef = MediaRef(itemId: nil, source: "tmdb", mediaType: "episode", mediaId: "1399", seasonNumber: 1, episodeNumber: 2)
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/posters/")
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/posters")
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
             XCTAssertEqual(request.httpMethod, "GET")
@@ -3767,7 +3772,7 @@ final class SpineTests: XCTestCase {
 
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/backdrops/")
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/backdrops")
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
             XCTAssertEqual(request.httpMethod, "GET")
@@ -3781,12 +3786,28 @@ final class SpineTests: XCTestCase {
 
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/episode/1399/backdrops")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
+            XCTAssertEqual(query.first { $0.name == "episode_number" }?.value, "2")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"backdrops":[]}"#.data(using: .utf8)!
+            )
+        }
+        _ = try await repository.backdrops(ref: episodeRef)
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/backdrop/")
             XCTAssertEqual(request.httpMethod, "PUT")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
             let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
             XCTAssertEqual(body.backdropUrl, "https://example.com/new.jpg")
             XCTAssertNil(body.seasonNumber)
+            XCTAssertNil(body.episodeNumber)
             return (
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 """
@@ -3806,6 +3827,7 @@ final class SpineTests: XCTestCase {
             let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
             XCTAssertEqual(body.backdropUrl, "https://example.com/new-season-backdrop.jpg")
             XCTAssertEqual(body.seasonNumber, 1)
+            XCTAssertNil(body.episodeNumber)
             return (
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 """
@@ -3819,6 +3841,29 @@ final class SpineTests: XCTestCase {
         )
 
         XCTAssertEqual(seasonBackdropResponse.backdropUrl, "https://example.com/new-season-backdrop.jpg")
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/episode/1399/backdrop/")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
+            XCTAssertEqual(body.backdropUrl, "https://example.com/new-episode-backdrop.jpg")
+            XCTAssertEqual(body.seasonNumber, 1)
+            XCTAssertEqual(body.episodeNumber, 2)
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {"backdrop_url":"https://example.com/new-episode-backdrop.jpg","custom_backdrop_url":"https://example.com/new-episode-backdrop.jpg"}
+                """.data(using: .utf8)!
+            )
+        }
+        let episodeBackdropResponse = try await repository.saveBackdrop(
+            ref: episodeRef,
+            backdropURL: "https://example.com/new-episode-backdrop.jpg"
+        )
+
+        XCTAssertEqual(episodeBackdropResponse.backdropUrl, "https://example.com/new-episode-backdrop.jpg")
 
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in

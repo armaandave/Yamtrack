@@ -53,15 +53,18 @@ struct HallOfFameCrownView: View {
                         .accessibilityLabel("Add Hall of Fame \(slot.title)")
                     }
 
-                    if savingSlotIDs.contains(slot.id) {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(.black.opacity(0.52))
-                            .frame(width: cardSize.width, height: cardSize.height)
-                            .overlay {
-                                ProgressView()
-                                    .tint(.white)
-                            }
+                    Group {
+                        if savingSlotIDs.contains(slot.id) {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(.black.opacity(0.52))
+                                .frame(width: cardSize.width, height: cardSize.height)
+                                .overlay {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+                        }
                     }
+                    .spineContentTransition(value: savingSlotIDs.contains(slot.id))
                 }
                 .scaleEffect(placement.scale, anchor: position.transformAnchor)
                 .rotationEffect(crownRevealed ? placement.rotation : .zero, anchor: position.transformAnchor)

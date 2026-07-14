@@ -176,11 +176,14 @@ struct PosterPickerView: View {
                             }
                         }
                     } label: {
-                        if viewModel.isSaving {
-                            ProgressView()
-                        } else {
-                            Text("Save")
+                        Group {
+                            if viewModel.isSaving {
+                                ProgressView()
+                            } else {
+                                Text("Save")
+                            }
                         }
+                        .spineContentTransition(value: viewModel.isSaving)
                     }
                     .disabled(!viewModel.canSave)
                 }

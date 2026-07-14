@@ -353,21 +353,24 @@ struct PersonDetailView: View {
                 }
             }
 
-            if filmography.isEmpty {
-                ContentUnavailableView(
-                    "No \(selectedType.title.lowercased())",
-                    systemImage: "square.grid.2x2",
-                    description: Text("Credits will appear here when available.")
-                )
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 220)
-            } else {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(groups) { group in
-                        roleDisclosureRow(group, type: selectedType)
+            Group {
+                if filmography.isEmpty {
+                    ContentUnavailableView(
+                        "No \(selectedType.title.lowercased())",
+                        systemImage: "square.grid.2x2",
+                        description: Text("Credits will appear here when available.")
+                    )
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                } else {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(groups) { group in
+                            roleDisclosureRow(group, type: selectedType)
+                        }
                     }
                 }
             }
+            .spineContentTransition(value: selectedType)
         }
     }
 

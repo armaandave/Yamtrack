@@ -465,8 +465,11 @@ struct APIMediaRepository: MediaRepository {
 
     func backdrops(ref: MediaRef) async throws -> [PosterOption] {
         var query: [URLQueryItem] = []
-        if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
+        if ["season", "episode"].contains(ref.mediaType), let seasonNumber = ref.seasonNumber {
             query.append(URLQueryItem(name: "season_number", value: String(seasonNumber)))
+        }
+        if ref.mediaType == "episode", let episodeNumber = ref.episodeNumber {
+            query.append(URLQueryItem(name: "episode_number", value: String(episodeNumber)))
         }
         let response: BackdropOptionsResponse = try await client.get(
             "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/backdrops/",
@@ -481,7 +484,8 @@ struct APIMediaRepository: MediaRepository {
             "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/backdrop/",
             body: BackdropSaveRequest(
                 backdropUrl: backdropURL,
-                seasonNumber: ref.mediaType == "season" ? ref.seasonNumber : nil
+                seasonNumber: ["season", "episode"].contains(ref.mediaType) ? ref.seasonNumber : nil,
+                episodeNumber: ref.mediaType == "episode" ? ref.episodeNumber : nil
             ),
             authenticated: true
         )

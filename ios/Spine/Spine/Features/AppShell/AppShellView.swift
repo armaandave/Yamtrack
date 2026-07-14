@@ -261,7 +261,6 @@ private struct LazyTab<Content: View>: View {
                 Color.clear
             }
         }
-        .spineContentTransition(value: isLoaded)
         .onChange(of: isSelected, initial: true) {
             if isSelected {
                 hasLoaded = true

@@ -247,6 +247,7 @@ struct ListComposerView: View {
                     Text(viewModel.isSaving ? viewModel.phase.label : viewModel.primaryActionTitle)
                         .font(.system(size: 16, weight: .heavy, design: .rounded))
                 }
+                .spineContentTransition(value: viewModel.isSaving)
                 .foregroundStyle(.black)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)

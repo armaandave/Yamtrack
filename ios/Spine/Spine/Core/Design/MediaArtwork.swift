@@ -9,14 +9,8 @@ struct MediaArtwork: View {
     var contentMode: PosterContentMode = .fill
 
     var body: some View {
-        Group {
-            if let imageURL {
-                SpineAsyncImage(url: imageURL) { phase in
-                    artwork(for: phase)
-                }
-            } else {
-                placeholder
-            }
+        SpineAsyncImage(url: imageURL) { phase in
+            artwork(for: phase)
         }
         .frame(width: slot.size.width, height: slot.size.height)
         .clipShape(RoundedRectangle(cornerRadius: slot.cornerRadius, style: .continuous))

@@ -415,7 +415,7 @@ enum MediaArtworkCustomization {
     }
 
     static func supportsBackdrop(source: String, mediaType: String) -> Bool {
-        if source == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
+        if source == "tmdb", ["movie", "tv", "season", "episode"].contains(mediaType) {
             return true
         }
         return source == "igdb" && mediaType == "game"
@@ -1274,6 +1274,9 @@ private struct MediaDetailPageView: View {
                     title: detail.title
                 )
                 .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.episodeAccessibilityArtworkHeight)
+                .onLongPressGesture {
+                    openBackdropPicker(for: detail)
+                }
 
                 episodeHeroContent(detail, overlaysArtwork: false)
                     .padding(.horizontal, 16)
@@ -1287,6 +1290,9 @@ private struct MediaDetailPageView: View {
                     title: detail.title
                 )
                 .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.episodeHeroHeight)
+                .onLongPressGesture {
+                    openBackdropPicker(for: detail)
+                }
 
                 episodeHeroContent(detail, overlaysArtwork: true)
                     .padding(.horizontal, 16)
@@ -2702,14 +2708,17 @@ private struct BookGameActionSheet: View {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(.white.opacity(0.13), lineWidth: 1.25)
                     }
-                if isSaving {
-                    ProgressView()
-                        .tint(.white)
-                } else {
-                    Image(systemName: systemName)
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.94))
+                Group {
+                    if isSaving {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Image(systemName: systemName)
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.94))
+                    }
                 }
+                .spineContentTransition(value: isSaving)
             }
             .frame(height: 86)
             .shadow(color: .black.opacity(0.18), radius: 10, y: 6)
@@ -2829,47 +2838,54 @@ private struct AddToListSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if viewModel.isLoading {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                } else if let error = viewModel.errorMessage {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                } else if filteredLists.isEmpty {
-                    ContentUnavailableView("No Lists", systemImage: "list.bullet.rectangle")
-                        .listRowBackground(Color.clear)
-                } else {
-                    ForEach(filteredLists) { list in
-                        Button {
-                            Task {
-                                await viewModel.toggle(list)
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(list.name)
-                                        .font(.system(size: 16, weight: .semibold))
-                                    Text("\(list.itemsCount.formatted()) items")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if viewModel.loadingListID == list.id {
-                                    ProgressView()
-                                } else if list.hasItem == true {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 16, weight: .bold))
-                                        .foregroundStyle(.green)
-                                }
-                            }
+                Section {
+                    if viewModel.isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
                         }
-                        .buttonStyle(.plain)
-                        .disabled(viewModel.loadingListID != nil)
+                    } else if let error = viewModel.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    } else if filteredLists.isEmpty {
+                        ContentUnavailableView("No Lists", systemImage: "list.bullet.rectangle")
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(filteredLists) { list in
+                            Button {
+                                Task {
+                                    await viewModel.toggle(list)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(list.name)
+                                            .font(.system(size: 16, weight: .semibold))
+                                        Text("\(list.itemsCount.formatted()) items")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Group {
+                                        if viewModel.loadingListID == list.id {
+                                            ProgressView()
+                                        } else if list.hasItem == true {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 16, weight: .bold))
+                                                .foregroundStyle(.green)
+                                        }
+                                    }
+                                    .frame(width: 20, height: 20)
+                                    .spineContentTransition(value: listIndicatorPhase(for: list))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.loadingListID != nil)
+                        }
                     }
                 }
+                .spineContentTransition(value: contentPhase)
 
                 Section {
                     if isCreating {
@@ -2893,6 +2909,7 @@ private struct AddToListSheet: View {
                         }
                     }
                 }
+                .spineContentTransition(value: isCreating)
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
@@ -2913,6 +2930,19 @@ private struct AddToListSheet: View {
                 }
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !filteredLists.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
+    private func listIndicatorPhase(for list: CustomListSummary) -> String {
+        if viewModel.loadingListID == list.id { return "loading" }
+        return list.hasItem == true ? "selected" : "empty"
     }
 
     private var filteredLists: [CustomListSummary] {
@@ -3261,14 +3291,17 @@ private struct ActionRail: View {
     ) -> some View {
         Button(action: action) {
             ZStack {
-                if isLoading {
-                    ProgressView()
-                        .tint(.white)
-                } else {
-                    Image(systemName: systemName)
-                        .font(.system(size: usesLargePlus ? 22 : 16, weight: .semibold))
-                        .foregroundStyle(railIconColor(systemName: systemName))
+                Group {
+                    if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Image(systemName: systemName)
+                            .font(.system(size: usesLargePlus ? 22 : 16, weight: .semibold))
+                            .foregroundStyle(railIconColor(systemName: systemName))
+                    }
                 }
+                .spineContentTransition(value: isLoading)
             }
             .frame(width: Self.buttonSize, height: Self.buttonSize)
             .background(.white.opacity(0.08), in: Circle())
@@ -4176,19 +4209,15 @@ private struct EpisodeCardStill: View {
 
     @ViewBuilder
     private var artwork: some View {
-        if let urlString = episode.imageUrl, let url = URL(string: urlString) {
-            SpineAsyncImage(url: url) { phase in
-                switch phase {
-                case let .success(image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                default:
-                    placeholder
-                }
+        SpineAsyncImage(url: episode.imageUrl.flatMap(URL.init(string:))) { phase in
+            switch phase {
+            case let .success(image):
+                image
+                    .resizable()
+                    .scaledToFill()
+            default:
+                placeholder
             }
-        } else {
-            placeholder
         }
     }
 
@@ -4213,48 +4242,59 @@ private struct ReviewsSection: View {
     let error: String?
 
     var body: some View {
-        if isLoading || !reviews.isEmpty || error != nil {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionLabel(title: "Reviews")
-                if isLoading {
-                    ProgressView()
-                        .tint(.white)
-                        .frame(maxWidth: .infinity, minHeight: 80)
-                } else {
-                    ForEach(reviews.prefix(3)) { review in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(review.user.displayName)
-                                    .font(.system(size: 13, weight: .heavy))
-                                    .foregroundStyle(.white)
-                                Spacer()
-                                if let rating = review.rating {
-                                    Label(rating.starRatingLabel, systemImage: "star.fill")
-                                        .font(.system(size: 11, weight: .heavy))
-                                        .foregroundStyle(.white.opacity(0.85))
+        Group {
+            if isLoading || !reviews.isEmpty || error != nil {
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionLabel(title: "Reviews")
+                    if !reviews.isEmpty {
+                        ForEach(reviews.prefix(3)) { review in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(review.user.displayName)
+                                        .font(.system(size: 13, weight: .heavy))
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    if let rating = review.rating {
+                                        Label(rating.starRatingLabel, systemImage: "star.fill")
+                                            .font(.system(size: 11, weight: .heavy))
+                                            .foregroundStyle(.white.opacity(0.85))
+                                    }
                                 }
+                                if let title = review.reviewTitle, !title.isEmpty {
+                                    Text(title)
+                                        .font(.system(size: 14, weight: .heavy))
+                                        .foregroundStyle(.white)
+                                }
+                                Text(review.containsSpoilers ? "Spoiler review" : review.review)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.68))
+                                    .lineLimit(4)
                             }
-                            if let title = review.reviewTitle, !title.isEmpty {
-                                Text(title)
-                                    .font(.system(size: 14, weight: .heavy))
-                                    .foregroundStyle(.white)
-                            }
-                            Text(review.containsSpoilers ? "Spoiler review" : review.review)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.68))
-                                .lineLimit(4)
+                            .padding(12)
+                            .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
                         }
-                        .padding(12)
-                        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
+                    } else if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .frame(maxWidth: .infinity, minHeight: 80)
                     }
-                }
-                if let error {
-                    Text(error)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.red.opacity(0.8))
+                    if let error {
+                        Text(error)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.red.opacity(0.8))
+                    }
                 }
             }
         }
+        .spineContentTransition(value: contentPhase)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: isLoading,
+            hasContent: !reviews.isEmpty,
+            hasError: error != nil
+        )
     }
 }
 

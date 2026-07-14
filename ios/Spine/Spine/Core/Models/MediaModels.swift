@@ -807,6 +807,7 @@ struct PosterSaveResponse: Codable, Equatable {
 struct BackdropSaveRequest: Codable, Equatable {
     let backdropUrl: String
     let seasonNumber: Int?
+    let episodeNumber: Int?
 }
 
 struct BackdropSaveResponse: Codable, Equatable {

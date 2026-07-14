@@ -21,6 +21,10 @@ final class DiaryViewModel {
     private var isInitialLoadInFlight = false
     private var presentedFilter: MediaFilterState?
 
+    var hasMorePages: Bool {
+        nextPage != nil
+    }
+
     init(
         diaryRepository: DiaryRepository,
         filter: DiaryFilter? = nil,
@@ -346,12 +350,18 @@ struct MediaDiaryView: View {
     @ViewBuilder
     private var paginationFooter: some View {
         VStack(spacing: 0) {
-            if viewModel.isLoadingNextPage {
-                ProgressView()
-                    .tint(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+            Group {
+                if viewModel.isLoadingNextPage {
+                    ProgressView()
+                        .tint(.white)
+                } else if let error = viewModel.nextPageErrorMessage {
+                    DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+                } else {
+                    Color.clear
+                }
             }
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .spineContentTransition(value: paginationPhase)
 
             Color.clear
                 .frame(height: 1)
@@ -360,6 +370,16 @@ struct MediaDiaryView: View {
             guard let last = viewModel.entries.last else { return }
             await viewModel.loadNextPageIfNeeded(currentEntry: last)
         }
+    }
+
+    private var paginationPhase: String {
+        if viewModel.isLoadingNextPage {
+            return "loading"
+        }
+        if viewModel.nextPageErrorMessage != nil {
+            return "error"
+        }
+        return viewModel.hasMorePages ? "available" : "empty"
     }
 }
 
@@ -554,14 +574,18 @@ struct DiaryView: View {
     @ViewBuilder
     private var paginationFooter: some View {
         VStack(spacing: 0) {
-            if viewModel.isLoadingNextPage {
-                ProgressView()
-                    .tint(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            } else if let error = viewModel.nextPageErrorMessage {
-                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+            Group {
+                if viewModel.isLoadingNextPage {
+                    ProgressView()
+                        .tint(.white)
+                } else if let error = viewModel.nextPageErrorMessage {
+                    DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+                } else {
+                    Color.clear
+                }
             }
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .spineContentTransition(value: paginationPhase)
 
             Color.clear
                 .frame(height: 1)
@@ -570,6 +594,16 @@ struct DiaryView: View {
             guard let last = viewModel.entries.last else { return }
             await viewModel.loadNextPageIfNeeded(currentEntry: last)
         }
+    }
+
+    private var paginationPhase: String {
+        if viewModel.isLoadingNextPage {
+            return "loading"
+        }
+        if viewModel.nextPageErrorMessage != nil {
+            return "error"
+        }
+        return viewModel.hasMorePages ? "available" : "empty"
     }
 }
 

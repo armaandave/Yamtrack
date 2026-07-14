@@ -13,6 +13,18 @@ enum SpineMotion {
     }
 }
 
+struct SpineAppearanceState: Equatable {
+    private(set) var isRevealed = false
+
+    var opacity: Double {
+        isRevealed ? 1 : 0
+    }
+
+    mutating func reveal() {
+        isRevealed = true
+    }
+}
+
 enum SpineContentPhase: Hashable {
     case loading
     case content
@@ -43,12 +55,53 @@ private struct SpineContentTransitionModifier<Value: Hashable>: ViewModifier {
             .id(value)
             .transition(.opacity)
             .animation(SpineMotion.animation(reduceMotion: reduceMotion), value: value)
+            .spineSoftAppear()
+    }
+}
+
+private struct SpineAncestorSoftAppearanceKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var spineAncestorSoftAppearanceActive: Bool {
+        get { self[SpineAncestorSoftAppearanceKey.self] }
+        set { self[SpineAncestorSoftAppearanceKey.self] = newValue }
+    }
+}
+
+private struct SpineSoftAppearanceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.spineAncestorSoftAppearanceActive) private var ancestorAppearanceActive
+    @State private var appearance = SpineAppearanceState()
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(ancestorAppearanceActive ? 1 : appearance.opacity)
+            .environment(
+                \.spineAncestorSoftAppearanceActive,
+                ancestorAppearanceActive || !appearance.isRevealed
+            )
+            .onAppear {
+                guard !appearance.isRevealed else { return }
+                if ancestorAppearanceActive {
+                    appearance.reveal()
+                } else {
+                    withAnimation(SpineMotion.animation(reduceMotion: reduceMotion)) {
+                        appearance.reveal()
+                    }
+                }
+            }
     }
 }
 
 extension View {
     func spineContentTransition<Value: Hashable>(value: Value) -> some View {
         modifier(SpineContentTransitionModifier(value: value))
+    }
+
+    func spineSoftAppear() -> some View {
+        modifier(SpineSoftAppearanceModifier())
     }
 }
 

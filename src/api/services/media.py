@@ -61,7 +61,7 @@ POSTER_UNSUPPORTED_MESSAGE = (
     "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
 )
 BACKDROP_UNSUPPORTED_MESSAGE = (
-    "Backdrop customization is only available for TMDB movies/TV shows/seasons and IGDB games."
+    "Backdrop customization is only available for TMDB movies/TV shows/seasons/episodes and IGDB games."
 )
 LOGO_UNSUPPORTED_MESSAGE = "Logo customization is only available for TMDB movies/TV shows and IGDB games."
 logger = logging.getLogger(__name__)
@@ -250,6 +250,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
         metadata=metadata,
         request=request,
         user=user,
@@ -778,7 +779,16 @@ def game_cover_options(*, source, media_id, request=None, user=None):
     return {"item": item, "posters": posters, "current_poster": selected_url}
 
 
-def backdrop_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
+def backdrop_options(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+    request=None,
+    user=None,
+):
     """Return selectable backdrops for supported media."""
     if _supports_game_backdrops(source, media_type):
         return game_backdrop_options(source=source, media_id=media_id, request=request, user=user)
@@ -786,16 +796,30 @@ def backdrop_options(*, source, media_type, media_id, season_number=None, reques
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,
         MediaTypes.SEASON.value,
+        MediaTypes.EPISODE.value,
     ]:
         raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
-    season_number = _required_season_number(media_type, season_number)
+    season_number, episode_number = _required_backdrop_coordinates(
+        media_type,
+        season_number,
+        episode_number,
+    )
 
-    item = _customizable_item(source=source, media_type=media_type, media_id=media_id, season_number=season_number)
+    item = _customizable_item(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
     metadata = provider_services.get_media_metadata(
         "tv_with_seasons" if media_type == MediaTypes.SEASON.value else media_type,
         media_id,
         source,
-        [season_number] if media_type == MediaTypes.SEASON.value else None,
+        [season_number]
+        if media_type in [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
+        else None,
+        episode_number,
     )
     if media_type == MediaTypes.SEASON.value:
         metadata = metadata[f"season/{season_number}"]
@@ -805,6 +829,12 @@ def backdrop_options(*, source, media_type, media_id, season_number=None, reques
     tmdb_backdrops = (
         tmdb.get_season_backdrop_images(media_id, season_number)
         if media_type == MediaTypes.SEASON.value
+        else tmdb.get_episode_backdrop_images(
+            media_id,
+            season_number,
+            episode_number,
+        )
+        if media_type == MediaTypes.EPISODE.value
         else tmdb.get_backdrop_images(media_id, media_type)
     )
     default_url, custom_url = resolved_backdrop_urls(
@@ -812,6 +842,7 @@ def backdrop_options(*, source, media_type, media_id, season_number=None, reques
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
         metadata=metadata,
         request=request,
         user=user,
@@ -902,21 +933,41 @@ def game_backdrop_options(*, source, media_id, request=None, user=None):
     return {"backdrops": backdrops}
 
 
-def save_backdrop_preference(*, source, media_type, media_id, backdrop_url, user, season_number=None):
+def save_backdrop_preference(
+    *,
+    source,
+    media_type,
+    media_id,
+    backdrop_url,
+    user,
+    season_number=None,
+    episode_number=None,
+):
     """Save a user's backdrop preference without mutating the item poster."""
     if (
         source != Sources.TMDB.value or media_type not in [
             MediaTypes.MOVIE.value,
             MediaTypes.TV.value,
             MediaTypes.SEASON.value,
+            MediaTypes.EPISODE.value,
         ]
     ) and not _supports_game_backdrops(source, media_type):
         raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
-    season_number = _required_season_number(media_type, season_number)
+    season_number, episode_number = _required_backdrop_coordinates(
+        media_type,
+        season_number,
+        episode_number,
+    )
     if not backdrop_url:
         raise ValueError("backdrop_url is required.")
 
-    item = _customizable_item(source=source, media_type=media_type, media_id=media_id, season_number=season_number)
+    item = _customizable_item(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
     CustomBackdropPreference.objects.update_or_create(
         user=user,
         item=item,
@@ -1066,12 +1117,20 @@ def _validate_logo_url(logo_url):
         raise ValueError("logo_url must be a valid absolute HTTP(S) URL.") from error
 
 
-def _customizable_item(*, source, media_type, media_id, season_number=None):
+def _customizable_item(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
     item = Item.objects.filter(
         source=source,
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
     ).first()
     if item is not None:
         return item
@@ -1079,7 +1138,10 @@ def _customizable_item(*, source, media_type, media_id, season_number=None):
         "tv_with_seasons" if media_type == MediaTypes.SEASON.value else media_type,
         media_id,
         source,
-        [season_number] if media_type == MediaTypes.SEASON.value else None,
+        [season_number]
+        if media_type in [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
+        else None,
+        episode_number,
     )
     if media_type == MediaTypes.SEASON.value:
         metadata = metadata[f"season/{season_number}"]
@@ -1090,6 +1152,7 @@ def _customizable_item(*, source, media_type, media_id, season_number=None):
         title=metadata.get("title") or metadata.get("name") or media_id,
         image=metadata.get("image") or settings.IMG_NONE,
         season_number=season_number,
+        episode_number=episode_number,
     )
 
 
@@ -1099,6 +1162,23 @@ def _required_season_number(media_type, season_number):
     if season_number in [None, ""]:
         raise ValueError("season_number is required for seasons.")
     return int(season_number)
+
+
+def _required_backdrop_coordinates(media_type, season_number, episode_number):
+    if media_type == MediaTypes.SEASON.value:
+        return _required_season_number(media_type, season_number), None
+    if media_type != MediaTypes.EPISODE.value:
+        return None, None
+    if season_number in [None, ""] or episode_number in [None, ""]:
+        raise ValueError(
+            "season_number and episode_number are required for episodes.",
+        )
+    try:
+        return int(season_number), int(episode_number)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "season_number and episode_number must be integers.",
+        ) from error
 
 
 def _supports_book_posters(source, media_type):
@@ -1178,6 +1258,7 @@ def resolved_backdrop_urls(
     media_id,
     metadata,
     season_number=None,
+    episode_number=None,
     request=None,
     user=None,
     item=None,
@@ -1191,6 +1272,7 @@ def resolved_backdrop_urls(
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,
         MediaTypes.SEASON.value,
+        MediaTypes.EPISODE.value,
     ]:
         return raw_default_url, custom_backdrop_url_for_user(
             user,
@@ -1199,6 +1281,7 @@ def resolved_backdrop_urls(
                 "media_type": media_type,
                 "media_id": media_id,
                 "season_number": season_number,
+                "episode_number": episode_number,
             },
             request=request,
         )
@@ -1208,8 +1291,16 @@ def resolved_backdrop_urls(
         media_type=media_type,
         media_id=media_id,
         season_number=season_number,
+        episode_number=episode_number,
     ).first()
     custom_url = _backdrop_preference_url(user, item, request=request)
+    if media_type == MediaTypes.EPISODE.value:
+        default_url = (
+            _curated_backdrop_url(item, request=request)
+            or raw_default_url
+            or (tmdb_backdrops[0]["url"] if tmdb_backdrops else None)
+        )
+        return default_url, custom_url
     if media_type == MediaTypes.SEASON.value:
         if tmdb_backdrops is None and season_number is not None:
             from app.providers import tmdb

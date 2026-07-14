@@ -111,13 +111,15 @@ struct AuthView: View {
                     Button {
                         Task { await submit() }
                     } label: {
-                        if isSubmitting {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Text(mode.rawValue)
-                                .frame(maxWidth: .infinity)
+                        Group {
+                            if isSubmitting {
+                                ProgressView()
+                            } else {
+                                Text(mode.rawValue)
+                            }
                         }
+                        .frame(maxWidth: .infinity)
+                        .spineContentTransition(value: isSubmitting)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)

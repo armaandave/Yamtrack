@@ -28,6 +28,7 @@ final class SearchViewModel {
     var results: [MediaSummary] = []
     var isLoading = false
     var errorMessage: String?
+    var resultRevision = 0
 
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
@@ -83,6 +84,9 @@ final class SearchViewModel {
             let found = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
             guard currentSearchID == searchID else { return }
             results = found
+            resultRevision += 1
+        } catch is CancellationError {
+            return
         } catch {
             guard currentSearchID == searchID else { return }
             errorMessage = error.localizedDescription
@@ -329,6 +333,7 @@ private struct SearchViewContent: View {
                         query: viewModel.query,
                         selectedMediaType: mediaLensStore.selectedMediaType,
                         results: viewModel.results,
+                        resultRevision: viewModel.resultRevision,
                         isLoading: viewModel.isLoading,
                         errorMessage: viewModel.errorMessage,
                         recentMedia: recentMedia,
@@ -435,10 +440,19 @@ enum RecentMedia {
 }
 
 private struct SearchResultsSection: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum ContentPhase: Hashable {
+        case error
+        case results(Int)
+        case loading
+        case prompt
+        case noResults
+        case recent
+    }
+
     let query: String
     let selectedMediaType: String
     let results: [MediaSummary]
+    let resultRevision: Int
     let isLoading: Bool
     let errorMessage: String?
     let recentMedia: [MediaSummary]
@@ -450,17 +464,17 @@ private struct SearchResultsSection: View {
             Color.black
 
             content
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .spineContentTransition(value: contentPhase)
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: contentState)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: resultIDs)
     }
 
     @ViewBuilder
     private var content: some View {
-        if let error = errorMessage {
+        if !results.isEmpty {
+            SearchResultsList(results: results, onSelect: onSelect)
+        } else if let error = errorMessage {
             ContentUnavailableView("Search failed", systemImage: "exclamationmark.triangle", description: Text(error))
-        } else if results.isEmpty {
+        } else {
             SearchEmptyState(
                 query: query,
                 selectedMediaType: selectedMediaType,
@@ -468,20 +482,15 @@ private struct SearchResultsSection: View {
                 recentMedia: recentMedia,
                 onRecentMedia: onRecentMedia
             )
-        } else {
-            SearchResultsList(results: results, onSelect: onSelect)
         }
     }
 
-    private var contentState: String {
-        if errorMessage != nil { return "error" }
-        if !results.isEmpty { return "results" }
-        if isLoading { return "loading-empty" }
-        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "empty" : "no-results"
-    }
-
-    private var resultIDs: [String] {
-        results.map(\.id)
+    private var contentPhase: ContentPhase {
+        if !results.isEmpty { return .results(resultRevision) }
+        if errorMessage != nil { return .error }
+        if isLoading { return .loading }
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .noResults }
+        return recentMedia.isEmpty ? .prompt : .recent
     }
 }
 
@@ -532,7 +541,6 @@ private struct SearchNoResultsState: View {
 }
 
 private struct SearchResultsList: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let results: [MediaSummary]
     let onSelect: (MediaSummary) -> Void
 
@@ -546,14 +554,12 @@ private struct SearchResultsList: View {
                 }
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 12))
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.black)
         .scrollDismissesKeyboard(.interactively)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: results.map(\.id))
     }
 }
 

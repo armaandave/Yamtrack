@@ -455,12 +455,15 @@ private struct ProgressUpdatePanel: View {
         Button(action: onSave) {
             HStack {
                 Spacer()
-                if isSaving {
-                    ProgressView()
-                } else {
-                    Text("Save Progress")
-                        .font(.headline.weight(.semibold))
+                Group {
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Text("Save Progress")
+                            .font(.headline.weight(.semibold))
+                    }
                 }
+                .spineContentTransition(value: isSaving)
                 Spacer()
             }
             .frame(height: 50)

@@ -1,6 +1,15 @@
 import SwiftUI
 
 struct ListMediaPickerView: View {
+    private enum ResultsPhase: Hashable {
+        case error
+        case loading
+        case results
+        case prompt
+        case recent
+        case noResults
+    }
+
     @Environment(\.dismiss) private var dismiss
 
     private let viewModel: ListComposerViewModel
@@ -44,6 +53,8 @@ struct ListMediaPickerView: View {
 
                 ScrollView(showsIndicators: false) {
                     resultsContent
+                        .frame(maxWidth: .infinity, minHeight: 420, alignment: .top)
+                        .spineContentTransition(value: resultsPhase)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                         .padding(.bottom, 28)
@@ -124,6 +135,16 @@ struct ListMediaPickerView: View {
             )
             .frame(minHeight: 420)
         }
+    }
+
+    private var resultsPhase: ResultsPhase {
+        if searchViewModel.errorMessage != nil { return .error }
+        if searchViewModel.isLoading && searchViewModel.results.isEmpty { return .loading }
+        if !searchViewModel.results.isEmpty { return .results }
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return recentMedia.isEmpty ? .prompt : .recent
+        }
+        return .noResults
     }
 
     private func searchRows(_ items: [MediaSummary]) -> some View {

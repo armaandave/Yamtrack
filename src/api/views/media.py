@@ -403,6 +403,7 @@ class MediaBackdropsView(APIView):
                     media_type=media_type,
                     media_id=media_id,
                     season_number=request.query_params.get("season_number"),
+                    episode_number=request.query_params.get("episode_number"),
                     request=request,
                     user=request.user,
                 ),
@@ -426,6 +427,7 @@ class MediaBackdropPreferenceView(APIView):
                     backdrop_url=request.data.get("backdrop_url"),
                     user=request.user,
                     season_number=request.data.get("season_number"),
+                    episode_number=request.data.get("episode_number"),
                 ),
             )
         except ValueError as error:

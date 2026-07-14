@@ -791,13 +791,16 @@ struct MediaLogView: View {
     private func saveLabel(_ title: String) -> some View {
         HStack {
             Spacer()
-            if viewModel.isSaving {
-                ProgressView()
-                    .tint(.black)
-            } else {
-                Text(title)
-                    .font(.system(size: 16, weight: .heavy))
+            Group {
+                if viewModel.isSaving {
+                    ProgressView()
+                        .tint(.black)
+                } else {
+                    Text(title)
+                        .font(.system(size: 16, weight: .heavy))
+                }
             }
+            .spineContentTransition(value: viewModel.isSaving)
             Spacer()
         }
         .foregroundStyle(.black)

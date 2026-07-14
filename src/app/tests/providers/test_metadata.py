@@ -186,6 +186,46 @@ class Metadata(TestCase):
         self.assertEqual(backdrops[0]["episode_number"], 1)
         self.assertEqual(backdrops[1]["episode_number"], 2)
 
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_backdrops_use_only_selected_episode_stills(self, mock_api_request):
+        cache.clear()
+        mock_api_request.return_value = {
+            "stills": [
+                {
+                    "file_path": "/alternate.jpg",
+                    "width": 1280,
+                    "height": 720,
+                    "aspect_ratio": 1.778,
+                    "vote_average": 7,
+                    "vote_count": 3,
+                },
+                {
+                    "file_path": "/preferred.jpg",
+                    "width": 1920,
+                    "height": 1080,
+                    "aspect_ratio": 1.778,
+                    "vote_average": 9,
+                    "vote_count": 12,
+                    "iso_639_1": None,
+                },
+            ],
+        }
+
+        backdrops = tmdb.get_episode_backdrop_images("1399", 1, 2)
+
+        self.assertEqual(
+            [backdrop["url"] for backdrop in backdrops],
+            [
+                "https://image.tmdb.org/t/p/original/preferred.jpg",
+                "https://image.tmdb.org/t/p/original/alternate.jpg",
+            ],
+        )
+        self.assertEqual(backdrops[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w780/preferred.jpg")
+        self.assertEqual(backdrops[0]["episode_number"], 2)
+        request_url = mock_api_request.call_args.args[2]
+        self.assertTrue(request_url.endswith("/tv/1399/season/1/episode/2/images"))
+        self.assertNotIn("language", mock_api_request.call_args.kwargs["params"])
+
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
     def test_tv_changes(self, mock_api_request, mock_localdate):

@@ -98,6 +98,14 @@ final class DiaryCreateViewModel {
 }
 
 struct DiaryCreateView: View {
+    private enum SearchContentPhase: Hashable {
+        case idle
+        case loading
+        case loadingWithResults
+        case results
+        case selection
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: DiaryCreateViewModel
     let onCreated: () -> Void
@@ -116,12 +124,15 @@ struct DiaryCreateView: View {
             Form {
                 mediaSearchSection
                 entrySection
-                if let error = viewModel.errorMessage {
-                    Section {
-                        Text(error)
-                            .foregroundStyle(.red)
+                Group {
+                    if let error = viewModel.errorMessage {
+                        Section {
+                            Text(error)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
+                .spineContentTransition(value: viewModel.errorMessage != nil)
             }
             .navigationTitle("New Diary Entry")
             .toolbar {
@@ -136,11 +147,15 @@ struct DiaryCreateView: View {
                             }
                         }
                     } label: {
-                        if viewModel.isSaving {
-                            ProgressView()
-                        } else {
-                            Text("Save")
+                        Group {
+                            if viewModel.isSaving {
+                                ProgressView()
+                            } else {
+                                Text("Save")
+                            }
                         }
+                        .frame(minWidth: 36)
+                        .spineContentTransition(value: viewModel.isSaving)
                     }
                     .disabled(viewModel.selectedMedia == nil || viewModel.isSaving)
                 }
@@ -170,40 +185,52 @@ struct DiaryCreateView: View {
                 .labelStyle(.iconOnly)
             }
 
-            if viewModel.isSearching {
-                ProgressView()
-            }
+            Group {
+                if viewModel.isSearching {
+                    ProgressView()
+                }
 
-            if let selected = viewModel.selectedMedia {
-                Label(selected.title, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            }
+                if let selected = viewModel.selectedMedia {
+                    Label(selected.title, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
 
-            ForEach(viewModel.results.prefix(6)) { result in
-                Button {
-                    viewModel.selectedMedia = result
-                } label: {
-                    HStack {
-                        MediaArtwork(
-                            url: result.displayPosterURL,
-                            title: result.title,
-                            slot: .searchRow,
-                            mediaType: result.ref.mediaType,
-                            orientation: result.posterOrientation
-                        )
-                        VStack(alignment: .leading) {
-                            Text(result.title)
-                            if let subtitle = result.subtitle ?? result.releaseDate {
-                                Text(subtitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                ForEach(viewModel.results.prefix(6)) { result in
+                    Button {
+                        viewModel.selectedMedia = result
+                    } label: {
+                        HStack {
+                            MediaArtwork(
+                                url: result.displayPosterURL,
+                                title: result.title,
+                                slot: .searchRow,
+                                mediaType: result.ref.mediaType,
+                                orientation: result.posterOrientation
+                            )
+                            VStack(alignment: .leading) {
+                                Text(result.title)
+                                if let subtitle = result.subtitle ?? result.releaseDate {
+                                    Text(subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .spineContentTransition(value: searchContentPhase)
         }
+    }
+
+    private var searchContentPhase: SearchContentPhase {
+        if viewModel.isSearching {
+            return viewModel.results.isEmpty ? .loading : .loadingWithResults
+        }
+        if !viewModel.results.isEmpty { return .results }
+        if viewModel.selectedMedia != nil { return .selection }
+        return .idle
     }
 
     private var entrySection: some View {
