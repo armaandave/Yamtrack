@@ -24,6 +24,7 @@ from api.serializers.profile import (
     preferences_payload,
     profile_payload,
 )
+from app import exposure
 from app.models import MediaLike, MediaTypes
 from app.providers import services as provider_services
 from app.services import set_media_like
@@ -33,16 +34,6 @@ logger = logging.getLogger(__name__)
 
 MAX_AVATAR_SIZE = 5 * 1024 * 1024
 ALLOWED_AVATAR_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
-
-HOF_MEDIA_TYPES = {
-    MediaTypes.MOVIE.value,
-    MediaTypes.TV.value,
-    MediaTypes.ANIME.value,
-    MediaTypes.MANGA.value,
-    MediaTypes.GAME.value,
-    MediaTypes.BOOK.value,
-    MediaTypes.COMIC.value,
-}
 
 PROFILE_BACKDROP_MEDIA_TYPES = {
     MediaTypes.MOVIE.value,
@@ -94,9 +85,13 @@ class LikedMediaView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        likes = MediaLike.objects.filter(user=request.user).select_related("item").order_by("-created_at", "-id")
+        likes = MediaLike.objects.filter(
+            user=request.user,
+            item__media_type__in=exposure.media_types(),
+        ).select_related("item").order_by("-created_at", "-id")
         media_type = request.query_params.get("media_type")
         if media_type:
+            exposure.require_media_type(media_type)
             likes = likes.filter(item__media_type=media_type)
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(likes, request, view=self)
@@ -120,6 +115,7 @@ class LikedMediaView(APIView):
         return Response({"liked": False})
 
     def _item_for_ref(self, ref, *, create):
+        exposure.require_media_type(ref["media_type"])
         item = find_item(ref)
         if item is not None or not create:
             return item
@@ -295,7 +291,8 @@ class HOFItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     def put(self, request, media_type):
-        if media_type not in HOF_MEDIA_TYPES:
+        exposure.require_media_type(media_type)
+        if media_type not in exposure.primary_media_types():
             return Response({"media_type": ["Unsupported Hall of Fame media type."]}, status=status.HTTP_400_BAD_REQUEST)
         serializer = HOFItemWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -317,7 +314,8 @@ class HOFItemView(APIView):
         return Response({"items": hof_payload(request.user, request=request)})
 
     def delete(self, request, media_type):
-        if media_type not in HOF_MEDIA_TYPES:
+        exposure.require_media_type(media_type)
+        if media_type not in exposure.primary_media_types():
             return Response({"media_type": ["Unsupported Hall of Fame media type."]}, status=status.HTTP_400_BAD_REQUEST)
         request.user.clear_hall_of_fame_item(media_type)
         request.user.save(update_fields=[f"hof_{media_type}"])

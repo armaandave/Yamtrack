@@ -16,6 +16,7 @@ from app.models import (
     Item,
     Manga,
     MediaTypes,
+    Music,
     Movie,
     Season,
     Sources,
@@ -166,6 +167,22 @@ class ExportCSVTest(TestCase):
         )
         Book.save_base(book)
 
+        item_music = Item.objects.create(
+            media_id="3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Year Zero",
+            image="https://image.url/year-zero.jpg",
+        )
+        music = Music(
+            item=item_music,
+            user=self.user,
+            score=9,
+            status=Status.COMPLETED.value,
+            end_date=datetime(2025, 4, 5, 0, 0, tzinfo=UTC),
+        )
+        Music.save_base(music)
+
     def test_export_csv(self):
         """Basic test exporting media to CSV."""
         # Generate the CSV file by accessing the export view
@@ -192,11 +209,18 @@ class ExportCSVTest(TestCase):
                 | Q(anime__user=self.user)
                 | Q(manga__user=self.user)
                 | Q(game__user=self.user)
-                | Q(book__user=self.user),
+                | Q(book__user=self.user)
+                | Q(music__user=self.user),
             ).values_list("media_id", flat=True),
         )
 
-        # Verify each row in the CSV exists in the database
+        exported_media_ids = set()
         for row in reader:
             media_id = row["media_id"]
+            exported_media_ids.add(media_id)
             self.assertIn(media_id, db_media_ids)
+
+        self.assertIn(
+            "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            exported_media_ids,
+        )

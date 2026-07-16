@@ -82,6 +82,9 @@ def create_entry(user, data):
             # Episode row instead of rewriting all repeats for the same Item.
             auto_mark_consumed=auto_mark_consumed and not watch_episode,
             tags=data.get("tags", []),
+            review_title=data.get("review_title", ""),
+            contains_spoilers=data.get("contains_spoilers", False),
+            visibility=data.get("visibility", "public"),
         )
         if watch_episode:
             tracking_service.watch_episode(
@@ -92,10 +95,6 @@ def create_entry(user, data):
                 episode_number=ref["episode_number"],
                 watched_at=consumed_at,
             )
-        entry.visibility = data.get("visibility", "public")
-        entry.contains_spoilers = data.get("contains_spoilers", False)
-        entry.review_title = data.get("review_title", "")
-        entry.save(update_fields=["visibility", "contains_spoilers", "review_title", "updated_at"])
         Activity.objects.create(
             actor=user,
             verb="diary_created",

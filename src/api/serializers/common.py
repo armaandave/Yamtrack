@@ -5,7 +5,15 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from app import config
-from app.models import BasicMedia, DiaryEntry, Item, MediaLike, MediaTypes, Sources
+from app.models import (
+    BasicMedia,
+    DiaryEntry,
+    Item,
+    MediaLike,
+    MediaTypes,
+    Sources,
+    Status,
+)
 from lists.models import CustomList
 from social.models import ProgressChange
 
@@ -580,8 +588,18 @@ def progress_for_media(media):
     media_type = media.item.media_type
     max_progress = getattr(media, "max_progress", None)
     value = getattr(media, "progress", 0)
-    if media_type == MediaTypes.MOVIE.value:
-        return {"kind": "binary", "value": 1 if media.end_date else 0, "max": 1, "unit": "movie"}
+    if media_type in (MediaTypes.MOVIE.value, MediaTypes.MUSIC.value):
+        is_complete = (
+            media.status == Status.COMPLETED.value
+            if media_type == MediaTypes.MUSIC.value
+            else bool(media.end_date)
+        )
+        return {
+            "kind": "binary",
+            "value": 1 if is_complete else 0,
+            "max": 1,
+            "unit": "album" if media_type == MediaTypes.MUSIC.value else "movie",
+        }
     if media_type in (MediaTypes.TV.value, MediaTypes.SEASON.value):
         return {"kind": "episodes", "value": value, "max": max_progress, "unit": "episode"}
     if media_type == MediaTypes.GAME.value:

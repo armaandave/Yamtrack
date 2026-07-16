@@ -22,6 +22,7 @@ from api.serializers.lists import (
 )
 from api.services import filters as filter_service
 from api.services.social import set_like
+from app import exposure
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
 from social.models import Activity, ContentLike
@@ -44,7 +45,9 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             user_summary(user, request=request) for user in custom_list.collaborators.all()
         ],
         "image_url": image_url(request, custom_list.image),
-        "items_count": custom_list.items.count(),
+        "items_count": custom_list.items.filter(
+            media_type__in=exposure.media_types(),
+        ).count(),
         "updated_at": custom_list.updated_at,
         "like_count": ContentLike.objects.filter(
             target_type=ContentLike.CUSTOM_LIST,
@@ -53,7 +56,9 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
     }
     if include_preview_items or include_items:
         items = []
-        list_items = custom_list.customlistitem_set.select_related("item").all()
+        list_items = custom_list.customlistitem_set.select_related("item").filter(
+            item__media_type__in=exposure.media_types(),
+        )
         if include_preview_items and not include_items:
             list_items = list_items[:LIST_PREVIEW_ITEM_LIMIT]
         for list_item in list_items:
@@ -80,6 +85,7 @@ def _renumber_list_items(custom_list):
 
 
 def _item_from_ref(ref):
+    exposure.require_media_type(ref["media_type"])
     item = find_item(ref)
     if item is not None:
         return item
@@ -212,6 +218,11 @@ class ListDetailView(APIView):
         if "is_ranked" in data:
             custom_list.is_ranked = data["is_ranked"]
         custom_list.save()
+        if "visibility" in data:
+            Activity.objects.filter(
+                target_type=ContentLike.CUSTOM_LIST,
+                target_id=custom_list.id,
+            ).update(visibility=custom_list.visibility)
         if "collaborator_usernames" in data:
             users = get_user_model().objects.filter(username__in=data["collaborator_usernames"])
             custom_list.collaborators.set(users)
@@ -221,6 +232,10 @@ class ListDetailView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_delete(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        Activity.objects.filter(
+            target_type=ContentLike.CUSTOM_LIST,
+            target_id=custom_list.id,
+        ).delete()
         custom_list.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -238,7 +253,10 @@ class ListItemsView(APIView):
         if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-        list_items = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+        list_items = CustomListItem.objects.filter(
+            custom_list=custom_list,
+            item__media_type__in=exposure.media_types(),
+        ).select_related("item")
         filter_service.ensure_filter_metadata(list_items, request.query_params)
         list_items = filter_service.apply_item_filters(list_items, request.query_params)
         list_items = filter_service.apply_user_status_filter(
@@ -321,6 +339,8 @@ class ListItemDetailView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_edit(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        item = get_object_or_404(custom_list.items, id=item_id)
+        exposure.require_media_type(item.media_type)
         deleted, _ = CustomListItem.objects.filter(custom_list=custom_list, item_id=item_id).delete()
         if deleted and custom_list.is_ranked:
             _renumber_list_items(custom_list)

@@ -16,6 +16,7 @@ CACHES = {
 CELERY_TASK_ALWAYS_EAGER = True
 
 TESTING = True
+MUSIC_ENABLED = True
 
 # Steam API key for testing
 STEAM_API_KEY = "test_steam_api_key"

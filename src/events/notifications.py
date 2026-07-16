@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.utils import timezone
 
+from app import config
 from app.models import TV, MediaTypes, Season
 from app.templatetags import app_tags
 from events.models import INACTIVE_TRACKING_STATUSES, Event
@@ -436,14 +437,20 @@ def format_notification(releases):
             notification_body.append(f"{icon}  {media_type.upper()}")
 
         for event in media_events:
+            release_text = (
+                f"{event.item} is available to "
+                f"{config.get_verb(media_type, past_tense=False)}"
+                if media_type == MediaTypes.MUSIC.value
+                else str(event)
+            )
             if event.is_sentinel_time:
                 # Don't show time for sentinel times
-                notification_body.append(f"  • {event}")
+                notification_body.append(f"  • {release_text}")
             else:
                 # Convert to local timezone and format
                 local_dt = timezone.localtime(event.datetime)
                 time_str = local_dt.strftime("%H:%M")
-                notification_body.append(f"  • {event} ({time_str})")
+                notification_body.append(f"  • {release_text} ({time_str})")
 
         # Add a blank line between media types
         notification_body.append("")

@@ -16,6 +16,7 @@ from app.models import (
     MediaLike,
     MediaTypes,
     Movie,
+    Music,
     Sources,
     Status,
 )
@@ -76,13 +77,102 @@ class StatsAPITests(TestCase):
         self.assertEqual(response.data["rating_distribution"][1], {"rating": "0.5", "count": 0})
         self.assertEqual(
             [entry["media_type"] for entry in response.data["media_types"]],
-            ["movie", "tv", "anime", "manga", "game", "book", "comic"],
+            ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"],
         )
         for entry in response.data["media_types"]:
             self.assertEqual(entry["tracked_count"], 0)
             self.assertEqual(entry["rating_distribution"][0], {"rating": "0.0", "count": 0})
             self.assertEqual(entry["top_rated"], [])
             self.assertEqual(entry["most_logged"], [])
+
+    def test_music_populates_every_primary_statistics_bucket(self):
+        item = Item.objects.create(
+            media_id="3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Year Zero",
+            image="https://example.com/year-zero.jpg",
+            release_year=2007,
+        )
+        listened_at = self._aware(2026, 1, 10)
+        Music.objects.bulk_create([
+            Music(
+                user=self.user,
+                item=item,
+                status=Status.COMPLETED.value,
+                score=Decimal("9.0"),
+                start_date=listened_at,
+                end_date=listened_at,
+            ),
+        ])
+        DiaryEntry.objects.bulk_create([
+            DiaryEntry(
+                user=self.user,
+                item=item,
+                consumed_at=listened_at,
+                rating=Decimal("8.5"),
+                review="Still sounds dangerous.",
+                visibility="public",
+            ),
+            DiaryEntry(
+                user=self.user,
+                item=item,
+                consumed_at=self._aware(2026, 1, 11),
+                rating=Decimal("9.0"),
+                is_rewatch=True,
+                visibility="public",
+            ),
+        ])
+        ItemFilterFacet.objects.bulk_create([
+            ItemFilterFacet(
+                item=item,
+                facet_type=ItemFilterFacet.FacetType.GENRE,
+                value="Industrial Rock",
+            ),
+            ItemFilterFacet(
+                item=item,
+                facet_type=ItemFilterFacet.FacetType.LANGUAGE,
+                value="English",
+            ),
+        ])
+        MediaLike.objects.create(user=self.user, item=item)
+        self.client.force_authenticate(self.user)
+
+        response = self.client.get(
+            "/api/v1/stats/me/summary/",
+            {"start_date": "2026-01-01", "end_date": "2026-01-31"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overview"]["tracked_count"], 1)
+        self.assertEqual(response.data["overview"]["completed_count"], 1)
+        self.assertEqual(response.data["overview"]["diary_entry_count"], 2)
+        self.assertEqual(response.data["overview"]["unique_logged_count"], 1)
+        self.assertEqual(response.data["overview"]["repeat_count"], 1)
+        self.assertEqual(response.data["overview"]["liked_count"], 1)
+        self.assertEqual(response.data["media_count"][MediaTypes.MUSIC.value], 1)
+
+        music = self._media_stats(response, MediaTypes.MUSIC.value)
+        self.assertEqual(music["tracked_count"], 1)
+        self.assertEqual(music["completed_count"], 1)
+        self.assertEqual(music["statuses"]["completed"], 1)
+        self.assertEqual(music["diary_entry_count"], 2)
+        self.assertEqual(music["rating_distribution"][17]["count"], 1)
+        self.assertEqual(music["rating_distribution"][18]["count"], 1)
+        self.assertEqual(music["release_years"], [{"year": 2007, "count": 1}])
+        self.assertEqual(music["top_genres"], [{"name": "Industrial Rock", "count": 1}])
+        self.assertEqual(music["top_languages"], [{"name": "English", "count": 1}])
+        self.assertEqual(
+            music["metadata_coverage"],
+            {
+                "total_items": 1,
+                "release_year_items": 1,
+                "genre_items": 1,
+                "language_items": 1,
+            },
+        )
+        self.assertEqual(music["top_rated"][0]["rating"], "9.0")
+        self.assertEqual(music["most_logged"][0]["log_count"], 2)
 
     @patch("app.providers.services.get_media_metadata")
     def test_populated_stats_use_local_tracking_diary_and_metadata(self, metadata_mock):

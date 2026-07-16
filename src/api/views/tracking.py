@@ -13,10 +13,11 @@ from api.serializers.tracking import (
 )
 from api.services import filters as filter_service
 from api.services import tracking as tracking_service
+from api.views.mixins import MediaExposureMixin
 from app.models import BasicMedia, MediaTypes, Status
 
 
-class TrackingListView(APIView):
+class TrackingListView(MediaExposureMixin, APIView):
     """List tracked media for the current user."""
 
     permission_classes = [IsAuthenticated]
@@ -71,7 +72,7 @@ class TrackingListView(APIView):
         )
 
 
-class TrackingDetailView(APIView):
+class TrackingDetailView(MediaExposureMixin, APIView):
     """Retrieve, upsert, patch, or delete tracking state."""
 
     permission_classes = [IsAuthenticated]
@@ -125,7 +126,7 @@ class TrackingDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class TrackingActionView(APIView):
+class TrackingActionView(MediaExposureMixin, APIView):
     """Generic tracking status actions."""
 
     permission_classes = [IsAuthenticated]

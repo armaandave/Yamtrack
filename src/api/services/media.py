@@ -12,6 +12,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db.models import Count
+from django.http import Http404
 
 from api.serializers.common import (
     absolute_url,
@@ -41,6 +42,7 @@ from app.models import (
     MediaTypes,
     Sources,
 )
+from app.providers import musicbrainz
 from app.providers import services as provider_services
 from app.utils.color import build_accent_palette, compute_and_store_poster_accent
 
@@ -50,6 +52,7 @@ DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
+MUSIC_DETAIL_CACHE_VERSION = "v1"
 COMPANY_SORTS = {"popularity", "release_date", "title", "average_rating"}
 COMPANY_GAME_SORT_OPTIONS = [
     {"value": "popularity", "label": "Popularity"},
@@ -76,6 +79,7 @@ RATING_URL_BASES = {
     "mal": "https://myanimelist.net/",
     "mangaupdates": "https://www.mangaupdates.com/",
     "metacritic": "https://www.metacritic.com/",
+    "musicbrainz": "https://musicbrainz.org/",
     "openlibrary": "https://openlibrary.org/",
     "tmdb": "https://www.themoviedb.org/",
     "tomatoes": "https://www.rottentomatoes.com/",
@@ -89,6 +93,7 @@ RATING_URL_HOSTS = {
     "mal": {"myanimelist.net"},
     "mangaupdates": {"mangaupdates.com"},
     "metacritic": {"metacritic.com"},
+    "musicbrainz": {"musicbrainz.org"},
     "openlibrary": {"openlibrary.org"},
     "tmdb": {"themoviedb.org"},
     "tomatoes": {"rottentomatoes.com"},
@@ -194,6 +199,8 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     cache_version = DETAIL_CACHE_VERSION
     if media_type == MediaTypes.EPISODE.value:
         cache_version = f"{cache_version}:episode-{EPISODE_DETAIL_CACHE_VERSION}"
+    elif media_type == MediaTypes.MUSIC.value:
+        cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}"
     cache_key = (
         f"api:{cache_version}:detail:{source}:{media_type}:{media_id}:"
         f"s{season_number}:e{episode_number}:u{getattr(settings, 'TMDB_LANG', 'en')}"
@@ -267,6 +274,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         "logo_aspect_ratio": logo.get("aspect_ratio") if logo else None,
         "custom_logo_url": custom_logo_url,
         "details": details_for_api(metadata),
+        **({"music": metadata["music"]} if "music" in metadata else {}),
         "parent": metadata.get("parent"),
         "external_links": metadata.get("external_links", {}),
         "cast": cast_from_metadata(metadata, request=request),
@@ -301,6 +309,102 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             season_number=season_number,
             episode_number=episode_number,
         ),
+    }
+
+
+def music_recording_detail(*, release_group_mbid, recording_mbid, request=None, user=None):
+    """Return read-only recording metadata within a representative album release."""
+    release_group_mbid = str(release_group_mbid)
+    recording_mbid = str(recording_mbid)
+    album_metadata = provider_services.get_media_metadata(
+        MediaTypes.MUSIC.value,
+        release_group_mbid,
+        Sources.MUSICBRAINZ.value,
+    )
+    representative = (album_metadata.get("music") or {}).get(
+        "representative_release",
+    )
+    context_medium = None
+    context_track = None
+    for medium in (representative or {}).get("media") or []:
+        for track in medium.get("tracks") or []:
+            if (track.get("recording") or {}).get("recording_mbid") == recording_mbid:
+                context_medium = medium
+                context_track = track
+                break
+        if context_track:
+            break
+    if context_track is None:
+        raise Http404
+
+    parent_payload = {
+        **album_metadata,
+        "media_id": release_group_mbid,
+        "source": Sources.MUSICBRAINZ.value,
+        "media_type": MediaTypes.MUSIC.value,
+    }
+    parent_album = media_summary_from_provider(
+        parent_payload,
+        MediaTypes.MUSIC.value,
+        Sources.MUSICBRAINZ.value,
+        request=request,
+        user=user,
+    )
+    metadata = musicbrainz.recording(recording_mbid)
+
+    albums = []
+    seen_albums = set()
+    for payload in [parent_payload, *metadata.pop("albums")]:
+        album_mbid = str(payload.get("media_id") or "")
+        if not album_mbid or album_mbid in seen_albums:
+            continue
+        seen_albums.add(album_mbid)
+        albums.append(
+            media_summary_from_provider(
+                payload,
+                MediaTypes.MUSIC.value,
+                Sources.MUSICBRAINZ.value,
+                request=request,
+                user=user,
+            ),
+        )
+
+    releases = metadata.pop("releases")
+    context_release_mbid = representative.get("release_mbid")
+    if context_release_mbid not in {release["release_mbid"] for release in releases}:
+        releases.insert(
+            0,
+            {
+                "release_mbid": context_release_mbid,
+                "title": representative.get("title") or "",
+                "status": representative.get("status") or None,
+                "date": representative.get("date") or None,
+                "country": representative.get("country") or None,
+                "barcode": representative.get("barcode") or None,
+                "release_group_mbid": release_group_mbid,
+            },
+        )
+
+    return {
+        **metadata,
+        "parent_album": parent_album,
+        "albums": albums,
+        "releases": releases,
+        "context_release": {
+            "release_mbid": context_release_mbid,
+            "medium_mbid": context_medium.get("medium_mbid"),
+            "track": context_track,
+        },
+        "image_url": parent_album["image_url"],
+        "capabilities": {
+            "trackable": False,
+            "rateable": False,
+            "reviewable": False,
+            "diary_loggable": False,
+            "likeable": False,
+            "listable": False,
+            "library_addable": False,
+        },
     }
 
 
@@ -1511,6 +1615,10 @@ def _provider_rating_fallback(
         (Sources.TMDB.value, MediaTypes.TV.value): f"https://www.themoviedb.org/tv/{encoded_id}",
         (Sources.MAL.value, MediaTypes.ANIME.value): f"https://myanimelist.net/anime/{encoded_id}",
         (Sources.MAL.value, MediaTypes.MANGA.value): f"https://myanimelist.net/manga/{encoded_id}",
+        (
+            Sources.MUSICBRAINZ.value,
+            MediaTypes.MUSIC.value,
+        ): f"https://musicbrainz.org/release-group/{encoded_id}",
         (Sources.OPENLIBRARY.value, MediaTypes.BOOK.value): f"https://openlibrary.org/books/{encoded_id}",
         (Sources.HARDCOVER.value, MediaTypes.BOOK.value): f"https://hardcover.app/book/{encoded_id}",
     }.get((source, media_type))
@@ -1719,6 +1827,7 @@ def source_label(source):
         "openlibrary": "OpenLibrary",
         "hardcover": "Hardcover",
         "metacritic": "Metacritic",
+        "musicbrainz": "MusicBrainz",
         "tmdb": "TMDB",
         "tomatoes": "Rotten Tomatoes",
     }.get(source, source.title())
@@ -1731,6 +1840,7 @@ def max_rating_value(source):
         "igdb": "100",
         "letterboxd": "5",
         "metacritic": "100",
+        "musicbrainz": "5",
         "openlibrary": "5",
         "tomatoes": "100%",
     }.get(source, "10")

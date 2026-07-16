@@ -1,0 +1,1038 @@
+import json
+import os
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import fakeredis
+import requests
+from django.core.cache import cache
+from django.test import TestCase, override_settings
+from pyrate_limiter import Duration, Rate, RateItem, RedisBucket
+
+from app.models import MediaTypes, Sources
+from app.providers import musicbrainz, services
+
+RUN_PROVIDER_TESTS = os.environ.get("RUN_PROVIDER_TESTS") == "1"
+requires_provider_network = unittest.skipUnless(
+    RUN_PROVIDER_TESTS,
+    "Set RUN_PROVIDER_TESTS=1 to run live provider API tests.",
+)
+
+RELEASE_GROUP_MBID = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+RELEASE_MBID = "2d0bad69-f735-484b-bc0b-2ea54c76225e"
+RECORDING_MBID = "35518724-a25a-4627-a2cc-0786dd1d2272"
+STREAMING_RELATION_ID = "320adf26-96fa-4183-9045-1f5f32f833cb"
+CORPUS_PATH = Path(__file__).parents[1] / "mock_data" / "musicbrainz_representative_releases.json"
+
+
+def http_error(status_code):
+    response = MagicMock(
+        status_code=status_code,
+        text=f"HTTP {status_code}",
+        headers={},
+    )
+    return requests.exceptions.HTTPError(response=response)
+
+
+def candidate(
+    release_mbid,
+    title="Album",
+    *,
+    country="US",
+    release_date="2020-01-01",
+    status="Official",
+    formats=("Digital Media",),
+    track_counts=(1,),
+    streaming=True,
+):
+    return {
+        "id": release_mbid,
+        "title": title,
+        "country": country,
+        "date": release_date,
+        "status": status,
+        "media": [
+            {"position": index, "format": media_format, "track-count": track_count}
+            for index, (media_format, track_count) in enumerate(
+                zip(formats, track_counts, strict=True),
+                start=1,
+            )
+        ],
+        "relations": (
+            [
+                {
+                    "type-id": STREAMING_RELATION_ID,
+                    "url": {"resource": "https://open.spotify.com/album/example"},
+                },
+            ]
+            if streaming
+            else []
+        ),
+    }
+
+
+def full_release(release, *, complete=True, printed_number="1", isrcs=None):
+    result = {**release, "artist-credit": [{"name": "Artist", "artist": {"id": "artist-1"}}]}
+    result["media"] = []
+    for medium in release["media"]:
+        count = medium["track-count"]
+        tracks = [
+            {
+                "id": f"track-{medium['position']}-{position}",
+                "position": position,
+                "number": printed_number if position == 1 else str(position),
+                "title": f"Track {position}",
+                "length": 180000,
+                "recording": {
+                    "id": f"recording-{medium['position']}-{position}",
+                    "title": f"Track {position}",
+                    "length": 180100,
+                    "isrcs": isrcs or [],
+                },
+            }
+            for position in range(1, count + 1)
+        ]
+        if not complete:
+            tracks = tracks[:-1]
+        result["media"].append({**medium, "tracks": tracks})
+    return result
+
+
+class MusicBrainzTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @override_settings(VERSION="1.2.3", MUSICBRAINZ_CONTACT="contact@example.com")
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_search_release_groups(self, api_request):
+        response = {
+            "count": 1,
+            "release-groups": [
+                {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Beyoncé (Deluxe): Hits?",
+                    "first-release-date": "2024-07",
+                },
+            ],
+        }
+        api_request.return_value = response
+
+        result = musicbrainz.search_release_groups(
+            "Beyoncé (Deluxe): Hits?",
+            limit=12,
+            offset=24,
+        )
+
+        self.assertEqual(result, response)
+        api_request.assert_called_once_with(
+            Sources.MUSICBRAINZ.value,
+            "GET",
+            f"{musicbrainz.MUSICBRAINZ_URL}/release-group",
+            params={
+                "fmt": "json",
+                "query": (
+                    r"(releasegroup:(Beyoncé \(Deluxe\)\: Hits\?) OR "
+                    r"artist:(Beyoncé \(Deluxe\)\: Hits\?))"
+                ),
+                "limit": 12,
+                "offset": 24,
+            },
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Spine/1.2.3 (contact@example.com)",
+            },
+            request_session=services.musicbrainz_session,
+        )
+
+    @override_settings(PER_PAGE=2)
+    @patch("app.providers.musicbrainz.search_release_groups")
+    def test_search_normalizes_release_groups_and_pagination(self, search_release_groups):
+        search_release_groups.return_value = {
+            "count": 1,
+            "release-groups": [
+                {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Year Zero",
+                    "score": 98,
+                    "first-release-date": "2007-04-13",
+                    "primary-type": "Album",
+                    "secondary-types": ["Concept Album"],
+                    "disambiguation": "Nine Inch Nails album",
+                    "artist-credit": [
+                        {
+                            "name": "Nine Inch Nails",
+                            "joinphrase": " feat. ",
+                            "artist": {"id": "artist-1"},
+                        },
+                        {
+                            "name": "Guest",
+                            "artist": {"id": "artist-2"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+        result = musicbrainz.search("Nine Inch Nails", 3)
+
+        search_release_groups.assert_called_once_with(
+            "Nine Inch Nails",
+            limit=2,
+            offset=4,
+        )
+        album = result["results"][0]
+        self.assertEqual(album["media_id"], RELEASE_GROUP_MBID)
+        self.assertEqual(album["source"], Sources.MUSICBRAINZ.value)
+        self.assertEqual(album["media_type"], MediaTypes.MUSIC.value)
+        self.assertEqual(album["subtitle"], "Nine Inch Nails feat. Guest · 2007 · Album")
+        self.assertEqual(album["search_score"], 98)
+        self.assertEqual(album["poster_aspect_ratio"], 1.0)
+        self.assertEqual(album["secondary_types"], ["Concept Album"])
+        self.assertNotIn("provider_rank_boost", album)
+
+    @patch(
+        "app.providers.musicbrainz.resolve_representative_release",
+        return_value={"release": None, "reason": None, "release_mbid": None},
+    )
+    @patch("app.providers.musicbrainz.lookup_cover_art")
+    @patch("app.providers.musicbrainz.lookup_release_group")
+    def test_music_normalizes_release_group_detail(
+        self,
+        lookup_release_group,
+        lookup_cover_art,
+        _resolve,
+    ):
+        lookup_release_group.return_value = {
+            "id": RELEASE_GROUP_MBID,
+            "title": "Year Zero",
+            "first-release-date": "2007-04-13",
+            "primary-type": "Album",
+            "secondary-types": ["Concept Album"],
+            "disambiguation": "Nine Inch Nails album",
+            "release-count": 13,
+            "annotation": "  A concept album.  ",
+            "artist-credit": [
+                {
+                    "name": "Nine Inch Nails",
+                    "joinphrase": "",
+                    "artist": {"id": "artist-1"},
+                },
+            ],
+            "genres": [{"name": "industrial rock"}, {"name": "electronic"}],
+            "rating": {"value": 4.25, "votes-count": 20},
+            "relations": [
+                {
+                    "target-type": "url",
+                    "type": "other databases",
+                    "url": {"resource": "http://www.discogs.com/master/123"},
+                },
+                {
+                    "target-type": "url",
+                    "type": "other databases",
+                    "url": {"resource": "https://discogs.com/master/456"},
+                },
+                {
+                    "target-type": "url",
+                    "type": "streaming music",
+                    "url": {"resource": "https://example.com/listen"},
+                },
+            ],
+        }
+        lookup_cover_art.return_value = {"images": [{"front": True}]}
+
+        result = musicbrainz.music(RELEASE_GROUP_MBID)
+
+        self.assertEqual(result["title"], "Year Zero")
+        self.assertEqual(result["release_date"], "2007-04-13")
+        self.assertEqual(result["max_progress"], 1)
+        self.assertEqual(result["genres"], ["industrial rock", "electronic"])
+        self.assertEqual(result["score"], 4.25)
+        self.assertEqual(result["score_count"], 20)
+        self.assertEqual(result["details"]["artist"], "Nine Inch Nails")
+        self.assertEqual(result["details"]["release_count"], 13)
+        self.assertEqual(result["details"]["annotation"], "A concept album.")
+        self.assertEqual(result["poster_width"], 500)
+        self.assertEqual(
+            result["external_links"],
+            {
+                "MusicBrainz": f"https://musicbrainz.org/release-group/{RELEASE_GROUP_MBID}",
+                "discogs.com": "https://www.discogs.com/master/123",
+            },
+        )
+        self.assertNotIn("synopsis", result)
+        self.assertNotIn("overview", result)
+
+    @patch(
+        "app.providers.musicbrainz.resolve_representative_release",
+        return_value={"release": None, "reason": None, "release_mbid": None},
+    )
+    @patch("app.providers.musicbrainz.lookup_cover_art", return_value=None)
+    @patch("app.providers.musicbrainz.lookup_release_group")
+    def test_music_missing_optional_fields_stay_empty(
+        self,
+        lookup_release_group,
+        _lookup_cover_art,
+        _resolve,
+    ):
+        lookup_release_group.return_value = {"id": RELEASE_GROUP_MBID, "title": "Elbentanz", "annotation": "  "}
+
+        result = musicbrainz.music(RELEASE_GROUP_MBID)
+
+        self.assertIsNone(result["release_date"])
+        self.assertEqual(result["genres"], [])
+        self.assertIsNone(result["score"])
+        self.assertIsNone(result["score_count"])
+        self.assertEqual(result["details"]["artist_credits"], [])
+        self.assertEqual(result["details"]["secondary_types"], [])
+        self.assertIsNone(result["details"]["primary_type"])
+        self.assertIsNone(result["details"]["disambiguation"])
+        self.assertIsNone(result["details"]["release_count"])
+        self.assertIsNone(result["details"]["annotation"])
+        self.assertIsNone(result["music"]["representative_release"])
+        self.assertNotIn("poster_width", result)
+
+    def test_lucene_escaping_preserves_unicode_and_escapes_reserved_tokens(self):
+        self.assertEqual(musicbrainz.escape_lucene("Beyoncé 千と千尋"), "Beyoncé 千と千尋")
+        for token in (
+            "+",
+            "-",
+            "&&",
+            "||",
+            "!",
+            "(",
+            ")",
+            "{",
+            "}",
+            "[",
+            "]",
+            "^",
+            '"',
+            "~",
+            "*",
+            "?",
+            ":",
+            "\\",
+            "/",
+        ):
+            with self.subTest(token=token):
+                self.assertEqual(musicbrainz.escape_lucene(token), f"\\{token}")
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_lookup_release_group_preserves_partial_date(self, api_request):
+        response = {
+            "id": RELEASE_GROUP_MBID,
+            "title": "Elbentanz",
+            "first-release-date": "2003",
+        }
+        api_request.return_value = response
+
+        result = musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+
+        self.assertEqual(result["first-release-date"], "2003")
+        self.assertEqual(
+            api_request.call_args.kwargs["params"],
+            {
+                "fmt": "json",
+                "inc": (
+                    "artist-credits+releases+genres+ratings+annotation+url-rels"
+                ),
+            },
+        )
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_browse_releases_requests_selection_inputs(self, api_request):
+        api_request.return_value = {"release-count": 0, "releases": []}
+
+        musicbrainz.browse_releases(RELEASE_GROUP_MBID, limit=100, offset=200)
+
+        self.assertEqual(
+            api_request.call_args.kwargs["params"],
+            {
+                "fmt": "json",
+                "release-group": RELEASE_GROUP_MBID,
+                "inc": "artist-credits+labels+media+url-rels",
+                "limit": 100,
+                "offset": 200,
+            },
+        )
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_lookup_release_requests_media_and_recordings(self, api_request):
+        api_request.return_value = {"id": RELEASE_MBID, "media": []}
+
+        result = musicbrainz.lookup_release(RELEASE_MBID)
+
+        self.assertEqual(result["id"], RELEASE_MBID)
+        self.assertEqual(
+            api_request.call_args.kwargs["params"],
+            {
+                "fmt": "json",
+                "inc": (
+                    "artist-credits+labels+media+recordings+isrcs+url-rels"
+                ),
+            },
+        )
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_lookup_recording_requests_core_relationships(self, api_request):
+        api_request.return_value = {"id": RECORDING_MBID}
+
+        result = musicbrainz.lookup_recording(RECORDING_MBID)
+        cached = musicbrainz.lookup_recording(RECORDING_MBID)
+
+        self.assertEqual(result["id"], RECORDING_MBID)
+        self.assertEqual(cached, result)
+        self.assertEqual(api_request.call_count, 1)
+        self.assertEqual(
+            api_request.call_args.kwargs["params"],
+            {
+                "fmt": "json",
+                "inc": (
+                    "artist-credits+isrcs+genres+ratings+annotation+url-rels+"
+                    "work-rels+work-level-rels+artist-rels+recording-rels"
+                ),
+            },
+        )
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_browse_recording_releases_requests_album_identity(self, api_request):
+        api_request.return_value = {"release-count": 0, "releases": []}
+
+        musicbrainz.browse_recording_releases(RECORDING_MBID, limit=100, offset=200)
+
+        self.assertEqual(
+            api_request.call_args.kwargs["params"],
+            {
+                "fmt": "json",
+                "recording": RECORDING_MBID,
+                "inc": "artist-credits+release-groups",
+                "limit": 100,
+                "offset": 200,
+            },
+        )
+
+    @patch("app.providers.musicbrainz.browse_recording_releases")
+    @patch("app.providers.musicbrainz.lookup_recording")
+    def test_recording_normalizes_relationships_and_all_release_pages(
+        self,
+        lookup_recording,
+        browse_recording_releases,
+    ):
+        lookup_recording.return_value = {
+            "id": RECORDING_MBID,
+            "title": "HYPERPOWER!",
+            "length": 102000,
+            "first-release-date": "2007-04-13",
+            "artist-credit": [
+                {
+                    "name": "Nine Inch Nails",
+                    "artist": {"id": "artist-1"},
+                },
+            ],
+            "isrcs": ["USUM70727128", "USUM70727128"],
+            "genres": [{"name": "industrial rock"}],
+            "rating": {"value": 4.5, "votes-count": 8},
+            "annotation": {"text": "  Instrumental opener.  "},
+            "relations": [
+                {
+                    "target-type": "work",
+                    "type": "performance",
+                    "work": {
+                        "id": "work-1",
+                        "title": "HYPERPOWER!",
+                        "iswcs": ["T-073.350.911-9"],
+                        "language": "zxx",
+                        "relations": [
+                            {
+                                "type": "composer",
+                                "artist": {"id": "writer-1", "name": "Trent Reznor"},
+                            },
+                            {
+                                "type": "lyricist",
+                                "artist": {"id": "writer-1", "name": "Trent Reznor"},
+                            },
+                            {
+                                "type": "producer",
+                                "artist": {"id": "producer-1", "name": "Producer"},
+                            },
+                        ],
+                    },
+                },
+                {
+                    "target-type": "recording",
+                    "type": "remaster",
+                    "direction": "forward",
+                    "recording": {
+                        "id": "recording-alt",
+                        "title": "HYPERPOWER! (remaster)",
+                        "length": 103000,
+                        "artist-credit": [
+                            {
+                                "name": "Nine Inch Nails",
+                                "artist": {"id": "artist-1"},
+                            },
+                        ],
+                    },
+                },
+                {
+                    "target-type": "url",
+                    "type": "other databases",
+                    "url": {"resource": "http://www.discogs.com/recording/example"},
+                },
+            ],
+        }
+        releases = [
+            {
+                "id": "release-1",
+                "title": "Year Zero",
+                "date": "2007-04-13",
+                "status": "Official",
+                "country": "US",
+                "artist-credit": [
+                    {
+                        "name": "Nine Inch Nails",
+                        "artist": {"id": "artist-1"},
+                    },
+                ],
+                "release-group": {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Year Zero",
+                    "first-release-date": "2007-04-13",
+                },
+            },
+            {
+                "id": "release-2",
+                "title": "Year Zero",
+                "date": "2016-09-02",
+                "release-group": {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Year Zero",
+                    "first-release-date": "2007-04-13",
+                },
+            },
+        ]
+        browse_recording_releases.side_effect = [
+            {"release-count": 2, "releases": [releases[0]]},
+            {"release-count": 2, "releases": [releases[1]]},
+        ]
+
+        result = musicbrainz.recording(RECORDING_MBID)
+
+        self.assertEqual(result["recording_mbid"], RECORDING_MBID)
+        self.assertEqual(result["isrcs"], ["USUM70727128"])
+        self.assertEqual(result["genres"], ["industrial rock"])
+        self.assertEqual(result["rating"], {"value": 4.5, "votes_count": 8, "max_value": 5})
+        self.assertEqual(result["annotation"], "Instrumental opener.")
+        self.assertEqual(
+            result["works"][0]["credits"],
+            [
+                {
+                    "artist_mbid": "writer-1",
+                    "name": "Trent Reznor",
+                    "roles": ["composer", "lyricist"],
+                },
+            ],
+        )
+        self.assertEqual(result["alternative_recordings"][0]["recording_mbid"], "recording-alt")
+        self.assertEqual(len(result["releases"]), 2)
+        self.assertEqual(len(result["albums"]), 1)
+        self.assertEqual(
+            [call.kwargs["offset"] for call in browse_recording_releases.call_args_list],
+            [0, 1],
+        )
+
+    @patch("app.providers.musicbrainz.browse_recording_releases")
+    @patch("app.providers.musicbrainz.lookup_recording")
+    def test_recording_variants_keep_distinct_mbids(
+        self,
+        lookup_recording,
+        browse_recording_releases,
+    ):
+        variants = [
+            ("97d09e1b-8812-45fd-830f-0200a3c0e3b8", "Survivalism", 264000),
+            ("61e7a5b8-5fdb-4524-8983-bdb7ca243a52", "Survivalism", 301000),
+            ("04bd34a4-bb7c-4acc-885b-0a643e7e3d4b", "Survivalism (deadmau5 remix)", 217500),
+        ]
+        lookup_recording.side_effect = [
+            {"id": mbid, "title": title, "length": length}
+            for mbid, title, length in variants
+        ]
+        browse_recording_releases.return_value = {"release-count": 0, "releases": []}
+
+        results = [musicbrainz.recording(mbid) for mbid, _title, _length in variants]
+
+        self.assertEqual(
+            [(item["recording_mbid"], item["title"], item["length_ms"]) for item in results],
+            variants,
+        )
+        self.assertTrue(all(item["isrcs"] == [] for item in results))
+        self.assertTrue(all(item["works"] == [] for item in results))
+        self.assertTrue(all(item["rating"] is None for item in results))
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_http_404_is_translated(self, api_request):
+        api_request.side_effect = http_error(requests.codes.not_found)
+
+        with self.assertRaises(services.ProviderAPIError) as raised:
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+
+        self.assertEqual(raised.exception.provider, Sources.MUSICBRAINZ.value)
+        self.assertEqual(raised.exception.status_code, requests.codes.not_found)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_503_is_retried_then_succeeds(self, api_request):
+        response = {"id": RELEASE_GROUP_MBID}
+        api_request.side_effect = [
+            http_error(requests.codes.service_unavailable),
+            response,
+        ]
+
+        self.assertEqual(
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID),
+            response,
+        )
+        self.assertEqual(api_request.call_count, 2)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_503_retry_exhaustion_stops_after_three_attempts(self, api_request):
+        api_request.side_effect = http_error(requests.codes.service_unavailable)
+
+        with self.assertRaises(services.ProviderAPIError) as raised:
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+
+        self.assertEqual(raised.exception.status_code, requests.codes.service_unavailable)
+        self.assertEqual(api_request.call_count, musicbrainz.MAX_ATTEMPTS)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_invalid_json_is_translated(self, api_request):
+        api_request.side_effect = requests.exceptions.JSONDecodeError(
+            "invalid JSON",
+            "not-json",
+            0,
+        )
+
+        with self.assertRaisesRegex(services.ProviderAPIError, "invalid JSON response"):
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_timeout_is_translated_without_retry(self, api_request):
+        api_request.side_effect = requests.exceptions.Timeout("timed out")
+
+        with self.assertRaises(services.ProviderAPIError) as raised:
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+
+        self.assertIn("network error", str(raised.exception))
+        api_request.assert_called_once()
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_positive_cache_avoids_provider(self, api_request):
+        response = {"count": 0, "release-groups": []}
+        api_request.return_value = response
+
+        first = musicbrainz.search_release_groups("cache me")
+        second = musicbrainz.search_release_groups("cache me")
+
+        self.assertEqual(first, response)
+        self.assertEqual(second, response)
+        api_request.assert_called_once()
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_cover_art_success_uses_general_session_and_cache(self, api_request):
+        response = {"images": [{"front": True}]}
+        api_request.return_value = response
+
+        first = musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID)
+        second = musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID)
+
+        self.assertEqual(first, response)
+        self.assertEqual(second, response)
+        api_request.assert_called_once()
+        self.assertIs(api_request.call_args.kwargs["request_session"], services.session)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_cover_art_404_is_a_cached_miss(self, api_request):
+        api_request.side_effect = http_error(requests.codes.not_found)
+
+        self.assertIsNone(musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID))
+        self.assertIsNone(musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID))
+
+        api_request.assert_called_once()
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_cache_timeouts(self, api_request):
+        api_request.return_value = {"id": RELEASE_GROUP_MBID}
+        with patch.object(musicbrainz, "cache") as provider_cache:
+            provider_cache.get.return_value = musicbrainz._CACHE_MISS
+
+            musicbrainz.search_release_groups("ttl")
+            self.assertEqual(provider_cache.set.call_args.args[2], musicbrainz.SEARCH_CACHE_TTL)
+
+            provider_cache.reset_mock()
+            provider_cache.get.return_value = musicbrainz._CACHE_MISS
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID)
+            self.assertEqual(provider_cache.set.call_args.args[2], musicbrainz.DETAIL_CACHE_TTL)
+
+            provider_cache.reset_mock()
+            provider_cache.get.return_value = musicbrainz._CACHE_MISS
+            musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID)
+            self.assertEqual(provider_cache.set.call_args.args[2], musicbrainz.DETAIL_CACHE_TTL)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_missing_cover_art_uses_short_cache_timeout(self, api_request):
+        api_request.side_effect = http_error(requests.codes.not_found)
+        with patch.object(musicbrainz, "cache") as provider_cache:
+            provider_cache.get.return_value = musicbrainz._CACHE_MISS
+
+            self.assertIsNone(musicbrainz.lookup_cover_art(RELEASE_GROUP_MBID))
+
+            self.assertEqual(
+                provider_cache.set.call_args.args,
+                (
+                    f"coverartarchive_v2_release_group_{RELEASE_GROUP_MBID}",
+                    False,
+                    musicbrainz.MISSING_COVER_CACHE_TTL,
+                ),
+            )
+
+    @requires_provider_network
+    def test_live_release_group_normalization(self):
+        search = musicbrainz.search("Year Zero Nine Inch Nails", 1)
+        detail = musicbrainz.music(RELEASE_GROUP_MBID)
+
+        self.assertIn(RELEASE_GROUP_MBID, [item["media_id"] for item in search["results"]])
+        self.assertEqual(detail["media_id"], RELEASE_GROUP_MBID)
+        self.assertEqual(detail["media_type"], MediaTypes.MUSIC.value)
+
+
+@override_settings(MUSIC_DEFAULT_MARKET="US")
+class RepresentativeReleaseTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_market_standard_release_beats_deluxe_and_worldwide(
+        self,
+        browse_releases,
+        lookup_release,
+    ):
+        standard = candidate("00000000-0000-0000-0000-000000000002")
+        deluxe = candidate(
+            "00000000-0000-0000-0000-000000000001",
+            "Album (D.L.X.)",
+            release_date="2019-01-01",
+        )
+        worldwide = candidate(
+            "00000000-0000-0000-0000-000000000003",
+            country="XW",
+        )
+        browse_releases.return_value = {
+            "release-count": 3,
+            "releases": [deluxe, worldwide, standard],
+        }
+        lookup_release.side_effect = lambda release_mbid: full_release(
+            {release["id"]: release for release in [standard, deluxe, worldwide]}[
+                release_mbid
+            ],
+        )
+
+        result = musicbrainz.resolve_representative_release(
+            RELEASE_GROUP_MBID,
+            "Album",
+        )
+
+        self.assertEqual(result["release_mbid"], standard["id"])
+        self.assertEqual(result["reason"], "streaming_market_match")
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_worldwide_standard_release_reason(self, browse_releases, lookup_release):
+        release = candidate(
+            "00000000-0000-0000-0000-000000000004",
+            country="XW",
+        )
+        browse_releases.return_value = {"release-count": 1, "releases": [release]}
+        lookup_release.return_value = full_release(release)
+
+        result = musicbrainz.resolve_representative_release(
+            RELEASE_GROUP_MBID,
+            "Album",
+        )
+
+        self.assertEqual(result["reason"], "streaming_standard_edition")
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_missing_streaming_uses_earliest_official(
+        self,
+        browse_releases,
+        lookup_release,
+    ):
+        later = candidate(
+            "00000000-0000-0000-0000-000000000006",
+            release_date="2003",
+            formats=("CD",),
+            streaming=False,
+        )
+        earlier = candidate(
+            "00000000-0000-0000-0000-000000000005",
+            release_date="2003-01-01",
+            formats=("CD",),
+            streaming=False,
+        )
+        browse_releases.return_value = {
+            "release-count": 2,
+            "releases": [later, earlier],
+        }
+        lookup_release.side_effect = lambda release_mbid: full_release(
+            {later["id"]: later, earlier["id"]: earlier}[release_mbid],
+        )
+
+        result = musicbrainz.resolve_representative_release(
+            RELEASE_GROUP_MBID,
+            "Album",
+        )
+
+        self.assertEqual(result["release_mbid"], earlier["id"])
+        self.assertEqual(result["reason"], "earliest_official")
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_nonofficial_complete_release_is_final_fallback(
+        self,
+        browse_releases,
+        lookup_release,
+    ):
+        official = candidate(
+            "00000000-0000-0000-0000-000000000012",
+            formats=("CD",),
+            streaming=False,
+        )
+        bootleg = candidate(
+            "00000000-0000-0000-0000-000000000013",
+            status="Bootleg",
+            formats=("CD",),
+            streaming=False,
+        )
+        browse_releases.return_value = {
+            "release-count": 2,
+            "releases": [official, bootleg],
+        }
+        lookup_release.side_effect = lambda release_mbid: (
+            full_release(official, complete=False)
+            if release_mbid == official["id"]
+            else full_release(bootleg)
+        )
+
+        result = musicbrainz.resolve_representative_release(
+            RELEASE_GROUP_MBID,
+            "Album",
+        )
+
+        self.assertEqual(result["release_mbid"], bootleg["id"])
+        self.assertEqual(result["reason"], "complete_tracklist_fallback")
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_incomplete_candidate_is_removed_and_all_incomplete_degrades(
+        self,
+        browse_releases,
+        lookup_release,
+    ):
+        first = candidate("00000000-0000-0000-0000-000000000007")
+        second = candidate("00000000-0000-0000-0000-000000000008")
+        browse_releases.return_value = {
+            "release-count": 2,
+            "releases": [first, second],
+        }
+        lookup_release.side_effect = [
+            full_release(first, complete=False),
+            full_release(second),
+            full_release(second),
+        ]
+
+        selected = musicbrainz.resolve_representative_release(
+            RELEASE_GROUP_MBID,
+            "Album",
+        )
+        self.assertEqual(selected["release_mbid"], second["id"])
+
+        cache.clear()
+        lookup_release.side_effect = [
+            full_release(first, complete=False),
+            full_release(second, complete=False),
+        ]
+        degraded = musicbrainz.resolve_representative_release(
+            "10000000-0000-0000-0000-000000000000",
+            "Album",
+        )
+        self.assertIsNone(degraded["release"])
+        self.assertIsNone(degraded["reason"])
+
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_pagination_advances_by_actual_batch_size(self, browse_releases):
+        releases = [
+            candidate(f"00000000-0000-0000-0000-{index:012d}")
+            for index in range(30)
+        ]
+        browse_releases.side_effect = [
+            {"release-count": 30, "releases": releases[:20]},
+            {"release-count": 30, "releases": releases[20:]},
+        ]
+
+        self.assertEqual(len(musicbrainz._all_releases(RELEASE_GROUP_MBID)), 30)
+        self.assertEqual(
+            [call.kwargs["offset"] for call in browse_releases.call_args_list],
+            [0, 20],
+        )
+
+    @patch("app.providers.musicbrainz.lookup_recording")
+    def test_multidisc_payload_preserves_printed_number_and_isrcs(
+        self,
+        lookup_recording,
+    ):
+        release = candidate(
+            RELEASE_MBID,
+            formats=("Digital Media", "Digital Media"),
+            track_counts=(1, 1),
+        )
+        payload = musicbrainz._representative_release(
+            full_release(
+                release,
+                printed_number="A1",
+                isrcs=["USAAA0000001"],
+            ),
+            "streaming_market_match",
+        )
+
+        self.assertEqual(payload["disc_count"], 2)
+        self.assertEqual(payload["track_count"], 2)
+        self.assertEqual(payload["media"][1]["tracks"][0]["disc_number"], 2)
+        self.assertEqual(payload["media"][0]["tracks"][0]["number"], "A1")
+        self.assertEqual(
+            payload["media"][0]["tracks"][0]["recording"]["isrcs"],
+            ["USAAA0000001"],
+        )
+        lookup_recording.assert_not_called()
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_mbid_tie_break_is_deterministic(self, browse_releases, lookup_release):
+        first = candidate("00000000-0000-0000-0000-000000000009")
+        second = candidate("00000000-0000-0000-0000-000000000010")
+        lookup_release.side_effect = lambda release_mbid: full_release(
+            {first["id"]: first, second["id"]: second}[release_mbid],
+        )
+
+        selected = []
+        for releases in ([second, first], [first, second]):
+            browse_releases.return_value = {
+                "release-count": 2,
+                "releases": releases,
+            }
+            selected.append(
+                musicbrainz._select_representative_release(
+                    RELEASE_GROUP_MBID,
+                    "Album",
+                )["release_mbid"],
+            )
+
+        self.assertEqual(selected, [first["id"], first["id"]])
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_selection_is_cached_by_release_group_and_version(
+        self,
+        browse_releases,
+        lookup_release,
+    ):
+        release = candidate("00000000-0000-0000-0000-000000000011")
+        browse_releases.return_value = {"release-count": 1, "releases": [release]}
+        lookup_release.return_value = full_release(release)
+
+        musicbrainz.resolve_representative_release(RELEASE_GROUP_MBID, "Album")
+        musicbrainz.resolve_representative_release(RELEASE_GROUP_MBID, "Album")
+
+        browse_releases.assert_called_once_with(RELEASE_GROUP_MBID, limit=100, offset=0)
+        self.assertEqual(
+            cache.get(
+                f"musicbrainz_representative_release_{musicbrainz.RESOLVER_VERSION}_{RELEASE_GROUP_MBID}",
+            )["release_mbid"],
+            release["id"],
+        )
+
+    @patch("app.providers.musicbrainz.resolve_representative_release")
+    @patch("app.providers.musicbrainz.lookup_cover_art", return_value=None)
+    @patch("app.providers.musicbrainz.lookup_release_group")
+    def test_resolution_failure_keeps_basic_album_metadata(
+        self,
+        lookup_release_group,
+        _lookup_cover_art,
+        resolve,
+    ):
+        lookup_release_group.return_value = {
+            "id": RELEASE_GROUP_MBID,
+            "title": "Year Zero",
+            "first-release-date": "2007-04-13",
+        }
+        resolve.side_effect = services.ProviderAPIError(
+            Sources.MUSICBRAINZ.value,
+            requests.exceptions.Timeout("timed out"),
+        )
+
+        with self.assertLogs(musicbrainz.logger, level="ERROR"):
+            result = musicbrainz.music(RELEASE_GROUP_MBID)
+
+        self.assertEqual(result["title"], "Year Zero")
+        self.assertEqual(result["release_date"], "2007-04-13")
+        self.assertIsNone(result["music"]["representative_release"])
+
+    @patch("app.providers.musicbrainz.lookup_release")
+    @patch("app.providers.musicbrainz.browse_releases")
+    def test_phase_zero_fixture_corpus(self, browse_releases, lookup_release):
+        fixtures = json.loads(CORPUS_PATH.read_text())
+        for fixture in fixtures:
+            with self.subTest(release_group=fixture["release_group_mbid"]):
+                cache.clear()
+                release = fixture["release"]
+                browse_releases.return_value = {
+                    "release-count": 1,
+                    "releases": [release],
+                }
+                lookup_release.return_value = full_release(release)
+
+                result = musicbrainz.resolve_representative_release(
+                    fixture["release_group_mbid"],
+                    fixture["title"],
+                )
+
+                self.assertEqual(
+                    result["release_mbid"],
+                    fixture["expected_release_mbid"],
+                )
+
+
+class MusicBrainzRateLimitTests(TestCase):
+    def test_musicbrainz_session_uses_dedicated_redis_bucket(self):
+        factory = services.musicbrainz_session.limiter.bucket_factory
+
+        self.assertIs(factory.bucket_class, RedisBucket)
+        self.assertEqual(
+            factory.bucket_init_kwargs["bucket_key"],
+            services.musicbrainz_bucket_key,
+        )
+        self.assertEqual(factory.rates[0].limit, 1)
+        self.assertEqual(factory.rates[0].interval, Duration.SECOND)
+        self.assertNotEqual(services.musicbrainz_bucket_key, services.bucket_key)
+
+    def test_separate_workers_share_one_atomic_bucket(self):
+        fake_server = fakeredis.FakeServer()
+        worker_one_redis = fakeredis.FakeRedis(server=fake_server)
+        worker_two_redis = fakeredis.FakeRedis(server=fake_server)
+        rates = [Rate(1, Duration.SECOND)]
+        worker_one = RedisBucket.init(rates, worker_one_redis, "musicbrainz_test")
+        worker_two = RedisBucket.init(rates, worker_two_redis, "musicbrainz_test")
+
+        self.assertTrue(worker_one.put(RateItem("worker-one", 1000)))
+        self.assertFalse(worker_two.put(RateItem("worker-two", 1000)))

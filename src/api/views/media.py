@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils.http import urlencode
 from rest_framework import status
@@ -11,14 +12,15 @@ from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services import media as media_service
 from api.throttling import SearchRateThrottle
-from app import config
+from api.views.mixins import MediaExposureMixin
+from app import config, exposure
 from app.forms import ManualItemForm
-from app.models import BasicMedia, DiaryEntry, Status
+from app.models import BasicMedia, DiaryEntry, MediaTypes, Status
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
 
 
-class MediaSearchView(APIView):
+class MediaSearchView(MediaExposureMixin, APIView):
     """Provider-backed media search."""
 
     permission_classes = [IsAuthenticated]
@@ -50,12 +52,7 @@ class MediaSourcesView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        return Response(
-            {
-                media_type: [source.value for source in config.get_sources(media_type)]
-                for media_type in config.MEDIA_TYPE_CONFIG
-            },
-        )
+        return Response(exposure.source_map())
 
 
 class FilterOptionsView(APIView):
@@ -99,7 +96,7 @@ class FilterOptionsView(APIView):
         return Response({"scope": ["Use tracking, diary, or list."]}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaDiscoverView(APIView):
+class MediaDiscoverView(MediaExposureMixin, APIView):
     """Provider-backed media discovery."""
 
     permission_classes = [IsAuthenticated]
@@ -176,7 +173,7 @@ def _discover_page_url(request, page):
     return request.build_absolute_uri(f"{request.path}?{urlencode(params, doseq=True)}")
 
 
-class ManualMediaView(APIView):
+class ManualMediaView(MediaExposureMixin, APIView):
     """Create a manual media item."""
 
     permission_classes = [IsAuthenticated]
@@ -198,7 +195,7 @@ class ManualMediaView(APIView):
         return Response(media_summary_from_item(item, request=request, user=request.user), status=status.HTTP_201_CREATED)
 
 
-class MediaDetailView(APIView):
+class MediaDetailView(MediaExposureMixin, APIView):
     """Provider-backed media detail."""
 
     permission_classes = [AllowAny]
@@ -219,6 +216,32 @@ class MediaDetailView(APIView):
             )
         except ValueError as error:
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MusicRecordingDetailView(APIView):
+    """Read-only MusicBrainz recording detail within an album context."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def initial(self, request, *args, **kwargs):
+        exposure.require_media_type(MediaTypes.MUSIC.value)
+        return super().initial(request, *args, **kwargs)
+
+    def get(self, request, release_group_mbid, recording_mbid):
+        try:
+            return Response(
+                media_service.music_recording_detail(
+                    release_group_mbid=release_group_mbid,
+                    recording_mbid=recording_mbid,
+                    request=request,
+                    user=request.user if request.user.is_authenticated else None,
+                ),
+            )
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                raise Http404 from error
+            raise
 
 
 class PersonDetailView(APIView):
@@ -310,7 +333,7 @@ class CompanyGameOptionsView(APIView):
             raise
 
 
-class MediaReviewsView(APIView):
+class MediaReviewsView(MediaExposureMixin, APIView):
     """Public diary reviews for a media identity."""
 
     permission_classes = [AllowAny]
@@ -348,7 +371,7 @@ class MediaReviewsView(APIView):
         )
 
 
-class MediaPostersView(APIView):
+class MediaPostersView(MediaExposureMixin, APIView):
     """Selectable poster images for TMDB movie/TV media and book covers."""
 
     permission_classes = [IsAuthenticated]
@@ -369,7 +392,7 @@ class MediaPostersView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaPosterPreferenceView(APIView):
+class MediaPosterPreferenceView(MediaExposureMixin, APIView):
     """Save the viewer's selected poster or book cover."""
 
     permission_classes = [IsAuthenticated]
@@ -390,7 +413,7 @@ class MediaPosterPreferenceView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaBackdropsView(APIView):
+class MediaBackdropsView(MediaExposureMixin, APIView):
     """Selectable backdrop images for TMDB movie/TV media."""
 
     permission_classes = [IsAuthenticated]
@@ -412,7 +435,7 @@ class MediaBackdropsView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaBackdropPreferenceView(APIView):
+class MediaBackdropPreferenceView(MediaExposureMixin, APIView):
     """Save the viewer's selected backdrop."""
 
     permission_classes = [IsAuthenticated]
@@ -434,7 +457,7 @@ class MediaBackdropPreferenceView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaLogosView(APIView):
+class MediaLogosView(MediaExposureMixin, APIView):
     """Selectable title logos for TMDB movie/TV media and IGDB games."""
 
     permission_classes = [IsAuthenticated]
@@ -454,7 +477,7 @@ class MediaLogosView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MediaLogoPreferenceView(APIView):
+class MediaLogoPreferenceView(MediaExposureMixin, APIView):
     """Save the viewer's selected title logo."""
 
     permission_classes = [IsAuthenticated]
@@ -524,7 +547,7 @@ class SeasonEpisodesView(APIView):
         )
 
 
-class CommunityStatsView(APIView):
+class CommunityStatsView(MediaExposureMixin, APIView):
     """Community aggregate placeholder."""
 
     permission_classes = [AllowAny]

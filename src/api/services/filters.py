@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from requests import RequestException
 
+from app import exposure
 from app.models import Item, ItemFilterFacet, MediaTypes, Status
 
 logger = logging.getLogger(__name__)
@@ -294,16 +295,7 @@ def apply_user_status_filter(queryset, user, status, *, item_id_field="item_id")
     tracked_only = str(status).lower() == "tracked"
 
     status_query = Q()
-    for media_type in [
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-        MediaTypes.MOVIE.value,
-        MediaTypes.ANIME.value,
-        MediaTypes.MANGA.value,
-        MediaTypes.GAME.value,
-        MediaTypes.BOOK.value,
-        MediaTypes.COMIC.value,
-    ]:
+    for media_type in exposure.user_owned_media_types():
         model = apps.get_model("app", media_type)
         media_queryset = model.objects.filter(user=user)
         if tracked_only:
@@ -322,16 +314,7 @@ def apply_user_status_filter(queryset, user, status, *, item_id_field="item_id")
 def annotate_user_rating(queryset, user, *, item_id_field="item_id", annotation="user_rating"):
     """Annotate mixed Item querysets with the current user's tracking score."""
     cases = []
-    for media_type in [
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-        MediaTypes.MOVIE.value,
-        MediaTypes.ANIME.value,
-        MediaTypes.MANGA.value,
-        MediaTypes.GAME.value,
-        MediaTypes.BOOK.value,
-        MediaTypes.COMIC.value,
-    ]:
+    for media_type in exposure.user_owned_media_types():
         model = apps.get_model("app", media_type)
         cases.append(
             When(
@@ -592,7 +575,9 @@ def _release_date(metadata):
         or metadata.get("first_air_date")
         or metadata.get("start_date")
         or metadata.get("end_date")
+        or metadata.get("first_release_date")
         or details.get("release_date")
+        or details.get("first_release_date")
         or details.get("first_air_date")
         or details.get("publish_date")
         or details.get("published_date")

@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -8,6 +9,7 @@ from rest_framework.views import APIView
 from api.pagination import FeedCursorPagination
 from api.serializers.social import LikeSerializer
 from api.services import social as social_service
+from app import exposure
 from social.models import Follow, FollowStatus
 
 
@@ -17,9 +19,12 @@ class FeedView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        queryset = social_service.feed_queryset(request.user)
+        queryset = social_service.feed_queryset(request.user).filter(
+            Q(item__isnull=True) | Q(item__media_type__in=exposure.media_types()),
+        )
         media_type = request.query_params.get("media_type")
         if media_type:
+            exposure.require_media_type(media_type)
             queryset = queryset.filter(item__media_type=media_type)
         paginator = FeedCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
@@ -37,7 +42,9 @@ class UserActivityView(APIView):
 
     def get(self, request, username):
         user = get_object_or_404(get_user_model(), username=username)
-        queryset = social_service.user_activity_queryset(request.user, user)
+        queryset = social_service.user_activity_queryset(request.user, user).filter(
+            Q(item__isnull=True) | Q(item__media_type__in=exposure.media_types()),
+        )
         paginator = FeedCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         data = [

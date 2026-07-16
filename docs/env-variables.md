@@ -22,6 +22,8 @@ This page outlines the environment variables used in the YamTrack project.
 | `IGDB_NSFW`     | Default to `False`. Set to `True` to include adult content in game searches.                                                                                                                                                                          |
 | `HARDCOVER_API` | Hardcover API key for books. A default key is provided, but it's recommended to get your own as it has a low rate limit. Custom values must include the `Bearer ` prefix.                                                                              |
 | `COMICVINE_API` | ComicVine API key for comics. A default key is provided, but it's recommended to get your own as it has a low rate limit.                                                                                                                             |
+| `MUSICBRAINZ_CONTACT` | Contact email or URL included in Spine's server-side MusicBrainz User-Agent. Defaults to `github@fuzzygrim.com`. |
+| `MUSIC_DEFAULT_MARKET` | Server-wide ISO 3166-1 market used to select representative music releases. Defaults to `US`. |
 
 ## Media Import
 
@@ -42,6 +44,7 @@ See [media-imports](media-imports.md).
 | `DEBUG`            | Default to `False`. Set to `True` for debugging.                                                                                                                                                     |
 | `ADMIN_ENABLED`    | Default to `False`. Set to `True` to enable the Django admin interface.                                                                                                                              |
 | `TRACK_TIME`       | Default to `True`. Set to `False` to disable time tracking in Yamtrack.                                                                                                                              |
+| `MUSIC_ENABLED`    | Defaults to the value of `DEBUG`. Keep `False` in production until Music is ready for client rollout.                                                                                                |
 
 ## User and System Configuration
 

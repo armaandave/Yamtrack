@@ -6,6 +6,7 @@ from django.db.models import Q
 from rest_framework import serializers
 
 from api.serializers.common import image_url, media_summary_from_item
+from app import exposure
 from app.models import BasicMedia, DiaryEntry, MediaLike, MediaTypes, Status, Tag
 from social.models import Follow, FollowStatus
 from users.forms import PasswordChangeForm
@@ -15,16 +16,6 @@ from users.models import (
     TimeFormatChoices,
     WeekStartDayChoices,
 )
-
-PROFILE_PRIMARY_MEDIA_TYPES = [
-    MediaTypes.MOVIE.value,
-    MediaTypes.TV.value,
-    MediaTypes.ANIME.value,
-    MediaTypes.MANGA.value,
-    MediaTypes.GAME.value,
-    MediaTypes.BOOK.value,
-    MediaTypes.COMIC.value,
-]
 
 
 def profile_payload(user, request=None, viewer=None):
@@ -91,7 +82,7 @@ def _review_q():
 
 def _media_count(user, *, status=None, exclude_status=None):
     total = 0
-    for media_type in PROFILE_PRIMARY_MEDIA_TYPES:
+    for media_type in exposure.primary_media_types():
         queryset = BasicMedia.objects.get_media_list(
             user,
             media_type,
@@ -107,7 +98,9 @@ def _media_count(user, *, status=None, exclude_status=None):
 def preferences_payload(user):
     """Serialize mobile-relevant preferences."""
     return {
-        "enabled_media_types": user.get_enabled_media_types(),
+        "enabled_media_types": exposure.filter_media_types(
+            user.get_enabled_media_types(),
+        ),
         "date_format": user.date_format,
         "time_format": user.time_format,
         "week_start_day": user.week_start_day,
@@ -122,6 +115,7 @@ def hof_payload(user, request=None):
     return {
         media_type: media_summary_from_item(item, request=request, user=user) if item else None
         for media_type, item in user.get_hall_of_fame_items().items()
+        if media_type in exposure.media_types()
     }
 
 
@@ -178,7 +172,7 @@ class PreferencesSerializer(serializers.Serializer):
     daily_digest_enabled = serializers.BooleanField(required=False)
 
     def validate_enabled_media_types(self, value):
-        allowed = set(MediaTypes.values) - {MediaTypes.EPISODE.value}
+        allowed = set(exposure.media_types()) - {MediaTypes.EPISODE.value}
         invalid = sorted(set(value) - allowed)
         if invalid:
             message = f"Unsupported media type(s): {', '.join(invalid)}."
@@ -203,7 +197,7 @@ class PreferencesSerializer(serializers.Serializer):
         enabled = data.pop("enabled_media_types", None)
         if enabled is not None:
             enabled = set(enabled)
-            for media_type in MediaTypes.values:
+            for media_type in exposure.media_types():
                 field = f"{media_type}_enabled"
                 if media_type != MediaTypes.EPISODE.value and hasattr(user, field):
                     value = media_type in enabled

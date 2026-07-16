@@ -201,6 +201,20 @@ MEDIA_TYPE_CONFIG = {
             5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z"/>""",
         "unit": ("#", "Issue"),
     },
+    MediaTypes.MUSIC.value: {
+        "sources": [Sources.MUSICBRAINZ],
+        "default_source": Sources.MUSICBRAINZ,
+        "sample_query": "Year Zero",
+        "unicode_icon": "🎵",
+        "verb": ("listen", "listened"),
+        "text_color": COLORS["lime"]["text"],
+        "stats_color": COLORS["lime"]["hex"],
+        "svg_icon": """
+            <path d="M9 18V5l12-2v13"/>
+            <circle cx="6" cy="18" r="3"/>
+            <circle cx="18" cy="16" r="3"/>""",
+        "date_key": "first_release_date",
+    },
 }
 
 # --- Status Configuration ---

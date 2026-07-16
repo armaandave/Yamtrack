@@ -17,6 +17,7 @@ from app.providers import (
     mal,
     mangaupdates,
     manual,
+    musicbrainz,
     openlibrary,
     tmdb,
 )
@@ -35,11 +36,23 @@ def get_redis_client():
 
 redis_db = get_redis_client()
 bucket_key = f"{settings.REDIS_PREFIX}_api" if settings.REDIS_PREFIX else "api"
+musicbrainz_bucket_key = (
+    f"{settings.REDIS_PREFIX}_musicbrainz_api"
+    if settings.REDIS_PREFIX
+    else "musicbrainz_api"
+)
 
 session = LimiterSession(
     per_second=5,
     bucket_class=RedisBucket,
     bucket_kwargs={"redis": redis_db, "bucket_key": bucket_key},
+)
+
+musicbrainz_session = LimiterSession(
+    per_second=1,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": musicbrainz_bucket_key},
+    limit_statuses=(requests.codes.service_unavailable,),
 )
 
 session.mount("http://", HTTPAdapter(max_retries=3))
@@ -144,6 +157,7 @@ def api_request(
     data=None,
     headers=None,
     response_format="json",
+    request_session=None,
 ):
     """Make a request to the API and return the response.
 
@@ -155,6 +169,7 @@ def api_request(
         data: Raw data for POST
         headers: Request headers
         response_format: "json" (default) or "xml" for XML parsing
+        request_session: Optional requests session; defaults to the shared provider session
 
     Returns:
         Parsed JSON dict or ElementTree for XML
@@ -166,13 +181,15 @@ def api_request(
             "timeout": settings.REQUEST_TIMEOUT,
         }
 
+        active_session = request_session or session
+
         if method == "GET":
             request_kwargs["params"] = params
-            request_func = session.get
+            request_func = active_session.get
         elif method == "POST":
             request_kwargs["data"] = data
             request_kwargs["json"] = params
-            request_func = session.post
+            request_func = active_session.post
 
         response = request_func(**request_kwargs)
         response.raise_for_status()
@@ -199,6 +216,7 @@ def api_request(
                 data=data,
                 headers=headers,
                 response_format=response_format,
+                request_session=request_session,
             )
 
         raise error from None
@@ -252,6 +270,7 @@ def get_media_metadata(
             else openlibrary.book(media_id)
         ),
         MediaTypes.COMIC.value: lambda: comicvine.comic(media_id),
+        MediaTypes.MUSIC.value: lambda: musicbrainz.music(media_id),
     }
     return metadata_retrievers[media_type]()
 
@@ -295,6 +314,7 @@ def search(
             else hardcover.search(query, page)
         ),
         MediaTypes.COMIC.value: lambda: comicvine.search(query, page),
+        MediaTypes.MUSIC.value: lambda: musicbrainz.search(query, page),
     }
     return search_handlers[media_type]()
 

@@ -7,7 +7,7 @@ from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from app import helpers
+from app import exposure, helpers
 from app.models import Item, MediaManager, MediaTypes
 from app.providers import services
 from lists.forms import CustomListForm
@@ -113,9 +113,11 @@ def list_detail(request, list_id):
         "page": int(request.GET.get("page", 1)),
         "search_query": request.GET.get("q", ""),
     }
+    if params["media_type"] != "all":
+        exposure.require_media_type(params["media_type"])
 
     # Build and filter base queryset
-    items = custom_list.items.all()
+    items = custom_list.items.filter(media_type__in=exposure.media_types())
     if params["search_query"]:
         items = items.filter(title__icontains=params["search_query"])
     if params["media_type"] != "all":
@@ -189,7 +191,7 @@ def list_detail(request, list_id):
         context.update(
             {
                 "form": CustomListForm(instance=custom_list),
-                "media_types": MediaTypes.values,
+                "media_types": exposure.media_types(),
                 "items_count": paginator.count,
                 "collaborators_count": custom_list.collaborators.count() + 1,
             },
@@ -255,6 +257,7 @@ def lists_modal(
     episode_number=None,
 ):
     """Return the modal showing all custom lists and allowing to add to them."""
+    exposure.require_media_type(media_type)
     try:
         item = Item.objects.get(
             media_id=media_id,
@@ -297,6 +300,7 @@ def list_item_toggle(request):
     custom_list_id = request.POST["custom_list_id"]
 
     item = get_object_or_404(Item, id=item_id)
+    exposure.require_media_type(item.media_type)
     custom_list = get_object_or_404(
         CustomList.objects.filter(
             Q(owner=request.user) | Q(collaborators=request.user),

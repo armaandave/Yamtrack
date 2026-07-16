@@ -1,0 +1,167 @@
+{
+  "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+  "title": "HYPERPOWER!",
+  "artist_credit": [
+    {
+      "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+      "name": "Nine Inch Nails",
+      "join_phrase": ""
+    }
+  ],
+  "length_ms": 102000,
+  "isrcs": [
+    "USUM70727128"
+  ],
+  "disambiguation": null,
+  "first_release_date": "2007-04-13",
+  "is_video": false,
+  "genres": [
+    "industrial rock"
+  ],
+  "rating": {
+    "value": 4.5,
+    "votes_count": 8,
+    "max_value": 5
+  },
+  "annotation": null,
+  "works": [
+    {
+      "work_mbid": "15baf23f-f6b4-3d92-9425-3ab51d40bca7",
+      "title": "HYPERPOWER!",
+      "relationship_type": "performance",
+      "iswcs": [
+        "T-073.350.911-9"
+      ],
+      "language": "zxx",
+      "credits": [
+        {
+          "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+          "name": "Trent Reznor",
+          "roles": [
+            "composer"
+          ]
+        }
+      ]
+    }
+  ],
+  "alternative_recordings": [],
+  "source_url": "https://musicbrainz.org/recording/35518724-a25a-4627-a2cc-0786dd1d2272",
+  "external_links": {
+    "MusicBrainz": "https://musicbrainz.org/recording/35518724-a25a-4627-a2cc-0786dd1d2272"
+  },
+  "parent_album": {
+    "ref": {
+      "item_id": 812,
+      "source": "musicbrainz",
+      "media_type": "music",
+      "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+      "season_number": null,
+      "episode_number": null
+    },
+    "title": "Year Zero",
+    "subtitle": "Nine Inch Nails",
+    "overview": null,
+    "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "backdrop_url": null,
+    "poster_aspect_ratio": 1.0,
+    "poster_width": 500,
+    "poster_height": 500,
+    "poster_orientation": "square",
+    "poster_accent_color": null,
+    "release_date": "2007-04-13",
+    "genres": [
+      "industrial rock"
+    ],
+    "languages": [],
+    "roles": [],
+    "credit_roles": [],
+    "default_source": "musicbrainz",
+    "custom_poster_url": null,
+    "user_state": null
+  },
+  "albums": [
+    {
+      "ref": {
+        "item_id": 812,
+        "source": "musicbrainz",
+        "media_type": "music",
+        "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "season_number": null,
+        "episode_number": null
+      },
+      "title": "Year Zero",
+      "subtitle": "Nine Inch Nails",
+      "overview": null,
+      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "backdrop_url": null,
+      "poster_aspect_ratio": 1.0,
+      "poster_width": 500,
+      "poster_height": 500,
+      "poster_orientation": "square",
+      "poster_accent_color": null,
+      "release_date": "2007-04-13",
+      "genres": [
+        "industrial rock"
+      ],
+      "languages": [],
+      "roles": [],
+      "credit_roles": [],
+      "default_source": "musicbrainz",
+      "custom_poster_url": null,
+      "user_state": null
+    }
+  ],
+  "releases": [
+    {
+      "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+      "title": "Year Zero",
+      "status": "Official",
+      "date": "2016-09-02",
+      "country": "XW",
+      "barcode": "00602547582812",
+      "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+    }
+  ],
+  "context_release": {
+    "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+    "medium_mbid": "b05740f0-cf72-3ea2-aabf-e00c85065525",
+    "track": {
+      "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f",
+      "disc_number": 1,
+      "position": 1,
+      "number": "1",
+      "title": "HYPERPOWER!",
+      "length_ms": 101790,
+      "artist_credit": [
+        {
+          "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+          "name": "Nine Inch Nails",
+          "join_phrase": ""
+        }
+      ],
+      "recording": {
+        "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+        "title": "HYPERPOWER!",
+        "length_ms": 102000,
+        "disambiguation": null,
+        "first_release_date": "2007-04-13",
+        "is_video": false,
+        "isrcs": [
+          "USUM70727128"
+        ]
+      }
+    }
+  },
+  "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+  "capabilities": {
+    "trackable": false,
+    "rateable": false,
+    "reviewable": false,
+    "diary_loggable": false,
+    "likeable": false,
+    "listable": false,
+    "library_addable": false
+  }
+}

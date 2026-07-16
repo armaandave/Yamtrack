@@ -316,6 +316,19 @@ class ServicesTests(TestCase):
 
         mock_comic.assert_called_once_with("1")
 
+    @patch("app.providers.musicbrainz.music")
+    def test_get_media_metadata_music(self, mock_music):
+        mock_music.return_value = {"title": "Year Zero"}
+
+        result = services.get_media_metadata(
+            MediaTypes.MUSIC.value,
+            "release-group-id",
+            Sources.MUSICBRAINZ.value,
+        )
+
+        self.assertEqual(result, {"title": "Year Zero"})
+        mock_music.assert_called_once_with("release-group-id")
+
     @patch("app.providers.openlibrary.book")
     def test_get_media_metadata_book(self, mock_book):
         """Test the get_media_metadata function for books."""
@@ -534,3 +547,12 @@ class ServicesTests(TestCase):
         self.assertEqual(result, [{"title": "Test Comic"}])
 
         mock_search.assert_called_once_with("test", 1)
+
+    @patch("app.providers.musicbrainz.search")
+    def test_search_music(self, mock_search):
+        mock_search.return_value = [{"title": "Year Zero"}]
+
+        result = services.search(MediaTypes.MUSIC.value, "year zero", 1)
+
+        self.assertEqual(result, [{"title": "Year Zero"}])
+        mock_search.assert_called_once_with("year zero", 1)

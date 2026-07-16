@@ -31,6 +31,12 @@ def process_other(item, events_bulk):
     date_key = config.get_date_key(item.media_type)
     content_number = metadata["max_progress"]
 
+    if (
+        item.media_type == MediaTypes.MUSIC.value
+        and not metadata["details"].get(date_key)
+    ):
+        return
+
     if date_key in metadata["details"] and content_number:
         if metadata["details"][date_key]:
             try:
@@ -46,7 +52,7 @@ def process_other(item, events_bulk):
         else:
             content_datetime = datetime.min.replace(tzinfo=ZoneInfo("UTC"))
 
-        if item.media_type == MediaTypes.MOVIE.value:
+        if item.media_type in (MediaTypes.MOVIE.value, MediaTypes.MUSIC.value):
             content_number = None
 
         events_bulk.append(

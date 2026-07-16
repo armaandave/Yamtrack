@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +12,11 @@ from app.models import (
     Book,
     Episode,
     Manga,
+    MediaTypes,
+    Music,
     Movie,
     Season,
+    Sources,
 )
 from integrations.imports import (
     yamtrack,
@@ -68,6 +72,32 @@ class ImportYamtrack(TestCase):
             tv.history.first().history_date,
             datetime(2024, 2, 9, 12, 0, 0, tzinfo=UTC),
         )
+
+    def test_musicbrainz_music_row_uses_generic_import(self):
+        csv_data = (
+            '"media_id","source","media_type","title","image","season_number",'
+            '"episode_number","score","progress","status","start_date","end_date",'
+            '"notes","progressed_at"\n'
+            '"3bd76d40-7f0e-36b7-9348-91a33afee20e","musicbrainz","music",'
+            '"Year Zero","https://example.com/year-zero.jpg","","","9","0",'
+            '"Completed","","2025-04-05","Loud","2025-04-05T12:00:00Z"\n'
+        )
+
+        counts, warnings = yamtrack.importer(
+            BytesIO(csv_data.encode()),
+            self.user,
+            "new",
+        )
+
+        music = Music.objects.get(
+            user=self.user,
+            item__source=Sources.MUSICBRAINZ.value,
+            item__media_type=MediaTypes.MUSIC.value,
+        )
+        self.assertEqual(counts[MediaTypes.MUSIC.value], 1)
+        self.assertEqual(warnings, "")
+        self.assertEqual(music.status, "Completed")
+        self.assertEqual(music.score, 9)
 
     @patch("integrations.imports.yamtrack.services.get_media_metadata")
     def test_missing_metadata_handling(self, mock_get_media_metadata):

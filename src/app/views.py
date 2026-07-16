@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_date
 from django.utils.timezone import datetime
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from app import config, helpers, history_processor
+from app import config, exposure, helpers, history_processor
 from app import statistics as stats
 from app.forms import EpisodeForm, ManualItemForm, get_form_class, BookProgressForm, BookLogForm, BookStartReadingForm
 from app.models import TV, BasicMedia, Item, MediaTypes, Season, Sources, Status, Movie, Episode, Book, BookSession, UserMessage
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 def home(request):
     """Home page with media items in progress."""
     media_type_to_load = request.GET.get("load_media_type")
+    exposure.require_media_type(media_type_to_load)
     items_limit = 14
 
     list_by_type = BasicMedia.objects.get_home_status(
@@ -49,6 +50,11 @@ def home(request):
         items_limit=items_limit,
         specific_media_type=media_type_to_load,
     )
+    list_by_type = {
+        media_type: value
+        for media_type, value in list_by_type.items()
+        if media_type in exposure.media_types()
+    }
 
     # If this is an HTMX request to load more items for a specific media type
     if request.headers.get("HX-Request") and media_type_to_load:
@@ -68,9 +74,10 @@ def home(request):
 @require_POST
 def progress_edit(request, media_type, instance_id):
     """Increase or decrease the progress of a media item from home page."""
-    # Games don't support progress updates
-    if media_type == MediaTypes.GAME.value:
-        return HttpResponseBadRequest("Games do not support progress updates")
+    exposure.require_media_type(media_type)
+    # Games and binary album tracking don't support progress updates.
+    if media_type in [MediaTypes.GAME.value, MediaTypes.MUSIC.value]:
+        return HttpResponseBadRequest(f"{MediaTypes(media_type).label} does not support progress updates")
     
     operation = request.POST["operation"]
 
@@ -105,6 +112,7 @@ def progress_edit(request, media_type, instance_id):
 @require_GET
 def media_list(request, media_type, username=None):
     """Return the media list page."""
+    exposure.require_media_type(media_type)
     target_user = get_object_or_404(User, username=username) if username else request.user
 
     if request.user == target_user:
@@ -124,7 +132,9 @@ def media_list(request, media_type, username=None):
         if target_user.profile_private:
             raise Http404("User not found")
 
-        enabled_media_types = target_user.get_enabled_media_types()
+        enabled_media_types = exposure.filter_media_types(
+            target_user.get_enabled_media_types(),
+        )
         if not enabled_media_types:
             raise Http404("User doesn't have any media types enabled")
 
@@ -173,6 +183,17 @@ def media_list(request, media_type, username=None):
         media_type,
     )
 
+    status_choices = MediaStatusChoices.choices
+    if media_type == MediaTypes.MUSIC.value:
+        music_labels = {
+            Status.IN_PROGRESS.value: "Listening",
+            Status.COMPLETED.value: "Listened",
+        }
+        status_choices = [
+            (value, music_labels.get(value, label))
+            for value, label in status_choices
+        ]
+
     context = {
         "media_type": media_type,
         "media_type_plural": app_tags.media_type_readable_plural(media_type).lower(),
@@ -182,7 +203,7 @@ def media_list(request, media_type, username=None):
         "current_sort": sort_filter,
         "current_status": status_filter,
         "sort_choices": MediaSortChoices.choices,
-        "status_choices": MediaStatusChoices.choices,
+        "status_choices": status_choices,
         "target_user": target_user,
     }
 
@@ -212,6 +233,7 @@ def media_list(request, media_type, username=None):
 @require_GET
 def media_search(request):
     """Return the media search page."""
+    exposure.require_media_type(request.GET["media_type"])
     media_type = request.user.update_preference(
         "last_search_type",
         request.GET["media_type"],
@@ -249,6 +271,7 @@ def media_search(request):
 @require_GET
 def media_details(request, source, media_type, media_id, title):
     """Return the details page for a media item."""
+    exposure.require_media_type(media_type)
     media_metadata = services.get_media_metadata(media_type, media_id, source)
     
     if not media_metadata:
@@ -289,9 +312,15 @@ def media_details(request, source, media_type, media_id, title):
             media_metadata.get("image"),
         )
 
-    # Get diary entries for this media (movies, TV, books, and games)
+    # Get diary entries for media types with detail-page logging actions.
     diary_entries = []
-    if media_type in [MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.BOOK.value, MediaTypes.GAME.value]:
+    if media_type in [
+        MediaTypes.MOVIE.value,
+        MediaTypes.TV.value,
+        MediaTypes.BOOK.value,
+        MediaTypes.GAME.value,
+        MediaTypes.MUSIC.value,
+    ]:
         try:
             item = Item.objects.get(source=source, media_type=media_type, media_id=media_id)
             diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).prefetch_related('tags').order_by('-consumed_at')
@@ -494,6 +523,7 @@ def season_details(request, source, media_id, title, season_number):  # noqa: AR
 @require_POST
 def update_media_score(request, media_type, instance_id):
     """Update the user's score for a media item."""
+    exposure.require_media_type(media_type)
     media = BasicMedia.objects.get_media(
         request.user,
         media_type,
@@ -520,6 +550,7 @@ def update_media_score(request, media_type, instance_id):
 @require_POST
 def sync_metadata(request, source, media_type, media_id, season_number=None):
     """Refresh the metadata for a media item."""
+    exposure.require_media_type(media_type)
     if source == Sources.MANUAL.value:
         msg = "Manual items cannot be synced."
         messages.error(request, msg)
@@ -635,6 +666,7 @@ def track_modal(
     season_number=None,
 ):
     """Return the tracking form for a media item."""
+    exposure.require_media_type(media_type)
     instance_id = request.GET.get("instance_id")
     if instance_id:
         media = BasicMedia.objects.get_media(
@@ -699,6 +731,7 @@ def media_save(request):
     media_id = request.POST["media_id"]
     source = request.POST["source"]
     media_type = request.POST["media_type"]
+    exposure.require_media_type(media_type)
     season_number = request.POST.get("season_number")
     instance_id = request.POST.get("instance_id")
 
@@ -754,6 +787,7 @@ def media_delete(request):
     """Delete media data from the database."""
     instance_id = request.POST["instance_id"]
     media_type = request.POST["media_type"]
+    exposure.require_media_type(media_type)
     model = apps.get_model(app_label="app", model_name=media_type)
 
     try:
@@ -849,10 +883,11 @@ def episode_save(request):
 def create_entry(request):
     """Return the form for manually adding media items."""
     if request.method == "GET":
-        media_types = MediaTypes.values
+        media_types = exposure.media_types()
         return render(request, "app/create_entry.html", {"media_types": media_types})
 
     # Process the form submission
+    exposure.require_media_type(request.POST.get("media_type"))
     form = ManualItemForm(request.POST, user=request.user)
     if not form.is_valid():
         # Handle form validation errors
@@ -976,6 +1011,7 @@ def history_modal(
     episode_number=None,
 ):
     """Return the history page for a media item."""
+    exposure.require_media_type(media_type)
     user_medias = BasicMedia.objects.filter_media(
         request.user,
         media_id,
@@ -1013,6 +1049,7 @@ def history_modal(
 @require_http_methods(["DELETE"])
 def delete_history_record(request, media_type, history_id):
     """Delete a specific history record."""
+    exposure.require_media_type(media_type)
     try:
         historical_model = apps.get_model(
             app_label="app",
@@ -1112,6 +1149,7 @@ def hof_search(request):
     """Return search results for Hall of Fame selection."""
     try:
         media_type = request.GET["media_type"]  # Use square brackets like working search
+        exposure.require_media_type(media_type)
         query = request.GET["q"]  # Use square brackets like working search
     except KeyError as e:
         print(f"HOF Search - Missing parameter: {e}")
@@ -1163,6 +1201,7 @@ def toggle_hof(request):
     
     try:
         media_type = request.POST["media_type"]
+        exposure.require_media_type(media_type)
         media_id = request.POST["media_id"]
         source = request.POST["source"]
         
@@ -1277,6 +1316,7 @@ def book_cover_selection_content(request, source, media_id):
 @require_GET
 def poster_selection_modal(request, media_type, media_id, source):
     """Return the poster selection modal with available posters."""
+    exposure.require_media_type(media_type)
     if source != Sources.TMDB.value or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
         return HttpResponseBadRequest("Poster selection only available for TMDB movies and TV shows")
         
@@ -1585,6 +1625,7 @@ def save_poster_preference(request):
     """Save the user's poster preference for an item."""
     try:
         media_type = request.POST["media_type"]
+        exposure.require_media_type(media_type)
         media_id = request.POST["media_id"]
         source = request.POST["source"]
         custom_image_url = request.POST["poster_url"]
@@ -1649,6 +1690,7 @@ def save_poster_preference(request):
 @require_POST
 def mark_consumed(request, media_type, instance_id):
     """Mark a media item as consumed."""
+    exposure.require_media_type(media_type)
     if media_type != MediaTypes.MOVIE.value:
         raise Http404("Mark as consumed is only available for movies")
         
@@ -1672,6 +1714,7 @@ def mark_consumed(request, media_type, instance_id):
 @require_POST
 def add_diary_entry(request, media_type, instance_id):
     """Create a new diary entry."""
+    exposure.require_media_type(media_type)
     if media_type != MediaTypes.MOVIE.value:
         raise Http404("Diary entries are only available for movies")
         
@@ -1724,12 +1767,17 @@ def diary_list(request):
     """Show user's diary entries."""
     # Get filters from query params
     media_type = request.GET.get("media_type", "")
+    if media_type:
+        exposure.require_media_type(media_type)
     year = request.GET.get("year")
     item_id = request.GET.get("item_id")
     page = request.GET.get("page", 1)
     
     # Base queryset - order by created_at descending (newest first) to reflect actual logging order
-    entries = DiaryEntry.objects.filter(user=request.user).select_related('item').prefetch_related('tags').order_by('-created_at')
+    entries = DiaryEntry.objects.filter(
+        user=request.user,
+        item__media_type__in=exposure.media_types(),
+    ).select_related('item').prefetch_related('tags').order_by('-created_at')
     
     # Apply filters
     if media_type:
@@ -1761,7 +1809,7 @@ def diary_list(request):
         "years": years,
         "current_year": year,
         "current_media_type": media_type,
-        "media_type_choices": MediaTypes.choices,
+        "media_type_choices": exposure.media_type_choices(),
     }
     
     if request.headers.get("HX-Request"):
@@ -1773,6 +1821,7 @@ def diary_list(request):
 @require_GET
 def diary_item(request, media_type, instance_id):
     """Show diary entries for a specific item."""
+    exposure.require_media_type(media_type)
     media = BasicMedia.objects.get_media(
         request.user,
         media_type,
@@ -1800,14 +1849,18 @@ from datetime import date
 
 def log_modal(request, source, media_type, media_id, season_number=None):
     """Show the log entry modal."""
+    exposure.require_media_type(media_type)
     if media_type not in [
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,
         MediaTypes.SEASON.value,
         MediaTypes.BOOK.value,
         MediaTypes.GAME.value,
+        MediaTypes.MUSIC.value,
     ]:
-        raise Http404("Logging is only available for movies, TV shows, seasons, books, and games")
+        raise Http404(
+            "Logging is only available for movies, TV shows, seasons, books, games, and music",
+        )
         
     # Get or create the item - fetch metadata if it doesn't exist
     try:
@@ -1882,6 +1935,7 @@ def log_modal(request, source, media_type, media_id, season_number=None):
         'user': request.user,
         'today': default_date,
         'book_completion': request.GET.get('book_complete') == '1',
+        'is_repeat': request.GET.get('relisten') == '1',
     })
 
 
@@ -2175,6 +2229,7 @@ def unmark_game_completed(request, source, media_id):
 @require_POST
 def mark_tv_watched(request, source, media_type, media_id):
     """Mark a TV show as watched by creating a tracking instance and marking all episodes as consumed."""
+    exposure.require_media_type(media_type)
     try:
         if media_type != MediaTypes.TV.value:
             raise Http404("Mark as watched is only available for TV shows")
@@ -2264,6 +2319,7 @@ def mark_tv_watched(request, source, media_type, media_id):
 @require_POST
 def unmark_tv_watched(request, source, media_type, media_id):
     """Unmark a TV show as watched by removing the tracking instance and all episodes."""
+    exposure.require_media_type(media_type)
     if media_type != MediaTypes.TV.value:
         raise Http404("Unwatch is only available for TV shows")
         
@@ -2333,6 +2389,7 @@ def unmark_tv_watched(request, source, media_type, media_id):
 @require_POST
 def start_tracking_tv(request, source, media_type, media_id):
     """Start tracking a TV show by creating Season 1 with 'In Progress' status."""
+    exposure.require_media_type(media_type)
     try:
         if media_type != MediaTypes.TV.value:
             raise Http404("Start tracking is only available for TV shows")
@@ -2435,6 +2492,7 @@ def start_tracking_tv(request, source, media_type, media_id):
 @require_POST
 def start_tracking_season(request, source, media_type, media_id, season_number):
     """Start tracking a specific season by setting it to 'In Progress' status."""
+    exposure.require_media_type(media_type)
     try:
         if media_type != MediaTypes.SEASON.value:
             raise Http404("Start tracking is only available for seasons")
@@ -2539,6 +2597,7 @@ def start_tracking_season(request, source, media_type, media_id, season_number):
 @require_POST
 def watch_episode(request, source, media_type, media_id, season_number, episode_number):
     """Mark an episode as watched by creating an Episode instance."""
+    exposure.require_media_type(media_type)
     if media_type != MediaTypes.EPISODE.value:
         raise Http404("Watch episode is only available for episodes")
         
@@ -2634,6 +2693,7 @@ def watch_episode(request, source, media_type, media_id, season_number, episode_
 @require_POST
 def unwatch_episode(request, source, media_type, media_id, season_number, episode_number):
     """Mark an episode as unwatched by removing the Episode instance."""
+    exposure.require_media_type(media_type)
     if media_type != MediaTypes.EPISODE.value:
         raise Http404("Unwatch episode is only available for episodes")
         
@@ -2824,6 +2884,7 @@ def render_episode_card(request, episode):
 @require_POST
 def mark_season_watched(request, source, media_type, media_id, season_number):
     """Mark a season as watched by creating a tracking instance and marking all episodes as consumed."""
+    exposure.require_media_type(media_type)
     # The URL passes media_type='tv' but we need to work with seasons
     season_media_type = MediaTypes.SEASON.value
         
@@ -2919,6 +2980,7 @@ def mark_season_watched(request, source, media_type, media_id, season_number):
 @require_POST
 def unmark_season_watched(request, source, media_type, media_id, season_number):
     """Unmark a season as watched by removing the tracking instance and all episodes."""
+    exposure.require_media_type(media_type)
     # The URL passes media_type='tv' but we need to work with seasons
     season_media_type = MediaTypes.SEASON.value
         
@@ -2990,6 +3052,7 @@ def unmark_season_watched(request, source, media_type, media_id, season_number):
 @require_POST
 def add_movie_diary_entry(request, source, media_type, media_id, season_number=None):
     """Create a diary entry for a movie, TV show, or season using media metadata."""
+    exposure.require_media_type(media_type)
     try:
         book_instance = None
         if media_type not in [
@@ -2998,8 +3061,11 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
             MediaTypes.SEASON.value,
             MediaTypes.BOOK.value,
             MediaTypes.GAME.value,
+            MediaTypes.MUSIC.value,
         ]:
-            raise Http404("Diary entries are only available for movies, TV shows, seasons, books, and games")
+            raise Http404(
+                "Diary entries are only available for movies, TV shows, seasons, books, games, and music",
+            )
             
         logger.info(f"Creating diary entry for {media_type} {media_id} from {source}")
         logger.info(f"POST data: {dict(request.POST)}")
@@ -3071,6 +3137,7 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
         else:
             # Convert date to datetime at end of day to allow multiple entries per day
             consumed_at = timezone.datetime.combine(consumed_at, timezone.datetime.max.time())
+            consumed_at = timezone.make_aware(consumed_at)
             
         rating = request.POST.get('rating')
         if rating and rating.strip():
@@ -3079,9 +3146,14 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
             rating = None
             
         review = request.POST.get('review', '').strip()
+        review_title = request.POST.get("review_title", "").strip()
         liked = request.POST.get('liked', '').lower() == 'true'
         is_rewatch = request.POST.get('is_rewatch') == 'on'
         auto_mark_consumed = request.POST.get('auto_mark_consumed') == 'true'
+        contains_spoilers = request.POST.get("contains_spoilers") == "on"
+        visibility = request.POST.get("visibility", "public")
+        if visibility not in {"public", "followers", "private"}:
+            visibility = "public"
         
         # Parse tags
         tags_data = request.POST.get('tags', '').strip()
@@ -3103,6 +3175,9 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
             is_rewatch=is_rewatch,
             auto_mark_consumed=auto_mark_consumed,
             tags=tag_names,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            visibility=visibility,
         )
         
         logger.info(f"Diary entry created successfully: {entry}")
@@ -3379,6 +3454,7 @@ def update_diary_entry(request, entry_id):
         else:
             # Convert date to datetime at end of day to allow multiple entries per day
             consumed_at = timezone.datetime.combine(consumed_at, timezone.datetime.max.time())
+            consumed_at = timezone.make_aware(consumed_at)
             
         rating = request.POST.get('rating')
         if rating and rating.strip():
@@ -3387,8 +3463,13 @@ def update_diary_entry(request, entry_id):
             rating = None
             
         review = request.POST.get('review', '').strip()
+        review_title = request.POST.get("review_title", "").strip()
         liked = request.POST.get('liked', '').lower() == 'true'
         is_rewatch = request.POST.get('is_rewatch') == 'on'  # Checkbox value
+        contains_spoilers = request.POST.get("contains_spoilers") == "on"
+        visibility = request.POST.get("visibility", "public")
+        if visibility not in {"public", "followers", "private"}:
+            visibility = "public"
         
         # Parse tags
         tags_data = request.POST.get('tags', '').strip()
@@ -3406,8 +3487,11 @@ def update_diary_entry(request, entry_id):
                 "consumed_at": consumed_at,
                 "rating": rating,
                 "review": review,
+                "review_title": review_title,
                 "liked": liked,
                 "is_rewatch": is_rewatch,
+                "contains_spoilers": contains_spoilers,
+                "visibility": visibility,
             },
             tags=tag_names,
         )
@@ -3447,7 +3531,7 @@ def update_diary_entry(request, entry_id):
             "years": years,
             "current_year": year,
             "current_media_type": media_type,
-            "media_type_choices": MediaTypes.choices,
+            "media_type_choices": exposure.media_type_choices(),
         }
         
         return render(request, "app/components/diary_entries.html", context)
@@ -3855,6 +3939,7 @@ def book_completed_modal(request, source, media_id):
 @require_POST
 def pause_media(request, source, media_type, media_id):
     """Pause a media item by setting its status to PAUSED."""
+    exposure.require_media_type(media_type)
     try:
         # Movies don't support pause/drop
         if media_type == MediaTypes.MOVIE.value:
@@ -3992,6 +4077,7 @@ def pause_media(request, source, media_type, media_id):
 @require_POST
 def resume_media(request, source, media_type, media_id):
     """Resume a paused or dropped media item by setting its status to IN_PROGRESS."""
+    exposure.require_media_type(media_type)
     try:
         # Movies don't support pause/drop
         if media_type == MediaTypes.MOVIE.value:
@@ -4108,6 +4194,7 @@ def resume_media(request, source, media_type, media_id):
 @require_POST
 def drop_media(request, source, media_type, media_id):
     """Drop a media item by setting its status to DROPPED."""
+    exposure.require_media_type(media_type)
     try:
         # Movies don't support pause/drop
         if media_type == MediaTypes.MOVIE.value:

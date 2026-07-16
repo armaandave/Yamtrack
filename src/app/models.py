@@ -47,6 +47,7 @@ class Sources(models.TextChoices):
     OPENLIBRARY = "openlibrary", "Open Library"
     HARDCOVER = "hardcover", "Hardcover"
     COMICVINE = "comicvine", "Comic Vine"
+    MUSICBRAINZ = "musicbrainz", "MusicBrainz"
     MANUAL = "manual", "Manual"
 
 
@@ -62,6 +63,31 @@ class MediaTypes(models.TextChoices):
     GAME = "game", "Game"
     BOOK = "book", "Book"
     COMIC = "comic", "Comic"
+    MUSIC = "music", "Music"
+
+
+PRIMARY_MEDIA_TYPES = (
+    MediaTypes.MOVIE.value,
+    MediaTypes.TV.value,
+    MediaTypes.ANIME.value,
+    MediaTypes.MANGA.value,
+    MediaTypes.GAME.value,
+    MediaTypes.BOOK.value,
+    MediaTypes.COMIC.value,
+    MediaTypes.MUSIC.value,
+)
+
+USER_OWNED_MEDIA_TYPES = (
+    MediaTypes.TV.value,
+    MediaTypes.SEASON.value,
+    MediaTypes.MOVIE.value,
+    MediaTypes.ANIME.value,
+    MediaTypes.MANGA.value,
+    MediaTypes.GAME.value,
+    MediaTypes.BOOK.value,
+    MediaTypes.COMIC.value,
+    MediaTypes.MUSIC.value,
+)
 
 
 class Item(CalendarTriggerMixin, models.Model):
@@ -614,7 +640,7 @@ class MediaManager(models.Manager):
         """Annotate max_progress for all media items."""
         current_datetime = timezone.now()
 
-        if media_type == MediaTypes.MOVIE.value:
+        if media_type in [MediaTypes.MOVIE.value, MediaTypes.MUSIC.value]:
             for media in media_list:
                 media.max_progress = 1
             return
@@ -2355,6 +2381,12 @@ class Comic(Media):
     tracker = FieldTracker()
 
 
+class Music(Media):
+    """Model for music releases."""
+
+    tracker = FieldTracker()
+
+
 class CustomPosterPreference(models.Model):
     """Model to store user's custom poster preferences for media items."""
 
@@ -2455,6 +2487,7 @@ class DiaryEntry(models.Model):
                 MediaTypes.BOOK.value,
                 MediaTypes.GAME.value,
                 MediaTypes.COMIC.value,
+                MediaTypes.MUSIC.value,
             ]
         },
     )
@@ -2512,6 +2545,7 @@ class DiaryEntry(models.Model):
             MediaTypes.BOOK.value,
             MediaTypes.GAME.value,
             MediaTypes.COMIC.value,
+            MediaTypes.MUSIC.value,
         ]:
             raise ValidationError(
                 "Diary entries can only be created for tracked media types."

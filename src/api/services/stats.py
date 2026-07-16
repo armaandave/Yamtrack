@@ -30,20 +30,10 @@ from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
 from api.serializers.common import media_summary_from_item
-from app import config
+from app import config, exposure
 from app.models import DiaryEntry, Item, ItemFilterFacet, MediaLike, MediaTypes, Status
 from app.templatetags import app_tags
 from social.models import Follow, FollowStatus
-
-PRIMARY_MEDIA_TYPES = [
-    MediaTypes.MOVIE.value,
-    MediaTypes.TV.value,
-    MediaTypes.ANIME.value,
-    MediaTypes.MANGA.value,
-    MediaTypes.GAME.value,
-    MediaTypes.BOOK.value,
-    MediaTypes.COMIC.value,
-]
 
 TV_DIARY_TYPES = [
     MediaTypes.TV.value,
@@ -63,6 +53,10 @@ RATING_BUCKETS = [Decimal(index) / Decimal(2) for index in range(21)]
 TOP_LEVEL_MEDIA_LIMIT = 12
 MEDIA_TYPE_MEDIA_LIMIT = 6
 FACET_LIMIT = 10
+
+
+def _primary_media_types():
+    return exposure.primary_media_types()
 
 
 @dataclass(frozen=True)
@@ -161,7 +155,7 @@ def build_stats_payload(*, user, viewer, request, stats_range):
     }
 
     media_types = []
-    for media_type in PRIMARY_MEDIA_TYPES:
+    for media_type in _primary_media_types():
         diary_values = diary_by_type[media_type]
         tracking_values = tracking_by_type[media_type]
         media_types.append({
@@ -260,7 +254,7 @@ def _diary_summaries(entries):
     )
     summary = _normalized_diary_summary(aggregate)
 
-    by_type = {media_type: _empty_diary_summary() for media_type in PRIMARY_MEDIA_TYPES}
+    by_type = {media_type: _empty_diary_summary() for media_type in _primary_media_types()}
     rows = (
         entries.annotate(stats_media_type=_media_type_bucket("item__media_type"))
         .values("stats_media_type")
@@ -299,9 +293,9 @@ def _tracking_summaries(user):
             "completed_count": 0,
             "statuses": dict.fromkeys(STATUS_KEYS.values(), 0),
         }
-        for media_type in PRIMARY_MEDIA_TYPES
+        for media_type in _primary_media_types()
     }
-    for media_type in PRIMARY_MEDIA_TYPES:
+    for media_type in _primary_media_types():
         model = apps.get_model("app", media_type)
         latest_pk = (
             model.objects.filter(user=user, item_id=OuterRef("item_id"))
@@ -324,7 +318,7 @@ def _tracking_summaries(user):
 
 
 def _like_summaries(user):
-    by_type = dict.fromkeys(PRIMARY_MEDIA_TYPES, 0)
+    by_type = dict.fromkeys(_primary_media_types(), 0)
     rows = (
         MediaLike.objects.filter(user=user)
         .annotate(stats_media_type=_media_type_bucket("item__media_type"))
@@ -416,7 +410,7 @@ def _streaks(active_dates, reference_date):
 
 def _rating_distributions(entries):
     overall_counts = Counter()
-    by_type_counts = {media_type: Counter() for media_type in PRIMARY_MEDIA_TYPES}
+    by_type_counts = {media_type: Counter() for media_type in _primary_media_types()}
     rows = (
         entries.exclude(rating__isnull=True)
         .annotate(stats_media_type=_media_type_bucket("item__media_type"))
@@ -472,7 +466,7 @@ def _top_rated_payloads(entries, request):
             items,
             value_key="rating",
         )
-        for media_type in PRIMARY_MEDIA_TYPES
+        for media_type in _primary_media_types()
     }
 
 
@@ -499,12 +493,12 @@ def _most_logged_payloads(entries, request):
             items,
             value_key="log_count",
         )
-        for media_type in PRIMARY_MEDIA_TYPES
+        for media_type in _primary_media_types()
     }
 
 
 def _limited_rows_by_type(rows, limit):
-    result = {media_type: [] for media_type in PRIMARY_MEDIA_TYPES}
+    result = {media_type: [] for media_type in _primary_media_types()}
     for row in rows:
         media_type = row["stats_media_type"]
         if media_type in result and len(result[media_type]) < limit:
@@ -551,7 +545,7 @@ def _release_year_payloads(entries):
         .order_by("release_year")
     )
     overall = Counter()
-    by_type = {media_type: Counter() for media_type in PRIMARY_MEDIA_TYPES}
+    by_type = {media_type: Counter() for media_type in _primary_media_types()}
     for row in rows:
         overall[row["release_year"]] += row["count"]
         if row["stats_media_type"] in by_type:
@@ -586,7 +580,7 @@ def _facet_payloads(entries):
             ItemFilterFacet.FacetType.GENRE: Counter(),
             ItemFilterFacet.FacetType.LANGUAGE: Counter(),
         }
-        for media_type in PRIMARY_MEDIA_TYPES
+        for media_type in _primary_media_types()
     }
     for row in facets:
         facet_type = row["facet_type"]
@@ -610,7 +604,7 @@ def _facet_payloads(entries):
             "genre_items": 0,
             "language_items": 0,
         }
-        for media_type in PRIMARY_MEDIA_TYPES
+        for media_type in _primary_media_types()
     }
     item_coverage_rows = (
         Item.objects.filter(id__in=Subquery(logged_item_ids))

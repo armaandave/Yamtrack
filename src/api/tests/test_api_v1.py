@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
 from importlib import import_module
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import requests
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -11,6 +12,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from api.serializers.common import media_summary_from_item
+from api.services.filters import update_item_filter_metadata
 from api.services.media import external_ratings
 from app.models import (
     TV,
@@ -26,10 +28,12 @@ from app.models import (
     MediaLike,
     MediaTypes,
     Movie,
+    Music,
     Season,
     Sources,
     Status,
 )
+from app.providers.services import ProviderAPIError
 from app.services import set_media_like, update_diary_entry_tags
 from lists.models import CustomList, CustomListItem
 from social.models import Activity, ContentLike, ProgressChange, SocialAuditLog
@@ -54,6 +58,613 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("movie", response.data["media_types"])
         self.assertIn("Completed", response.data["status_choices"])
+
+    def test_meta_and_sources_expose_music_when_enabled(self):
+        meta = self.client.get("/api/v1/meta/")
+        sources = self.client.get("/api/v1/media/sources/")
+
+        self.assertIn(MediaTypes.MUSIC.value, meta.data["media_types"])
+        self.assertEqual(
+            meta.data["sources"][MediaTypes.MUSIC.value],
+            [Sources.MUSICBRAINZ.value],
+        )
+        self.assertIn(Sources.MUSICBRAINZ.value, meta.data["source_choices"])
+        self.assertEqual(
+            sources.data[MediaTypes.MUSIC.value],
+            [Sources.MUSICBRAINZ.value],
+        )
+
+    def test_music_tracking_uses_generic_workflow_and_binary_progress(self):
+        user = get_user_model().objects.create_user(
+            username="music-tracking",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        media_id = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+        detail_url = f"/api/v1/tracking/musicbrainz/music/{media_id}/"
+        metadata = {
+            "title": "Year Zero",
+            "image": "https://example.com/year-zero.jpg",
+            "max_progress": 1,
+        }
+
+        with (
+            patch("app.providers.services.get_media_metadata", return_value=metadata),
+            patch("app.models.Item.fetch_releases"),
+        ):
+            planned = self.client.put(
+                detail_url,
+                {"status": Status.PLANNING.value},
+                format="json",
+            )
+            started = self.client.patch(
+                detail_url,
+                {
+                    "status": Status.IN_PROGRESS.value,
+                    "rating": "8.5",
+                    "start_date": "2025-01-02T00:00:00Z",
+                    "notes": "Headphones recommended.",
+                },
+                format="json",
+            )
+            paused = self.client.post(f"{detail_url}actions/pause/", {}, format="json")
+            resumed = self.client.post(f"{detail_url}actions/resume/", {}, format="json")
+            dropped = self.client.post(f"{detail_url}actions/drop/", {}, format="json")
+            resumed_after_drop = self.client.post(
+                f"{detail_url}actions/resume/",
+                {},
+                format="json",
+            )
+            listened = self.client.post(
+                f"{detail_url}actions/consume/",
+                {"consumed_at": "2025-01-03T00:00:00Z"},
+                format="json",
+            )
+
+            item = Item.objects.get(media_id=media_id, media_type=MediaTypes.MUSIC.value)
+            Music.objects.create(user=user, item=item, status=Status.PLANNING.value)
+            listed = self.client.get(
+                "/api/v1/tracking/",
+                {"media_type": MediaTypes.MUSIC.value},
+            )
+
+            first_delete = self.client.delete(detail_url)
+            second_delete = self.client.delete(detail_url)
+
+        self.assertEqual(planned.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            planned.data["progress"],
+            {"kind": "binary", "value": 0, "max": 1, "unit": "album"},
+        )
+        self.assertEqual(started.status_code, status.HTTP_200_OK)
+        self.assertEqual(started.data["status"], Status.IN_PROGRESS.value)
+        self.assertEqual(started.data["rating"], "8.5")
+        self.assertEqual(started.data["notes"], "Headphones recommended.")
+        self.assertEqual(
+            started.data["progress"],
+            {"kind": "binary", "value": 0, "max": 1, "unit": "album"},
+        )
+        self.assertEqual(paused.data["status"], Status.PAUSED.value)
+        self.assertEqual(resumed.data["status"], Status.IN_PROGRESS.value)
+        self.assertEqual(dropped.data["status"], Status.DROPPED.value)
+        self.assertEqual(resumed_after_drop.data["status"], Status.IN_PROGRESS.value)
+        self.assertEqual(listened.status_code, status.HTTP_200_OK)
+        self.assertEqual(listened.data["status"], Status.COMPLETED.value)
+        self.assertEqual(
+            listened.data["progress"],
+            {"kind": "binary", "value": 1, "max": 1, "unit": "album"},
+        )
+        self.assertEqual(
+            listened.data["end_date"],
+            datetime(2025, 1, 3, tzinfo=UTC),
+        )
+        self.assertEqual(listed.status_code, status.HTTP_200_OK)
+        self.assertEqual(listed.data["count"], 1)
+        self.assertEqual(listed.data["results"][0]["tracking"]["repeats"], 2)
+        self.assertEqual(first_delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(second_delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Music.objects.filter(user=user, item=item).exists())
+
+    def test_music_diary_uses_shared_create_filter_update_and_delete(self):
+        user = get_user_model().objects.create_user(
+            username="music-diary",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        untracked_id = "f5c9b7c1-9b1b-4f87-bbc9-b209a7f4f6c7"
+        tracked_id = "7f8f3f1d-0f72-4b87-9af2-4ac53be82c14"
+        metadata = {
+            "title": "Album Log",
+            "image": "https://example.com/album.jpg",
+            "max_progress": 1,
+        }
+
+        def ref(media_id):
+            return {
+                "source": Sources.MUSICBRAINZ.value,
+                "media_type": MediaTypes.MUSIC.value,
+                "media_id": media_id,
+            }
+
+        with (
+            patch("app.providers.services.get_media_metadata", return_value=metadata),
+            patch("app.models.Item.fetch_releases"),
+        ):
+            untracked = self.client.post(
+                "/api/v1/diary/",
+                {
+                    "ref": ref(untracked_id),
+                    "consumed_at": "2025-02-01T00:00:00Z",
+                    "rating": "9.0",
+                    "review_title": "Industrial revelation",
+                    "review": "Dense and rewarding.",
+                    "liked": True,
+                    "is_rewatch": False,
+                    "contains_spoilers": True,
+                    "visibility": "followers",
+                    "tags": ["industrial", "night listen"],
+                    "auto_mark_consumed": False,
+                },
+                format="json",
+            )
+            first_listen = self.client.post(
+                "/api/v1/diary/",
+                {
+                    "ref": ref(tracked_id),
+                    "consumed_at": "2025-03-01T00:00:00Z",
+                    "auto_mark_consumed": True,
+                },
+                format="json",
+            )
+            relisten = self.client.post(
+                "/api/v1/diary/",
+                {
+                    "ref": ref(tracked_id),
+                    "consumed_at": "2025-03-02T00:00:00Z",
+                    "rating": "8.5",
+                    "review_title": "Second spin",
+                    "review": "New details emerged.",
+                    "liked": True,
+                    "is_rewatch": True,
+                    "contains_spoilers": True,
+                    "visibility": "private",
+                    "tags": ["relisten"],
+                    "auto_mark_consumed": True,
+                },
+                format="json",
+            )
+            filtered = self.client.get(
+                "/api/v1/diary/",
+                {"media_type": MediaTypes.MUSIC.value},
+            )
+            updated = self.client.patch(
+                f"/api/v1/diary/{relisten.data['id']}/",
+                {
+                    "consumed_at": "2025-03-03T00:00:00Z",
+                    "rating": "9.5",
+                    "review_title": "Third pass",
+                    "review": "Best listen yet.",
+                    "liked": False,
+                    "is_rewatch": True,
+                    "contains_spoilers": False,
+                    "visibility": "public",
+                    "tags": ["headphones"],
+                },
+                format="json",
+            )
+            deleted = self.client.delete(f"/api/v1/diary/{first_listen.data['id']}/")
+
+        self.assertEqual(untracked.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(
+            Music.objects.filter(user=user, item__media_id=untracked_id).exists(),
+        )
+        self.assertEqual(untracked.data["review_title"], "Industrial revelation")
+        self.assertEqual(untracked.data["visibility"], "followers")
+        self.assertTrue(untracked.data["contains_spoilers"])
+        self.assertCountEqual(untracked.data["tags"], ["industrial", "night listen"])
+
+        self.assertEqual(first_listen.status_code, status.HTTP_201_CREATED)
+        music = Music.objects.get(user=user, item__media_id=tracked_id)
+        self.assertEqual(music.status, Status.COMPLETED.value)
+        self.assertEqual(relisten.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(relisten.data["is_rewatch"])
+        self.assertEqual(relisten.data["review_title"], "Second spin")
+        self.assertEqual(relisten.data["visibility"], "private")
+
+        self.assertEqual(filtered.status_code, status.HTTP_200_OK)
+        self.assertEqual(filtered.data["count"], 3)
+        self.assertTrue(
+            all(
+                entry["media"]["ref"]["media_type"] == MediaTypes.MUSIC.value
+                for entry in filtered.data["results"]
+            ),
+        )
+        self.assertEqual(updated.status_code, status.HTTP_200_OK)
+        self.assertEqual(updated.data["review_title"], "Third pass")
+        self.assertEqual(updated.data["rating"], "9.5")
+        self.assertEqual(updated.data["visibility"], "public")
+        self.assertFalse(updated.data["contains_spoilers"])
+        self.assertEqual(updated.data["tags"], ["headphones"])
+        music.refresh_from_db()
+        self.assertEqual(music.end_date, datetime(2025, 3, 3, tzinfo=UTC))
+        self.assertEqual(deleted.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(
+            DiaryEntry.objects.filter(user=user, item__media_id=tracked_id).count(),
+            1,
+        )
+        self.assertTrue(Music.objects.filter(user=user, item__media_id=tracked_id).exists())
+
+    @override_settings(MUSIC_ENABLED=False)
+    def test_meta_and_sources_hide_music_when_disabled(self):
+        meta = self.client.get("/api/v1/meta/")
+        sources = self.client.get("/api/v1/media/sources/")
+
+        self.assertNotIn(MediaTypes.MUSIC.value, meta.data["media_types"])
+        self.assertNotIn(MediaTypes.MUSIC.value, meta.data["sources"])
+        self.assertNotIn(Sources.MUSICBRAINZ.value, meta.data["source_choices"])
+        self.assertNotIn(MediaTypes.MUSIC.value, sources.data)
+
+    @override_settings(MUSIC_ENABLED=False)
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("api.services.media.provider_services.search")
+    def test_disabled_music_search_and_detail_are_not_found(
+        self,
+        search_mock,
+        metadata_mock,
+    ):
+        user = get_user_model().objects.create_user(username="hidden-music")
+        self.client.force_authenticate(user)
+
+        search = self.client.get("/api/v1/media/search/?media_type=music&q=year+zero")
+        detail = self.client.get(
+            "/api/v1/media/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/",
+        )
+        tracking = self.client.put(
+            "/api/v1/tracking/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/",
+            {"status": Status.PLANNING.value},
+            format="json",
+        )
+
+        self.assertEqual(search.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(tracking.status_code, status.HTTP_404_NOT_FOUND)
+        search_mock.assert_not_called()
+        metadata_mock.assert_not_called()
+
+    @patch("app.providers.musicbrainz.search")
+    def test_music_search_uses_generic_summary_and_outer_cache(self, search_mock):
+        search_mock.return_value = {
+            "page": 1,
+            "total_results": 1,
+            "total_pages": 1,
+            "results": [
+                {
+                    "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "title": "Year Zero",
+                    "subtitle": "Nine Inch Nails · 2007 · Album",
+                    "image": (
+                        "https://coverartarchive.org/release-group/"
+                        "3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500"
+                    ),
+                    "poster_width": 500,
+                    "poster_height": 500,
+                    "poster_aspect_ratio": 1.0,
+                    "release_date": "2007-04-13",
+                    "search_score": 100,
+                },
+            ],
+        }
+        user = get_user_model().objects.create_user(username="music-searcher")
+        self.client.force_authenticate(user)
+
+        first = self.client.get("/api/v1/media/search/?media_type=music&q=year+zero")
+        second = self.client.get("/api/v1/media/search/?media_type=music&q=year+zero")
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        album = first.data["results"][0]
+        self.assertEqual(
+            set(album),
+            {
+                "ref",
+                "title",
+                "subtitle",
+                "overview",
+                "image_url",
+                "poster_url",
+                "backdrop_url",
+                "poster_aspect_ratio",
+                "poster_width",
+                "poster_height",
+                "poster_orientation",
+                "poster_accent_color",
+                "release_date",
+                "genres",
+                "languages",
+                "roles",
+                "credit_roles",
+                "default_source",
+                "custom_poster_url",
+                "user_state",
+            },
+        )
+        self.assertEqual(album["ref"]["source"], Sources.MUSICBRAINZ.value)
+        self.assertEqual(album["ref"]["media_type"], MediaTypes.MUSIC.value)
+        self.assertEqual(
+            album["ref"]["media_id"],
+            "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        )
+        self.assertEqual(album["poster_orientation"], "square")
+        self.assertEqual(album["poster_aspect_ratio"], 1.0)
+        self.assertNotIn("search_score", album)
+        search_mock.assert_called_once_with("year zero", 1)
+
+    @patch("app.providers.musicbrainz.music")
+    def test_music_detail_uses_generic_contract_and_metadata(self, music_mock):
+        media_id = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+        source_url = f"https://musicbrainz.org/release-group/{media_id}"
+        music = {
+            "release_group_mbid": media_id,
+            "primary_type": "Album",
+            "secondary_types": [],
+            "disambiguation": None,
+            "annotation": None,
+            "first_release_date": "2007-04-13",
+            "release_count": 13,
+            "artist_credit": [],
+            "cover_art": {
+                "source": "cover_art_archive",
+                "release_group_mbid": media_id,
+                "fallback_used": False,
+            },
+            "representative_release": {
+                "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+                "title": "Year Zero",
+                "status": "Official",
+                "date": "2016-09-02",
+                "country": "XW",
+                "barcode": None,
+                "selection_basis": "streaming_standard_edition",
+                "labels": [],
+                "format": "Digital Media",
+                "is_deluxe_or_remastered": False,
+                "streaming_links": [
+                    {
+                        "service": "open.spotify.com",
+                        "url": "https://open.spotify.com/album/example",
+                    },
+                ],
+                "disc_count": 1,
+                "track_count": 1,
+                "media": [
+                    {
+                        "medium_mbid": "medium-1",
+                        "position": 1,
+                        "title": None,
+                        "format": "Digital Media",
+                        "track_count": 1,
+                        "tracks": [
+                            {
+                                "track_mbid": "track-1",
+                                "disc_number": 1,
+                                "position": 1,
+                                "number": "A1",
+                                "title": "HYPERPOWER!",
+                                "length_ms": 101790,
+                                "artist_credit": [],
+                                "recording": {
+                                    "recording_mbid": "recording-1",
+                                    "title": "HYPERPOWER!",
+                                    "length_ms": 102000,
+                                    "disambiguation": None,
+                                    "first_release_date": "2007-04-13",
+                                    "is_video": False,
+                                    "isrcs": ["USAAA0000001"],
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        music_mock.return_value = {
+            "media_id": media_id,
+            "source": Sources.MUSICBRAINZ.value,
+            "media_type": MediaTypes.MUSIC.value,
+            "source_url": source_url,
+            "title": "Year Zero",
+            "image": f"https://coverartarchive.org/release-group/{media_id}/front-500",
+            "poster_width": 500,
+            "poster_height": 500,
+            "poster_aspect_ratio": 1.0,
+            "release_date": "2007-04-13",
+            "max_progress": 1,
+            "genres": ["industrial rock"],
+            "score": 4.25,
+            "score_count": 20,
+            "details": {
+                "artist": "Nine Inch Nails",
+                "artist_credits": [
+                    {
+                        "artist_mbid": "artist-1",
+                        "name": "Nine Inch Nails",
+                        "join_phrase": "",
+                    },
+                ],
+                "first_release_date": "2007-04-13",
+                "primary_type": "Album",
+                "secondary_types": [],
+                "disambiguation": None,
+                "release_count": 13,
+                "annotation": None,
+            },
+            "external_links": {
+                "MusicBrainz": source_url,
+                "discogs.com": "https://discogs.com/master/123",
+            },
+            "music": music,
+        }
+        item = Item.objects.create(
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id=media_id,
+            title="Year Zero",
+            image=music_mock.return_value["image"],
+        )
+
+        first = self.client.get(f"/api/v1/media/musicbrainz/music/{media_id}/")
+        second = self.client.get(f"/api/v1/media/musicbrainz/music/{media_id}/")
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertIsNone(first.data["overview"])
+        self.assertIsNone(first.data["synopsis"])
+        self.assertEqual(first.data["poster_orientation"], "square")
+        self.assertEqual(first.data["genres"], ["industrial rock"])
+        self.assertEqual(first.data["details"]["primary_type"], "Album")
+        self.assertEqual(first.data["details"]["release_count"], 13)
+        self.assertEqual(first.data["external_links"]["MusicBrainz"], source_url)
+        self.assertEqual(
+            first.data["external_ratings"],
+            [
+                {
+                    "source": "MusicBrainz",
+                    "value": "4.25",
+                    "vote_count": 20,
+                    "max_value": "5",
+                    "url": source_url,
+                },
+            ],
+        )
+        self.assertNotIn("max_progress", first.data)
+        self.assertEqual(first.data["music"], music)
+        self.assertEqual(
+            first.data["music"]["representative_release"]["media"][0]["tracks"][0]["number"],
+            "A1",
+        )
+        item.refresh_from_db()
+        self.assertEqual(str(item.release_date), "2007-04-13")
+        self.assertTrue(
+            ItemFilterFacet.objects.filter(
+                item=item,
+                facet_type=ItemFilterFacet.FacetType.GENRE,
+                value="industrial rock",
+            ).exists(),
+        )
+        music_mock.assert_called_once_with(media_id)
+
+    @patch("app.providers.musicbrainz.music")
+    def test_music_detail_missing_optional_fields_are_null_or_empty(self, music_mock):
+        media_id = "87199163-cf50-3c84-8774-e09c5de47d6a"
+        music_mock.return_value = {
+            "media_id": media_id,
+            "source": Sources.MUSICBRAINZ.value,
+            "media_type": MediaTypes.MUSIC.value,
+            "title": "Elbentanz",
+            "image": settings.IMG_NONE,
+            "release_date": None,
+            "max_progress": 1,
+            "genres": [],
+            "score": None,
+            "score_count": None,
+            "details": {
+                "artist": None,
+                "artist_credits": [],
+                "first_release_date": None,
+                "primary_type": None,
+                "secondary_types": [],
+                "disambiguation": None,
+                "release_count": None,
+                "annotation": None,
+            },
+            "external_links": {},
+            "music": {
+                "release_group_mbid": media_id,
+                "primary_type": None,
+                "secondary_types": [],
+                "disambiguation": None,
+                "annotation": None,
+                "first_release_date": None,
+                "release_count": None,
+                "artist_credit": [],
+                "cover_art": {
+                    "source": "cover_art_archive",
+                    "release_group_mbid": media_id,
+                    "fallback_used": True,
+                },
+                "representative_release": None,
+            },
+        }
+
+        response = self.client.get(
+            f"/api/v1/media/musicbrainz/music/{media_id}/",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["release_date"])
+        self.assertIsNone(response.data["overview"])
+        self.assertIsNone(response.data["synopsis"])
+        self.assertEqual(response.data["genres"], [])
+        self.assertEqual(response.data["external_ratings"], [])
+        self.assertEqual(response.data["details"]["artist_credits"], [])
+        self.assertEqual(response.data["details"]["secondary_types"], [])
+        self.assertIsNone(response.data["details"]["annotation"])
+        self.assertIsNone(response.data["music"]["representative_release"])
+
+    def test_filter_metadata_accepts_musicbrainz_first_release_date(self):
+        item = Item.objects.create(
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id="partial-date",
+            title="Partial Date",
+            image=settings.IMG_NONE,
+        )
+
+        update_item_filter_metadata(
+            item,
+            {"first_release_date": "2003", "genres": ["ambient"]},
+        )
+
+        item.refresh_from_db()
+        self.assertEqual(str(item.release_date), "2003-01-01")
+        self.assertEqual(item.release_year, 2003)
+        self.assertTrue(
+            ItemFilterFacet.objects.filter(
+                item=item,
+                facet_type=ItemFilterFacet.FacetType.GENRE,
+                value="ambient",
+            ).exists(),
+        )
+
+    def test_musicbrainz_rating_url_only_accepts_trusted_host(self):
+        media_id = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+
+        trusted = external_ratings(
+            metadata={
+                "score": 4.5,
+                "source_url": f"https://musicbrainz.org/release-group/{media_id}",
+            },
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id=media_id,
+        )
+        rejected = external_ratings(
+            metadata={"score": 4.5, "source_url": "https://example.com/album"},
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id=media_id,
+        )
+
+        self.assertEqual(
+            trusted[0]["url"],
+            f"https://musicbrainz.org/release-group/{media_id}",
+        )
+        self.assertEqual(
+            rejected[0]["url"],
+            f"https://musicbrainz.org/release-group/{media_id}",
+        )
 
     def test_register_returns_tokens_and_user(self):
         response = self.client.post(
@@ -1465,7 +2076,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         item = Item.objects.get(source=Sources.TMDB.value, media_type=MediaTypes.MOVIE.value, media_id="550")
         self.assertEqual(user.__class__.objects.get(id=user.id).hof_movie, item)
-        self.assertEqual(set(response.data["items"]), {"tv", "movie", "anime", "manga", "game", "book", "comic"})
+        self.assertEqual(
+            set(response.data["items"]),
+            {"tv", "movie", "anime", "manga", "game", "book", "comic", "music"},
+        )
         self.assertEqual(response.data["items"]["movie"]["ref"]["item_id"], item.id)
         self.assertEqual(response.data["items"]["movie"]["ref"]["media_type"], "movie")
         self.assertEqual(response.data["items"]["movie"]["title"], "Fight Club")
@@ -4594,9 +5208,18 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     @patch("app.providers.steam.get_metacritic_rating", return_value=None)
+    @patch("app.providers.igdb.get_game_backdrops", return_value=[])
+    @patch("app.providers.steamgriddb.get_game_backdrops", return_value=[])
     @patch("app.providers.steamgriddb.get_game_logo")
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_media_detail_includes_steamgriddb_logo_fields(self, metadata_mock, logo_mock, _metacritic_mock):
+    def test_media_detail_includes_steamgriddb_logo_fields(
+        self,
+        metadata_mock,
+        logo_mock,
+        _steamgriddb_backdrops_mock,
+        _igdb_backdrops_mock,
+        _metacritic_mock,
+    ):
         metadata_mock.return_value = {
             "media_id": "1020",
             "media_type": "game",
@@ -5047,3 +5670,308 @@ class ApiV1FoundationTests(TestCase):
             CustomBackdropPreference.objects.get(user=viewer, item=item).custom_image_url,
             "https://example.com/viewer.jpg",
         )
+
+
+class MusicRecordingApiTests(TestCase):
+    """Read-only album-context recording API contract."""
+
+    release_group_mbid = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
+    recording_mbid = "35518724-a25a-4627-a2cc-0786dd1d2272"
+    release_mbid = "2d0bad69-f735-484b-bc0b-2ea54c76225e"
+    related_group_mbid = "aa997ea0-2936-40bd-884d-3af8a0e064dc"
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.url = (
+            f"/api/v1/media/musicbrainz/music/{self.release_group_mbid}/"
+            f"recordings/{self.recording_mbid}/"
+        )
+
+    def album_metadata(self, image="https://example.com/year-zero.jpg", recording_mbid=None):
+        recording_mbid = recording_mbid or self.recording_mbid
+        return {
+            "media_id": self.release_group_mbid,
+            "source": Sources.MUSICBRAINZ.value,
+            "media_type": MediaTypes.MUSIC.value,
+            "title": "Year Zero",
+            "image": image,
+            "release_date": "2007-04-13",
+            "genres": ["industrial rock"],
+            "details": {"artist": "Nine Inch Nails"},
+            "music": {
+                "representative_release": {
+                    "release_mbid": self.release_mbid,
+                    "title": "Year Zero",
+                    "status": "Official",
+                    "date": "2016-09-02",
+                    "country": "XW",
+                    "barcode": "00602547582812",
+                    "media": [
+                        {
+                            "medium_mbid": "b05740f0-cf72-3ea2-aabf-e00c85065525",
+                            "position": 1,
+                            "tracks": [
+                                {
+                                    "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f",
+                                    "disc_number": 1,
+                                    "position": 1,
+                                    "number": "1",
+                                    "title": "HYPERPOWER!",
+                                    "length_ms": 101790,
+                                    "artist_credit": [],
+                                    "recording": {
+                                        "recording_mbid": recording_mbid,
+                                        "title": "HYPERPOWER!",
+                                        "length_ms": 102000,
+                                        "disambiguation": None,
+                                        "first_release_date": "2007-04-13",
+                                        "is_video": False,
+                                        "isrcs": ["USUM70727128"],
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+
+    def recording_metadata(self):
+        return {
+            "recording_mbid": self.recording_mbid,
+            "title": "HYPERPOWER!",
+            "artist_credit": [
+                {
+                    "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                    "name": "Nine Inch Nails",
+                    "join_phrase": "",
+                },
+            ],
+            "length_ms": 102000,
+            "isrcs": ["USUM70727128"],
+            "disambiguation": None,
+            "first_release_date": "2007-04-13",
+            "is_video": False,
+            "genres": ["industrial rock"],
+            "rating": {"value": 4.5, "votes_count": 8, "max_value": 5},
+            "annotation": None,
+            "works": [],
+            "alternative_recordings": [],
+            "source_url": f"https://musicbrainz.org/recording/{self.recording_mbid}",
+            "external_links": {
+                "MusicBrainz": f"https://musicbrainz.org/recording/{self.recording_mbid}",
+            },
+            "albums": [
+                {
+                    "media_id": self.related_group_mbid,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "title": "Random Access Memories",
+                    "subtitle": "Daft Punk",
+                    "image": "https://example.com/ram.jpg",
+                    "release_date": "2013",
+                },
+            ],
+            "releases": [
+                {
+                    "release_mbid": self.release_mbid,
+                    "title": "Year Zero",
+                    "status": "Official",
+                    "date": "2016-09-02",
+                    "country": "XW",
+                    "barcode": "00602547582812",
+                    "release_group_mbid": self.release_group_mbid,
+                },
+                {
+                    "release_mbid": "ec116461-5b0d-4c98-bb44-a4de5de63076",
+                    "title": "Random Access Memories",
+                    "status": "Official",
+                    "date": "2013",
+                    "country": "US",
+                    "barcode": None,
+                    "release_group_mbid": self.related_group_mbid,
+                },
+            ],
+        }
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_detail_is_public_read_only_and_uses_media_summaries(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        get_media_metadata.return_value = self.album_metadata()
+        recording.return_value = self.recording_metadata()
+        before_items = Item.objects.count()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("ref", response.data)
+        self.assertEqual(response.data["recording_mbid"], self.recording_mbid)
+        self.assertEqual(response.data["context_release"]["release_mbid"], self.release_mbid)
+        self.assertEqual(response.data["context_release"]["track"]["number"], "1")
+        self.assertEqual(response.data["image_url"], "https://example.com/year-zero.jpg")
+        self.assertTrue(all(value is False for value in response.data["capabilities"].values()))
+        self.assertEqual(Item.objects.count(), before_items)
+        summary_keys = {
+            "ref",
+            "title",
+            "subtitle",
+            "overview",
+            "image_url",
+            "poster_url",
+            "backdrop_url",
+            "poster_aspect_ratio",
+            "poster_width",
+            "poster_height",
+            "poster_orientation",
+            "poster_accent_color",
+            "release_date",
+            "genres",
+            "languages",
+            "roles",
+            "credit_roles",
+            "default_source",
+            "custom_poster_url",
+            "user_state",
+        }
+        self.assertEqual(set(response.data["parent_album"]), summary_keys)
+        self.assertTrue(all(set(album) == summary_keys for album in response.data["albums"]))
+        self.assertEqual(
+            [album["ref"]["media_id"] for album in response.data["albums"]],
+            [self.release_group_mbid, self.related_group_mbid],
+        )
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_detail_rejects_non_member_before_recording_lookup(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        get_media_metadata.return_value = self.album_metadata(
+            recording_mbid="97d09e1b-8812-45fd-830f-0200a3c0e3b8",
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        recording.assert_not_called()
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_albums_include_authenticated_user_state(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        user = get_user_model().objects.create_user(username="song-viewer")
+        for media_id, title in [
+            (self.release_group_mbid, "Year Zero"),
+            (self.related_group_mbid, "Random Access Memories"),
+        ]:
+            Item.objects.create(
+                source=Sources.MUSICBRAINZ.value,
+                media_type=MediaTypes.MUSIC.value,
+                media_id=media_id,
+                title=title,
+                image=settings.IMG_NONE,
+            )
+        self.client.force_authenticate(user)
+        get_media_metadata.return_value = self.album_metadata()
+        recording.return_value = self.recording_metadata()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(all(album["user_state"] is not None for album in response.data["albums"]))
+
+    def test_recording_detail_rejects_malformed_mbid(self):
+        response = self.client.get(
+            f"/api/v1/media/musicbrainz/music/{self.release_group_mbid}/recordings/not-an-mbid/",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    @override_settings(MUSIC_ENABLED=False)
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_detail_honors_music_exposure(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        get_media_metadata.assert_not_called()
+        recording.assert_not_called()
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_provider_404_maps_to_api_404(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        get_media_metadata.return_value = self.album_metadata()
+        provider_response = MagicMock(status_code=404, text="not found")
+        recording.side_effect = ProviderAPIError(
+            Sources.MUSICBRAINZ.value,
+            requests.exceptions.HTTPError(response=provider_response),
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"]["code"], "not_found")
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_recording_failure_does_not_break_album_detail(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        get_media_metadata.return_value = self.album_metadata()
+        recording.side_effect = ProviderAPIError(
+            Sources.MUSICBRAINZ.value,
+            requests.exceptions.Timeout("timed out"),
+        )
+
+        failed_recording = self.client.get(self.url)
+        album = self.client.get(
+            f"/api/v1/media/musicbrainz/music/{self.release_group_mbid}/",
+        )
+
+        self.assertEqual(failed_recording.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(album.status_code, status.HTTP_200_OK)
+        recording.assert_called_once_with(self.recording_mbid)
+
+    @patch("api.services.media.musicbrainz.recording")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_missing_artwork_uses_parent_fallback(
+        self,
+        get_media_metadata,
+        recording,
+    ):
+        get_media_metadata.return_value = self.album_metadata(image=settings.IMG_NONE)
+        recording.return_value = self.recording_metadata()
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["image_url"].endswith(settings.IMG_NONE))
+
+    def test_song_identity_cannot_be_read_from_tracking(self):
+        user = get_user_model().objects.create_user(username="song-reader")
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            f"/api/v1/tracking/musicbrainz/song/{self.recording_mbid}/",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

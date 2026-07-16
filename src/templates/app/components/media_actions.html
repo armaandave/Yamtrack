@@ -1853,7 +1853,7 @@
       <p class="text-xs text-center text-gray-400 mt-2">Start playing to track, mark as played, or log to diary</p>
     {% endif %}
   {% else %}
-    {# Non-movie/game/book/TV/Season media types (Anime, Manga, Comics) #}
+    {# Other media types (Anime, Manga, Comics, Music) #}
     {% if current_instance and current_instance.status == "In progress" %}
       {# If in progress, show in progress indicator with pause/drop buttons #}
       <div class="flex flex-col gap-2">
@@ -1862,7 +1862,9 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
           </svg>
-          {% if media.media_type == MediaTypes.MANGA.value %}
+          {% if media.media_type == MediaTypes.MUSIC.value %}
+            Listening
+          {% elif media.media_type == MediaTypes.MANGA.value %}
             Reading
           {% else %}
             Watching
@@ -1962,6 +1964,13 @@
           Resume
         </button>
       </div>
+    {% elif current_instance and current_instance.status == "Completed" %}
+      <div class="w-full poster-accent-button px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-medium">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+        {% if media.media_type == MediaTypes.MUSIC.value %}Listened{% else %}Completed{% endif %}
+      </div>
     {% else %}
       {# Not started - show track button #}
       <button class="w-full bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors"
@@ -1972,11 +1981,23 @@
         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
         </svg>
-        {% if media.media_type == MediaTypes.BOOK.value or media.media_type == MediaTypes.MANGA.value %}
+        {% if media.media_type == MediaTypes.MUSIC.value %}
+          Listen
+        {% elif media.media_type == MediaTypes.BOOK.value or media.media_type == MediaTypes.MANGA.value %}
           Track Reading
         {% else %}
           Track Watching
         {% endif %}
+      </button>
+    {% endif %}
+    {% if media.media_type == MediaTypes.MUSIC.value %}
+      <button class="w-full mt-2 poster-accent-button px-4 py-2 rounded-lg flex items-center justify-center gap-2 font-medium book-accent-hover"
+              data-log-url="{% url 'log_modal' media.source media.media_type media.media_id %}{% if diary_entries %}?relisten=1{% endif %}"
+              onclick="fetch(this.dataset.logUrl).then(response => response.text()).then(html => { document.getElementById('log-modal-container').innerHTML = html; })">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m0-12c-2-1-5-1-7 0v12c2-1 5-1 7 0m0-12c2-1 5-1 7 0v12c-2-1-5-1-7 0"></path>
+        </svg>
+        {% if diary_entries %}Relisten{% else %}Log Album{% endif %}
       </button>
     {% endif %}
   {% endif %}

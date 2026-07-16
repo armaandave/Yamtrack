@@ -10,6 +10,7 @@ from api.serializers.diary import DiaryEntryWriteSerializer
 from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services.social import set_like
+from app import exposure
 from app.models import CustomBackdropPreference, CustomPosterPreference, DiaryEntry
 from app.services import delete_diary_entry
 from social.models import ContentLike
@@ -24,7 +25,10 @@ class DiaryListView(APIView):
         viewer_posters = CustomPosterPreference.objects.filter(user=request.user)
         viewer_backdrops = CustomBackdropPreference.objects.filter(user=request.user)
         entries = (
-            DiaryEntry.objects.filter(user=request.user)
+            DiaryEntry.objects.filter(
+                user=request.user,
+                item__media_type__in=exposure.media_types(),
+            )
             .select_related("item", "user")
             .prefetch_related(
                 "tags",
@@ -82,6 +86,9 @@ class DiaryListView(APIView):
     def post(self, request):
         serializer = DiaryEntryWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        ref = serializer.validated_data.get("ref")
+        if ref:
+            exposure.require_media_type(ref["media_type"])
         entry = diary_service.create_entry(request.user, serializer.validated_data)
         entry = DiaryEntry.objects.select_related("item", "user").prefetch_related("tags").get(id=entry.id)
         return Response(
@@ -102,18 +109,24 @@ class DiaryDetailView(APIView):
         )
         if entry.user != request.user and entry.visibility == "private":
             return Response(status=status.HTTP_404_NOT_FOUND)
+        exposure.require_media_type(entry.item.media_type)
         return Response(diary_service.diary_payload(entry, request=request, viewer=request.user))
 
     def patch(self, request, entry_id):
         entry = get_object_or_404(DiaryEntry, id=entry_id, user=request.user)
+        exposure.require_media_type(entry.item.media_type)
         serializer = DiaryEntryWriteSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        ref = serializer.validated_data.get("ref")
+        if ref:
+            exposure.require_media_type(ref["media_type"])
         entry = diary_service.update_entry(entry, serializer.validated_data)
         entry = DiaryEntry.objects.select_related("item", "user").prefetch_related("tags").get(id=entry.id)
         return Response(diary_service.diary_payload(entry, request=request, viewer=request.user))
 
     def delete(self, request, entry_id):
         entry = get_object_or_404(DiaryEntry, id=entry_id, user=request.user)
+        exposure.require_media_type(entry.item.media_type)
         delete_diary_entry(request.user, entry)
         return Response(status=status.HTTP_204_NO_CONTENT)
 

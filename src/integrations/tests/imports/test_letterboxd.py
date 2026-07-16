@@ -342,9 +342,13 @@ class ImportLetterboxdTests(TestCase):
         client.force_authenticate(self.user)
 
         response = client.get("/api/v1/diary/")
+        entries = list(response.data["results"])
+        while response.data["next"]:
+            response = client.get(response.data["next"])
+            entries.extend(response.data["results"])
 
         self.assertEqual(response.data["count"], 101)
-        self.assertEqual(len(response.data["results"]), 101)
+        self.assertEqual(len(entries), 101)
 
     def test_import_message_formats_letterboxd_counts(self):
         message = format_import_message(

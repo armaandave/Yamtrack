@@ -540,7 +540,23 @@ class JellyfinWebhookTests(TestCase):
         self.assertEqual(movie.status, Status.COMPLETED.value)
         self.assertEqual(movie.progress, 1)
 
-    def test_anime_movie_mark_played(self):
+    @patch(
+        "integrations.webhooks.anime.app.providers.mal.anime",
+        return_value={
+            "title": "Perfect Blue",
+            "image": "perfect-blue.jpg",
+            "max_progress": 1,
+        },
+    )
+    @patch(
+        "integrations.webhooks.movie.anime_mappings.get_mal_id_from_imdb",
+        return_value=437,
+    )
+    @patch(
+        "integrations.webhooks.movie.anime_mappings.fetch_mapping_data",
+        return_value={},
+    )
+    def test_anime_movie_mark_played(self, *_mocks):
         """Test webhook handles movie mark played event."""
         payload = {
             "Event": "Stop",
@@ -569,7 +585,31 @@ class JellyfinWebhookTests(TestCase):
         self.assertEqual(movie.status, Status.COMPLETED.value)
         self.assertEqual(movie.progress, 1)
 
-    def test_anime_episode_mark_played(self):
+    @patch(
+        "integrations.webhooks.anime.app.providers.mal.anime",
+        return_value={
+            "title": "Frieren: Beyond Journey's End",
+            "image": "frieren.jpg",
+            "max_progress": 28,
+        },
+    )
+    @patch(
+        "integrations.webhooks.tv.anime_mappings.get_mal_id_from_tvdb",
+        return_value=(52991, 1),
+    )
+    @patch(
+        "integrations.webhooks.tv.anime_mappings.fetch_mapping_data",
+        return_value={},
+    )
+    @patch(
+        "integrations.webhooks.tv.tvdb_provider.episode",
+        return_value={
+            "series_id": 424536,
+            "season_number": 1,
+            "episode_number": 1,
+        },
+    )
+    def test_anime_episode_mark_played(self, *_mocks):
         """Test webhook handles anime episode mark played event."""
         payload = {
             "Event": "Stop",

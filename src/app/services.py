@@ -16,6 +16,7 @@ COMPLETABLE_MEDIA_MODELS = {
     MediaTypes.MANGA.value: "Manga",
     MediaTypes.COMIC.value: "Comic",
     MediaTypes.BOOK.value: "Book",
+    MediaTypes.MUSIC.value: "Music",
 }
 
 
@@ -94,6 +95,9 @@ def create_diary_entry(
     is_rewatch=False,
     auto_mark_consumed=False,
     tags=None,
+    review_title="",
+    contains_spoilers=False,
+    visibility="public",
 ) -> DiaryEntry:
     """
     Create a diary entry for a media item.
@@ -143,6 +147,9 @@ def create_diary_entry(
             liked=title_liked,
             is_rewatch=is_rewatch,
             progress_snapshot=progress_snapshot,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            visibility=visibility,
         )
 
         if liked:
@@ -226,7 +233,7 @@ def sync_tracking_from_diary_entry(entry, *, previous_consumed_at=None):
 
 def update_diary_entry(entry, data, *, tags=None):
     """Update a diary entry and keep title-level state in sync."""
-    from social.models import SocialAuditLog
+    from social.models import Activity, SocialAuditLog
 
     previous_consumed_at = entry.consumed_at
     snapshot = {}
@@ -258,6 +265,18 @@ def update_diary_entry(entry, data, *, tags=None):
             set_media_like(entry.user, entry.item, data["liked"])
         if tags is not None:
             update_diary_entry_tags(entry, tags)
+        Activity.objects.filter(
+            actor=entry.user,
+            verb="diary_created",
+            target_type="diary",
+            target_id=entry.id,
+        ).update(
+            visibility=entry.visibility,
+            snapshot={
+                "rating": str(entry.rating) if entry.rating is not None else None,
+                "liked": bool(entry.liked),
+            },
+        )
         SocialAuditLog.objects.create(
             actor=entry.user,
             action="diary_updated",

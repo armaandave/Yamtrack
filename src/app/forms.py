@@ -14,6 +14,7 @@ from app.models import (
     Item,
     Manga,
     MediaTypes,
+    Music,
     Movie,
     Season,
     Sources,
@@ -315,6 +316,30 @@ class ComicForm(MediaForm):
                 f"Progress ({config.get_unit(MediaTypes.COMIC.value, short=False)}s)"
             ),
         }
+
+
+class MusicForm(MediaForm):
+    """Form for music releases."""
+
+    class Meta(MediaForm.Meta):
+        """Bind form to model."""
+
+        model = Music
+        fields = ["score", "status", "start_date", "end_date", "notes"]
+
+    def __init__(self, *args, **kwargs):
+        """Use album-specific labels without changing stored status values."""
+        super().__init__(*args, **kwargs)
+        self.fields["status"].choices = [
+            (
+                value,
+                {"In progress": "Listening", "Completed": "Listened"}.get(
+                    value,
+                    label,
+                ),
+            )
+            for value, label in self.fields["status"].choices
+        ]
 
 
 class TvForm(MediaForm):

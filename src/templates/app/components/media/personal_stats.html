@@ -11,6 +11,8 @@
           Read
         {% elif media.media_type == MediaTypes.GAME.value %}
           Played
+        {% elif media.media_type == MediaTypes.MUSIC.value %}
+          Listened
         {% else %}
           Watched
         {% endif %}
@@ -34,6 +36,8 @@
               First Read
             {% elif media.media_type == MediaTypes.GAME.value %}
               First Played
+            {% elif media.media_type == MediaTypes.MUSIC.value %}
+              First Listened
             {% else %}
               First Watched
             {% endif %}

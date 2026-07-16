@@ -1,9 +1,10 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 
-from api.permissions import can_view_user_profile
+from api.permissions import can_view_user_profile, users_blocked
 from api.serializers.common import media_summary_from_item, user_summary
 from app.models import DiaryEntry
 from lists.models import CustomList
@@ -14,9 +15,10 @@ from social.models import (
     Follow,
     FollowStatus,
     SocialAuditLog,
+    Visibility,
 )
 
-MEDIA_ACTIVITY_VERBS = ("diary_created", "progress_updated")
+MEDIA_ACTIVITY_VERBS = ("diary_created", "progress_updated", "list_item_added")
 
 
 def follow_user(actor, username):
@@ -67,9 +69,19 @@ def unblock_user(actor, username):
 def set_like(user, *, target_type, target_id, liked):
     """Create/delete a like for a supported target."""
     if target_type == ContentLike.DIARY_ENTRY:
-        get_object_or_404(DiaryEntry, id=target_id)
+        entry = get_object_or_404(DiaryEntry.objects.select_related("user"), id=target_id)
+        if not _can_view_diary_entry(user, entry):
+            raise Http404
     elif target_type == ContentLike.CUSTOM_LIST:
-        get_object_or_404(CustomList, id=target_id)
+        custom_list = get_object_or_404(
+            CustomList.objects.select_related("owner").prefetch_related("collaborators"),
+            id=target_id,
+        )
+        if users_blocked(user, custom_list.owner) or (
+            custom_list.visibility == CustomList.Visibility.PRIVATE
+            and not custom_list.user_can_view(user)
+        ):
+            raise Http404
     if liked:
         ContentLike.objects.get_or_create(
             user=user,
@@ -105,14 +117,29 @@ def feed_queryset(user):
         from_user=user,
         status=FollowStatus.ACCEPTED,
     ).values("to_user")
-    return _media_activity(Activity.objects.filter(actor__in=following)).select_related("actor", "item")
+    return _media_activity(
+        Activity.objects.filter(
+            actor__in=following,
+            visibility__in=[Visibility.PUBLIC, Visibility.FOLLOWERS],
+        ),
+    ).select_related("actor", "item")
 
 
 def user_activity_queryset(viewer, target_user):
     """Return visible activity for a profile."""
     if not can_view_user_profile(viewer, target_user):
         return Activity.objects.none()
-    return _media_activity(Activity.objects.filter(actor=target_user)).select_related("actor", "item")
+    queryset = Activity.objects.filter(actor=target_user)
+    if viewer != target_user:
+        visibilities = [Visibility.PUBLIC]
+        if viewer.is_authenticated and Follow.objects.filter(
+            from_user=viewer,
+            to_user=target_user,
+            status=FollowStatus.ACCEPTED,
+        ).exists():
+            visibilities.append(Visibility.FOLLOWERS)
+        queryset = queryset.filter(visibility__in=visibilities)
+    return _media_activity(queryset).select_related("actor", "item")
 
 
 def _media_activity(queryset):
@@ -121,10 +148,28 @@ def _media_activity(queryset):
 
 
 def _with_live_targets(queryset):
-    """Hide diary activity after the backing log is gone."""
+    """Hide activity after its backing diary entry or list is gone."""
     return queryset.annotate(
         diary_exists=Exists(DiaryEntry.objects.filter(id=OuterRef("target_id"))),
-    ).filter(~Q(target_type="diary") | Q(diary_exists=True))
+        list_exists=Exists(CustomList.objects.filter(id=OuterRef("target_id"))),
+    ).filter(
+        (~Q(target_type=ContentLike.DIARY_ENTRY) | Q(diary_exists=True))
+        & (~Q(target_type=ContentLike.CUSTOM_LIST) | Q(list_exists=True)),
+    )
+
+
+def _can_view_diary_entry(viewer, entry):
+    if not can_view_user_profile(viewer, entry.user):
+        return False
+    if viewer == entry.user:
+        return True
+    if entry.visibility == Visibility.PUBLIC:
+        return True
+    return entry.visibility == Visibility.FOLLOWERS and Follow.objects.filter(
+        from_user=viewer,
+        to_user=entry.user,
+        status=FollowStatus.ACCEPTED,
+    ).exists()
 
 
 def activity_payload(activity, request=None, viewer=None):

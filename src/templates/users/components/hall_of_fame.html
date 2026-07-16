@@ -33,7 +33,8 @@
        hx-target="#hof-grid"
        hx-select="#hof-grid"
        hx-swap="outerHTML">
-    {% with hof_items=user.get_hall_of_fame_items %}
+    {% get_exposed_hall_of_fame_items user as hof_items %}
+    {% with hof_items=hof_items %}
       {% for media_type, item in hof_items.items %}
         <div class="relative">
           {% if item %}
@@ -136,4 +137,4 @@
       </div>
     </div>
   </div>
-</div> 
+</div>

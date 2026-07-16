@@ -363,9 +363,17 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
 VERSION = config("VERSION", default="dev")
 
+MUSICBRAINZ_CONTACT = config(
+    "MUSICBRAINZ_CONTACT",
+    default="github@fuzzygrim.com",
+)
+MUSIC_DEFAULT_MARKET = config("MUSIC_DEFAULT_MARKET", default="US")
+
 ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 
 TRACK_TIME = config("TRACK_TIME", default=True, cast=bool)
+
+MUSIC_ENABLED = config("MUSIC_ENABLED", default=DEBUG, cast=bool)
 
 TZ = zoneinfo.ZoneInfo(TIME_ZONE)
 
