@@ -235,7 +235,11 @@ struct DiaryCreateView: View {
 
     private var entrySection: some View {
         Section("Entry") {
-            DatePicker("Consumed", selection: $viewModel.consumedAt, displayedComponents: [.date, .hourAndMinute])
+            DatePicker(
+                viewModel.selectedMedia?.ref.mediaType == "music" ? "Date listened" : "Consumed",
+                selection: $viewModel.consumedAt,
+                displayedComponents: [.date, .hourAndMinute]
+            )
             TextField("Rating 0-10", text: $viewModel.ratingText)
                 .keyboardType(.decimalPad)
             TextField("Review title", text: $viewModel.reviewTitle)
@@ -248,7 +252,7 @@ struct DiaryCreateView: View {
                 }
             }
             Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
-            Toggle("Rewatch", isOn: $viewModel.isRewatch)
+            Toggle(viewModel.selectedMedia?.ref.repeatLabel ?? "Rewatch", isOn: $viewModel.isRewatch)
         }
     }
 }

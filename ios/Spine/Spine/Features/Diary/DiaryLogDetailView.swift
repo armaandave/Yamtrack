@@ -327,7 +327,7 @@ struct DiaryLogDetailView: View {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 17.25, weight: .bold))
                                 .foregroundStyle(.white.opacity(0.74))
-                                .accessibilityLabel("Rewatch")
+                                .accessibilityLabel(entry.media.ref.repeatLabel)
                         }
                     }
 
@@ -615,14 +615,7 @@ private final class DiaryLogEditViewModel {
     }
 
     var repeatLabel: String {
-        switch entry.media.ref.mediaType {
-        case "book", "manga", "comic":
-            "Reread"
-        case "game", "boardgame":
-            "Replay"
-        default:
-            "Rewatch"
-        }
+        entry.media.ref.repeatLabel
     }
 
     func ratingLabel() -> String {
@@ -755,7 +748,11 @@ private struct DiaryLogEditSheet: View {
     private var fields: some View {
         VStack(alignment: .leading, spacing: 16) {
             fieldGroup {
-                DatePicker("Date", selection: $viewModel.consumedAt, displayedComponents: [.date])
+                DatePicker(
+                    viewModel.entry.media.ref.consumedDateLabel,
+                    selection: $viewModel.consumedAt,
+                    displayedComponents: [.date]
+                )
                     .datePickerStyle(.compact)
                     .colorScheme(.dark)
                 ratingPicker

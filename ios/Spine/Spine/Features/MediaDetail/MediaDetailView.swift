@@ -140,6 +140,11 @@ final class MediaDetailViewModel {
                     ref: detail.ref,
                     request: TrackingWriteRequest(status: "In progress")
                 )
+            case .paused:
+                state = try await trackingRepository.update(
+                    ref: detail.ref,
+                    request: TrackingWriteRequest(status: "Paused")
+                )
             case .finished:
                 if detail.ref.mediaType == "book" {
                     state = try await trackingRepository.completeBook(
@@ -281,6 +286,7 @@ final class MediaDetailViewModel {
 
 enum MediaDetailQuickAction {
     case currently
+    case paused
     case finished
     case stopped
 }
@@ -786,7 +792,7 @@ private struct MediaDetailPageView: View {
                 if let detail = viewModel.detail {
                     BookGameActionSheet(
                         mediaType: detail.ref.mediaType,
-                        isInProgress: currentStatus(detail) == "In progress",
+                        status: currentStatus(detail),
                         isSaving: viewModel.isSavingQuickAction,
                         errorMessage: viewModel.quickActionErrorMessage,
                         onAction: { action in
@@ -1169,7 +1175,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func usesBookGameActions(_ detail: MediaDetail) -> Bool {
-        ["book", "game"].contains(detail.ref.mediaType)
+        ["book", "game", "music"].contains(detail.ref.mediaType)
     }
 
     private func trackAction(for detail: MediaDetail) {
@@ -1414,8 +1420,8 @@ private struct MediaDetailPageView: View {
             $0.source.caseInsensitiveCompare("IMDb") == .orderedSame && !$0.value.isEmpty
         }
 
-        HStack(spacing: 8) {
-            RatingChipRow(chips: chips, stacked: false)
+        VStack(alignment: .leading, spacing: 8) {
+            RatingChipRow(chips: chips, stacked: true)
             if !hasIMDbRating, let destination = episodeIMDbURL(detail) {
                 IMDbExternalLinkPill(destination: destination)
             }
@@ -2546,9 +2552,14 @@ private struct CircleIconButton: View {
 }
 
 private func bookGameCopy(for mediaType: String) -> (currently: String, finished: String, stopped: String) {
-    mediaType == "book"
-        ? ("Currently Reading", "Finished Reading", "Stopped Reading")
-        : ("Currently Playing", "Finished Playing", "Stopped Playing")
+    switch mediaType {
+    case "book":
+        return ("Currently Reading", "Finished Reading", "Stopped Reading")
+    case "music":
+        return ("Listen", "Listened", "Dropped")
+    default:
+        return ("Currently Playing", "Finished Playing", "Stopped Playing")
+    }
 }
 
 private struct PosterMenuSheet: View {
@@ -2649,22 +2660,32 @@ private struct PosterMenuSheet: View {
 
 private struct BookGameActionSheet: View {
     let mediaType: String
-    let isInProgress: Bool
+    let status: String?
     let isSaving: Bool
     let errorMessage: String?
     let onAction: (MediaDetailQuickAction) async -> Void
     let onUpdateProgress: () -> Void
     let onLog: () -> Void
 
+    private var isInProgress: Bool {
+        status == "In progress"
+    }
+
     var body: some View {
         let copy = bookGameCopy(for: mediaType)
 
         VStack(spacing: 16) {
             HStack(spacing: 12) {
-                if isInProgress {
+                if mediaType == "music" && isInProgress {
+                    actionButton(title: "Pause", systemName: "pause.fill", action: .paused)
+                } else if isInProgress {
                     progressButton
                 } else {
-                    actionButton(title: copy.currently, systemName: "play.fill", action: .currently)
+                    actionButton(
+                        title: mediaType == "music" && (status == "Paused" || status == "Dropped") ? "Resume" : copy.currently,
+                        systemName: "play.fill",
+                        action: .currently
+                    )
                 }
                 actionButton(title: copy.finished, systemName: "checkmark", action: .finished)
                 actionButton(title: copy.stopped, systemName: "xmark", action: .stopped)
@@ -3553,7 +3574,7 @@ private struct TrackingSummarySection: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         if let status {
-                            Text(status)
+                            Text(detail.ref.trackingStatusLabel(status))
                                 .font(.system(size: 14, weight: .heavy))
                                 .foregroundStyle(.white)
                                 .onTapGesture {
@@ -4722,6 +4743,8 @@ private extension ExternalRating {
         switch source.lowercased() {
         case "imdb":
             "RatingIMDb"
+        case "tmdb":
+            "RatingTMDB"
         case "letterboxd":
             "RatingLetterboxd"
         case "rotten tomatoes":

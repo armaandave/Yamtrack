@@ -254,7 +254,7 @@ struct DiaryEntryRow: View {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11.25, weight: .bold))
                     .foregroundStyle(.white.opacity(0.7))
-                    .accessibilityLabel("Rewatch")
+                    .accessibilityLabel(entry.media.ref.repeatLabel)
             }
         }
     }

@@ -751,7 +751,7 @@ private struct LibraryListRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
 
-                Text(item.tracking.status ?? "Tracked")
+                Text(item.tracking.status.map(item.media.ref.trackingStatusLabel) ?? "Tracked")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)

@@ -56,6 +56,35 @@ struct MediaRef: Codable, Hashable, Identifiable {
         )
     }
 
+    var repeatLabel: String {
+        switch mediaType {
+        case "book", "manga", "comic":
+            "Reread"
+        case "game", "boardgame":
+            "Replay"
+        case "music":
+            "Relisten"
+        default:
+            "Rewatch"
+        }
+    }
+
+    var consumedDateLabel: String {
+        mediaType == "music" ? "Date listened" : "Date"
+    }
+
+    func trackingStatusLabel(_ status: String) -> String {
+        guard mediaType == "music" else { return status }
+        switch status {
+        case "In progress":
+            return "Listening"
+        case "Completed":
+            return "Listened"
+        default:
+            return status
+        }
+    }
+
     func episodeRef(episodeNumber: Int, itemId: Int? = nil) -> MediaRef? {
         guard mediaType == "season", let seasonNumber else { return nil }
         return MediaRef(
@@ -334,6 +363,89 @@ struct MediaDiscoverRequest: Hashable, Identifiable {
     }
 }
 
+struct MusicDetail: Decodable {
+    let releaseGroupMbid: String
+    let primaryType: String?
+    let secondaryTypes: [String]
+    let disambiguation: String?
+    let annotation: String?
+    let firstReleaseDate: String?
+    let releaseCount: Int?
+    let artistCredit: [MusicArtistCredit]
+    let coverArt: MusicCoverArt
+    let representativeRelease: MusicRepresentativeRelease?
+}
+
+struct MusicCoverArt: Decodable {
+    let source: String
+    let releaseGroupMbid: String
+    let fallbackUsed: Bool
+}
+
+struct MusicRepresentativeRelease: Decodable {
+    let releaseMbid: String
+    let title: String
+    let status: String?
+    let date: String?
+    let country: String?
+    let barcode: String?
+    let selectionBasis: String
+    let labels: [MusicLabel]
+    let format: String?
+    let isDeluxeOrRemastered: Bool
+    let streamingLinks: [MusicStreamingLink]
+    let discCount: Int
+    let trackCount: Int
+    let media: [MusicMedium]
+}
+
+struct MusicLabel: Decodable {
+    let labelMbid: String?
+    let name: String?
+    let catalogNumber: String?
+}
+
+struct MusicStreamingLink: Decodable {
+    let service: String
+    let url: String
+}
+
+struct MusicMedium: Decodable {
+    let mediumMbid: String?
+    let position: Int
+    let title: String?
+    let format: String?
+    let trackCount: Int
+    let tracks: [MusicTrack]
+}
+
+struct MusicTrack: Decodable {
+    let trackMbid: String
+    let discNumber: Int
+    let position: Int
+    let number: String
+    let title: String
+    let lengthMs: Int?
+    let artistCredit: [MusicArtistCredit]
+    let recording: MusicRecording
+}
+
+struct MusicRecording: Decodable {
+    let recordingMbid: String
+    let title: String
+    let lengthMs: Int?
+    let disambiguation: String?
+    let firstReleaseDate: String?
+    let isVideo: Bool
+    let isrcs: [String]
+}
+
+struct MusicArtistCredit: Decodable {
+    let artistMbid: String?
+    let name: String
+    let joinPhrase: String
+}
+
 struct MediaDetail: Decodable, Identifiable {
     let ref: MediaRef
     let title: String
@@ -356,6 +468,7 @@ struct MediaDetail: Decodable, Identifiable {
     let userState: UserMediaState?
     let backdropUrl: String?
     let details: [String: JSONValue]?
+    let music: MusicDetail?
     let related: [String: JSONValue]?
     let providers: JSONValue?
     let community: CommunityStats?
@@ -415,6 +528,7 @@ struct MediaDetail: Decodable, Identifiable {
         case userState
         case backdropUrl
         case details
+        case music
         case related
         case providers
         case community
@@ -452,6 +566,7 @@ struct MediaDetail: Decodable, Identifiable {
         userState: UserMediaState? = nil,
         backdropUrl: String? = nil,
         details: [String: JSONValue]? = nil,
+        music: MusicDetail? = nil,
         related: [String: JSONValue]? = nil,
         providers: JSONValue? = nil,
         community: CommunityStats? = nil,
@@ -487,6 +602,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.userState = userState
         self.backdropUrl = backdropUrl
         self.details = details
+        self.music = music
         self.related = related
         self.providers = providers
         self.community = community
@@ -527,6 +643,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: try container.decodeIfPresent(UserMediaState.self, forKey: .userState),
             backdropUrl: try container.decodeIfPresent(String.self, forKey: .backdropUrl),
             details: try container.decodeIfPresent([String: JSONValue].self, forKey: .details),
+            music: try container.decodeIfPresent(MusicDetail.self, forKey: .music),
             related: try container.decodeIfPresent([String: JSONValue].self, forKey: .related),
             providers: try container.decodeIfPresent(JSONValue.self, forKey: .providers),
             community: try container.decodeIfPresent(CommunityStats.self, forKey: .community),
@@ -566,6 +683,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: userState,
             backdropUrl: backdropUrl,
             details: details,
+            music: music,
             related: related,
             providers: providers,
             community: community,
@@ -605,6 +723,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: userState,
             backdropUrl: backdropUrl,
             details: details,
+            music: music,
             related: related,
             providers: providers,
             community: community,
@@ -644,6 +763,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: userState,
             backdropUrl: backdropUrl,
             details: details,
+            music: music,
             related: related,
             providers: providers,
             community: community,
@@ -683,6 +803,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: (userState ?? UserMediaState(isTracked: false)).replacingHasLiked(liked),
             backdropUrl: backdropUrl,
             details: details,
+            music: music,
             related: related,
             providers: providers,
             community: community,
@@ -722,6 +843,7 @@ struct MediaDetail: Decodable, Identifiable {
             userState: (userState ?? UserMediaState(isTracked: false)).replacingIsTracked(isTracked),
             backdropUrl: backdropUrl,
             details: details,
+            music: music,
             related: related,
             providers: providers,
             community: community,

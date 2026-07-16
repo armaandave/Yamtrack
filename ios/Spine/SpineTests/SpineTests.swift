@@ -3080,6 +3080,86 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(DiaryLogFormat.ageLabel("2023-03-06T00:00:00Z", now: now, calendar: calendar), "1 year, 2 months and 4 days ago")
     }
 
+    func testMusicDetailDecodingAndReplacementPreservation() throws {
+        let detail = try JSONDecoder.api.decode(
+            MediaDetail.self,
+            from: """
+            {
+              "ref": {"source": "musicbrainz", "media_type": "music", "media_id": "group-1"},
+              "title": "Album",
+              "music": {
+                "release_group_mbid": "group-1",
+                "primary_type": "Album",
+                "secondary_types": [],
+                "disambiguation": null,
+                "annotation": null,
+                "first_release_date": "2020",
+                "release_count": 2,
+                "artist_credit": [{"artist_mbid": "artist-1", "name": "Artist", "join_phrase": ""}],
+                "cover_art": {"source": "cover_art_archive", "release_group_mbid": "group-1", "fallback_used": false},
+                "representative_release": {
+                  "release_mbid": "release-1",
+                  "title": "Album",
+                  "status": "Official",
+                  "date": "2020-01",
+                  "country": "US",
+                  "barcode": null,
+                  "selection_basis": "streaming_market_match",
+                  "labels": [{"label_mbid": "label-1", "name": "Label", "catalog_number": null}],
+                  "format": "Digital Media",
+                  "is_deluxe_or_remastered": false,
+                  "streaming_links": [{"service": "open.spotify.com", "url": "https://open.spotify.com/album/example"}],
+                  "disc_count": 2,
+                  "track_count": 2,
+                  "media": [
+                    {
+                      "medium_mbid": "medium-1",
+                      "position": 1,
+                      "title": null,
+                      "format": "Digital Media",
+                      "track_count": 1,
+                      "tracks": [{
+                        "track_mbid": "track-1",
+                        "disc_number": 1,
+                        "position": 1,
+                        "number": "A1",
+                        "title": "First",
+                        "length_ms": 1000,
+                        "artist_credit": [{"artist_mbid": "artist-1", "name": "Artist", "join_phrase": ""}],
+                        "recording": {"recording_mbid": "recording-1", "title": "First", "length_ms": 1001, "disambiguation": null, "first_release_date": null, "is_video": false, "isrcs": ["USAAA0000001"]}
+                      }]
+                    },
+                    {
+                      "medium_mbid": null,
+                      "position": 2,
+                      "title": "Bonus disc",
+                      "format": "Digital Media",
+                      "track_count": 1,
+                      "tracks": [{
+                        "track_mbid": "track-2",
+                        "disc_number": 2,
+                        "position": 1,
+                        "number": "1",
+                        "title": "Second",
+                        "length_ms": null,
+                        "artist_credit": [],
+                        "recording": {"recording_mbid": "recording-2", "title": "Second", "length_ms": null, "disambiguation": null, "first_release_date": null, "is_video": false, "isrcs": []}
+                      }]
+                    }
+                  ]
+                }
+              }
+            }
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(detail.music?.representativeRelease?.media.count, 2)
+        XCTAssertEqual(detail.music?.representativeRelease?.media[0].tracks[0].number, "A1")
+        XCTAssertEqual(detail.music?.representativeRelease?.media[0].tracks[0].recording.isrcs, ["USAAA0000001"])
+        XCTAssertEqual(detail.music?.representativeRelease?.streamingLinks.first?.service, "open.spotify.com")
+        XCTAssertEqual(detail.replacingHasLiked(true).music?.representativeRelease?.releaseMbid, "release-1")
+    }
+
     func testRichMediaDetailAndReviewDecoding() throws {
         let detail = try JSONDecoder.api.decode(
             MediaDetail.self,
@@ -4686,10 +4766,106 @@ final class SpineTests: XCTestCase {
             onUnauthorized: {},
             onSaved: {}
         )
+        let musicLog = MediaLogViewModel(
+            detail: TestFixtures.logDetail(mediaType: "music"),
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
 
         XCTAssertEqual(movieLog.primaryActionTitle, "Log Movie")
         XCTAssertEqual(bookLog.primaryActionTitle, "Log Book")
         XCTAssertEqual(episodeLog.primaryActionTitle, "Log Episode")
+        XCTAssertEqual(musicLog.primaryActionTitle, "Log Album")
+        XCTAssertEqual(musicLog.repeatLabel, "Relisten")
+        XCTAssertFalse(musicLog.supportsProgress)
+        musicLog.isRepeat = true
+        XCTAssertEqual(musicLog.primaryActionTitle, "Relisten")
+    }
+
+    @MainActor
+    func testMusicLogPassesFullDiaryFieldsThroughSharedRepository() async {
+        let diary = RecordingDiaryRepository()
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        viewModel.ratingSteps = 9
+        viewModel.reviewTitle = "A second spin"
+        viewModel.review = "New details emerged."
+        viewModel.tags = ["relisten", "headphones"]
+        viewModel.liked = true
+        viewModel.isRepeat = true
+        viewModel.containsSpoilers = true
+        viewModel.visibility = "followers"
+
+        let didSave = await viewModel.save()
+
+        XCTAssertTrue(didSave)
+        let request = diary.createdRequests.first
+        XCTAssertEqual(request?.ref, detail.ref)
+        XCTAssertEqual(request?.rating, Decimal(9))
+        XCTAssertEqual(request?.reviewTitle, "A second spin")
+        XCTAssertEqual(request?.review, "New details emerged.")
+        XCTAssertEqual(request?.tags, ["relisten", "headphones"])
+        XCTAssertEqual(request?.liked, true)
+        XCTAssertEqual(request?.isRewatch, true)
+        XCTAssertEqual(request?.containsSpoilers, true)
+        XCTAssertEqual(request?.visibility, "followers")
+        XCTAssertEqual(request?.autoMarkConsumed, true)
+    }
+
+    @MainActor
+    func testMusicQuickActionsUseGenericTrackingRepository() async {
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaDetailViewModel(
+            ref: detail.ref,
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {}
+        )
+        let completedAt = Date(timeIntervalSince1970: 1_797_120_000)
+
+        let started = await viewModel.performQuickAction(.currently, for: detail)
+        let paused = await viewModel.performQuickAction(.paused, for: detail)
+        let dropped = await viewModel.performQuickAction(.stopped, for: detail)
+        let resumed = await viewModel.performQuickAction(.currently, for: detail)
+        let listened = await viewModel.performQuickAction(
+            .finished,
+            for: detail,
+            completedAt: completedAt
+        )
+
+        XCTAssertTrue(started)
+        XCTAssertTrue(paused)
+        XCTAssertTrue(dropped)
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(listened)
+        XCTAssertEqual(tracking.updateRequests.map(\.ref), [detail.ref, detail.ref, detail.ref, detail.ref])
+        XCTAssertEqual(
+            tracking.updateRequests.map(\.request.status),
+            ["In progress", "Paused", "Dropped", "In progress"]
+        )
+        XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
+        XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, completedAt)
+        XCTAssertTrue(tracking.completedBooks.isEmpty)
+    }
+
+    func testMusicPresentationUsesAlbumWordingWithoutChangingWireStatus() {
+        let ref = TestFixtures.logDetail(mediaType: "music").ref
+
+        XCTAssertEqual(ref.repeatLabel, "Relisten")
+        XCTAssertEqual(ref.consumedDateLabel, "Date listened")
+        XCTAssertEqual(ref.trackingStatusLabel("In progress"), "Listening")
+        XCTAssertEqual(ref.trackingStatusLabel("Completed"), "Listened")
+        XCTAssertEqual(ref.trackingStatusLabel("Planning"), "Planning")
     }
 
     @MainActor
@@ -4904,14 +5080,14 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(ProfileMenuDestination.allCases.map(\.title), [
             "Library",
             "Diary",
-            "Stats",
             "Reviews",
             "Lists",
             "Planned",
             "Likes",
             "Tags",
+            "Stats",
         ])
-        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, nil, 3, 4, 5, 6, 7])
+        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, 3, 4, 5, 6, 7, nil])
     }
 
     private func profileFixture(

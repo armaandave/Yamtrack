@@ -15,11 +15,13 @@ final class MediaLogViewModel {
     var selectedSeasonNumber: Int?
     var consumedAt = Date()
     var ratingSteps = 0
+    var reviewTitle = ""
     var review = ""
     var tags: [String] = []
     var tagQuery = ""
     var tagSuggestions: [DiaryTagSuggestion] = []
     var containsSpoilers = false
+    var visibility = "public"
     var liked = false
     var isRepeat = false
     var progressText = ""
@@ -45,6 +47,7 @@ final class MediaLogViewModel {
         self.diaryRepository = diaryRepository
         self.onUnauthorized = onUnauthorized
         self.onSaved = onSaved
+        isRepeat = (detail.userState?.diaryCount ?? 0) > 0
     }
 
     var supportsProgress: Bool {
@@ -73,14 +76,7 @@ final class MediaLogViewModel {
     }
 
     var repeatLabel: String {
-        switch detail.ref.mediaType {
-        case "book", "manga", "comic":
-            "Reread"
-        case "game", "boardgame":
-            "Replay"
-        default:
-            "Rewatch"
-        }
+        detail.ref.repeatLabel
     }
 
     var primaryActionTitle: String {
@@ -105,6 +101,8 @@ final class MediaLogViewModel {
             "Log Board Game"
         case "book":
             "Log Book"
+        case "music":
+            isRepeat ? "Relisten" : "Log Album"
         default:
             "Log Entry"
         }
@@ -245,12 +243,12 @@ final class MediaLogViewModel {
                 consumedAt: consumedAt,
                 rating: Self.ratingDecimal(for: ratingSteps),
                 review: review,
-                reviewTitle: "",
+                reviewTitle: reviewTitle,
                 liked: liked,
                 isRewatch: isRepeat,
                 autoMarkConsumed: true,
                 containsSpoilers: containsSpoilers,
-                visibility: "public",
+                visibility: visibility,
                 tags: tags
             ))
         }
@@ -508,6 +506,13 @@ struct MediaLogView: View {
                 ratingPicker
                 Divider().overlay(.white.opacity(0.1))
                 VStack(alignment: .leading, spacing: 8) {
+                    sectionLabel("Review title")
+                    TextField("Review title", text: $viewModel.reviewTitle)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 17, weight: .regular, design: .rounded))
+                        .foregroundStyle(.white)
+                        .tint(.white)
+                    Divider().overlay(.white.opacity(0.1))
                     sectionLabel("Review")
                     TextField("Review", text: $viewModel.review, axis: .vertical)
                         .textFieldStyle(.plain)
@@ -562,7 +567,7 @@ struct MediaLogView: View {
     private var dateRow: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                sectionLabel("Date")
+                sectionLabel(viewModel.selectedRef.consumedDateLabel)
             }
 
             Spacer(minLength: 12)
@@ -728,6 +733,12 @@ struct MediaLogView: View {
 
     private var options: some View {
         composerSurface {
+            Picker("Visibility", selection: $viewModel.visibility) {
+                ForEach(APIConstants.visibilityChoices, id: \.self) { value in
+                    Text(value.capitalized).tag(value)
+                }
+            }
+            Divider().overlay(.white.opacity(0.1))
             Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .tint(.red)

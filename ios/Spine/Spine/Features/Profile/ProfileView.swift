@@ -1593,12 +1593,12 @@ private struct ProfileStatChip: View {
 enum ProfileMenuDestination: CaseIterable, Hashable {
     case library
     case diary
-    case stats
     case reviews
     case lists
     case planned
     case likes
     case tags
+    case stats
 
     var title: String {
         switch self {
