@@ -593,12 +593,26 @@ struct MusicArtistCredit: Decodable {
     let artistMbid: String?
     let name: String
     let joinPhrase: String
+
+    var personRef: PersonRef? {
+        guard let artistMbid = artistMbid?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !artistMbid.isEmpty
+        else { return nil }
+        return PersonRef(source: "musicbrainz", id: artistMbid)
+    }
 }
 
 struct MusicRecordingCredit: Decodable {
     let artistMbid: String?
     let name: String
     let roles: [String]
+
+    var personRef: PersonRef? {
+        guard let artistMbid = artistMbid?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !artistMbid.isEmpty
+        else { return nil }
+        return PersonRef(source: "musicbrainz", id: artistMbid)
+    }
 
     enum CodingKeys: String, CodingKey {
         case artistMbid

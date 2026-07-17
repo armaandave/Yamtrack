@@ -151,6 +151,58 @@ final class MusicContractTests: XCTestCase {
         )
     }
 
+    func testMusicCreditsProduceMusicBrainzPersonRefs() throws {
+        let albumCredits = try JSONDecoder.api.decode(
+            [MusicArtistCredit].self,
+            from: """
+            [
+              {"artist_mbid":"artist-1","name":"Artist","join_phrase":""},
+              {"artist_mbid":"artist-1","name":"Artist Duplicate","join_phrase":" feat. "},
+              {"artist_mbid":"artist-2","name":"Guest","join_phrase":""},
+              {"artist_mbid":"  ","name":"Unknown","join_phrase":""}
+            ]
+            """.data(using: .utf8)!
+        )
+        let recordingCredits = try JSONDecoder.api.decode(
+            [MusicRecordingCredit].self,
+            from: """
+            [
+              {"artist_mbid":"writer-1","name":"Writer","roles":["writer"]},
+              {"artist_mbid":null,"name":"Unknown Writer","roles":["composer"]}
+            ]
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(albumCredits[0].personRef, PersonRef(source: "musicbrainz", id: "artist-1"))
+        XCTAssertNil(albumCredits[3].personRef)
+        XCTAssertEqual(recordingCredits[0].personRef, PersonRef(source: "musicbrainz", id: "writer-1"))
+        XCTAssertNil(recordingCredits[1].personRef)
+
+        let presentation = try XCTUnwrap(MediaCreditPresentation.musicArtists(albumCredits))
+        XCTAssertEqual(presentation.label, "Artists")
+        XCTAssertEqual(presentation.people.map(\.name), ["Artist", "Guest", "Unknown"])
+        XCTAssertEqual(
+            presentation.people.compactMap(\.personRef),
+            [
+                PersonRef(source: "musicbrainz", id: "artist-1"),
+                PersonRef(source: "musicbrainz", id: "artist-2"),
+            ]
+        )
+    }
+
+    func testAlbumCreditPresentationUsesMusicBrainzArtists() throws {
+        let detail = try Self.albumDetail()
+
+        let presentation = try XCTUnwrap(MediaCreditPresentation.make(for: detail))
+
+        XCTAssertEqual(presentation.label, "Artist")
+        XCTAssertEqual(presentation.people.map(\.name), ["Nine Inch Nails"])
+        XCTAssertEqual(
+            presentation.people.first?.personRef,
+            PersonRef(source: "musicbrainz", id: "b7ffd2af-418f-4be2-bdd1-22f8b48613da")
+        )
+    }
+
     func testAlbumPresentationAllowsOnlyRecognizedHTTPStreamingLinks() {
         let links = [
             MusicStreamingLink(service: "music.apple.com", url: "https://music.apple.com/album/example"),

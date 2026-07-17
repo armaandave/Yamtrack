@@ -71,6 +71,7 @@ struct SongDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: SongDetailViewModel
     @State private var selectedAlbum: MediaRef?
+    @State private var presentedPerson: PersonRef?
     @State private var edgeDragOffset: CGFloat = 0
 
     private let selection: MusicSongSelection
@@ -147,6 +148,20 @@ struct SongDetailView: View {
                 listRepository: listRepository,
                 peopleRepository: peopleRepository,
                 companyRepository: companyRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedPerson) { person in
+            PersonDetailView(
+                ref: person,
+                peopleRepository: peopleRepository,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -267,11 +282,7 @@ struct SongDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityAddTraits(.isHeader)
 
-                if let artist = MusicAlbumPresentation.artistCreditText(detail.artistCredit) {
-                    Text(artist)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.62))
-                }
+                songArtistByline(detail.artistCredit)
 
                 HStack(spacing: 8) {
                     albumContext(detail)
@@ -338,9 +349,7 @@ struct SongDetailView: View {
                             }
                             ForEach(Array(work.credits.enumerated()), id: \.offset) { _, credit in
                                 if let value = MusicSongPresentation.credit(credit) {
-                                    Text(value)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.white.opacity(0.8))
+                                    songWorkCredit(value, credit: credit)
                                 }
                             }
                         }
@@ -404,6 +413,55 @@ struct SongDetailView: View {
         } else {
             selectedAlbum = ref
         }
+    }
+
+    @ViewBuilder
+    private func songArtistByline(_ credits: [MusicArtistCredit]) -> some View {
+        if let presentation = MediaCreditPresentation.musicArtists(credits) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(presentation.heroPeople, id: \.self) { person in
+                    if let personRef = person.personRef {
+                        Button { presentedPerson = personRef } label: {
+                            songArtistText(person.name)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(person.name)")
+                    } else {
+                        songArtistText(person.name)
+                    }
+                }
+                if presentation.heroMoreCount > 0 {
+                    Text("+\(presentation.heroMoreCount) more")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+            }
+        }
+    }
+
+    private func songArtistText(_ value: String) -> some View {
+        Text(value)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.62))
+    }
+
+    @ViewBuilder
+    private func songWorkCredit(_ value: String, credit: MusicRecordingCredit) -> some View {
+        if let personRef = credit.personRef {
+            Button { presentedPerson = personRef } label: {
+                songWorkCreditText(value)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View \(credit.name)")
+        } else {
+            songWorkCreditText(value)
+        }
+    }
+
+    private func songWorkCreditText(_ value: String) -> some View {
+        Text(value)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.8))
     }
 
     private func workMetadata(_ work: MusicWorkRelationship) -> [String] {

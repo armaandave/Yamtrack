@@ -495,10 +495,11 @@ struct PersonDetailView: View {
     }
 }
 
-private enum FilmographyType: String, CaseIterable, Identifiable {
+enum FilmographyType: String, CaseIterable, Identifiable {
     case movie
     case tv
     case book
+    case music
 
     var id: String { rawValue }
 
@@ -510,6 +511,8 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
             "TV"
         case .book:
             "Books"
+        case .music:
+            "Music"
         }
     }
 
@@ -517,6 +520,8 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
         switch self {
         case .book:
             "Books"
+        case .music:
+            "Discography"
         case .movie, .tv:
             "Filmography"
         }
@@ -608,13 +613,15 @@ struct FilmographyCreditGroup: Identifiable {
             ["producer"]
         case "author":
             ["author"]
+        case "artist":
+            ["artist"]
         default:
             []
         }
     }
 }
 
-private extension FilmographyType {
+extension FilmographyType {
     func creditNoun(count: Int) -> String {
         switch self {
         case .movie:
@@ -623,6 +630,8 @@ private extension FilmographyType {
             count == 1 ? "show" : "shows"
         case .book:
             count == 1 ? "book" : "books"
+        case .music:
+            count == 1 ? "release" : "releases"
         }
     }
 }

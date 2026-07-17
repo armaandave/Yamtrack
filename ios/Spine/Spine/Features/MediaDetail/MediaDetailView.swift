@@ -359,6 +359,9 @@ struct MediaCreditPresentation: Hashable {
     }
 
     static func make(for detail: MediaDetail) -> MediaCreditPresentation? {
+        if detail.ref.source == "musicbrainz", detail.ref.mediaType == "music" {
+            return musicArtists(detail.music?.artistCredit ?? [])
+        }
         guard detail.ref.source == "tmdb" else { return nil }
 
         let configuration: (pluralKey: String, singularKey: String, singularIDKey: String, singularLabel: String, pluralLabel: String)
@@ -383,6 +386,22 @@ struct MediaCreditPresentation: Hashable {
         return MediaCreditPresentation(
             label: resolvedPeople.count == 1 ? configuration.singularLabel : configuration.pluralLabel,
             people: resolvedPeople
+        )
+    }
+
+    static func musicArtists(_ credits: [MusicArtistCredit]) -> MediaCreditPresentation? {
+        var seen = Set<String>()
+        let people = credits.compactMap { credit -> MediaPersonCredit? in
+            let name = credit.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            let key = credit.personRef.map { "id:\($0.id)" } ?? "name:\(name.lowercased())"
+            guard seen.insert(key).inserted else { return nil }
+            return MediaPersonCredit(name: name, personRef: credit.personRef)
+        }
+        guard !people.isEmpty else { return nil }
+        return MediaCreditPresentation(
+            label: people.count == 1 ? "Artist" : "Artists",
+            people: people
         )
     }
 
@@ -1338,7 +1357,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func usesBookGameActions(_ detail: MediaDetail) -> Bool {
-        ["book", "game", "music"].contains(detail.ref.mediaType)
+        ["book", "game"].contains(detail.ref.mediaType)
     }
 
     private func trackAction(for detail: MediaDetail) {
@@ -1422,6 +1441,7 @@ private struct MediaDetailPageView: View {
         return ActionRail(
             isTracked: isEpisode ? isWatched : currentStatus(detail) != nil,
             isLiked: detail.userState?.hasLiked ?? false,
+            showsEye: detail.ref.mediaType != "music",
             trackLabel: isEpisode ? "Log episode" : (usesQuickActions ? "Track" : nil),
             eyeLabel: isEpisode
                 ? (isWatched ? "Episode watched" : "Mark episode watched")
@@ -1487,7 +1507,9 @@ private struct MediaDetailPageView: View {
                         maxLogoHeight: 48
                     )
 
-                    if let artist = musicArtist(detail) {
+                    if let credits = MediaCreditPresentation.make(for: detail) {
+                        creditBylineView(credits)
+                    } else if let artist = musicArtist(detail) {
                         bylineText(artist, lineLimit: 1, alignment: .leading)
                     }
 
@@ -3564,6 +3586,7 @@ private struct ActionRail: View {
 
     let isTracked: Bool
     let isLiked: Bool
+    var showsEye = true
     var trackLabel: String?
     var eyeLabel: String?
     var isEyeSelected = false
@@ -3582,14 +3605,16 @@ private struct ActionRail: View {
                 usesLargePlus: true,
                 action: onTrack
             )
-            railButton(
-                systemName: isEyeSelected ? "eye.fill" : "eye",
-                label: eyeLabel ?? "Mark as watched",
-                usesLargePlus: false,
-                isLoading: isEyeLoading,
-                isDisabled: isEyeDisabled,
-                action: onEye
-            )
+            if showsEye {
+                railButton(
+                    systemName: isEyeSelected ? "eye.fill" : "eye",
+                    label: eyeLabel ?? "Mark as watched",
+                    usesLargePlus: false,
+                    isLoading: isEyeLoading,
+                    isDisabled: isEyeDisabled,
+                    action: onEye
+                )
+            }
             railButton(
                 systemName: isLiked ? "heart.fill" : "heart",
                 label: isLiked ? "Unlike" : "Like",
