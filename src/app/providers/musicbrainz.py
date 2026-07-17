@@ -22,11 +22,14 @@ CACHE_VERSION = "v2"
 LISTENBRAINZ_CACHE_VERSION = "v1"
 RESOLVER_VERSION = "v1"
 RECORDING_CACHE_VERSION = "v2"
+ARTIST_CACHE_VERSION = "v1"
 SEARCH_CACHE_TTL = 6 * 60 * 60
 LISTENBRAINZ_FAILURE_CACHE_TTL = 5 * 60
 DETAIL_CACHE_TTL = 24 * 60 * 60
 MISSING_COVER_CACHE_TTL = 6 * 60 * 60
 SEARCH_CANDIDATE_LIMIT = 100
+ARTIST_RELEASE_GROUP_LIMIT = 500
+ARTIST_RELEASE_GROUP_PAGE_SIZE = 100
 LISTENBRAINZ_TIMEOUT = 5
 MAX_ATTEMPTS = 3
 _CACHE_MISS = object()
@@ -185,6 +188,98 @@ def lookup_release_group(release_group_mbid):
                 ),
             },
         ),
+    )
+
+
+def lookup_artist(artist_mbid):
+    """Look up one MusicBrainz artist."""
+    mbid = _path_value(artist_mbid)
+    return _cached(
+        f"musicbrainz_artist_{ARTIST_CACHE_VERSION}_{mbid}",
+        DETAIL_CACHE_TTL,
+        lambda: _musicbrainz_request(
+            f"artist/{mbid}",
+            {"inc": "annotation+url-rels"},
+        ),
+    )
+
+
+def browse_artist_release_groups(artist_mbid, *, limit=ARTIST_RELEASE_GROUP_PAGE_SIZE, offset=0):
+    """Browse one cached page of an artist's primary release groups."""
+    mbid = _path_value(artist_mbid)
+    return _cached(
+        f"musicbrainz_artist_release_groups_{ARTIST_CACHE_VERSION}_{mbid}_{limit}_{offset}",
+        DETAIL_CACHE_TTL,
+        lambda: _musicbrainz_request(
+            "release-group",
+            {
+                "artist": artist_mbid,
+                "release-group-status": "website-default",
+                "inc": "artist-credits+genres+ratings",
+                "limit": limit,
+                "offset": offset,
+            },
+        ),
+    )
+
+
+def person_page(artist_mbid):
+    """Return MusicBrainz artist details and release-group credits."""
+    mbid = _path_value(artist_mbid)
+
+    def fetch():
+        artist = lookup_artist(artist_mbid)
+        groups = []
+        offset = 0
+        while offset < ARTIST_RELEASE_GROUP_LIMIT:
+            response = browse_artist_release_groups(
+                artist_mbid,
+                limit=min(
+                    ARTIST_RELEASE_GROUP_PAGE_SIZE,
+                    ARTIST_RELEASE_GROUP_LIMIT - offset,
+                ),
+                offset=offset,
+            )
+            page = response.get("release-groups") or []
+            groups.extend(page)
+            offset += len(page)
+            total = response.get("release-group-count", response.get("count", offset))
+            try:
+                total = int(total)
+            except (TypeError, ValueError):
+                total = offset
+            if not page or offset >= total:
+                break
+
+        credits_by_id = {}
+        for group in groups[:ARTIST_RELEASE_GROUP_LIMIT]:
+            if group.get("id"):
+                credits_by_id.setdefault(group["id"], _artist_release_group_credit(group))
+        credits = list(credits_by_id.values())
+        credits.sort(key=lambda credit: (credit.get("title") or "").casefold())
+        credits.sort(key=lambda credit: credit.get("release_date") or "", reverse=True)
+
+        life_span = artist.get("life-span") or {}
+        begin_area = artist.get("begin-area") or {}
+        area = artist.get("area") or {}
+        return {
+            "source": Sources.MUSICBRAINZ.value,
+            "person_id": str(artist.get("id") or artist_mbid),
+            "name": artist.get("name") or "",
+            "image": _artist_image(artist.get("relations")),
+            "biography": _annotation(artist.get("annotation")),
+            "known_for_department": "Artist",
+            "birth_date": life_span.get("begin") or None,
+            "death_date": life_span.get("end") or None,
+            "place_of_birth": begin_area.get("name") or area.get("name") or None,
+            "popularity": None,
+            "credits": credits,
+        }
+
+    return _cached(
+        f"musicbrainz_artist_page_{ARTIST_CACHE_VERSION}_{mbid}",
+        DETAIL_CACHE_TTL,
+        fetch,
     )
 
 
@@ -937,6 +1032,40 @@ def _genre_names(genres):
         for genre in genres or []
         if isinstance(genre, dict) and genre.get("name")
     ]
+
+
+def _artist_release_group_credit(group):
+    release_group_mbid = str(group.get("id") or "")
+    release_date = group.get("first-release-date") or None
+    rating = group.get("rating") or {}
+    return {
+        "media_type": MediaTypes.MUSIC.value,
+        "source": Sources.MUSICBRAINZ.value,
+        "media_id": release_group_mbid,
+        "title": group.get("title") or "",
+        "image": _cover_art_url(release_group_mbid),
+        "release_date": release_date,
+        "year": release_date[:4] if release_date else None,
+        "genres": _genre_names(group.get("genres")),
+        "roles": ["Artist"],
+        "credit_roles": ["Artist"],
+        "vote_average": rating.get("value"),
+        "vote_count": rating.get("votes-count"),
+    }
+
+
+def _artist_image(relations):
+    for relation in relations or []:
+        if relation.get("target-type") != "url" or relation.get("type") != "image":
+            continue
+        resource = (relation.get("url") or {}).get("resource")
+        try:
+            parsed = urlsplit(resource)
+        except (TypeError, ValueError):
+            continue
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return urlunsplit(parsed._replace(scheme="https"))
+    return settings.IMG_NONE
 
 
 def _annotation(value):

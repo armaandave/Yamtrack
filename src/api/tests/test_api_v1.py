@@ -3165,13 +3165,111 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["credits"]["cast"][0]["ref"]["source"], Sources.HARDCOVER.value)
         self.assertEqual(response.data["credits"]["cast"][0]["title"], "I Am Not a Serial Killer")
 
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_returns_musicbrainz_artist_and_release_groups(self, person_mock):
+        person_mock.return_value = {
+            "source": Sources.MUSICBRAINZ.value,
+            "person_id": "artist-1",
+            "name": "Artist",
+            "image": "https://example.com/artist.jpg",
+            "biography": "Artist biography.",
+            "known_for_department": "Artist",
+            "birth_date": "1988",
+            "death_date": None,
+            "place_of_birth": "Cleveland",
+            "popularity": None,
+            "credits": [
+                {
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_id": "release-group-1",
+                    "title": "Album",
+                    "image": "https://example.com/album.jpg",
+                    "release_date": "2005",
+                    "year": "2005",
+                    "genres": ["Industrial Rock"],
+                    "roles": ["Artist"],
+                    "credit_roles": ["Artist"],
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/people/musicbrainz/artist-1/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        person_mock.assert_called_once_with(Sources.MUSICBRAINZ.value, "artist-1")
+        self.assertEqual(response.data["name"], "Artist")
+        self.assertEqual(response.data["known_for_department"], "Artist")
+        self.assertEqual(response.data["profile_url"], "https://example.com/artist.jpg")
+        album = response.data["credits"]["cast"][0]
+        self.assertEqual(album["ref"]["source"], Sources.MUSICBRAINZ.value)
+        self.assertEqual(album["ref"]["media_type"], MediaTypes.MUSIC.value)
+        self.assertEqual(album["ref"]["media_id"], "release-group-1")
+        self.assertEqual(album["roles"], ["Artist"])
+        self.assertEqual(album["credit_roles"], ["Artist"])
+
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_filters_and_sorts_music_release_groups(self, person_mock):
+        person_mock.return_value = {
+            "source": Sources.MUSICBRAINZ.value,
+            "person_id": "artist-1",
+            "name": "Artist",
+            "credits": [
+                {
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_id": "lower-rated",
+                    "title": "Lower Rated",
+                    "release_date": "2020-01-01",
+                    "genres": ["Rock"],
+                    "vote_average": 3.5,
+                },
+                {
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_id": "higher-rated",
+                    "title": "Higher Rated",
+                    "release_date": "2021-01-01",
+                    "genres": ["Rock"],
+                    "vote_average": 4.5,
+                },
+                {
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_id": "too-old",
+                    "title": "Too Old",
+                    "release_date": "1990-01-01",
+                    "genres": ["Rock"],
+                    "vote_average": 5.0,
+                },
+            ],
+        }
+
+        response = self.client.get(
+            "/api/v1/people/musicbrainz/artist-1/",
+            {
+                "media_type": MediaTypes.MUSIC.value,
+                "year_min": "2000",
+                "release_status": "released",
+                "genre": "Rock",
+                "sort": "average_rating",
+                "direction": "desc",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item["title"] for item in response.data["credits"]["cast"]],
+            ["Higher Rated", "Lower Rated"],
+        )
+
     def test_person_detail_rejects_unsupported_source_for_v1(self):
         response = self.client.get("/api/v1/people/manual/author-1/")
 
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertEqual(
             response.data["detail"],
-            "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1.",
+            "People pages are only supported for TMDB, Hardcover, OpenLibrary, and MusicBrainz in v1.",
         )
 
     @patch("api.services.media.provider_services.company_catalog_count")

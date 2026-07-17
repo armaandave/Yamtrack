@@ -44,24 +44,12 @@ final class SongDetailViewModel {
 }
 
 enum MusicSongPresentation {
-    static func musicBrainzURL(_ detail: MusicRecordingDetail) -> URL {
-        for value in [detail.externalLinks["MusicBrainz"], detail.sourceUrl].compactMap({ $0 }) {
-            guard
-                let url = URL(string: value),
-                ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-                let host = url.host?.lowercased(),
-                host == "musicbrainz.org" || host.hasSuffix(".musicbrainz.org")
-            else { continue }
-            return url
-        }
-        return URL(string: "https://musicbrainz.org")!
-            .appending(path: "recording")
-            .appending(path: detail.recordingMbid)
-    }
-
-    static func rating(_ rating: MusicRecordingRating?) -> String? {
-        guard let value = rating?.value else { return nil }
-        return String(format: "%.1f / %d", value, rating?.maxValue ?? 5)
+    static func albumContext(_ detail: MusicRecordingDetail) -> String {
+        let trackNumber = detail.contextRelease.track.number
+        let number = trackNumber.isEmpty
+            ? String(detail.contextRelease.track.position)
+            : trackNumber
+        return "Track \(number) on \(detail.parentAlbum.title)"
     }
 
     static func credit(_ credit: MusicRecordingCredit) -> String? {
@@ -80,9 +68,10 @@ enum MusicSongPresentation {
 
 struct SongDetailView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: SongDetailViewModel
     @State private var selectedAlbum: MediaRef?
+    @State private var edgeDragOffset: CGFloat = 0
 
     private let selection: MusicSongSelection
     private let musicRepository: MusicRepository
@@ -141,6 +130,13 @@ struct SongDetailView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .navigationBarBackButtonHidden()
+        .offset(x: edgeDragOffset)
+        .overlay(alignment: .leading) {
+            Color.clear
+                .frame(width: 28)
+                .contentShape(Rectangle())
+                .gesture(edgeSwipeBackGesture)
+        }
         .fullScreenCover(item: $selectedAlbum) { ref in
             MediaDetailView(
                 ref: ref,
@@ -164,6 +160,23 @@ struct SongDetailView: View {
         }
     }
 
+    private var edgeSwipeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in
+                guard value.translation.width > 0 else { return }
+                edgeDragOffset = value.translation.width
+            }
+            .onEnded { value in
+                if value.translation.width > 90 {
+                    dismiss()
+                } else {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)) {
+                        edgeDragOffset = 0
+                    }
+                }
+            }
+    }
+
     @ViewBuilder
     private var content: some View {
         if viewModel.isLoading, viewModel.detail == nil {
@@ -174,19 +187,20 @@ struct SongDetailView: View {
                 .accessibilityIdentifier("song-detail.loading")
         } else if let detail = viewModel.detail {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 28) {
+                VStack(spacing: 0) {
                     hero(detail)
-                    facts(detail)
-                    works(detail)
-                    albums(detail)
-                    releases(detail)
-                    externalLink(detail)
+
+                    VStack(alignment: .leading, spacing: 28) {
+                        works(detail)
+                        albums(detail)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 28)
+                    .padding(.bottom, 40)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 58)
-                .padding(.bottom, 40)
             }
             .scrollContentBackground(.hidden)
+            .ignoresSafeArea(edges: .top)
         } else {
             VStack(spacing: 18) {
                 ContentUnavailableView(
@@ -229,77 +243,81 @@ struct SongDetailView: View {
     }
 
     private func hero(_ detail: MusicRecordingDetail) -> some View {
-        VStack(spacing: 16) {
+        let artworkURL = selection.artworkURL ?? detail.imageUrl ?? detail.parentAlbum.displayPosterURL
+        let artworkSize: CGFloat = 244
+
+        return VStack(spacing: 0) {
             MediaArtwork(
-                url: selection.artworkURL ?? detail.imageUrl,
+                url: artworkURL,
                 title: detail.parentAlbum.title,
                 slot: .hero,
                 mediaType: "music",
                 orientation: .square
             )
+            .scaleEffect(1.28)
+            .frame(width: artworkSize, height: artworkSize)
             .accessibilityLabel("Album cover for \(detail.parentAlbum.title)")
             .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
+            .padding(.bottom, 18)
 
-            VStack(spacing: 7) {
+            VStack(alignment: .leading, spacing: 11) {
                 Text(detail.title)
-                    .font(.largeTitle.weight(.black))
+                    .font(.system(size: 33, weight: .heavy))
                     .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+
                 if let artist = MusicAlbumPresentation.artistCreditText(detail.artistCredit) {
                     Text(artist)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.62))
-                        .multilineTextAlignment(.center)
                 }
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
 
-    @ViewBuilder
-    private func facts(_ detail: MusicRecordingDetail) -> some View {
-        let rows = factRows(detail)
-        if !rows.isEmpty {
-            SongSection(title: "Song Details") {
-                VStack(spacing: 0) {
-                    ForEach(rows) { row in
-                        Group {
-                            if dynamicTypeSize.isAccessibilitySize {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    factLabel(row.label)
-                                    factValue(row.value)
-                                }
-                            } else {
-                                HStack(alignment: .top, spacing: 12) {
-                                    factLabel(row.label)
-                                        .frame(width: 92, alignment: .leading)
-                                    factValue(row.value)
-                                }
-                            }
-                        }
-                        .padding(14)
-                        if row.id != rows.last?.id {
-                            Divider().overlay(.white.opacity(0.05))
-                        }
+                HStack(spacing: 8) {
+                    albumContext(detail)
+                    if let duration = MusicAlbumPresentation.duration(detail.lengthMs) {
+                        songPill(duration)
                     }
                 }
-                .songSurface()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 14)
+        .padding(.top, 108)
+        .padding(.bottom, 24)
+        .background {
+            HeroArtwork(artworkURL: URL(string: artworkURL ?? ""))
         }
     }
 
-    private func factLabel(_ value: String) -> some View {
-        Text(value)
+    private func albumContext(_ detail: MusicRecordingDetail) -> some View {
+        Button { openAlbum(detail.parentAlbum.ref) } label: {
+            HStack(spacing: 5) {
+                Text(MusicSongPresentation.albumContext(detail))
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+            }
             .font(.caption.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.62))
+            .foregroundStyle(.white.opacity(0.82))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.white.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            "\(MusicSongPresentation.albumContext(detail)). Open album"
+        )
     }
 
-    private func factValue(_ value: String) -> some View {
+    private func songPill(_ value: String) -> some View {
         Text(value)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.86))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.82))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.white.opacity(0.12), in: Capsule())
     }
 
     @ViewBuilder
@@ -380,88 +398,12 @@ struct SongDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func releases(_ detail: MusicRecordingDetail) -> some View {
-        if !detail.releases.isEmpty {
-            SongSection(title: "Release Appearances") {
-                VStack(spacing: 0) {
-                    ForEach(detail.releases, id: \.releaseMbid) { release in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(release.title)
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.white.opacity(0.9))
-                            let metadata = releaseMetadata(release)
-                            if !metadata.isEmpty {
-                                Text(metadata.joined(separator: " · "))
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.62))
-                            }
-                            if let barcode = nonEmpty(release.barcode) {
-                                Text("Barcode \(barcode)")
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.62))
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        if release.releaseMbid != detail.releases.last?.releaseMbid {
-                            Divider().overlay(.white.opacity(0.05))
-                        }
-                    }
-                }
-                .songSurface()
-            }
-        }
-    }
-
-    private func externalLink(_ detail: MusicRecordingDetail) -> some View {
-        SongSection(title: "External") {
-            Link(destination: MusicSongPresentation.musicBrainzURL(detail)) {
-                HStack {
-                    Label("View on MusicBrainz", systemImage: "music.note")
-                        .font(.subheadline.weight(.bold))
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption.weight(.bold))
-                }
-                .foregroundStyle(.white.opacity(0.9))
-                .padding(14)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens in the system browser")
-            .songSurface()
-        }
-    }
-
     private func openAlbum(_ ref: MediaRef) {
         if ref.id == selection.album.id {
             dismiss()
         } else {
             selectedAlbum = ref
         }
-    }
-
-    private func factRows(_ detail: MusicRecordingDetail) -> [SongFact] {
-        var rows: [SongFact] = []
-        if let duration = MusicAlbumPresentation.duration(detail.lengthMs) {
-            rows.append(SongFact(label: "Duration", value: duration))
-        }
-        if let disambiguation = nonEmpty(detail.disambiguation) {
-            rows.append(SongFact(label: "Version", value: disambiguation))
-        }
-        if !detail.isrcs.isEmpty {
-            rows.append(SongFact(label: "ISRC", value: detail.isrcs.joined(separator: ", ")))
-        }
-        if !detail.genres.isEmpty {
-            rows.append(SongFact(label: "Genres", value: detail.genres.joined(separator: ", ")))
-        }
-        if let rating = MusicSongPresentation.rating(detail.rating) {
-            let votes = detail.rating?.votesCount.map { " · \($0) votes" } ?? ""
-            rows.append(SongFact(label: "Community", value: rating + votes))
-        }
-        return rows
     }
 
     private func workMetadata(_ work: MusicWorkRelationship) -> [String] {
@@ -472,25 +414,10 @@ struct SongDetailView: View {
         ].compactMap { $0 }
     }
 
-    private func releaseMetadata(_ release: MusicRecordingAppearance) -> [String] {
-        [
-            nonEmpty(release.status),
-            nonEmpty(release.date),
-            MusicAlbumPresentation.countryName(release.country),
-        ].compactMap { $0 }
-    }
-
     private func nonEmpty(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return value
     }
-}
-
-private struct SongFact: Identifiable {
-    let label: String
-    let value: String
-
-    var id: String { label }
 }
 
 private struct SongSection<Content: View>: View {

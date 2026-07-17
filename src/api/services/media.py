@@ -416,8 +416,13 @@ def music_recording_detail(*, release_group_mbid, recording_mbid, request=None, 
 
 def person_detail(*, source, person_id, request=None, user=None, params=None):
     """Return a provider person profile plus iOS-ready media summaries."""
-    if source not in {Sources.TMDB.value, Sources.HARDCOVER.value, Sources.OPENLIBRARY.value}:
-        msg = "People pages are only supported for TMDB, Hardcover, and OpenLibrary in v1."
+    if source not in {
+        Sources.TMDB.value,
+        Sources.HARDCOVER.value,
+        Sources.OPENLIBRARY.value,
+        Sources.MUSICBRAINZ.value,
+    }:
+        msg = "People pages are only supported for TMDB, Hardcover, OpenLibrary, and MusicBrainz in v1."
         raise NotImplementedError(msg)
 
     person = provider_services.get_person_page(source, person_id)
@@ -443,7 +448,13 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
                     user=user,
                 )
                 for credit in person_credits
-                if credit.get("media_type") in {MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.BOOK.value}
+                if credit.get("media_type")
+                in {
+                    MediaTypes.MOVIE.value,
+                    MediaTypes.TV.value,
+                    MediaTypes.BOOK.value,
+                    MediaTypes.MUSIC.value,
+                }
             ],
         },
     }

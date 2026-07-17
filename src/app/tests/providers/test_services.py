@@ -18,6 +18,15 @@ mock_path = Path(__file__).resolve().parent.parent / "mock_data"
 class ServicesTests(TestCase):
     """Test the services module functions."""
 
+    @patch("app.providers.services.musicbrainz.person_page")
+    def test_get_person_page_dispatches_musicbrainz(self, person_page):
+        person_page.return_value = {"person_id": "artist-1"}
+
+        result = services.get_person_page(Sources.MUSICBRAINZ.value, "artist-1")
+
+        self.assertEqual(result, {"person_id": "artist-1"})
+        person_page.assert_called_once_with("artist-1")
+
     @patch("app.providers.services.session.get")
     def test_api_request_get(self, mock_get):
         """Test the api_request function with GET method."""

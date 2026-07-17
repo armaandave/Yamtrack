@@ -3421,7 +3421,21 @@ private struct IMDbExternalLinkPill: View {
 }
 
 struct HeroArtwork: View {
-    let detail: MediaDetail
+    private let artworkURL: URL?
+    private let usesPosterFallback: Bool
+    private let accentColor: Color
+
+    init(detail: MediaDetail) {
+        artworkURL = URL(string: detail.displayBackdropURL ?? detail.displayPosterURL ?? "")
+        usesPosterFallback = detail.displayBackdropURL == nil && detail.displayPosterURL != nil
+        accentColor = Color(hex: detail.posterAccentColor) ?? SpinePalette.pageBackground
+    }
+
+    init(artworkURL: URL?, accentColor: Color = SpinePalette.pageBackground) {
+        self.artworkURL = artworkURL
+        usesPosterFallback = artworkURL != nil
+        self.accentColor = accentColor
+    }
 
     var body: some View {
         ZStack {
@@ -3485,14 +3499,6 @@ struct HeroArtwork: View {
         .clipped()
     }
 
-    private var artworkURL: URL? {
-        return URL(string: detail.displayBackdropURL ?? detail.displayPosterURL ?? "")
-    }
-
-    private var usesPosterFallback: Bool {
-        detail.displayBackdropURL == nil && detail.displayPosterURL != nil
-    }
-
     private var blurRadius: CGFloat {
         usesPosterFallback ? 30 : 22
     }
@@ -3501,9 +3507,6 @@ struct HeroArtwork: View {
         usesPosterFallback ? 1.28 : 1.2
     }
 
-    private var accentColor: Color {
-        Color(hex: detail.posterAccentColor) ?? SpinePalette.pageBackground
-    }
 }
 
 struct BackdropArtwork: View {
@@ -4365,13 +4368,33 @@ private struct MusicStreamingButton: View {
 
     var body: some View {
         Link(destination: destination.url) {
-            serviceLogo
-            .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-            .contentShape(Circle())
+            HStack(spacing: 8) {
+                serviceLogo
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(accentColor)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(.white.opacity(0.07), in: Capsule())
+            .glassEffect(
+                .regular.tint(accentColor.opacity(0.08)).interactive(),
+                in: .rect(cornerRadius: 20)
+            )
+            .overlay {
+                Capsule().stroke(.white.opacity(0.14), lineWidth: 0.75)
+            }
+            .shadow(color: accentColor.opacity(0.15), radius: 7, y: 2)
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Listen on \(destination.label)")
         .accessibilityHint("Opens using the system URL behavior")
+    }
+
+    private var accentColor: Color {
+        destination.label == "Spotify" ? Color(red: 0.12, green: 0.84, blue: 0.38) : .pink
     }
 
     @ViewBuilder
@@ -4381,19 +4404,19 @@ private struct MusicStreamingButton: View {
             Image("AppleMusicIcon")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 36, height: 36)
-                .clipShape(Circle())
+                .frame(width: 24, height: 24)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         case "Spotify":
             Image("SpotifyIcon")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 36, height: 36)
+                .frame(width: 24, height: 24)
                 .clipShape(Circle())
         default:
-            Image(systemName: "play.fill")
-                .font(.caption.weight(.bold))
-                .frame(width: 36, height: 36)
-                .background(.white.opacity(0.12), in: Circle())
+            Image(systemName: "music.note")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 24, height: 24)
         }
     }
 }

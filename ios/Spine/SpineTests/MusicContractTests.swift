@@ -291,13 +291,12 @@ final class MusicContractTests: XCTestCase {
         XCTAssertEqual(detail.releases.map(\.releaseMbid), ["2d0bad69-f735-484b-bc0b-2ea54c76225e", "second-release"])
     }
 
-    func testSongPresentationFormatsCreditsRatingAndSafeMusicBrainzURL() throws {
+    func testSongPresentationFormatsCredits() throws {
         let detail = try Self.recordingDetail()
         let credit = try XCTUnwrap(detail.works.first?.credits.first)
 
-        XCTAssertEqual(MusicSongPresentation.rating(detail.rating), "4.5 / 5")
+        XCTAssertEqual(MusicSongPresentation.albumContext(detail), "Track 1 on Year Zero")
         XCTAssertEqual(MusicSongPresentation.credit(credit), "Trent Reznor · Composer")
-        XCTAssertEqual(MusicSongPresentation.musicBrainzURL(detail), URL(string: detail.sourceUrl!))
     }
 
     func testSongDetailFailedFetchCanRetry() async throws {

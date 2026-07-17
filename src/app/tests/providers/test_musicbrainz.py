@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import fakeredis
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from pyrate_limiter import Duration, Rate, RateItem, RedisBucket
@@ -22,6 +23,7 @@ requires_provider_network = unittest.skipUnless(
 RELEASE_GROUP_MBID = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
 RELEASE_MBID = "2d0bad69-f735-484b-bc0b-2ea54c76225e"
 RECORDING_MBID = "35518724-a25a-4627-a2cc-0786dd1d2272"
+ARTIST_MBID = "b7ffd2af-418f-4be2-bdd1-22f8b48613da"
 THRILLER_ALBUM_MBID = "f32fab67-77dd-3937-addc-9062e28e4c37"
 OBSCURE_THRILLER_MBID = "d3d7a588-5113-4edb-9bcb-a6c9f2cd1a33"
 STREAMING_RELATION_ID = "320adf26-96fa-4183-9045-1f5f32f833cb"
@@ -505,6 +507,153 @@ class MusicBrainzTests(TestCase):
                 ),
             },
         )
+
+    @override_settings(VERSION="1.2.3", MUSICBRAINZ_CONTACT="contact@example.com")
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_lookup_artist_requests_profile_fields_and_caches(self, api_request):
+        api_request.return_value = {"id": ARTIST_MBID, "name": "Nine Inch Nails"}
+
+        result = musicbrainz.lookup_artist(ARTIST_MBID)
+        cached = musicbrainz.lookup_artist(ARTIST_MBID)
+
+        self.assertEqual(result, cached)
+        api_request.assert_called_once_with(
+            Sources.MUSICBRAINZ.value,
+            "GET",
+            f"{musicbrainz.MUSICBRAINZ_URL}/artist/{ARTIST_MBID}",
+            params={"fmt": "json", "inc": "annotation+url-rels"},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Spine/1.2.3 (contact@example.com)",
+            },
+            request_session=services.musicbrainz_session,
+        )
+
+    @patch("app.providers.musicbrainz.browse_artist_release_groups")
+    @patch("app.providers.musicbrainz.lookup_artist")
+    def test_person_page_normalizes_artist_and_paginated_release_groups(
+        self,
+        lookup_artist,
+        browse_release_groups,
+    ):
+        lookup_artist.return_value = {
+            "id": ARTIST_MBID,
+            "name": "Nine Inch Nails",
+            "annotation": {"text": "  Industrial rock band.  "},
+            "life-span": {"begin": "1988", "end": None},
+            "begin-area": {"name": "Cleveland"},
+            "area": {"name": "United States"},
+            "relations": [
+                {
+                    "target-type": "url",
+                    "type": "image",
+                    "url": {"resource": "http://example.com/artist.jpg"},
+                },
+            ],
+        }
+        duplicate = {
+            "id": "release-group-2",
+            "title": "The Fragile",
+            "first-release-date": "1999-09-21",
+            "genres": [{"name": "industrial rock"}],
+            "rating": {"value": 4.4, "votes-count": 20},
+        }
+        browse_release_groups.side_effect = [
+            {
+                "release-group-count": 4,
+                "release-groups": [
+                    {
+                        "id": "release-group-1",
+                        "title": "With Teeth",
+                        "first-release-date": "2005",
+                    },
+                    duplicate,
+                ],
+            },
+            {
+                "release-group-count": 4,
+                "release-groups": [
+                    duplicate,
+                    {"id": "release-group-3", "title": "Undated"},
+                ],
+            },
+        ]
+
+        result = musicbrainz.person_page(ARTIST_MBID)
+        cached = musicbrainz.person_page(ARTIST_MBID)
+
+        self.assertEqual(result, cached)
+        self.assertEqual(result["name"], "Nine Inch Nails")
+        self.assertEqual(result["image"], "https://example.com/artist.jpg")
+        self.assertEqual(result["biography"], "Industrial rock band.")
+        self.assertEqual(result["birth_date"], "1988")
+        self.assertEqual(result["place_of_birth"], "Cleveland")
+        self.assertEqual(
+            [credit["title"] for credit in result["credits"]],
+            ["With Teeth", "The Fragile", "Undated"],
+        )
+        fragile = result["credits"][1]
+        self.assertEqual(fragile["media_type"], MediaTypes.MUSIC.value)
+        self.assertEqual(fragile["source"], Sources.MUSICBRAINZ.value)
+        self.assertEqual(fragile["genres"], ["industrial rock"])
+        self.assertEqual(fragile["vote_average"], 4.4)
+        self.assertEqual(fragile["vote_count"], 20)
+        self.assertEqual(fragile["roles"], ["Artist"])
+        self.assertEqual(browse_release_groups.call_count, 2)
+        self.assertEqual(browse_release_groups.call_args_list[0].kwargs["offset"], 0)
+        self.assertEqual(browse_release_groups.call_args_list[1].kwargs["offset"], 2)
+        lookup_artist.assert_called_once_with(ARTIST_MBID)
+
+    @patch("app.providers.musicbrainz.browse_artist_release_groups")
+    @patch("app.providers.musicbrainz.lookup_artist")
+    def test_person_page_uses_area_and_image_fallback_for_group(
+        self,
+        lookup_artist,
+        browse_release_groups,
+    ):
+        lookup_artist.return_value = {
+            "id": "group-artist",
+            "name": "Example Band",
+            "life-span": {"begin": "2001", "end": "2010"},
+            "area": {"name": "Canada"},
+        }
+        browse_release_groups.return_value = {
+            "release-group-count": 0,
+            "release-groups": [],
+        }
+
+        result = musicbrainz.person_page("group-artist")
+
+        self.assertEqual(result["image"], settings.IMG_NONE)
+        self.assertEqual(result["birth_date"], "2001")
+        self.assertEqual(result["death_date"], "2010")
+        self.assertEqual(result["place_of_birth"], "Canada")
+
+    @patch("app.providers.musicbrainz.browse_artist_release_groups")
+    @patch("app.providers.musicbrainz.lookup_artist")
+    def test_person_page_caps_release_groups_at_500(
+        self,
+        lookup_artist,
+        browse_release_groups,
+    ):
+        lookup_artist.return_value = {"id": "prolific-artist", "name": "Prolific"}
+
+        def page(_artist_mbid, *, limit, offset):
+            return {
+                "release-group-count": 900,
+                "release-groups": [
+                    {"id": f"group-{index}", "title": f"Release {index}"}
+                    for index in range(offset, offset + limit)
+                ],
+            }
+
+        browse_release_groups.side_effect = page
+
+        result = musicbrainz.person_page("prolific-artist")
+
+        self.assertEqual(len(result["credits"]), 500)
+        self.assertEqual(browse_release_groups.call_count, 5)
+        self.assertEqual(browse_release_groups.call_args_list[-1].kwargs["offset"], 400)
 
     @patch("app.providers.musicbrainz.services.api_request")
     def test_browse_releases_requests_selection_inputs(self, api_request):

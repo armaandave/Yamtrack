@@ -353,6 +353,8 @@ def get_person_page(source, person_id):
         return hardcover.person_page(person_id)
     if source == Sources.OPENLIBRARY.value:
         return openlibrary.person_page(person_id)
+    if source == Sources.MUSICBRAINZ.value:
+        return musicbrainz.person_page(person_id)
     raise_not_found_error(source, person_id, "person")
 
 
