@@ -150,8 +150,13 @@ class MusicBrainzTests(TestCase):
         )
 
     @override_settings(VERSION="1.2.3", MUSICBRAINZ_CONTACT="contact@example.com")
+    @patch("app.providers.musicbrainz.lookup_release_group_popularity")
     @patch("app.providers.musicbrainz.services.api_request")
-    def test_discover_genre_uses_exact_tag_and_real_pagination(self, api_request):
+    def test_discover_genre_ranks_one_candidate_pool_before_pagination(
+        self,
+        api_request,
+        lookup_popularity,
+    ):
         api_request.return_value = {
             "count": "3",
             "release-groups": [
@@ -163,12 +168,42 @@ class MusicBrainzTests(TestCase):
                     "primary-type": "Album",
                     "artist-credit": [{"name": "Nine Inch Nails"}],
                 },
+                {
+                    "id": THRILLER_ALBUM_MBID,
+                    "title": "Popular Album",
+                    "score": 70,
+                    "first-release-date": "1982",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Popular Artist"}],
+                },
+                {
+                    "id": OBSCURE_THRILLER_MBID,
+                    "title": "Cult Album",
+                    "score": 90,
+                    "first-release-date": "1990",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Cult Artist"}],
+                },
             ],
+        }
+        lookup_popularity.return_value = {
+            RELEASE_GROUP_MBID: {
+                "total_user_count": 10,
+                "total_listen_count": 100_000,
+            },
+            THRILLER_ALBUM_MBID: {
+                "total_user_count": 1_000,
+                "total_listen_count": 20_000,
+            },
+            OBSCURE_THRILLER_MBID: {
+                "total_user_count": 10,
+                "total_listen_count": 200_000,
+            },
         }
 
         first = musicbrainz.discover(
             genre='  Industrial  Rock: "Heavy"  ',
-            page=2,
+            page=1,
             page_size=2,
         )
         second = musicbrainz.discover(
@@ -177,13 +212,22 @@ class MusicBrainzTests(TestCase):
             page_size=2,
         )
 
-        self.assertEqual(first, second)
-        self.assertEqual(first["page"], 2)
+        self.assertEqual(first["page"], 1)
+        self.assertEqual(second["page"], 2)
         self.assertEqual(first["per_page"], 2)
         self.assertEqual(first["total_results"], 3)
-        self.assertEqual(first["results"][0]["media_id"], RELEASE_GROUP_MBID)
-        self.assertEqual(first["results"][0]["subtitle"], "Nine Inch Nails · 2007 · Album")
-        self.assertEqual(first["results"][0]["poster_aspect_ratio"], 1.0)
+        results = first["results"] + second["results"]
+        self.assertEqual(
+            [result["media_id"] for result in results],
+            [THRILLER_ALBUM_MBID, OBSCURE_THRILLER_MBID, RELEASE_GROUP_MBID],
+        )
+        self.assertEqual(results[-1]["subtitle"], "Nine Inch Nails · 2007 · Album")
+        self.assertEqual(results[-1]["poster_aspect_ratio"], 1.0)
+        self.assertNotIn("total_user_count", results[0])
+        self.assertNotIn("provider_rank_boost", results[0])
+        lookup_popularity.assert_called_with(
+            [RELEASE_GROUP_MBID, THRILLER_ALBUM_MBID, OBSCURE_THRILLER_MBID],
+        )
         api_request.assert_called_once_with(
             Sources.MUSICBRAINZ.value,
             "GET",
@@ -191,8 +235,8 @@ class MusicBrainzTests(TestCase):
             params={
                 "fmt": "json",
                 "query": r'tag:"industrial rock\: \"heavy\"" AND status:official',
-                "limit": 2,
-                "offset": 2,
+                "limit": musicbrainz.SEARCH_CANDIDATE_LIMIT,
+                "offset": 0,
             },
             headers={
                 "Accept": "application/json",
@@ -201,8 +245,13 @@ class MusicBrainzTests(TestCase):
             request_session=services.musicbrainz_session,
         )
 
+    @patch("app.providers.musicbrainz.lookup_release_group_popularity")
     @patch("app.providers.musicbrainz.services.api_request")
-    def test_discover_genre_handles_empty_results_and_invalid_count(self, api_request):
+    def test_discover_genre_handles_empty_results_and_invalid_count(
+        self,
+        api_request,
+        _lookup_popularity,
+    ):
         api_request.return_value = {"count": None, "release-groups": []}
 
         result = musicbrainz.discover(genre="ambient", page=1, page_size=25)

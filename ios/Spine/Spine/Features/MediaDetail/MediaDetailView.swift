@@ -3658,8 +3658,8 @@ private struct ActionRail: View {
     var onEye: () -> Void = {}
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            VStack(spacing: 8) {
+        GlassEffectContainer(spacing: 0) {
+            VStack(spacing: -6) {
                 if showsEye, ratingPicker.isPresented {
                     ratingComposer
                         .transition(pickerTransition)
@@ -3730,7 +3730,7 @@ private struct ActionRail: View {
 
             if ratingPicker.showsConfirm {
                 Button(action: confirmRating) {
-                    Image(systemName: "arrow.right")
+                    Image(systemName: "checkmark")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white.opacity(0.9))
                         .frame(width: 35, height: 35)
@@ -4398,9 +4398,7 @@ private struct MusicAlbumTracklistSection: View {
     let onSelectTrack: (MusicTrack) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel(title: "Tracklist")
-
+        VStack(alignment: .leading, spacing: 0) {
             if let release, hasTracks(release) {
                 LazyVStack(spacing: 0) {
                     ForEach(release.media, id: \.position) { medium in
@@ -4414,12 +4412,13 @@ private struct MusicAlbumTracklistSection: View {
                                 onSelect: { onSelectTrack(track) }
                             )
                             if track.id != medium.tracks.last?.id {
-                                Divider().overlay(.white.opacity(0.045))
+                                Divider()
+                                    .overlay(.white.opacity(0.12))
+                                    .padding(.leading, 46)
                             }
                         }
                     }
                 }
-                .mediaDetailSurface(cornerRadius: 14)
             } else {
                 ContentUnavailableView(
                     "Tracklist unavailable",
@@ -4442,19 +4441,17 @@ private struct MusicAlbumTracklistSection: View {
     private func discHeader(_ medium: MusicMedium) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Disc \(medium.position)")
-                .font(.subheadline.weight(.heavy))
+                .font(.caption.weight(.semibold))
             if let title = medium.title?.nilIfEmpty {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.5))
             }
         }
-        .foregroundStyle(.white.opacity(0.9))
+        .foregroundStyle(.white.opacity(0.62))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 5)
-        .background(.white.opacity(0.035))
+        .padding(.top, 14)
+        .padding(.bottom, 6)
     }
 }
 
@@ -4467,45 +4464,39 @@ private struct MusicAlbumTrackRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(track.number)
-                    .font(.caption.monospacedDigit().weight(.bold))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .font(.system(size: 16, weight: .regular).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.5))
                     .frame(width: numberWidth, alignment: .trailing)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.94))
                         .fixedSize(horizontal: false, vertical: true)
                     if let artist = MusicAlbumPresentation.differingArtistCredit(
                         track: track,
                         albumCredits: albumCredits
                     ) {
                         Text(artist)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.62))
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.52))
                     }
                 }
 
-                Spacer(minLength: 8)
-
-                if let duration = MusicAlbumPresentation.duration(track.lengthMs) {
-                    Text(duration)
-                        .font(.caption.monospacedDigit().weight(.medium))
-                        .foregroundStyle(.white.opacity(0.62))
-                }
+                Spacer(minLength: 10)
 
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.28))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.42))
             }
-            .frame(minHeight: 36)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 3)
+        .padding(.vertical, 6)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(MusicAlbumPresentation.trackAccessibilityLabel(track: track, albumCredits: albumCredits))
         .accessibilityHint("Opens song details")

@@ -117,44 +117,75 @@ def search(query, page):
 
 
 def discover(*, page=1, page_size=None, genre=None):
-    """Discover official release groups carrying an exact MusicBrainz genre."""
+    """Discover popular official release groups carrying an exact genre."""
     genre = " ".join(str(genre or "").split()).casefold()
     if not genre:
         raise ValueError("genre is required for MusicBrainz discovery.")
 
     page = max(1, int(page))
     per_page = page_size or settings.PER_PAGE
-    offset = (page - 1) * per_page
     query = f'tag:"{escape_lucene(genre)}" AND status:official'
     digest = hashlib.sha256(query.encode()).hexdigest()
     response = _cached(
-        f"musicbrainz_{CACHE_VERSION}_genre_discover_{digest}_{per_page}_{offset}",
+        (
+            f"musicbrainz_{CACHE_VERSION}_genre_discover_{digest}_"
+            f"{SEARCH_CANDIDATE_LIMIT}_0"
+        ),
         SEARCH_CACHE_TTL,
         lambda: _musicbrainz_request(
             "release-group",
             {
                 "query": query,
-                "limit": per_page,
-                "offset": offset,
+                "limit": SEARCH_CANDIDATE_LIMIT,
+                "offset": 0,
             },
         ),
     )
-    results = [
+    candidates = [
         _search_result(group)
         for group in response.get("release-groups", [])
     ]
+    popularity = lookup_release_group_popularity(
+        [candidate["media_id"] for candidate in candidates],
+    )
+    ranked = _rank_genre_results(candidates, popularity)
+    start = (page - 1) * per_page
+    results = ranked[start : start + per_page]
     try:
-        total_results = int(response.get("count", len(results)))
+        total_results = int(response.get("count", len(ranked)))
     except (TypeError, ValueError):
-        total_results = len(results)
+        total_results = len(ranked)
+    total_results = min(max(0, total_results), SEARCH_CANDIDATE_LIMIT)
     data = helpers.format_search_response(
         page,
         per_page,
-        max(0, total_results),
+        total_results,
         results,
     )
     data["per_page"] = per_page
     return data
+
+
+def _rank_genre_results(candidates, popularity):
+    """Rank exact genre matches by audience breadth, listens, then relevance."""
+    def key(candidate):
+        counts = popularity.get(candidate["media_id"], {})
+        known = any(
+            counts.get(name) is not None
+            for name in ("total_user_count", "total_listen_count")
+        )
+        return (
+            known,
+            _popularity_count(counts.get("total_user_count")) or 0,
+            _popularity_count(counts.get("total_listen_count")) or 0,
+            _popularity_count(candidate.get("search_score")) or 0,
+            bool(candidate.get("release_date")),
+        )
+
+    ranked = sorted(candidates, key=key, reverse=True)
+    for candidate in ranked:
+        candidate.pop("provider_rank_boost", None)
+    return ranked
 
 
 def lookup_release_group_popularity(release_group_mbids):
