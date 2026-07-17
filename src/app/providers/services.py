@@ -341,6 +341,18 @@ def discover(media_type, *, source=None, page=1, page_size=None, genre=None, yea
             return openlibrary.discover(page=page, page_size=page_size, genre=genre, year=year)
         return hardcover.discover(page=page, page_size=page_size, genre=genre, year=year)
 
+    if source == Sources.MUSICBRAINZ.value and media_type == MediaTypes.MUSIC.value:
+        if year:
+            msg = "year discovery is not supported for music."
+            raise ValueError(msg)
+        if platform:
+            msg = "platform discovery is only supported for games."
+            raise ValueError(msg)
+        if not str(genre or "").strip():
+            msg = "genre is required for MusicBrainz discovery."
+            raise ValueError(msg)
+        return musicbrainz.discover(page=page, page_size=page_size, genre=genre)
+
     msg = f"Discovery is not supported for media_type={media_type!r} and source={source!r}."
     raise NotImplementedError(msg)
 

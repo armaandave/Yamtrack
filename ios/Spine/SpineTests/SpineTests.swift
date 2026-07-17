@@ -1052,6 +1052,35 @@ final class SpineTests: XCTestCase {
         XCTAssertNil(platform)
     }
 
+    func testMediaDiscoverRequestBuildsMusicGenreDetailPillRequest() {
+        let ref = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+        let genre = MediaDiscoverRequest.detailPillRequest(
+            ref: ref,
+            filter: .genre("Industrial Rock")
+        )
+        let year = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .year("2007"))
+        let platform = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .platform("Spotify"))
+        let query = Dictionary(uniqueKeysWithValues: (genre?.queryItems ?? []).map { ($0.name, $0.value) })
+
+        XCTAssertEqual(genre?.mediaType, "music")
+        XCTAssertEqual(genre?.source, "musicbrainz")
+        XCTAssertEqual(genre?.filter, .genre("Industrial Rock"))
+        XCTAssertEqual(genre?.title, "Industrial Rock · Music")
+        XCTAssertEqual(query["media_type"]!, "music")
+        XCTAssertEqual(query["source"]!, "musicbrainz")
+        XCTAssertEqual(query["genre"]!, "Industrial Rock")
+        XCTAssertEqual(query["sort"]!, "vote_count")
+        XCTAssertNil(year)
+        XCTAssertNil(platform)
+    }
+
     func testMediaDiscoverRequestMapsSeasonDetailPillsToTV() {
         let ref = MediaRef(itemId: nil, source: "tmdb", mediaType: "season", mediaId: "1399", seasonNumber: 1, episodeNumber: nil)
         let genre = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .genre("Fantasy"))
@@ -4448,6 +4477,83 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(response.count, 1)
         XCTAssertEqual(response.results.first?.ref.mediaType, "book")
+    }
+
+    func testMediaRepositoryBuildsMusicGenreDiscoverRequest() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        defer {
+            RequestCaptureURLProtocol.handler = nil
+            client.tokenProvider.clear()
+        }
+        let repository = APIMediaRepository(client: client)
+        let discoverRequest = MediaDiscoverRequest(
+            mediaType: "music",
+            source: "musicbrainz",
+            filter: .genre("Industrial Rock")
+        )
+
+        RequestCaptureURLProtocol.handler = { request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+            let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+            XCTAssertEqual(components.path, "/api/v1/media/discover/")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            XCTAssertEqual(query["media_type"]!, "music")
+            XCTAssertEqual(query["source"]!, "musicbrainz")
+            XCTAssertEqual(query["genre"]!, "Industrial Rock")
+            XCTAssertEqual(query["sort"]!, "vote_count")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "count": 2,
+                  "next": "https://example.com/api/v1/media/discover/?media_type=music&genre=Industrial%20Rock&page=2",
+                  "previous": null,
+                  "results": [
+                    {
+                      "ref": { "item_id": null, "source": "musicbrainz", "media_type": "music", "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e", "season_number": null, "episode_number": null },
+                      "title": "Year Zero",
+                      "subtitle": "Nine Inch Nails · 2007 · Album",
+                      "overview": null,
+                      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+                      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+                      "custom_poster_url": null,
+                      "backdrop_url": null,
+                      "poster_orientation": "square",
+                      "poster_aspect_ratio": 1.0,
+                      "poster_width": 500,
+                      "poster_height": 500,
+                      "poster_accent_color": null,
+                      "logo_url": null,
+                      "logo_width": null,
+                      "logo_height": null,
+                      "logo_aspect_ratio": null,
+                      "release_date": "2007-04-13",
+                      "default_source": "musicbrainz",
+                      "user_state": null
+                    }
+                  ]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let response = try await repository.discover(discoverRequest)
+
+        XCTAssertEqual(response.count, 2)
+        XCTAssertNotNil(response.next)
+        XCTAssertEqual(response.results.first?.ref.source, "musicbrainz")
+        XCTAssertEqual(response.results.first?.ref.mediaType, "music")
+        XCTAssertEqual(response.results.first?.posterOrientation, .square)
+        XCTAssertEqual(response.results.first?.posterAspectRatio, 1.0)
     }
 
     func testMediaRepositoryBuildsTVDiscoverRequest() async throws {

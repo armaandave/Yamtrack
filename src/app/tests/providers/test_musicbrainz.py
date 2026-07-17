@@ -149,6 +149,74 @@ class MusicBrainzTests(TestCase):
             request_session=services.musicbrainz_session,
         )
 
+    @override_settings(VERSION="1.2.3", MUSICBRAINZ_CONTACT="contact@example.com")
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_discover_genre_uses_exact_tag_and_real_pagination(self, api_request):
+        api_request.return_value = {
+            "count": "3",
+            "release-groups": [
+                {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Year Zero",
+                    "score": 100,
+                    "first-release-date": "2007-04-13",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Nine Inch Nails"}],
+                },
+            ],
+        }
+
+        first = musicbrainz.discover(
+            genre='  Industrial  Rock: "Heavy"  ',
+            page=2,
+            page_size=2,
+        )
+        second = musicbrainz.discover(
+            genre='Industrial Rock: "Heavy"',
+            page=2,
+            page_size=2,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["page"], 2)
+        self.assertEqual(first["per_page"], 2)
+        self.assertEqual(first["total_results"], 3)
+        self.assertEqual(first["results"][0]["media_id"], RELEASE_GROUP_MBID)
+        self.assertEqual(first["results"][0]["subtitle"], "Nine Inch Nails · 2007 · Album")
+        self.assertEqual(first["results"][0]["poster_aspect_ratio"], 1.0)
+        api_request.assert_called_once_with(
+            Sources.MUSICBRAINZ.value,
+            "GET",
+            f"{musicbrainz.MUSICBRAINZ_URL}/release-group",
+            params={
+                "fmt": "json",
+                "query": r'tag:"industrial rock\: \"heavy\"" AND status:official',
+                "limit": 2,
+                "offset": 2,
+            },
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Spine/1.2.3 (contact@example.com)",
+            },
+            request_session=services.musicbrainz_session,
+        )
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_discover_genre_handles_empty_results_and_invalid_count(self, api_request):
+        api_request.return_value = {"count": None, "release-groups": []}
+
+        result = musicbrainz.discover(genre="ambient", page=1, page_size=25)
+
+        self.assertEqual(result["total_results"], 0)
+        self.assertEqual(result["results"], [])
+
+    def test_discover_genre_requires_nonblank_value(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "genre is required for MusicBrainz discovery.",
+        ):
+            musicbrainz.discover(genre="   ")
+
     @override_settings(PER_PAGE=2)
     @patch("app.providers.musicbrainz.search_release_groups")
     def test_search_normalizes_release_groups_and_pagination(self, search_release_groups):
@@ -585,7 +653,7 @@ class MusicBrainzTests(TestCase):
         self.assertEqual(result, cached)
         self.assertEqual(result["name"], "Nine Inch Nails")
         self.assertEqual(result["image"], "https://example.com/artist.jpg")
-        self.assertEqual(result["biography"], "Industrial rock band.")
+        self.assertIsNone(result["biography"])
         self.assertEqual(result["birth_date"], "1988")
         self.assertEqual(result["place_of_birth"], "Cleveland")
         self.assertEqual(
@@ -603,6 +671,21 @@ class MusicBrainzTests(TestCase):
         self.assertEqual(browse_release_groups.call_args_list[0].kwargs["offset"], 0)
         self.assertEqual(browse_release_groups.call_args_list[1].kwargs["offset"], 2)
         lookup_artist.assert_called_once_with(ARTIST_MBID)
+
+    def test_release_group_categories_separate_studio_albums_from_other_releases(self):
+        cases = (
+            ({"primary-type": "Album"}, "Albums"),
+            ({"primary-type": "EP"}, "EPs"),
+            ({"primary-type": "Single"}, "Singles"),
+            ({"primary-type": "Album", "secondary-types": ["Compilation"]}, "Compilations"),
+            ({"primary-type": "Album", "secondary-types": ["Live"]}, "Live releases"),
+            ({"primary-type": "Album", "secondary-types": ["Mixtape/Street"]}, "Mixtapes"),
+            ({}, "Other"),
+        )
+
+        for group, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(musicbrainz._release_group_category(group), expected)
 
     @patch("app.providers.musicbrainz.browse_artist_release_groups")
     @patch("app.providers.musicbrainz.lookup_artist")

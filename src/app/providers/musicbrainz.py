@@ -22,7 +22,7 @@ CACHE_VERSION = "v2"
 LISTENBRAINZ_CACHE_VERSION = "v1"
 RESOLVER_VERSION = "v1"
 RECORDING_CACHE_VERSION = "v2"
-ARTIST_CACHE_VERSION = "v1"
+ARTIST_CACHE_VERSION = "v2"
 SEARCH_CACHE_TTL = 6 * 60 * 60
 LISTENBRAINZ_FAILURE_CACHE_TTL = 5 * 60
 DETAIL_CACHE_TTL = 24 * 60 * 60
@@ -114,6 +114,47 @@ def search(query, page):
         total_results,
         results,
     )
+
+
+def discover(*, page=1, page_size=None, genre=None):
+    """Discover official release groups carrying an exact MusicBrainz genre."""
+    genre = " ".join(str(genre or "").split()).casefold()
+    if not genre:
+        raise ValueError("genre is required for MusicBrainz discovery.")
+
+    page = max(1, int(page))
+    per_page = page_size or settings.PER_PAGE
+    offset = (page - 1) * per_page
+    query = f'tag:"{escape_lucene(genre)}" AND status:official'
+    digest = hashlib.sha256(query.encode()).hexdigest()
+    response = _cached(
+        f"musicbrainz_{CACHE_VERSION}_genre_discover_{digest}_{per_page}_{offset}",
+        SEARCH_CACHE_TTL,
+        lambda: _musicbrainz_request(
+            "release-group",
+            {
+                "query": query,
+                "limit": per_page,
+                "offset": offset,
+            },
+        ),
+    )
+    results = [
+        _search_result(group)
+        for group in response.get("release-groups", [])
+    ]
+    try:
+        total_results = int(response.get("count", len(results)))
+    except (TypeError, ValueError):
+        total_results = len(results)
+    data = helpers.format_search_response(
+        page,
+        per_page,
+        max(0, total_results),
+        results,
+    )
+    data["per_page"] = per_page
+    return data
 
 
 def lookup_release_group_popularity(release_group_mbids):
@@ -267,7 +308,7 @@ def person_page(artist_mbid):
             "person_id": str(artist.get("id") or artist_mbid),
             "name": artist.get("name") or "",
             "image": _artist_image(artist.get("relations")),
-            "biography": _annotation(artist.get("annotation")),
+            "biography": None,
             "known_for_department": "Artist",
             "birth_date": life_span.get("begin") or None,
             "death_date": life_span.get("end") or None,
@@ -1048,10 +1089,38 @@ def _artist_release_group_credit(group):
         "year": release_date[:4] if release_date else None,
         "genres": _genre_names(group.get("genres")),
         "roles": ["Artist"],
-        "credit_roles": ["Artist"],
+        "credit_roles": [_release_group_category(group)],
         "vote_average": rating.get("value"),
         "vote_count": rating.get("votes-count"),
     }
+
+
+def _release_group_category(group):
+    secondary_types = {
+        str(value).casefold() for value in group.get("secondary-types") or []
+    }
+    secondary_categories = (
+        ("soundtrack", "Soundtracks"),
+        ("compilation", "Compilations"),
+        ("live", "Live releases"),
+        ("remix", "Remix releases"),
+        ("mixtape/street", "Mixtapes"),
+        ("dj-mix", "DJ mixes"),
+        ("demo", "Demos"),
+        ("audiobook", "Audiobooks"),
+        ("interview", "Interviews"),
+    )
+    for release_type, category in secondary_categories:
+        if release_type in secondary_types:
+            return category
+
+    primary_type = str(group.get("primary-type") or group.get("type") or "").casefold()
+    return {
+        "album": "Albums",
+        "ep": "EPs",
+        "single": "Singles",
+        "broadcast": "Broadcasts",
+    }.get(primary_type, "Other")
 
 
 def _artist_image(relations):

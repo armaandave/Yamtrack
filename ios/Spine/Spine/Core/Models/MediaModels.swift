@@ -351,7 +351,8 @@ struct MediaDiscoverRequest: Hashable, Identifiable {
         case ("movie", .genre), ("movie", .year),
              ("tv", .genre), ("tv", .year),
              ("book", .genre), ("book", .year),
-             ("game", .genre), ("game", .year), ("game", .platform):
+             ("game", .genre), ("game", .year), ("game", .platform),
+             ("music", .genre):
             return MediaDiscoverRequest(
                 mediaType: mediaType,
                 source: ref.source,

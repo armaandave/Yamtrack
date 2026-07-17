@@ -101,7 +101,7 @@ final class PersonDetailTests: XCTestCase {
           "id": "artist-1",
           "source": "musicbrainz",
           "name": "Artist",
-          "biography": "Artist biography.",
+          "biography": null,
           "profile_url": "https://example.com/artist.jpg",
           "known_for_department": "Artist",
           "birth_date": "1988",
@@ -127,7 +127,7 @@ final class PersonDetailTests: XCTestCase {
                 "release_date": "2005",
                 "genres": ["Industrial Rock"],
                 "roles": ["Artist"],
-                "credit_roles": ["Artist"],
+                "credit_roles": ["Albums"],
                 "default_source": "musicbrainz",
                 "user_state": null
               }
@@ -143,27 +143,26 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.filmography.first?.ref.source, "musicbrainz")
         XCTAssertEqual(detail.filmography.first?.ref.mediaType, "music")
         XCTAssertEqual(detail.filmography.first?.ref.mediaId, "release-group-1")
-        XCTAssertEqual(detail.filmography.first?.creditRoles, ["Artist"])
+        XCTAssertNil(detail.biography)
+        XCTAssertEqual(detail.filmography.first?.creditRoles, ["Albums"])
         XCTAssertEqual(MediaTypeTheme.theme(for: "music").artworkOrientation, .square)
     }
 
-    func testMusicFilmographyUsesDiscographyCopyAndArtistRole() {
-        let release = mediaSummary(
-            id: "release-group-1",
-            title: "Album",
-            source: "musicbrainz",
-            mediaType: "music",
-            creditRoles: ["Artist"]
-        )
+    func testMusicFilmographyUsesDiscographyCopyAndReleaseSections() {
+        let releases = [
+            mediaSummary(id: "single", title: "Single", source: "musicbrainz", mediaType: "music", creditRoles: ["Singles"]),
+            mediaSummary(id: "compilation", title: "Compilation", source: "musicbrainz", mediaType: "music", creditRoles: ["Compilations"]),
+            mediaSummary(id: "album", title: "Album", source: "musicbrainz", mediaType: "music", creditRoles: ["Albums"]),
+        ]
 
-        XCTAssertEqual(FilmographyType.available(in: [release]), [.music])
+        XCTAssertEqual(FilmographyType.available(in: releases), [.music])
         XCTAssertEqual(FilmographyType.music.title, "Music")
         XCTAssertEqual(FilmographyType.music.sectionTitle, "Discography")
         XCTAssertEqual(FilmographyType.music.creditNoun(count: 1), "release")
         XCTAssertEqual(FilmographyType.music.creditNoun(count: 2), "releases")
         XCTAssertEqual(
-            FilmographyCreditGroup.groups(from: [release], knownForDepartment: "Artist").map(\.role),
-            ["Artist"]
+            FilmographyCreditGroup.groups(from: releases, knownForDepartment: "Artist").map(\.role),
+            ["Albums", "Singles", "Compilations"]
         )
     }
 

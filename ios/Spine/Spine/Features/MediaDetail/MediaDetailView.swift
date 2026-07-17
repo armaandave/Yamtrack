@@ -316,6 +316,31 @@ enum MediaDetailQuickAction {
     case stopped
 }
 
+struct MediaRatingPickerState: Equatable {
+    private(set) var isPresented = false
+    var draftHalfSteps = 0
+    private(set) var confirmedHalfSteps = 0
+    private(set) var hasLocallyWatched = false
+
+    var showsConfirm: Bool { draftHalfSteps > 0 }
+
+    mutating func open() {
+        draftHalfSteps = confirmedHalfSteps
+        hasLocallyWatched = true
+        isPresented = true
+    }
+
+    mutating func dismiss() {
+        draftHalfSteps = confirmedHalfSteps
+        isPresented = false
+    }
+
+    mutating func confirm() {
+        confirmedHalfSteps = draftHalfSteps
+        isPresented = false
+    }
+}
+
 private enum MediaDetailSheet: Identifiable {
     case posterMenu
     case bookGameActions
@@ -774,6 +799,7 @@ private struct MediaDetailPageView: View {
     @State private var showsTitleLogo = true
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var edgeDragOffset: CGFloat = 0
+    @State private var ratingPicker = MediaRatingPickerState()
 
     private let mediaRepository: MediaRepository
     private let musicRepository: MusicRepository
@@ -848,6 +874,15 @@ private struct MediaDetailPageView: View {
             ScrollView(showsIndicators: false) {
                 pageScrollContent
                     .spineContentTransition(value: contentPhase)
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded { dismissRatingPicker() }
+            )
+            .onScrollPhaseChange { _, phase in
+                if phase != .idle {
+                    dismissRatingPicker()
+                }
             }
             .scrollContentBackground(.hidden)
             .ignoresSafeArea(edges: .top)
@@ -1266,14 +1301,23 @@ private struct MediaDetailPageView: View {
     private var topButtons: some View {
         HStack {
             CircleIconButton(systemName: "chevron.left", label: "Back") {
+                dismissRatingPicker()
                 dismiss()
             }
             Spacer()
             if viewModel.detail != nil {
                 CircleIconButton(systemName: "ellipsis", label: "More") {
+                    dismissRatingPicker()
                     presentedSheet = .posterMenu
                 }
             }
+        }
+    }
+
+    private func dismissRatingPicker() {
+        guard ratingPicker.isPresented else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.84)) {
+            ratingPicker.dismiss()
         }
     }
 
@@ -1369,8 +1413,8 @@ private struct MediaDetailPageView: View {
     }
 
     private func eyeAction(for detail: MediaDetail) {
+        guard !isEyeCompleted(detail) else { return }
         if detail.ref.mediaType == "episode" {
-            guard detail.userState?.isTracked != true else { return }
             Task {
                 let succeeded = await viewModel.watchEpisode(detail)
                 if !succeeded {
@@ -1383,6 +1427,13 @@ private struct MediaDetailPageView: View {
         Task {
             await performQuickAction(.finished, for: detail, dismissSheet: false)
         }
+    }
+
+    private func isEyeCompleted(_ detail: MediaDetail) -> Bool {
+        if detail.ref.mediaType == "episode" {
+            return detail.userState?.isTracked == true
+        }
+        return currentStatus(detail)?.caseInsensitiveCompare("Completed") == .orderedSame
     }
 
     private func performQuickAction(_ action: MediaDetailQuickAction, for detail: MediaDetail, dismissSheet: Bool) async {
@@ -1439,6 +1490,7 @@ private struct MediaDetailPageView: View {
         let usesQuickActions = usesBookGameActions(detail)
 
         return ActionRail(
+            ratingPicker: $ratingPicker,
             isTracked: isEpisode ? isWatched : currentStatus(detail) != nil,
             isLiked: detail.userState?.hasLiked ?? false,
             showsEye: detail.ref.mediaType != "music",
@@ -1446,8 +1498,7 @@ private struct MediaDetailPageView: View {
             eyeLabel: isEpisode
                 ? (isWatched ? "Episode watched" : "Mark episode watched")
                 : (usesQuickActions ? bookGameCopy(for: detail.ref.mediaType).finished : nil),
-            isEyeSelected: isEpisode && isWatched,
-            isEyeDisabled: isEpisode && isWatched,
+            isEyeSelected: isEyeCompleted(detail),
             isEyeLoading: (isEpisode || usesQuickActions) && viewModel.isSavingQuickAction,
             isLikeLoading: viewModel.isSavingLike,
             onTrack: { trackAction(for: detail) },
@@ -1508,7 +1559,7 @@ private struct MediaDetailPageView: View {
                     )
 
                     if let credits = MediaCreditPresentation.make(for: detail) {
-                        creditBylineView(credits)
+                        creditBylineView(credits, textAlignment: .leading)
                     } else if let artist = musicArtist(detail) {
                         bylineText(artist, lineLimit: 1, alignment: .leading)
                     }
@@ -1539,11 +1590,18 @@ private struct MediaDetailPageView: View {
 
     @ViewBuilder
     private func musicHeroChips(_ detail: MediaDetail) -> some View {
-        let genres = detailArray(detail, "genres")
+        let genres = detailArray(detail, "genres").map { genre in
+            MediaDetailChip(
+                label: genre,
+                discoverRequest: discoverRequest(detail, filter: .genre(genre))
+            )
+        }
         let release = [
             detail.music.flatMap { MusicAlbumPresentation.releaseType($0) },
             formattedDate(detail.music?.firstReleaseDate),
-        ].compactMap { $0?.nilIfEmpty }
+        ].compactMap { $0?.nilIfEmpty }.map { value in
+            MediaDetailChip(label: value, discoverRequest: nil)
+        }
 
         VStack(spacing: 8) {
             musicHeroChipRow(genres)
@@ -1552,20 +1610,20 @@ private struct MediaDetailPageView: View {
     }
 
     @ViewBuilder
-    private func musicHeroChipRow(_ chips: [String]) -> some View {
+    private func musicHeroChipRow(_ chips: [MediaDetailChip]) -> some View {
         if !chips.isEmpty {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(chips, id: \.self) { value in
-                        chipLabel(value)
+                    ForEach(chips) { chip in
+                        genreChip(chip)
                     }
                 }
                 .fixedSize(horizontal: true, vertical: false)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(chips, id: \.self) { value in
-                            chipLabel(value)
+                        ForEach(chips) { chip in
+                            genreChip(chip)
                         }
                     }
                 }
@@ -1809,11 +1867,8 @@ private struct MediaDetailPageView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 10)
 
-                VStack(spacing: 10) {
-                    heroPoster(detail)
-                    StarRatingPill()
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
+                heroPoster(detail)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         } else {
             VStack(spacing: 0) {
@@ -1921,9 +1976,12 @@ private struct MediaDetailPageView: View {
             .multilineTextAlignment(alignment)
     }
 
-    private func creditBylineView(_ credits: MediaCreditPresentation) -> some View {
-        let alignment: Alignment = showsTitleLogo ? .center : .leading
-        let textAlignment: TextAlignment = showsTitleLogo ? .center : .leading
+    private func creditBylineView(
+        _ credits: MediaCreditPresentation,
+        textAlignment: TextAlignment? = nil
+    ) -> some View {
+        let textAlignment = textAlignment ?? (showsTitleLogo ? .center : .leading)
+        let alignment: Alignment = textAlignment == .center ? .center : .leading
 
         return VStack(alignment: textAlignment == .center ? .center : .leading, spacing: 2) {
             ForEach(credits.heroPeople, id: \.self) { person in
@@ -3580,17 +3638,19 @@ struct BackdropArtwork: View {
 private struct ActionRail: View {
     private static let buttonSize: CGFloat = 44
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var glassNamespace
     @State private var isPressing = false
     @State private var pressHaptics = UIImpactFeedbackGenerator(style: .light)
     @State private var actionHaptics = UISelectionFeedbackGenerator()
 
+    @Binding var ratingPicker: MediaRatingPickerState
     let isTracked: Bool
     let isLiked: Bool
     var showsEye = true
     var trackLabel: String?
     var eyeLabel: String?
     var isEyeSelected = false
-    var isEyeDisabled = false
     var isEyeLoading = false
     var isLikeLoading = false
     let onTrack: () -> Void
@@ -3598,29 +3658,48 @@ private struct ActionRail: View {
     var onEye: () -> Void = {}
 
     var body: some View {
+        GlassEffectContainer(spacing: 10) {
+            VStack(spacing: 8) {
+                if showsEye, ratingPicker.isPresented {
+                    ratingComposer
+                        .transition(pickerTransition)
+                }
+
+                rail
+                    .glassEffectID("media-actions", in: glassNamespace)
+            }
+        }
+        .onAppear {
+            pressHaptics.prepare()
+            actionHaptics.prepare()
+        }
+    }
+
+    private var rail: some View {
         HStack(spacing: 0) {
             railButton(
                 systemName: "plus",
                 label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
                 usesLargePlus: true,
-                action: onTrack
+                action: handleTrack
             )
             if showsEye {
                 railButton(
-                    systemName: isEyeSelected ? "eye.fill" : "eye",
+                    systemName: isEyeSelected || ratingPicker.hasLocallyWatched ? "eye.fill" : "eye",
                     label: eyeLabel ?? "Mark as watched",
                     usesLargePlus: false,
-                    isLoading: isEyeLoading,
-                    isDisabled: isEyeDisabled,
-                    action: onEye
+                    isLoading: isEyeLoading && !ratingPicker.isPresented,
+                    action: handleEye
                 )
+                .accessibilityValue(ratingPicker.isPresented ? "Expanded" : "Collapsed")
+                .accessibilityHint(ratingPicker.isPresented ? "Closes the rating picker" : "Opens the rating picker")
             }
             railButton(
                 systemName: isLiked ? "heart.fill" : "heart",
                 label: isLiked ? "Unlike" : "Like",
                 usesLargePlus: false,
                 isLoading: isLikeLoading,
-                action: onLike
+                action: handleLike
             )
         }
         .padding(4)
@@ -3640,11 +3719,92 @@ private struct ActionRail: View {
                 }
                 .onEnded { _ in isPressing = false }
         )
-        .onAppear {
-            pressHaptics.prepare()
-            actionHaptics.prepare()
-        }
         .accessibilityIdentifier("media-detail.actions")
+    }
+
+    private var ratingComposer: some View {
+        ZStack {
+            StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
+                .glassEffectID("media-rating", in: glassNamespace)
+                .glassEffectTransition(.materialize)
+
+            if ratingPicker.showsConfirm {
+                Button(action: confirmRating) {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .frame(width: 35, height: 35)
+                }
+                .buttonStyle(.plain)
+                .background(.white.opacity(0.06), in: Circle())
+                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 17.5))
+                .overlay {
+                    Circle().stroke(.white.opacity(0.2), lineWidth: 0.875)
+                }
+                .shadow(color: .black.opacity(0.16), radius: 5, y: 1.25)
+                .offset(x: 91)
+                .glassEffectID("media-rating-confirm", in: glassNamespace)
+                .glassEffectTransition(.materialize)
+                .transition(confirmTransition)
+                .accessibilityLabel("Confirm rating")
+                .accessibilityIdentifier("media-detail.rating-confirm")
+            }
+        }
+        .frame(width: 217, height: 35)
+        .accessibilityIdentifier("media-detail.rating-picker")
+    }
+
+    private var pickerTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .move(edge: .bottom)
+            .combined(with: .opacity)
+            .combined(with: .scale(scale: 0.82, anchor: .bottom))
+    }
+
+    private var confirmTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .offset(x: -24)
+            .combined(with: .opacity)
+            .combined(with: .scale(scale: 0.75, anchor: .leading))
+    }
+
+    private func handleTrack() {
+        dismissRatingPickerIfNeeded()
+        onTrack()
+    }
+
+    private func handleEye() {
+        if ratingPicker.isPresented {
+            animate { ratingPicker.dismiss() }
+        } else {
+            let shouldTrack = !isEyeSelected && !ratingPicker.hasLocallyWatched
+            animate { ratingPicker.open() }
+            if shouldTrack {
+                onEye()
+            }
+        }
+    }
+
+    private func handleLike() {
+        dismissRatingPickerIfNeeded()
+        onLike()
+    }
+
+    private func confirmRating() {
+        actionHaptics.selectionChanged()
+        actionHaptics.prepare()
+        animate { ratingPicker.confirm() }
+    }
+
+    private func dismissRatingPickerIfNeeded() {
+        guard ratingPicker.isPresented else { return }
+        animate { ratingPicker.dismiss() }
+    }
+
+    private func animate(_ changes: () -> Void) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.84)) {
+            changes()
+        }
     }
 
     private func railButton(
@@ -3652,7 +3812,6 @@ private struct ActionRail: View {
         label: String,
         usesLargePlus: Bool,
         isLoading: Bool = false,
-        isDisabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -3676,8 +3835,7 @@ private struct ActionRail: View {
             .frame(width: Self.buttonSize, height: Self.buttonSize)
         }
         .buttonStyle(.plain)
-        .disabled(isLoading || isDisabled)
-        .opacity(isDisabled ? 0.62 : 1)
+        .disabled(isLoading)
         .accessibilityLabel(label)
     }
 
@@ -3688,7 +3846,7 @@ private struct ActionRail: View {
 }
 
 private struct StarRatingPill: View {
-    @State private var halfSteps = 0
+    @Binding var halfSteps: Int
     @State private var haptics = UISelectionFeedbackGenerator()
 
     private let duneGold = Color(red: 0.94, green: 0.64, blue: 0.24)

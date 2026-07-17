@@ -554,10 +554,18 @@ struct FilmographyCreditGroup: Identifiable {
         }
 
         let primaryRoles = primaryRoles(for: knownForDepartment)
+        let isMusic = media.allSatisfy { $0.ref.mediaType == FilmographyType.music.rawValue }
 
         return grouped
             .map { FilmographyCreditGroup(role: $0.key, media: $0.value) }
             .sorted {
+                if isMusic {
+                    let firstOrder = musicRoleOrder($0.role)
+                    let secondOrder = musicRoleOrder($1.role)
+                    if firstOrder != secondOrder {
+                        return firstOrder < secondOrder
+                    }
+                }
                 let firstIsPrimary = primaryRoles.contains($0.role.lowercased())
                 let secondIsPrimary = primaryRoles.contains($1.role.lowercased())
                 if firstIsPrimary != secondIsPrimary {
@@ -578,7 +586,10 @@ struct FilmographyCreditGroup: Identifiable {
     }
 
     fileprivate func compactTitle(for type: FilmographyType) -> String {
-        "\(role) · \(media.count) \(type.creditNoun(count: media.count))"
+        if type == .music {
+            return "\(role) · \(media.count)"
+        }
+        return "\(role) · \(media.count) \(type.creditNoun(count: media.count))"
     }
 
     private var connector: String {
@@ -618,6 +629,14 @@ struct FilmographyCreditGroup: Identifiable {
         default:
             []
         }
+    }
+
+    private static func musicRoleOrder(_ role: String) -> Int {
+        [
+            "Albums", "EPs", "Singles", "Mixtapes", "Compilations", "Soundtracks",
+            "Live releases", "Remix releases", "DJ mixes", "Demos", "Broadcasts",
+            "Audiobooks", "Interviews", "Other",
+        ].firstIndex(of: role) ?? .max
     }
 }
 

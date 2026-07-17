@@ -566,3 +566,55 @@ class ServicesTests(TestCase):
 
         self.assertEqual(result, [{"title": "Year Zero"}])
         mock_search.assert_called_once_with("year zero", 1)
+
+    @patch("app.providers.services.musicbrainz.discover")
+    def test_discover_musicbrainz_genre(self, discover):
+        discover.return_value = {"results": [{"title": "Year Zero"}]}
+
+        result = services.discover(
+            MediaTypes.MUSIC.value,
+            source=Sources.MUSICBRAINZ.value,
+            page=2,
+            page_size=25,
+            genre="Industrial Rock",
+        )
+
+        self.assertEqual(result, discover.return_value)
+        discover.assert_called_once_with(
+            page=2,
+            page_size=25,
+            genre="Industrial Rock",
+        )
+
+    def test_discover_musicbrainz_requires_genre(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "genre is required for MusicBrainz discovery.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="   ",
+            )
+
+    def test_discover_musicbrainz_rejects_year_and_platform(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "year discovery is not supported for music.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="Rock",
+                year="2007",
+            )
+        with self.assertRaisesMessage(
+            ValueError,
+            "platform discovery is only supported for games.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="Rock",
+                platform="Spotify",
+            )

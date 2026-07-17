@@ -2439,6 +2439,100 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertIn("Discovery is not supported", response.data["detail"])
 
+    @patch("api.services.media.provider_services.discover")
+    def test_media_discover_music_genre_contract(self, discover_mock):
+        user = get_user_model().objects.create_user(
+            username="music-discoverer",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        discover_mock.return_value = {
+            "per_page": 2,
+            "total_results": 3,
+            "results": [
+                {
+                    "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "title": "Year Zero",
+                    "subtitle": "Nine Inch Nails · 2007 · Album",
+                    "image": (
+                        "https://coverartarchive.org/release-group/"
+                        "3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500"
+                    ),
+                    "release_date": "2007-04-13",
+                    "poster_width": 500,
+                    "poster_height": 500,
+                    "poster_aspect_ratio": 1.0,
+                },
+            ],
+        }
+
+        response = self.client.get(
+            "/api/v1/media/discover/"
+            "?media_type=music&source=musicbrainz&genre=Industrial%20Rock&page_size=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 3)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+        self.assertEqual(response.data["results"][0]["title"], "Year Zero")
+        ref = response.data["results"][0]["ref"]
+        self.assertEqual(ref["source"], Sources.MUSICBRAINZ.value)
+        self.assertEqual(ref["media_type"], MediaTypes.MUSIC.value)
+        self.assertEqual(
+            ref["media_id"],
+            "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        )
+        self.assertEqual(response.data["results"][0]["poster_aspect_ratio"], 1.0)
+        discover_mock.assert_called_once_with(
+            MediaTypes.MUSIC.value,
+            source=Sources.MUSICBRAINZ.value,
+            page=1,
+            page_size=2,
+            genre="Industrial Rock",
+            year=None,
+            platform=None,
+            sort="vote_count",
+        )
+
+    @patch("api.services.media.provider_services.discover")
+    def test_media_discover_music_empty_results(self, discover_mock):
+        user = get_user_model().objects.create_user(
+            username="music-discoverer-empty",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        discover_mock.return_value = {
+            "per_page": 25,
+            "total_results": 0,
+            "results": [],
+        }
+
+        response = self.client.get(
+            "/api/v1/media/discover/?media_type=music&genre=unknown-tag",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+        self.assertIsNone(response.data["next"])
+
+    @override_settings(MUSIC_ENABLED=False)
+    def test_media_discover_music_is_hidden_when_disabled(self):
+        user = get_user_model().objects.create_user(
+            username="music-discoverer-disabled",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/media/discover/?media_type=music&genre=Rock",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     @patch("app.providers.tmdb.services.api_request")
     @patch("app.providers.tmdb._genre_map", return_value={"sci-fi-fantasy": 10765})
     def test_tmdb_tv_discover_resolves_fantasy_alias(self, _genre_map_mock, api_request_mock):
