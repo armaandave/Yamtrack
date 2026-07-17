@@ -3636,7 +3636,7 @@ struct BackdropArtwork: View {
 }
 
 private struct ActionRail: View {
-    private static let buttonSize: CGFloat = 44
+    private static let buttonSize: CGFloat = 48
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glassNamespace
@@ -3658,15 +3658,14 @@ private struct ActionRail: View {
     var onEye: () -> Void = {}
 
     var body: some View {
-        GlassEffectContainer(spacing: 0) {
-            VStack(spacing: -6) {
+        GlassEffectContainer(spacing: 16) {
+            VStack(spacing: -10) {
                 if showsEye, ratingPicker.isPresented {
                     ratingComposer
-                        .transition(pickerTransition)
+                        .transition(.opacity)
                 }
 
                 rail
-                    .glassEffectID("media-actions", in: glassNamespace)
             }
         }
         .onAppear {
@@ -3702,13 +3701,10 @@ private struct ActionRail: View {
                 action: handleLike
             )
         }
-        .padding(4)
-        .background(.white.opacity(0.08), in: Capsule())
-        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 26))
-        .overlay {
-            Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+        .padding(5)
+        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
+        .glassEffectID("media-actions", in: glassNamespace)
+        .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -3725,47 +3721,31 @@ private struct ActionRail: View {
     private var ratingComposer: some View {
         ZStack {
             StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
+                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
                 .glassEffectID("media-rating", in: glassNamespace)
-                .glassEffectTransition(.materialize)
+                .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
+                .glassEffectTransition(.matchedGeometry)
 
             if ratingPicker.showsConfirm {
                 Button(action: confirmRating) {
                     Image(systemName: "checkmark")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white.opacity(0.9))
-                        .frame(width: 35, height: 35)
+                        .frame(width: 60, height: 60)
                 }
                 .buttonStyle(.plain)
-                .background(.white.opacity(0.06), in: Circle())
-                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 17.5))
-                .overlay {
-                    Circle().stroke(.white.opacity(0.2), lineWidth: 0.875)
-                }
-                .shadow(color: .black.opacity(0.16), radius: 5, y: 1.25)
-                .offset(x: 91)
+                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
+                .offset(x: 71.25)
                 .glassEffectID("media-rating-confirm", in: glassNamespace)
-                .glassEffectTransition(.materialize)
-                .transition(confirmTransition)
+                .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
+                .glassEffectTransition(.matchedGeometry)
+                .transition(.opacity)
                 .accessibilityLabel("Confirm rating")
                 .accessibilityIdentifier("media-detail.rating-confirm")
             }
         }
-        .frame(width: 217, height: 35)
+        .frame(width: 280, height: 60)
         .accessibilityIdentifier("media-detail.rating-picker")
-    }
-
-    private var pickerTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        return .move(edge: .bottom)
-            .combined(with: .opacity)
-            .combined(with: .scale(scale: 0.82, anchor: .bottom))
-    }
-
-    private var confirmTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        return .offset(x: -24)
-            .combined(with: .opacity)
-            .combined(with: .scale(scale: 0.75, anchor: .leading))
     }
 
     private func handleTrack() {
@@ -3875,14 +3855,8 @@ private struct StarRatingPill: View {
             )
         }
         .frame(width: 127.5, height: 30)
-        .padding(.horizontal, 3.75)
-        .padding(.vertical, 2.5)
-        .background(.white.opacity(0.06), in: Capsule())
-        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 17.5))
-        .overlay {
-            Capsule().stroke(.white.opacity(0.2), lineWidth: 0.875)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 5, y: 1.25)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 15)
         .onAppear { haptics.prepare() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Your rating")
@@ -4414,7 +4388,7 @@ private struct MusicAlbumTracklistSection: View {
                             if track.id != medium.tracks.last?.id {
                                 Divider()
                                     .overlay(.white.opacity(0.12))
-                                    .padding(.leading, 46)
+                                    .padding(.leading, 40)
                             }
                         }
                     }
@@ -4468,7 +4442,7 @@ private struct MusicAlbumTrackRow: View {
                 Text(track.number)
                     .font(.system(size: 16, weight: .regular).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: numberWidth, alignment: .trailing)
+                    .frame(width: numberWidth, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.title)
@@ -4495,7 +4469,6 @@ private struct MusicAlbumTrackRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 3)
         .padding(.vertical, 6)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(MusicAlbumPresentation.trackAccessibilityLabel(track: track, albumCredits: albumCredits))

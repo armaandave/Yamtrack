@@ -3217,7 +3217,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
             [item["title"] for item in response.data["credits"]["cast"]],
-            ["Released Feature", "Released Uncached Runtime"],
+            ["Released Feature"],
         )
         self.assertEqual(response.data["credits"]["cast"][0]["genres"], ["Science Fiction"])
         self.assertEqual(response.data["credits"]["cast"][0]["languages"], ["English"])
