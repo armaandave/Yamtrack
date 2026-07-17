@@ -3,6 +3,12 @@ import XCTest
 
 @MainActor
 final class MediaDetailArtworkTests: XCTestCase {
+    func testMusicBrainzDoesNotEnableArtworkCustomization() {
+        XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "musicbrainz", mediaType: "music"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "musicbrainz", mediaType: "music"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "musicbrainz", mediaType: "music"))
+    }
+
     func testArtworkSavesUpdateArtworkAndPreserveLoadedDetail() throws {
         let original = makeDetail()
         let viewModel = makeViewModel(mediaRepository: ArtworkScriptedMediaRepository(results: []))

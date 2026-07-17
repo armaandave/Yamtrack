@@ -2,6 +2,27 @@ import XCTest
 @testable import Spine
 
 final class SpineTests: XCTestCase {
+    func testAppRepositoriesExposeInjectedMusicRepository() async {
+        let repositories = fakeRepositories(auth: FakeAuthRepository(hasStoredTokens: false))
+        let album = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "album",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+
+        do {
+            _ = try await repositories.music.recordingDetail(album: album, recordingMbid: "recording")
+            XCTFail("Expected the injected fake music repository to be called")
+        } catch FakeMusicRepositoryError.called {
+            // The repository bundle forwarded the call to the injected fake.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testMediaTypeThemeLookup() {
         let movie = MediaTypeTheme.theme(for: "movie")
         let boardGame = MediaTypeTheme.theme(for: "boardgame")
@@ -99,6 +120,32 @@ final class SpineTests: XCTestCase {
         viewModel.undoRemoval()
         XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
         XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+    }
+
+    @MainActor
+    func testListComposerSelectsMusic() {
+        let viewModel = ListComposerViewModel(
+            mode: .create,
+            listRepository: ScriptedListComposerRepository(),
+            onUnauthorized: {}
+        )
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterOrientation: .square
+        )
+
+        viewModel.toggleSelection(album)
+
+        XCTAssertTrue(viewModel.contains(album))
+        XCTAssertEqual(viewModel.draft.items, [album])
     }
 
     @MainActor
@@ -579,6 +626,42 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.totalCount, 1)
     }
 
+    @MainActor
+    func testLibraryMusicRequestsPreserveSearchShelfAndPagination() async {
+        let repository = ScriptedLibraryTrackingRepository(responses: [
+            "music::Year Zero": PagedResponse(
+                count: 2,
+                next: "https://spine.test/api/v1/tracking/?media_type=music&page=2",
+                previous: nil,
+                results: [libraryItem(id: "album-1", title: "Year Zero", mediaType: "music")]
+            ),
+            "music:2:Year Zero": PagedResponse(
+                count: 2,
+                next: nil,
+                previous: "https://spine.test/api/v1/tracking/?media_type=music",
+                results: [libraryItem(id: "album-2", title: "Ghosts I–IV", mediaType: "music")]
+            )
+        ])
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.mediaType = "music"
+
+        await viewModel.setSearchQuery("Year Zero")
+        await viewModel.loadNextPage()
+        viewModel.shelf = .planning
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.items.map(\.media.ref.mediaType), ["music"])
+        XCTAssertEqual(repository.requests, [
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "tracked", query: "Year Zero"),
+            LibraryTrackingRequest(mediaType: "music", page: "2", status: "tracked", query: "Year Zero"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "Planning", query: "Year Zero")
+        ])
+    }
+
     func testInProgressLoaderMapsMediaTypesAndSortsWithLimit() {
         let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "episode", "book"])
 
@@ -1049,6 +1132,41 @@ final class SpineTests: XCTestCase {
         XCTAssertNil(updated)
         XCTAssertTrue(repository.preferenceRequests.isEmpty)
         XCTAssertEqual(viewModel.fieldErrors["enabled_media_types"], "Enable at least one media type.")
+    }
+
+    @MainActor
+    func testProfileSettingsLoadsAndSavesMusicPreferenceFromMeta() async throws {
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie"])
+        let repository = RecordingProfileRepository(profile: profile)
+        let meta = try JSONDecoder.api.decode(MetaResponse.self, from: Data("""
+        {
+          "version": "v1",
+          "media_types": ["movie", "music"],
+          "sources": {},
+          "status_choices": [],
+          "source_choices": []
+        }
+        """.utf8))
+        let viewModel = ProfileSettingsViewModel(
+            profileRepository: repository,
+            mediaRepository: FakeMediaRepository(metaResponse: meta),
+            onUnauthorized: {}
+        )
+        viewModel.load(profile: profile)
+
+        await viewModel.loadOptions()
+        viewModel.enabledMediaTypes.insert("music")
+        let enabled = await viewModel.savePreferences()
+        viewModel.enabledMediaTypes.remove("music")
+        let disabled = await viewModel.savePreferences()
+
+        XCTAssertEqual(viewModel.mediaTypes, ["movie", "music"])
+        XCTAssertEqual(repository.preferenceRequests.map(\.enabledMediaTypes), [
+            ["movie", "music"],
+            ["movie"]
+        ])
+        XCTAssertEqual(enabled?.preferences.enabledMediaTypes, ["movie", "music"])
+        XCTAssertEqual(disabled?.preferences.enabledMediaTypes, ["movie"])
     }
 
     @MainActor
@@ -2395,6 +2513,46 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(state.progress?.value(in: .percentage), 7)
     }
 
+    func testTrackingRepositoryDeletesMusicTracking() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defer {
+            RequestCaptureURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APITrackingRepository(client: client)
+        let ref = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "album",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/tracking/musicbrainz/music/album/"
+            )
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
+                Data()
+            )
+        }
+
+        try await repository.delete(ref: ref)
+    }
+
     func testActivityRepositoryLoadsUserActivity() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -3325,6 +3483,48 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(repository.setRef, movie.ref)
         XCTAssertEqual(repository.clearMediaType, "movie")
         XCTAssertNil(viewModel.profile?.hof["movie"]!)
+    }
+
+    @MainActor
+    func testProfileHallOfFameSelectsAndClearsMusic() async {
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: 902,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterOrientation: .square
+        )
+        let repository = HallOfFameProfileRepository(
+            profile: profileFixture(hof: ["music": nil], enabledMediaTypes: ["movie", "music"]),
+            setResponse: ["music": album],
+            clearResponse: ["music": nil]
+        )
+        let viewModel = ProfileViewModel(
+            profileRepository: repository,
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        let slots = ProfileFavorites.slots(
+            from: viewModel.profile?.hof ?? [:],
+            enabledMediaTypes: viewModel.profile?.preferences.enabledMediaTypes ?? []
+        )
+        let didSet = await viewModel.setHallOfFameItem(mediaType: "music", ref: album.ref)
+        let didClear = await viewModel.clearHallOfFameItem(mediaType: "music")
+
+        XCTAssertEqual(slots.map(\.id), ["movie", "music"])
+        XCTAssertTrue(didSet)
+        XCTAssertTrue(didClear)
+        XCTAssertEqual(repository.setMediaType, "music")
+        XCTAssertEqual(repository.setRef, album.ref)
+        XCTAssertEqual(repository.clearMediaType, "music")
     }
 
     @MainActor
@@ -4833,6 +5033,7 @@ final class SpineTests: XCTestCase {
         )
         let completedAt = Date(timeIntervalSince1970: 1_797_120_000)
 
+        let planned = await viewModel.performQuickAction(.planning, for: detail)
         let started = await viewModel.performQuickAction(.currently, for: detail)
         let paused = await viewModel.performQuickAction(.paused, for: detail)
         let dropped = await viewModel.performQuickAction(.stopped, for: detail)
@@ -4842,30 +5043,72 @@ final class SpineTests: XCTestCase {
             for: detail,
             completedAt: completedAt
         )
+        let removed = await viewModel.removeTracking(for: detail)
 
+        XCTAssertTrue(planned)
         XCTAssertTrue(started)
         XCTAssertTrue(paused)
         XCTAssertTrue(dropped)
         XCTAssertTrue(resumed)
         XCTAssertTrue(listened)
-        XCTAssertEqual(tracking.updateRequests.map(\.ref), [detail.ref, detail.ref, detail.ref, detail.ref])
+        XCTAssertTrue(removed)
+        XCTAssertEqual(tracking.updateRequests.map(\.ref), [detail.ref, detail.ref, detail.ref, detail.ref, detail.ref])
         XCTAssertEqual(
             tracking.updateRequests.map(\.request.status),
-            ["In progress", "Paused", "Dropped", "In progress"]
+            ["Planning", "In progress", "Paused", "Dropped", "In progress"]
         )
         XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
         XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, completedAt)
+        XCTAssertEqual(tracking.deletedRefs, [detail.ref])
         XCTAssertTrue(tracking.completedBooks.isEmpty)
     }
 
+    @MainActor
     func testMusicPresentationUsesAlbumWordingWithoutChangingWireStatus() {
-        let ref = TestFixtures.logDetail(mediaType: "music").ref
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let ref = detail.ref
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
 
         XCTAssertEqual(ref.repeatLabel, "Relisten")
         XCTAssertEqual(ref.consumedDateLabel, "Date listened")
         XCTAssertEqual(ref.trackingStatusLabel("In progress"), "Listening")
         XCTAssertEqual(ref.trackingStatusLabel("Completed"), "Listened")
+        XCTAssertEqual(ref.trackingStatusLabel("Dropped"), "Stopped")
         XCTAssertEqual(ref.trackingStatusLabel("Planning"), "Planning")
+        XCTAssertEqual(viewModel.primaryActionTitle, "Log Album")
+        let copy = bookGameCopy(for: "music")
+        XCTAssertEqual(copy.currently, "Start Listening")
+        XCTAssertEqual(copy.finished, "Mark Listened")
+        XCTAssertEqual(copy.stopped, "Stopped")
+    }
+
+    @MainActor
+    func testMusicMarkOnlyCompletesWithoutCreatingDiaryEntry() async {
+        let diary = RecordingDiaryRepository()
+        let tracking = RecordingTrackingRepository()
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let listenedAt = Date(timeIntervalSince1970: 1_797_120_000)
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: tracking,
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        viewModel.consumedAt = listenedAt
+
+        let didSave = await viewModel.markOnly()
+
+        XCTAssertTrue(didSave)
+        XCTAssertTrue(diary.createdRequests.isEmpty)
+        XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
+        XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, listenedAt)
     }
 
     @MainActor
@@ -5269,6 +5512,7 @@ private func fakeRepositories(auth: AuthRepository) -> AppRepositories {
     AppRepositories(
         auth: auth,
         media: FakeMediaRepository(),
+        music: FakeMusicRepository(),
         tracking: FakeTrackingRepository(),
         diary: FakeDiaryRepository(),
         activity: FakeActivityRepository(),
@@ -5278,8 +5522,23 @@ private func fakeRepositories(auth: AuthRepository) -> AppRepositories {
     )
 }
 
+private struct FakeMusicRepository: MusicRepository {
+    func recordingDetail(album _: MediaRef, recordingMbid _: String) async throws -> MusicRecordingDetail {
+        throw FakeMusicRepositoryError.called
+    }
+}
+
+private enum FakeMusicRepositoryError: Error {
+    case called
+}
+
 private struct FakeMediaRepository: MediaRepository {
-    func meta() async throws -> MetaResponse { fatalError("Not used") }
+    var metaResponse: MetaResponse? = nil
+
+    func meta() async throws -> MetaResponse {
+        guard let metaResponse else { fatalError("Not used") }
+        return metaResponse
+    }
     func search(query: String, mediaType: String) async throws -> [MediaSummary] { fatalError("Not used") }
     func detail(ref: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
     func reviews(ref: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
@@ -6352,6 +6611,7 @@ private final class RecordingTrackingRepository: TrackingRepository {
     var detailRequests: [MediaRef] = []
     var detailResponse = TestFixtures.trackingState
     var updateRequests: [(ref: MediaRef, request: TrackingWriteRequest)] = []
+    var deletedRefs: [MediaRef] = []
     var consumedRefs: [(ref: MediaRef, consumedAt: Date?)] = []
     var watchedSeasons: [(source: String, mediaId: String, seasonNumber: Int)] = []
     var watchedEpisodes: [(source: String, mediaId: String, seasonNumber: Int, episodeNumber: Int, watchedAt: Date?)] = []
@@ -6368,6 +6628,10 @@ private final class RecordingTrackingRepository: TrackingRepository {
     func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState {
         updateRequests.append((ref, request))
         return TestFixtures.trackingState
+    }
+
+    func delete(ref: MediaRef) async throws {
+        deletedRefs.append(ref)
     }
 
     func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState {

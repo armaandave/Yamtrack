@@ -44,7 +44,7 @@ See [media-imports](media-imports.md).
 | `DEBUG`            | Default to `False`. Set to `True` for debugging.                                                                                                                                                     |
 | `ADMIN_ENABLED`    | Default to `False`. Set to `True` to enable the Django admin interface.                                                                                                                              |
 | `TRACK_TIME`       | Default to `True`. Set to `False` to disable time tracking in Yamtrack.                                                                                                                              |
-| `MUSIC_ENABLED`    | Defaults to the value of `DEBUG`. Keep `False` in production until Music is ready for client rollout.                                                                                                |
+| `MUSIC_ENABLED`    | Defaults to the value of `DEBUG`. Spine's production Compose configuration enables it for the music rollout.                                                                                         |
 
 ## User and System Configuration
 

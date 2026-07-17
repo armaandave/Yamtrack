@@ -80,6 +80,8 @@ struct MediaRef: Codable, Hashable, Identifiable {
             return "Listening"
         case "Completed":
             return "Listened"
+        case "Dropped":
+            return "Stopped"
         default:
             return status
         }
@@ -374,6 +376,36 @@ struct MusicDetail: Decodable {
     let artistCredit: [MusicArtistCredit]
     let coverArt: MusicCoverArt
     let representativeRelease: MusicRepresentativeRelease?
+
+    enum CodingKeys: String, CodingKey {
+        case releaseGroupMbid
+        case primaryType
+        case secondaryTypes
+        case disambiguation
+        case annotation
+        case firstReleaseDate
+        case releaseCount
+        case artistCredit
+        case coverArt
+        case representativeRelease
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        releaseGroupMbid = try container.decode(String.self, forKey: .releaseGroupMbid)
+        primaryType = try container.decodeIfPresent(String.self, forKey: .primaryType)
+        secondaryTypes = try container.decodeIfPresent([String].self, forKey: .secondaryTypes) ?? []
+        disambiguation = try container.decodeIfPresent(String.self, forKey: .disambiguation)
+        annotation = try container.decodeIfPresent(String.self, forKey: .annotation)
+        firstReleaseDate = try container.decodeIfPresent(String.self, forKey: .firstReleaseDate)
+        releaseCount = try container.decodeIfPresent(Int.self, forKey: .releaseCount)
+        artistCredit = try container.decodeIfPresent([MusicArtistCredit].self, forKey: .artistCredit) ?? []
+        coverArt = try container.decode(MusicCoverArt.self, forKey: .coverArt)
+        representativeRelease = try container.decodeIfPresent(
+            MusicRepresentativeRelease.self,
+            forKey: .representativeRelease
+        )
+    }
 }
 
 struct MusicCoverArt: Decodable {
@@ -397,6 +429,44 @@ struct MusicRepresentativeRelease: Decodable {
     let discCount: Int
     let trackCount: Int
     let media: [MusicMedium]
+
+    enum CodingKeys: String, CodingKey {
+        case releaseMbid
+        case title
+        case status
+        case date
+        case country
+        case barcode
+        case selectionBasis
+        case labels
+        case format
+        case isDeluxeOrRemastered
+        case streamingLinks
+        case discCount
+        case trackCount
+        case media
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        releaseMbid = try container.decode(String.self, forKey: .releaseMbid)
+        title = try container.decode(String.self, forKey: .title)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        date = try container.decodeIfPresent(String.self, forKey: .date)
+        country = try container.decodeIfPresent(String.self, forKey: .country)
+        barcode = try container.decodeIfPresent(String.self, forKey: .barcode)
+        selectionBasis = try container.decode(String.self, forKey: .selectionBasis)
+        labels = try container.decodeIfPresent([MusicLabel].self, forKey: .labels) ?? []
+        format = try container.decodeIfPresent(String.self, forKey: .format)
+        isDeluxeOrRemastered = try container.decode(Bool.self, forKey: .isDeluxeOrRemastered)
+        streamingLinks = try container.decodeIfPresent(
+            [MusicStreamingLink].self,
+            forKey: .streamingLinks
+        ) ?? []
+        discCount = try container.decode(Int.self, forKey: .discCount)
+        trackCount = try container.decode(Int.self, forKey: .trackCount)
+        media = try container.decodeIfPresent([MusicMedium].self, forKey: .media) ?? []
+    }
 }
 
 struct MusicLabel: Decodable {
@@ -417,9 +487,28 @@ struct MusicMedium: Decodable {
     let format: String?
     let trackCount: Int
     let tracks: [MusicTrack]
+
+    enum CodingKeys: String, CodingKey {
+        case mediumMbid
+        case position
+        case title
+        case format
+        case trackCount
+        case tracks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mediumMbid = try container.decodeIfPresent(String.self, forKey: .mediumMbid)
+        position = try container.decode(Int.self, forKey: .position)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        format = try container.decodeIfPresent(String.self, forKey: .format)
+        trackCount = try container.decode(Int.self, forKey: .trackCount)
+        tracks = try container.decodeIfPresent([MusicTrack].self, forKey: .tracks) ?? []
+    }
 }
 
-struct MusicTrack: Decodable {
+struct MusicTrack: Decodable, Identifiable {
     let trackMbid: String
     let discNumber: Int
     let position: Int
@@ -428,6 +517,45 @@ struct MusicTrack: Decodable {
     let lengthMs: Int?
     let artistCredit: [MusicArtistCredit]
     let recording: MusicRecording
+
+    var id: String { trackMbid }
+
+    enum CodingKeys: String, CodingKey {
+        case trackMbid
+        case discNumber
+        case position
+        case number
+        case title
+        case lengthMs
+        case artistCredit
+        case recording
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        trackMbid = try container.decode(String.self, forKey: .trackMbid)
+        discNumber = try container.decode(Int.self, forKey: .discNumber)
+        position = try container.decode(Int.self, forKey: .position)
+        number = try container.decode(String.self, forKey: .number)
+        title = try container.decode(String.self, forKey: .title)
+        lengthMs = try container.decodeIfPresent(Int.self, forKey: .lengthMs)
+        artistCredit = try container.decodeIfPresent([MusicArtistCredit].self, forKey: .artistCredit) ?? []
+        recording = try container.decode(MusicRecording.self, forKey: .recording)
+    }
+}
+
+struct MusicSongSelection: Identifiable {
+    let album: MediaRef
+    let recordingMbid: String
+    let artworkURL: String?
+
+    var id: String { "\(album.id):\(recordingMbid)" }
+
+    init(album: MediaRef, track: MusicTrack, artworkURL: String?) {
+        self.album = album
+        recordingMbid = track.recording.recordingMbid
+        self.artworkURL = artworkURL
+    }
 }
 
 struct MusicRecording: Decodable {
@@ -438,12 +566,209 @@ struct MusicRecording: Decodable {
     let firstReleaseDate: String?
     let isVideo: Bool
     let isrcs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case recordingMbid
+        case title
+        case lengthMs
+        case disambiguation
+        case firstReleaseDate
+        case isVideo
+        case isrcs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recordingMbid = try container.decode(String.self, forKey: .recordingMbid)
+        title = try container.decode(String.self, forKey: .title)
+        lengthMs = try container.decodeIfPresent(Int.self, forKey: .lengthMs)
+        disambiguation = try container.decodeIfPresent(String.self, forKey: .disambiguation)
+        firstReleaseDate = try container.decodeIfPresent(String.self, forKey: .firstReleaseDate)
+        isVideo = try container.decode(Bool.self, forKey: .isVideo)
+        isrcs = try container.decodeIfPresent([String].self, forKey: .isrcs) ?? []
+    }
 }
 
 struct MusicArtistCredit: Decodable {
     let artistMbid: String?
     let name: String
     let joinPhrase: String
+}
+
+struct MusicRecordingCredit: Decodable {
+    let artistMbid: String?
+    let name: String
+    let roles: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case artistMbid
+        case name
+        case roles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        artistMbid = try container.decodeIfPresent(String.self, forKey: .artistMbid)
+        name = try container.decode(String.self, forKey: .name)
+        roles = try container.decodeIfPresent([String].self, forKey: .roles) ?? []
+    }
+}
+
+struct MusicRecordingAppearance: Decodable {
+    let releaseMbid: String
+    let title: String
+    let status: String?
+    let date: String?
+    let country: String?
+    let barcode: String?
+    let releaseGroupMbid: String?
+}
+
+struct MusicWorkRelationship: Decodable {
+    let workMbid: String
+    let title: String
+    let relationshipType: String?
+    let iswcs: [String]
+    let language: String?
+    let credits: [MusicRecordingCredit]
+
+    enum CodingKeys: String, CodingKey {
+        case workMbid
+        case title
+        case relationshipType
+        case iswcs
+        case language
+        case credits
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workMbid = try container.decode(String.self, forKey: .workMbid)
+        title = try container.decode(String.self, forKey: .title)
+        relationshipType = try container.decodeIfPresent(String.self, forKey: .relationshipType)
+        iswcs = try container.decodeIfPresent([String].self, forKey: .iswcs) ?? []
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        credits = try container.decodeIfPresent([MusicRecordingCredit].self, forKey: .credits) ?? []
+    }
+}
+
+struct MusicAlternativeRecording: Decodable {
+    let recordingMbid: String
+    let relationshipType: String?
+    let direction: String?
+    let title: String
+    let artistCredit: [MusicArtistCredit]
+    let lengthMs: Int?
+    let disambiguation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case recordingMbid
+        case relationshipType
+        case direction
+        case title
+        case artistCredit
+        case lengthMs
+        case disambiguation
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recordingMbid = try container.decode(String.self, forKey: .recordingMbid)
+        relationshipType = try container.decodeIfPresent(String.self, forKey: .relationshipType)
+        direction = try container.decodeIfPresent(String.self, forKey: .direction)
+        title = try container.decode(String.self, forKey: .title)
+        artistCredit = try container.decodeIfPresent([MusicArtistCredit].self, forKey: .artistCredit) ?? []
+        lengthMs = try container.decodeIfPresent(Int.self, forKey: .lengthMs)
+        disambiguation = try container.decodeIfPresent(String.self, forKey: .disambiguation)
+    }
+}
+
+struct MusicRecordingRating: Decodable {
+    let value: Double?
+    let votesCount: Int?
+    let maxValue: Int?
+}
+
+struct MusicRecordingContext: Decodable {
+    let releaseMbid: String
+    let mediumMbid: String?
+    let track: MusicTrack
+}
+
+struct MusicRecordingDetail: Decodable {
+    let recordingMbid: String
+    let title: String
+    let artistCredit: [MusicArtistCredit]
+    let lengthMs: Int?
+    let isrcs: [String]
+    let disambiguation: String?
+    let firstReleaseDate: String?
+    let isVideo: Bool
+    let genres: [String]
+    let rating: MusicRecordingRating?
+    let annotation: String?
+    let works: [MusicWorkRelationship]
+    let alternativeRecordings: [MusicAlternativeRecording]
+    let sourceUrl: String?
+    let externalLinks: [String: String]
+    let parentAlbum: MediaSummary
+    let albums: [MediaSummary]
+    let releases: [MusicRecordingAppearance]
+    let contextRelease: MusicRecordingContext
+    let imageUrl: String?
+    let capabilities: [String: Bool]
+
+    enum CodingKeys: String, CodingKey {
+        case recordingMbid
+        case title
+        case artistCredit
+        case lengthMs
+        case isrcs
+        case disambiguation
+        case firstReleaseDate
+        case isVideo
+        case genres
+        case rating
+        case annotation
+        case works
+        case alternativeRecordings
+        case sourceUrl
+        case externalLinks
+        case parentAlbum
+        case albums
+        case releases
+        case contextRelease
+        case imageUrl
+        case capabilities
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recordingMbid = try container.decode(String.self, forKey: .recordingMbid)
+        title = try container.decode(String.self, forKey: .title)
+        artistCredit = try container.decodeIfPresent([MusicArtistCredit].self, forKey: .artistCredit) ?? []
+        lengthMs = try container.decodeIfPresent(Int.self, forKey: .lengthMs)
+        isrcs = try container.decodeIfPresent([String].self, forKey: .isrcs) ?? []
+        disambiguation = try container.decodeIfPresent(String.self, forKey: .disambiguation)
+        firstReleaseDate = try container.decodeIfPresent(String.self, forKey: .firstReleaseDate)
+        isVideo = try container.decode(Bool.self, forKey: .isVideo)
+        genres = try container.decodeIfPresent([String].self, forKey: .genres) ?? []
+        rating = try container.decodeIfPresent(MusicRecordingRating.self, forKey: .rating)
+        annotation = try container.decodeIfPresent(String.self, forKey: .annotation)
+        works = try container.decodeIfPresent([MusicWorkRelationship].self, forKey: .works) ?? []
+        alternativeRecordings = try container.decodeIfPresent(
+            [MusicAlternativeRecording].self,
+            forKey: .alternativeRecordings
+        ) ?? []
+        sourceUrl = try container.decodeIfPresent(String.self, forKey: .sourceUrl)
+        externalLinks = try container.decodeIfPresent([String: String].self, forKey: .externalLinks) ?? [:]
+        parentAlbum = try container.decode(MediaSummary.self, forKey: .parentAlbum)
+        albums = try container.decodeIfPresent([MediaSummary].self, forKey: .albums) ?? []
+        releases = try container.decodeIfPresent([MusicRecordingAppearance].self, forKey: .releases) ?? []
+        contextRelease = try container.decode(MusicRecordingContext.self, forKey: .contextRelease)
+        imageUrl = try container.decodeIfPresent(String.self, forKey: .imageUrl)
+        capabilities = try container.decodeIfPresent([String: Bool].self, forKey: .capabilities) ?? [:]
+    }
 }
 
 struct MediaDetail: Decodable, Identifiable {

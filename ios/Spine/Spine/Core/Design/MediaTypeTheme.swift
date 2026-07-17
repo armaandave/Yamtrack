@@ -4,12 +4,35 @@ struct MediaTypeTheme: Equatable {
     let slug: String
     let displayName: String
     let symbolName: String
-    let accentColor = Color(red: 0.72, green: 0.74, blue: 0.78)
     let gradientColors = [Color(red: 0.31, green: 0.33, blue: 0.37), Color(red: 0.09, green: 0.10, blue: 0.12)]
+
+    var accentColor: Color {
+        slug == "music" ? Self.musicColor : Color(red: 0.72, green: 0.74, blue: 0.78)
+    }
+
+    var artworkOrientation: PosterOrientation {
+        slug == "music" ? .square : .portrait
+    }
+
+    var statsColor: Color {
+        switch slug {
+        case "movie": Color(red: 0.98, green: 0.49, blue: 0.24)
+        case "tv": Color(red: 0.25, green: 0.70, blue: 0.96)
+        case "anime": Color(red: 0.93, green: 0.39, blue: 0.67)
+        case "manga": Color(red: 0.34, green: 0.82, blue: 0.58)
+        case "game": Color(red: 0.50, green: 0.47, blue: 0.96)
+        case "book": Color(red: 0.91, green: 0.69, blue: 0.25)
+        case "comic": Color(red: 0.93, green: 0.34, blue: 0.35)
+        case "music": Self.musicColor
+        default: Color(red: 0.30, green: 0.77, blue: 0.95)
+        }
+    }
 
     var symbolText: String? {
         slug == "anime" ? "オ" : nil
     }
+
+    private static let musicColor = Color(red: 0.20, green: 0.78, blue: 0.74)
 
     static func theme(for slug: String) -> MediaTypeTheme {
         let normalized = slug.lowercased()
@@ -55,6 +78,12 @@ struct MediaTypeTheme: Equatable {
                 slug: normalized,
                 displayName: "Comics",
                 symbolName: "rectangle.3.group.bubble.left"
+            )
+        case "music":
+            return MediaTypeTheme(
+                slug: normalized,
+                displayName: "Music",
+                symbolName: "music.note.list"
             )
         case "boardgame":
             return MediaTypeTheme(

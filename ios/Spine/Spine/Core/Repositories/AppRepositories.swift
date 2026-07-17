@@ -23,6 +23,10 @@ protocol MediaRepository {
     func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse
 }
 
+protocol MusicRepository {
+    func recordingDetail(album: MediaRef, recordingMbid: String) async throws -> MusicRecordingDetail
+}
+
 protocol PeopleRepository {
     func detail(ref: PersonRef) async throws -> PersonDetail
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail
@@ -66,6 +70,7 @@ protocol TrackingRepository {
     func list(mediaType: String, page: String?, filter: MediaFilterState) async throws -> PagedResponse<LibraryItem>
     func detail(ref: MediaRef) async throws -> TrackingState
     func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState
+    func delete(ref: MediaRef) async throws
     func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState
     func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState
     func watchEpisode(
@@ -80,6 +85,10 @@ protocol TrackingRepository {
 }
 
 extension TrackingRepository {
+    func delete(ref _: MediaRef) async throws {
+        fatalError("Not implemented")
+    }
+
     func list(mediaType: String, page: String?, filter: MediaFilterState) async throws -> PagedResponse<LibraryItem> {
         try await list(
             mediaType: mediaType,
@@ -283,6 +292,7 @@ protocol ImportRepository {
 struct AppRepositories {
     let auth: AuthRepository
     let media: MediaRepository
+    let music: MusicRepository
     let people: PeopleRepository
     let companies: CompanyRepository
     let tracking: TrackingRepository
@@ -296,6 +306,7 @@ struct AppRepositories {
     init(
         auth: AuthRepository,
         media: MediaRepository,
+        music: MusicRepository,
         people: PeopleRepository = APIPeopleRepository(client: AppEnvironment.apiClient),
         companies: CompanyRepository = APICompanyRepository(client: AppEnvironment.apiClient),
         tracking: TrackingRepository,
@@ -308,6 +319,7 @@ struct AppRepositories {
     ) {
         self.auth = auth
         self.media = media
+        self.music = music
         self.people = people
         self.companies = companies
         self.tracking = tracking
@@ -327,6 +339,7 @@ struct AppRepositories {
         AppRepositories(
             auth: APIAuthRepository(service: AuthService(client: client), tokenStore: client.tokenProvider),
             media: APIMediaRepository(client: client),
+            music: APIMusicRepository(client: client),
             people: APIPeopleRepository(client: client),
             companies: APICompanyRepository(client: client),
             tracking: APITrackingRepository(client: client),
@@ -513,6 +526,17 @@ struct APIMediaRepository: MediaRepository {
     }
 }
 
+struct APIMusicRepository: MusicRepository {
+    let client: APIClient
+
+    func recordingDetail(album: MediaRef, recordingMbid: String) async throws -> MusicRecordingDetail {
+        try await client.get(
+            "/media/\(album.source)/\(album.mediaType)/\(album.mediaId)/recordings/\(recordingMbid)/",
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+}
+
 struct APIPeopleRepository: PeopleRepository {
     let client: APIClient
 
@@ -583,6 +607,13 @@ struct APITrackingRepository: TrackingRepository {
         try await client.patch(
             "/tracking/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/",
             body: request,
+            authenticated: true
+        )
+    }
+
+    func delete(ref: MediaRef) async throws {
+        let _: EmptyResponse = try await client.delete(
+            "/tracking/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/",
             authenticated: true
         )
     }

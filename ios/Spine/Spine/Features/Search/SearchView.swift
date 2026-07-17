@@ -418,8 +418,7 @@ private struct SearchViewContent: View {
     }
 
     private func validateSelectedMediaType() {
-        guard !viewModel.mediaTypes.contains(mediaLensStore.selectedMediaType) else { return }
-        mediaLensStore.setMediaType(viewModel.mediaTypes.first ?? "movie")
+        mediaLensStore.validateSelection(in: viewModel.mediaTypes)
     }
 
     private func saveRecentMedia(_ media: MediaSummary) {
@@ -591,7 +590,7 @@ struct SearchResultRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                if let subtitle = subtitleText {
+                if let subtitle = result.searchResultSubtitle {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -632,8 +631,16 @@ struct SearchResultRow: View {
         }
     }
 
-    private var subtitleText: String? {
-        let text = [result.subtitle, formattedReleaseDate]
+}
+
+extension MediaSummary {
+    var searchResultSubtitle: String? {
+        if ref.mediaType == "music" {
+            let text = subtitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return text.isEmpty ? nil : text
+        }
+
+        let text = [subtitle, formattedReleaseDate]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
@@ -641,7 +648,7 @@ struct SearchResultRow: View {
     }
 
     private var formattedReleaseDate: String? {
-        guard let releaseDate = result.releaseDate else { return nil }
+        guard let releaseDate else { return nil }
         return SearchDateFormatter.string(from: releaseDate) ?? releaseDate
     }
 }

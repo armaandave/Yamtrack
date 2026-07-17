@@ -1018,16 +1018,7 @@ private enum StatsPalette {
     static let language = Color(red: 0.99, green: 0.57, blue: 0.23)
 
     static func accent(for mediaType: String?) -> Color {
-        switch mediaType {
-        case "movie": Color(red: 0.98, green: 0.49, blue: 0.24)
-        case "tv": Color(red: 0.25, green: 0.70, blue: 0.96)
-        case "anime": Color(red: 0.93, green: 0.39, blue: 0.67)
-        case "manga": Color(red: 0.34, green: 0.82, blue: 0.58)
-        case "game": Color(red: 0.50, green: 0.47, blue: 0.96)
-        case "book": Color(red: 0.91, green: 0.69, blue: 0.25)
-        case "comic": Color(red: 0.93, green: 0.34, blue: 0.35)
-        default: allMedia
-        }
+        mediaType.map { MediaTypeTheme.theme(for: $0).statsColor } ?? allMedia
     }
 
     static func status(_ status: String, fallback: Color) -> Color {

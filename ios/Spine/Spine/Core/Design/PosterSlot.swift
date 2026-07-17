@@ -56,8 +56,11 @@ enum PosterSlot {
         }
     }
 
-    var glyphSize: CGFloat {
-        min(size.width, size.height) * 0.36
+    func artworkSize(mediaType: String?, orientation: PosterOrientation?) -> CGSize {
+        let usesSquareArtwork = orientation == .square
+            || ((orientation == nil || orientation == .unknown)
+                && MediaTypeTheme.theme(for: mediaType ?? "unknown").artworkOrientation == .square)
+        return usesSquareArtwork ? CGSize(width: size.width, height: size.width) : size
     }
 }
 

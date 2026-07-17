@@ -222,8 +222,7 @@ struct ListMediaPickerView: View {
 
     private func validateSelectedMediaType() {
         let available = SearchViewModel.lensMediaTypes(from: searchViewModel.mediaTypes)
-        guard !available.contains(mediaLensStore.selectedMediaType) else { return }
-        mediaLensStore.setMediaType(available.first ?? "movie")
+        mediaLensStore.validateSelection(in: available)
     }
 
     private func saveRecentMedia(_ media: MediaSummary) {

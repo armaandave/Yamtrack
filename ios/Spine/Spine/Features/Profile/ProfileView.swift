@@ -1233,7 +1233,7 @@ struct ProfileView: View {
 }
 
 struct ProfileFavorites {
-    private static let defaultSlotKeys = ["movie", "tv", "anime", "manga", "game", "book", "comic"]
+    private static let defaultSlotKeys = ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"]
 
     static func slots(from hof: [String: MediaSummary?], enabledMediaTypes: [String] = []) -> [FavoriteSlot] {
         let enabled = enabledMediaTypes.filter { defaultSlotKeys.contains($0) }
@@ -1249,7 +1249,7 @@ struct ProfileFavorites {
 
     static func rank(_ key: String) -> Int {
         let normalized = key.lowercased()
-        let order = ["movie", "tv", "anime", "manga", "game", "book", "comic", "boardgame"]
+        let order = ["movie", "tv", "anime", "manga", "game", "book", "comic", "music", "boardgame"]
         return order.firstIndex { normalized.contains($0) } ?? order.count
     }
 }
@@ -1500,7 +1500,7 @@ private struct HallOfFamePickerRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                if let subtitle {
+                if let subtitle = media.searchResultSubtitle {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -1514,13 +1514,6 @@ private struct HallOfFamePickerRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var subtitle: String? {
-        let text = [media.subtitle, media.releaseDate]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-        return text.isEmpty ? nil : text
-    }
 }
 
 private struct ProfileStatChip: View {
@@ -2032,6 +2025,7 @@ private struct ProfileSettingsSheet: View {
                 if let profile {
                     accountSection(profile)
                     profileSaveSection
+                    enabledMediaSection
                 }
 
                 Section("Import") {
@@ -2056,6 +2050,7 @@ private struct ProfileSettingsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 viewModel.load(profile: profile)
+                await viewModel.loadOptions()
             }
             .onChange(of: selectedPhotoItem) { _, newItem in
                 Swift.Task<Void, Never> {
@@ -2201,6 +2196,46 @@ private struct ProfileSettingsSheet: View {
 
             statusMessages
         }
+    }
+
+    private var enabledMediaSection: some View {
+        Section("Enabled Media") {
+            if viewModel.isLoadingOptions {
+                ProgressView()
+            } else {
+                ForEach(viewModel.mediaTypes, id: \.self) { mediaType in
+                    Toggle(
+                        MediaTypeTheme.theme(for: mediaType).displayName,
+                        isOn: enabledMediaBinding(mediaType)
+                    )
+                }
+            }
+
+            fieldError("enabled_media_types")
+
+            saveButton(
+                "Save Enabled Media",
+                isSaving: viewModel.isSavingPreferences,
+                isDisabled: !viewModel.hasPreferenceChanges
+            ) {
+                if let updated = await viewModel.savePreferences() {
+                    onProfileUpdated(updated)
+                }
+            }
+        }
+    }
+
+    private func enabledMediaBinding(_ mediaType: String) -> Binding<Bool> {
+        Binding(
+            get: { viewModel.enabledMediaTypes.contains(mediaType) },
+            set: { isEnabled in
+                if isEnabled {
+                    viewModel.enabledMediaTypes.insert(mediaType)
+                } else {
+                    viewModel.enabledMediaTypes.remove(mediaType)
+                }
+            }
+        )
     }
 
     @ViewBuilder

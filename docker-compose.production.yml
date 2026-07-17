@@ -14,6 +14,8 @@ services:
       - redis
     env_file:
       - .env.production
+    environment:
+      MUSIC_ENABLED: "True"
     ports:
       - "8000:8000"
     volumes:

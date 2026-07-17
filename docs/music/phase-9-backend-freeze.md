@@ -177,14 +177,13 @@ check.
 Deployment is performed from the other computer after `search-page-ios` is
 pushed:
 
-1. Confirm the production environment contains `MUSIC_ENABLED=False` without
-   printing other environment values.
+1. Confirm the production Compose configuration sets `MUSIC_ENABLED=True`.
 2. Deploy the pushed `search-page-ios` commit with the existing backend workflow.
 3. Confirm migrations complete and clear Django cache.
 4. Verify `/api/v1/health/` succeeds.
-5. Verify `/api/v1/meta/` omits `music` and `musicbrainz`.
-6. Verify direct music search, album, recording, and tracking routes return `404`
-   for normal clients.
+5. Verify `/api/v1/meta/` includes `music` and `musicbrainz`.
+6. Verify music search, album, recording, and tracking routes are available to
+   normal authenticated clients.
 
-Do not enable public music exposure until the separate MetaBrainz account and
-licensing decision is complete.
+Public music exposure still requires the project owner to satisfy the separate
+MetaBrainz account and licensing requirements recorded in Phase 0.

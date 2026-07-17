@@ -776,7 +776,7 @@ struct MediaLogView: View {
     }
 
     private var actionsFooter: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             Button {
                 Task {
                     if await viewModel.save() {
@@ -789,6 +789,26 @@ struct MediaLogView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.isSaving)
 
+            if viewModel.detail.ref.mediaType == "music", viewModel.mode == .finished {
+                Button {
+                    Task {
+                        if await viewModel.markOnly() {
+                            dismiss()
+                        }
+                    }
+                } label: {
+                    Text("Mark Listened")
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .background(.white.opacity(0.08), in: Capsule())
+                        .overlay { Capsule().stroke(.white.opacity(0.14)) }
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isSaving)
+                .accessibilityHint("Completes tracking without creating a diary log")
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)

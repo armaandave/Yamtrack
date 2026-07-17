@@ -22,4 +22,13 @@ final class MediaLensStore {
         selectedMediaType = slug
         defaults.set(slug, forKey: Self.persistenceKey)
     }
+
+    @discardableResult
+    func validateSelection(in availableTypes: [String]) -> String {
+        guard !availableTypes.contains(selectedMediaType), let fallback = availableTypes.first else {
+            return selectedMediaType
+        }
+        setMediaType(fallback)
+        return fallback
+    }
 }

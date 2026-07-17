@@ -41,7 +41,7 @@ struct MetaResponse: Decodable {
 }
 
 enum APIConstants {
-    static let fallbackMediaTypes = ["movie", "tv", "anime", "manga", "game", "book", "comic", "boardgame"]
+    static let fallbackMediaTypes = ["movie", "tv", "anime", "manga", "game", "book", "comic", "music", "boardgame"]
     static let statusChoices = ["Completed", "In progress", "Planning", "Paused", "Dropped"]
     static let visibilityChoices = ["public", "followers", "private"]
 }

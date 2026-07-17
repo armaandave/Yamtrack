@@ -424,9 +424,7 @@ struct LibraryView: View {
     }
 
     private func validateSelectedMediaType() {
-        guard !viewModel.mediaTypes.contains(mediaLensStore.selectedMediaType) else { return }
-        mediaLensStore.setMediaType(viewModel.mediaTypes.first ?? "movie")
-        viewModel.mediaType = mediaLensStore.selectedMediaType
+        viewModel.mediaType = mediaLensStore.validateSelection(in: viewModel.mediaTypes)
     }
 
     private var header: some View {
@@ -496,7 +494,7 @@ struct LibraryView: View {
     private var content: some View {
         let displayedItems = viewModel.displayedItems
         if viewModel.isBootstrapping || (viewModel.isLoadingInitial && viewModel.items.isEmpty) {
-            LibrarySkeleton(mode: viewModel.viewMode)
+            LibrarySkeleton(mode: viewModel.viewMode, mediaType: viewModel.mediaType)
         } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
             LibraryStateCard(
                 title: "Could not load library",
@@ -797,6 +795,7 @@ private struct LibraryListRow: View {
 
 private struct LibrarySkeleton: View {
     let mode: LibraryViewMode
+    let mediaType: String
 
     var body: some View {
         switch mode {
@@ -805,7 +804,7 @@ private struct LibrarySkeleton: View {
                 ForEach(0 ..< 12, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: PosterSlot.tagGrid.cornerRadius, style: .continuous)
                         .fill(.white.opacity(0.08))
-                        .frame(width: PosterSlot.tagGrid.size.width, height: PosterSlot.tagGrid.size.height)
+                        .frame(width: gridArtworkSize.width, height: gridArtworkSize.height)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -815,7 +814,7 @@ private struct LibrarySkeleton: View {
                     HStack(spacing: 14) {
                         RoundedRectangle(cornerRadius: PosterSlot.libraryRow.cornerRadius, style: .continuous)
                             .fill(.white.opacity(0.08))
-                            .frame(width: PosterSlot.libraryRow.size.width, height: PosterSlot.libraryRow.size.height)
+                            .frame(width: listArtworkSize.width, height: listArtworkSize.height)
 
                         VStack(alignment: .leading, spacing: 8) {
                             RoundedRectangle(cornerRadius: 4)
@@ -831,6 +830,14 @@ private struct LibrarySkeleton: View {
                 }
             }
         }
+    }
+
+    private var gridArtworkSize: CGSize {
+        PosterSlot.tagGrid.artworkSize(mediaType: mediaType, orientation: nil)
+    }
+
+    private var listArtworkSize: CGSize {
+        PosterSlot.libraryRow.artworkSize(mediaType: mediaType, orientation: nil)
     }
 }
 

@@ -56,11 +56,12 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
             "game": nil,
             "tv": nil,
             "manga": nil,
+            "music": nil,
         ]
 
         XCTAssertEqual(
             ProfileFavorites.slots(from: hof).map(\.id),
-            ["movie", "tv", "anime", "manga", "game", "book", "comic"]
+            ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"]
         )
     }
 
@@ -72,7 +73,7 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
             "book": book,
         ])
 
-        XCTAssertEqual(slots.map(\.id), ["movie", "tv", "anime", "manga", "game", "book", "comic"])
+        XCTAssertEqual(slots.map(\.id), ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"])
         XCTAssertEqual(slots.compactMap(\.item).map(\.id), [movie.id, book.id])
     }
 
@@ -83,7 +84,7 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
             "tv": nil,
         ])
 
-        XCTAssertEqual(slots.count, 7)
+        XCTAssertEqual(slots.count, 8)
         XCTAssertEqual(slots[0].id, "movie")
         XCTAssertEqual(slots[0].item?.id, movie.id)
         XCTAssertEqual(slots[1].id, "tv")

@@ -135,6 +135,11 @@ final class MediaDetailViewModel {
         do {
             let state: TrackingState
             switch action {
+            case .planning:
+                state = try await trackingRepository.update(
+                    ref: detail.ref,
+                    request: TrackingWriteRequest(status: "Planning")
+                )
             case .currently:
                 state = try await trackingRepository.update(
                     ref: detail.ref,
@@ -162,6 +167,25 @@ final class MediaDetailViewModel {
                 )
             }
             tracking = state
+            return true
+        } catch {
+            quickActionErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+            return false
+        }
+    }
+
+    func removeTracking(for detail: MediaDetail) async -> Bool {
+        guard !isSavingQuickAction else { return false }
+        isSavingQuickAction = true
+        quickActionErrorMessage = nil
+        defer { isSavingQuickAction = false }
+
+        do {
+            try await trackingRepository.delete(ref: detail.ref)
+            tracking = nil
             return true
         } catch {
             quickActionErrorMessage = error.localizedDescription
@@ -285,6 +309,7 @@ final class MediaDetailViewModel {
 }
 
 enum MediaDetailQuickAction {
+    case planning
     case currently
     case paused
     case finished
@@ -448,6 +473,98 @@ enum MediaExternalRatingPresentation {
     }
 }
 
+struct MusicStreamingDestination: Hashable, Identifiable {
+    let label: String
+    let url: URL
+
+    var id: String { url.absoluteString }
+}
+
+enum MusicAlbumPresentation {
+    static func artistCreditText(_ credits: [MusicArtistCredit]) -> String? {
+        let value = credits
+            .map { "\($0.name)\($0.joinPhrase)" }
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    static func releaseType(_ music: MusicDetail) -> String? {
+        ([music.primaryType] + music.secondaryTypes.map(Optional.some))
+            .compactMap { $0?.nilIfEmpty }
+            .joined(separator: " · ")
+            .nilIfEmpty
+    }
+
+    static func duration(_ milliseconds: Int?) -> String? {
+        guard let milliseconds, milliseconds >= 0 else { return nil }
+        let seconds = milliseconds / 1_000
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    static func countryName(_ code: String?, locale: Locale = .current) -> String? {
+        guard let code = code?.nilIfEmpty else { return nil }
+        if code.caseInsensitiveCompare("XW") == .orderedSame {
+            return "Worldwide"
+        }
+        return locale.localizedString(forRegionCode: code.uppercased()) ?? code
+    }
+
+    static func format(_ release: MusicRepresentativeRelease) -> String? {
+        if let format = release.format?.nilIfEmpty {
+            return format
+        }
+        var seen = Set<String>()
+        return release.media
+            .compactMap { $0.format?.nilIfEmpty }
+            .filter { seen.insert($0.lowercased()).inserted }
+            .joined(separator: ", ")
+            .nilIfEmpty
+    }
+
+    static func differingArtistCredit(
+        track: MusicTrack,
+        albumCredits: [MusicArtistCredit]
+    ) -> String? {
+        guard let trackArtist = artistCreditText(track.artistCredit) else { return nil }
+        guard let albumArtist = artistCreditText(albumCredits) else { return trackArtist }
+        return trackArtist.caseInsensitiveCompare(albumArtist) == .orderedSame ? nil : trackArtist
+    }
+
+    static func streamingDestinations(_ links: [MusicStreamingLink]) -> [MusicStreamingDestination] {
+        var seen = Set<String>()
+        return links.compactMap { streamingDestination($0) }.filter { seen.insert($0.id).inserted }
+    }
+
+    static func musicBrainzURL(releaseGroupMbid: String) -> URL {
+        URL(string: "https://musicbrainz.org")!
+            .appending(path: "release-group")
+            .appending(path: releaseGroupMbid)
+    }
+
+    private static func streamingDestination(_ link: MusicStreamingLink) -> MusicStreamingDestination? {
+        guard
+            let url = URL(string: link.url),
+            ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+            let rawHost = url.host?.lowercased(),
+            !rawHost.isEmpty
+        else { return nil }
+        let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+
+        let label: String
+        if host == "music.apple.com" {
+            label = "Apple Music"
+        } else if host == "open.spotify.com" {
+            label = "Spotify"
+        } else if host == "qobuz.com" || host.hasSuffix(".qobuz.com") {
+            label = "Qobuz"
+        } else {
+            return nil
+        }
+        return MusicStreamingDestination(label: label, url: url)
+    }
+}
+
 private struct TopSafeAreaInsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
@@ -465,6 +582,7 @@ struct MediaDetailView: View {
     private let ref: MediaRef
     private let browsingContext: MediaBrowsingContext?
     private let mediaRepository: MediaRepository
+    private let musicRepository: MusicRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
@@ -480,6 +598,7 @@ struct MediaDetailView: View {
         ref: MediaRef,
         browsingContext: MediaBrowsingContext? = nil,
         mediaRepository: MediaRepository,
+        musicRepository: MusicRepository = AppRepositories.current().music,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
         listRepository: ListRepository = AppRepositories.current().lists,
@@ -494,6 +613,7 @@ struct MediaDetailView: View {
         self.ref = ref
         self.browsingContext = browsingContext
         self.mediaRepository = mediaRepository
+        self.musicRepository = musicRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
@@ -564,6 +684,7 @@ struct MediaDetailView: View {
             shouldLoad: shouldLoad,
             topSafeAreaInset: topSafeAreaInset,
             mediaRepository: mediaRepository,
+            musicRepository: musicRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
             listRepository: listRepository,
@@ -605,6 +726,7 @@ private struct MediaDetailPageView: View {
     @State private var presentedDiscover: MediaDiscoverRequest?
     @State private var presentedPerson: PersonRef?
     @State private var presentedCompany: CompanyRef?
+    @State private var presentedSong: MusicSongSelection?
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
     @State private var isLogoPickerPresented = false
@@ -620,6 +742,7 @@ private struct MediaDetailPageView: View {
     @State private var edgeDragOffset: CGFloat = 0
 
     private let mediaRepository: MediaRepository
+    private let musicRepository: MusicRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
@@ -642,6 +765,7 @@ private struct MediaDetailPageView: View {
         shouldLoad: Bool,
         topSafeAreaInset: CGFloat? = nil,
         mediaRepository: MediaRepository,
+        musicRepository: MusicRepository = AppRepositories.current().music,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
         listRepository: ListRepository = AppRepositories.current().lists,
@@ -660,6 +784,7 @@ private struct MediaDetailPageView: View {
         self.shouldLoad = shouldLoad
         topSafeAreaInsetOverride = topSafeAreaInset
         self.mediaRepository = mediaRepository
+        self.musicRepository = musicRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
@@ -798,6 +923,12 @@ private struct MediaDetailPageView: View {
                         onAction: { action in
                             await performQuickAction(action, for: detail, dismissSheet: true)
                         },
+                        onRemove: {
+                            if await viewModel.removeTracking(for: detail) {
+                                presentedSheet = nil
+                                await viewModel.load()
+                            }
+                        },
                         onUpdateProgress: {
                             openProgressUpdate(for: detail)
                         },
@@ -808,7 +939,7 @@ private struct MediaDetailPageView: View {
                             }
                         }
                     )
-                    .presentationDetents([.height(224)])
+                    .presentationDetents([.height(detail.ref.mediaType == "music" ? 292 : 224)])
                     .presentationDragIndicator(.visible)
                 }
             case .addToList:
@@ -892,6 +1023,7 @@ private struct MediaDetailPageView: View {
             MediaDetailView(
                 ref: ref,
                 mediaRepository: mediaRepository,
+                musicRepository: musicRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
@@ -908,6 +1040,7 @@ private struct MediaDetailPageView: View {
                 ref: selection.ref,
                 browsingContext: selection.context,
                 mediaRepository: mediaRepository,
+                musicRepository: musicRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
@@ -987,6 +1120,22 @@ private struct MediaDetailPageView: View {
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedSong) { selection in
+            SongDetailView(
+                selection: selection,
+                musicRepository: musicRepository,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
+                companyRepository: companyRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -1260,7 +1409,9 @@ private struct MediaDetailPageView: View {
 
     @ViewBuilder
     private func hero(_ detail: MediaDetail) -> some View {
-        if detail.ref.mediaType == "episode" {
+        if detail.ref.mediaType == "music" {
+            musicHero(detail)
+        } else if detail.ref.mediaType == "episode" {
             episodeHero(detail)
         } else {
             ZStack(alignment: .top) {
@@ -1282,6 +1433,93 @@ private struct MediaDetailPageView: View {
                     .frame(minHeight: heroHeight(for: detail), alignment: .top)
             }
         }
+    }
+
+    private func musicHero(_ detail: MediaDetail) -> some View {
+        VStack(spacing: 16) {
+            heroPoster(detail)
+
+            VStack(spacing: 8) {
+                Text(detail.displayTitle)
+                    .font(.system(size: 33, weight: .black))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+
+                if let artist = musicArtist(detail) {
+                    Text(artist)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .multilineTextAlignment(.center)
+                }
+            }
+
+            musicHeroChips(detail)
+            RatingChipRow(chips: ratingChips(detail), stacked: false)
+
+            ActionRail(
+                isTracked: currentStatus(detail) != nil,
+                isLiked: detail.userState?.hasLiked ?? false,
+                isHorizontal: true,
+                trackLabel: "Track",
+                eyeLabel: bookGameCopy(for: detail.ref.mediaType).finished,
+                isEyeLoading: viewModel.isSavingQuickAction,
+                isLikeLoading: viewModel.isSavingLike,
+                onTrack: { trackAction(for: detail) },
+                onLike: { likeAction(for: detail) },
+                onEye: { eyeAction(for: detail) }
+            )
+
+            Text(musicProviderAttribution(detail))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.46))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.top, resolvedTopSafeAreaInset + 76)
+        .padding(.bottom, 28)
+        .background {
+            HeroArtwork(detail: detail)
+        }
+    }
+
+    @ViewBuilder
+    private func musicHeroChips(_ detail: MediaDetail) -> some View {
+        let chips = musicHeroChipValues(detail)
+        if !chips.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(chips, id: \.self) { value in
+                        chipLabel(value)
+                    }
+                }
+            }
+            .contentMargins(.horizontal, 2)
+        }
+    }
+
+    private func musicHeroChipValues(_ detail: MediaDetail) -> [String] {
+        guard let music = detail.music else { return [] }
+        var values = [MusicAlbumPresentation.releaseType(music), music.firstReleaseDate?.yearPrefix]
+            .compactMap { $0?.nilIfEmpty }
+        values += detailArray(detail, "genres")
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private func musicArtist(_ detail: MediaDetail) -> String? {
+        guard let music = detail.music else { return detail.subtitle?.nilIfEmpty }
+        return MusicAlbumPresentation.artistCreditText(music.artistCredit)
+            ?? detail.subtitle?.nilIfEmpty
+            ?? detailString(detail, "artist")
+    }
+
+    private func musicProviderAttribution(_ detail: MediaDetail) -> String {
+        guard let music = detail.music, !music.coverArt.fallbackUsed else {
+            return "Metadata by MusicBrainz"
+        }
+        return "Metadata by MusicBrainz · Cover art by Cover Art Archive"
     }
 
     @ViewBuilder
@@ -1603,6 +1841,10 @@ private struct MediaDetailPageView: View {
     @ViewBuilder
     private func heroPoster(_ detail: MediaDetail) -> some View {
         let poster = PosterViewerItem(detail: detail)
+        let posterSize = PosterSlot.hero.artworkSize(
+            mediaType: detail.ref.mediaType,
+            orientation: detail.posterOrientation
+        )
         let artwork = MediaArtwork(
             url: detail.displayPosterURL,
             title: detail.title,
@@ -1617,7 +1859,7 @@ private struct MediaDetailPageView: View {
 
         if presentedPosterID == detail.ref.id {
             Color.clear
-                .frame(width: PosterSlot.hero.size.width, height: PosterSlot.hero.size.height)
+                .frame(width: posterSize.width, height: posterSize.height)
         } else if let poster {
             artwork
                 .matchedGeometryEffect(
@@ -1743,28 +1985,63 @@ private struct MediaDetailPageView: View {
         MediaDetailLayout.heroPosterTopOffset + (backdropURLString(for: detail) == nil ? 0 : MediaDetailLayout.backdropTopSpacing)
     }
 
+    @ViewBuilder
     private func content(_ detail: MediaDetail) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
-            SynopsisText(text: synopsisPreview(detail))
-            trackingSummarySection(detail)
-            if detail.ref.mediaType != "episode" || (detail.community?.ratingCount ?? 0) > 0 {
-                SpineRatingDistributionSection(community: detail.community)
-            }
+        if detail.ref.mediaType == "music" {
+            musicContent(detail)
+        } else {
+            VStack(alignment: .leading, spacing: 28) {
+                SynopsisText(text: synopsisPreview(detail))
+                trackingSummarySection(detail)
+                if detail.ref.mediaType != "episode" || (detail.community?.ratingCount ?? 0) > 0 {
+                    SpineRatingDistributionSection(community: detail.community)
+                }
 
-            if detail.ref.mediaType == "tv" {
-                seasonsSection(detail)
-                CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
-                    presentedPerson = person
-                }
-            } else {
-                CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
-                    presentedPerson = person
-                }
-                if detail.ref.mediaType != "episode" {
+                if detail.ref.mediaType == "tv" {
                     seasonsSection(detail)
+                    CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
+                        presentedPerson = person
+                    }
+                } else {
+                    CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
+                        presentedPerson = person
+                    }
+                    if detail.ref.mediaType != "episode" {
+                        seasonsSection(detail)
+                    }
+                }
+
+                MediaFactsSection(
+                    rows: detailRows(detail),
+                    onPersonSelected: { person in
+                        presentedPerson = person
+                    },
+                    onCompanySelected: { company in
+                        presentedCompany = company
+                    }
+                )
+                if detail.ref.mediaType == "season" {
+                    EpisodesSection(episodes: detail.episodes ?? []) { episode in
+                        presentEpisode(episode, from: detail)
+                    }
+                }
+                ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
+                RecommendationsSection(sections: relatedSections(detail)) { item in
+                    presentedRef = item.ref
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+        }
+    }
 
+    private func musicContent(_ detail: MediaDetail) -> some View {
+        VStack(alignment: .leading, spacing: 28) {
+            if let annotation = detail.music?.annotation?.nilIfEmpty {
+                SynopsisText(text: annotation)
+            }
+            trackingSummarySection(detail)
+            SpineRatingDistributionSection(community: detail.community)
             MediaFactsSection(
                 rows: detailRows(detail),
                 onPersonSelected: { person in
@@ -1774,11 +2051,18 @@ private struct MediaDetailPageView: View {
                     presentedCompany = company
                 }
             )
-            if detail.ref.mediaType == "season" {
-                EpisodesSection(episodes: detail.episodes ?? []) { episode in
-                    presentEpisode(episode, from: detail)
+            MusicAlbumTracklistSection(
+                release: detail.music?.representativeRelease,
+                albumCredits: detail.music?.artistCredit ?? [],
+                onSelectTrack: { track in
+                    presentedSong = MusicSongSelection(
+                        album: detail.ref,
+                        track: track,
+                        artworkURL: detail.displayPosterURL
+                    )
                 }
-            }
+            )
+            MusicStreamingLinksSection(links: detail.music?.representativeRelease?.streamingLinks ?? [])
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
             RecommendationsSection(sections: relatedSections(detail)) { item in
                 presentedRef = item.ref
@@ -2141,6 +2425,9 @@ private struct MediaDetailPageView: View {
 
     private func detailRows(_ detail: MediaDetail) -> [DetailFactRow] {
         let mediaType = detail.ref.mediaType
+        if mediaType == "music" {
+            return musicDetailRows(detail)
+        }
         var rows: [DetailFactRow] = [
             DetailFactRow(label: "Status", value: detailString(detail, "status")),
             DetailFactRow(label: "Format", value: detailString(detail, "format")),
@@ -2233,6 +2520,30 @@ private struct MediaDetailPageView: View {
             }
         }
         return rows.filter { !$0.isEmpty }
+    }
+
+    private func musicDetailRows(_ detail: MediaDetail) -> [DetailFactRow] {
+        guard let music = detail.music else { return [] }
+        let release = music.representativeRelease
+        let selectedEdition = [
+            release?.title.nilIfEmpty,
+            formattedDate(release?.date),
+        ].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
+        return [
+            DetailFactRow(label: "Artist", value: musicArtist(detail)),
+            DetailFactRow(label: "Release Date", value: formattedDate(music.firstReleaseDate)),
+            DetailFactRow(label: "Release Type", value: MusicAlbumPresentation.releaseType(music)),
+            DetailFactRow(label: "Selected Edition", value: selectedEdition),
+            DetailFactRow(label: "Track Count", value: release.map { String($0.trackCount) }),
+            DetailFactRow(label: "Disc Count", value: release.map { String($0.discCount) }),
+            DetailFactRow(label: "Country", value: MusicAlbumPresentation.countryName(release?.country)),
+            DetailFactRow(label: "Format", value: release.flatMap { MusicAlbumPresentation.format($0) }),
+            DetailFactRow(
+                label: "MusicBrainz",
+                value: "Open release group",
+                destination: MusicAlbumPresentation.musicBrainzURL(releaseGroupMbid: music.releaseGroupMbid)
+            ),
+        ].filter { !$0.isEmpty }
     }
 
     private func creditDetailRow(_ credits: MediaCreditPresentation?) -> DetailFactRow {
@@ -2551,12 +2862,12 @@ private struct CircleIconButton: View {
     }
 }
 
-private func bookGameCopy(for mediaType: String) -> (currently: String, finished: String, stopped: String) {
+func bookGameCopy(for mediaType: String) -> (currently: String, finished: String, stopped: String) {
     switch mediaType {
     case "book":
         return ("Currently Reading", "Finished Reading", "Stopped Reading")
     case "music":
-        return ("Listen", "Listened", "Dropped")
+        return ("Start Listening", "Mark Listened", "Stopped")
     default:
         return ("Currently Playing", "Finished Playing", "Stopped Playing")
     }
@@ -2659,11 +2970,14 @@ private struct PosterMenuSheet: View {
 }
 
 private struct BookGameActionSheet: View {
+    @State private var isRemoveConfirmationPresented = false
+
     let mediaType: String
     let status: String?
     let isSaving: Bool
     let errorMessage: String?
     let onAction: (MediaDetailQuickAction) async -> Void
+    let onRemove: () async -> Void
     let onUpdateProgress: () -> Void
     let onLog: () -> Void
 
@@ -2682,7 +2996,7 @@ private struct BookGameActionSheet: View {
                     progressButton
                 } else {
                     actionButton(
-                        title: mediaType == "music" && (status == "Paused" || status == "Dropped") ? "Resume" : copy.currently,
+                        title: mediaType == "music" && (status == "Paused" || status == "Dropped") ? "Resume Listening" : copy.currently,
                         systemName: "play.fill",
                         action: .currently
                     )
@@ -2694,6 +3008,30 @@ private struct BookGameActionSheet: View {
             .padding(.horizontal, 16)
             .padding(.top, 36)
 
+            if mediaType == "music" {
+                HStack(spacing: 12) {
+                    Button {
+                        Task { await onAction(.planning) }
+                    } label: {
+                        Label(status == "Planning" ? "Planning" : "Add to Planning", systemImage: "bookmark")
+                    }
+                    .disabled(isSaving || status == "Planning")
+
+                    if status != nil {
+                        Button(role: .destructive) {
+                            isRemoveConfirmationPresented = true
+                        } label: {
+                            Label("Remove Tracking", systemImage: "trash")
+                        }
+                        .disabled(isSaving)
+                    }
+                }
+                .font(.system(size: 13, weight: .bold))
+                .buttonStyle(.bordered)
+                .tint(.white.opacity(0.82))
+                .padding(.horizontal, 16)
+            }
+
             if let errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 13, weight: .semibold))
@@ -2703,6 +3041,14 @@ private struct BookGameActionSheet: View {
             }
         }
         .presentationBackground(.regularMaterial)
+        .confirmationDialog("Remove album tracking?", isPresented: $isRemoveConfirmationPresented, titleVisibility: .visible) {
+            Button("Remove Tracking", role: .destructive) {
+                Task { await onRemove() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Diary logs are kept.")
+        }
     }
 
     private func actionButton(title: String, systemName: String, action: MediaDetailQuickAction) -> some View {
@@ -2727,7 +3073,7 @@ private struct BookGameActionSheet: View {
 
     private var logButton: some View {
         Button(action: onLog) {
-            actionLabel(title: "Log", systemName: "square.and.pencil")
+            actionLabel(title: mediaType == "music" ? "Log Album" : "Log", systemName: "square.and.pencil")
         }
         .buttonStyle(.plain)
         .disabled(isSaving)
@@ -3697,15 +4043,17 @@ private struct DetailFactRow: Identifiable {
     var value: String?
     var people: [MediaPersonCredit]
     var companies: [MediaCompanyCredit]
+    var destination: URL?
 
     var id: String { label }
     var isEmpty: Bool { label.isEmpty || (value?.isEmpty != false && people.isEmpty && companies.isEmpty) }
 
-    init(label: String, value: String?) {
+    init(label: String, value: String?, destination: URL? = nil) {
         self.label = label
         self.value = value
         people = []
         companies = []
+        self.destination = destination
     }
 
     init(label: String, people: [MediaPersonCredit]) {
@@ -3713,6 +4061,7 @@ private struct DetailFactRow: Identifiable {
         value = nil
         self.people = people
         companies = []
+        destination = nil
     }
 
     init(label: String, companies: [MediaCompanyCredit]) {
@@ -3720,6 +4069,7 @@ private struct DetailFactRow: Identifiable {
         value = nil
         people = []
         self.companies = companies
+        destination = nil
     }
 }
 
@@ -3766,12 +4116,22 @@ private struct DetailFactRowView: View {
                 .frame(width: 98, alignment: .leading)
 
             if row.people.isEmpty && row.companies.isEmpty {
-                Text(row.value ?? "")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.84))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.86)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let destination = row.destination {
+                    Link(destination: destination) {
+                        HStack(spacing: 5) {
+                            detailText(row.value ?? "")
+                            Image(systemName: "arrow.up.right")
+                                .font(.caption2.weight(.bold))
+                        }
+                        .foregroundStyle(.white.opacity(0.84))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens in the system browser")
+                } else {
+                    detailText(row.value ?? "")
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.86)
+                }
             } else if !row.people.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(row.people, id: \.self) { person in
@@ -3817,6 +4177,178 @@ private struct DetailFactRowView: View {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white.opacity(0.84))
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct MusicAlbumTracklistSection: View {
+    let release: MusicRepresentativeRelease?
+    let albumCredits: [MusicArtistCredit]
+    let onSelectTrack: (MusicTrack) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            SectionLabel(title: "Tracklist")
+
+            if let release, hasTracks(release) {
+                LazyVStack(spacing: 0) {
+                    if release.isDeluxeOrRemastered {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "sparkles")
+                            Text("Selected edition: \(release.title) · Deluxe / remastered")
+                        }
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        Divider().overlay(.white.opacity(0.045))
+                    }
+
+                    ForEach(release.media, id: \.position) { medium in
+                        if release.discCount > 1 || release.media.count > 1 {
+                            discHeader(medium)
+                        }
+                        ForEach(medium.tracks) { track in
+                            MusicAlbumTrackRow(
+                                track: track,
+                                albumCredits: albumCredits,
+                                onSelect: { onSelectTrack(track) }
+                            )
+                            if track.id != medium.tracks.last?.id {
+                                Divider().overlay(.white.opacity(0.045))
+                            }
+                        }
+                    }
+                }
+                .mediaDetailSurface(cornerRadius: 14)
+            } else {
+                ContentUnavailableView(
+                    "Tracklist unavailable",
+                    systemImage: "music.note.list",
+                    description: Text("Spine could not resolve a complete album edition.")
+                )
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .mediaDetailSurface(cornerRadius: 14)
+                .accessibilityIdentifier("music.tracklist.unavailable")
+            }
+        }
+    }
+
+    private func hasTracks(_ release: MusicRepresentativeRelease) -> Bool {
+        release.media.contains { !$0.tracks.isEmpty }
+    }
+
+    private func discHeader(_ medium: MusicMedium) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Disc \(medium.position)")
+                .font(.system(size: 13, weight: .heavy))
+            if let title = medium.title?.nilIfEmpty {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.52))
+            }
+        }
+        .foregroundStyle(.white.opacity(0.9))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 7)
+        .background(.white.opacity(0.035))
+    }
+}
+
+private struct MusicAlbumTrackRow: View {
+    let track: MusicTrack
+    let albumCredits: [MusicArtistCredit]
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(track.number)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .frame(width: 28, alignment: .trailing)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(track.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let artist = MusicAlbumPresentation.differingArtistCredit(
+                        track: track,
+                        albumCredits: albumCredits
+                    ) {
+                        Text(artist)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if let duration = MusicAlbumPresentation.duration(track.lengthMs) {
+                    Text(duration)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.28))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .accessibilityLabel("Open \(track.title)")
+        .accessibilityIdentifier("music.track.\(track.recording.recordingMbid)")
+    }
+}
+
+private struct MusicStreamingLinksSection: View {
+    let links: [MusicStreamingLink]
+
+    private var destinations: [MusicStreamingDestination] {
+        MusicAlbumPresentation.streamingDestinations(links)
+    }
+
+    var body: some View {
+        if !destinations.isEmpty {
+            VStack(alignment: .leading, spacing: 13) {
+                SectionLabel(title: "Listen")
+
+                VStack(spacing: 0) {
+                    ForEach(destinations) { destination in
+                        Link(destination: destination.url) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title3)
+                                Text(destination.label)
+                                    .font(.system(size: 14, weight: .semibold))
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.white.opacity(0.42))
+                            }
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens \(destination.label) using the system URL behavior")
+
+                        if destination.id != destinations.last?.id {
+                            Divider().overlay(.white.opacity(0.045))
+                        }
+                    }
+                }
+                .mediaDetailSurface(cornerRadius: 14)
+            }
+        }
     }
 }
 
