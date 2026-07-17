@@ -352,7 +352,7 @@ struct ActivityFeedSkeleton: View {
     var rowCount = 3
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(0 ..< rowCount, id: \.self) { index in
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {

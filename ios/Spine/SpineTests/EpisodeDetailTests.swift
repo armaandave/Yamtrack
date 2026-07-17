@@ -76,6 +76,7 @@ final class EpisodeDetailTests: XCTestCase {
         XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "movie"))
         XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "tv"))
         XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "TMDB", mediaType: "season"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "MusicBrainz", mediaType: "music"))
     }
 
     func testEpisodeIMDbRatingDecodesWhenBackendEnrichesIt() throws {

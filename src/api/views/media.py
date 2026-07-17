@@ -372,7 +372,7 @@ class MediaReviewsView(MediaExposureMixin, APIView):
 
 
 class MediaPostersView(MediaExposureMixin, APIView):
-    """Selectable poster images for TMDB movie/TV media and book covers."""
+    """Selectable poster images for supported media."""
 
     permission_classes = [IsAuthenticated]
 
@@ -393,7 +393,7 @@ class MediaPostersView(MediaExposureMixin, APIView):
 
 
 class MediaPosterPreferenceView(MediaExposureMixin, APIView):
-    """Save the viewer's selected poster or book cover."""
+    """Save the viewer's selected poster."""
 
     permission_classes = [IsAuthenticated]
 

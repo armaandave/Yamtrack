@@ -4746,6 +4746,77 @@ class ApiV1FoundationTests(TestCase):
         self.assertFalse(response.data["posters"][0]["is_selected"])
         self.assertTrue(response.data["posters"][1]["is_selected"])
 
+    @patch("app.providers.musicbrainz.lookup_cover_art")
+    def test_media_music_posters_endpoint_returns_approved_front_covers(self, cover_art_mock):
+        user = get_user_model().objects.create_user(
+            username="musicposter",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id="f32fab67-77dd-3937-addc-9062e28e4c37",
+            title="Thriller",
+            image="https://coverartarchive.org/release-group/f32fab67-77dd-3937-addc-9062e28e4c37/front-500",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://coverartarchive.org/release/release-id/alternate.jpg",
+        )
+        cover_art_mock.return_value = {
+            "images": [
+                {
+                    "image": "http://coverartarchive.org/release/release-id/original.jpg",
+                    "thumbnails": {
+                        "500": "http://coverartarchive.org/release/release-id/original-500.jpg",
+                    },
+                    "types": ["Front"],
+                    "front": True,
+                    "approved": True,
+                },
+                {
+                    "image": "http://coverartarchive.org/release/release-id/alternate.jpg",
+                    "thumbnails": {
+                        "250": "http://coverartarchive.org/release/release-id/alternate-250.jpg",
+                    },
+                    "types": ["Front"],
+                    "front": False,
+                    "approved": True,
+                },
+                {
+                    "image": "https://coverartarchive.org/release/release-id/back.jpg",
+                    "types": ["Back"],
+                    "approved": True,
+                },
+                {
+                    "image": "https://coverartarchive.org/release/release-id/unapproved.jpg",
+                    "types": ["Front"],
+                    "approved": False,
+                },
+            ],
+        }
+        self.client.force_authenticate(user)
+
+        response = self.client.get(
+            "/api/v1/media/musicbrainz/music/f32fab67-77dd-3937-addc-9062e28e4c37/posters/",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [poster["url"] for poster in response.data["posters"]],
+            [
+                "https://coverartarchive.org/release/release-id/original.jpg",
+                "https://coverartarchive.org/release/release-id/alternate.jpg",
+            ],
+        )
+        self.assertTrue(response.data["posters"][0]["is_original"])
+        self.assertTrue(response.data["posters"][1]["is_selected"])
+        self.assertEqual(
+            response.data["posters"][1]["thumbnail_url"],
+            "https://coverartarchive.org/release/release-id/alternate-250.jpg",
+        )
+
     def test_media_posters_endpoint_rejects_unsupported_media(self):
         user = get_user_model().objects.create_user(username="poster2", password="strong-password-123")
         self.client.force_authenticate(user)
@@ -4888,6 +4959,42 @@ class ApiV1FoundationTests(TestCase):
         item.refresh_from_db()
         self.assertEqual(item.image, "https://example.com/new-game.jpg")
         self.assertEqual(item.poster_accent_color, "#aabbcc")
+
+    @patch("api.services.media.build_accent_palette", return_value={"accent": "#d9bc7a", "contrast": "#000000"})
+    @patch("api.services.media.compute_and_store_poster_accent", return_value="#d9bc7a")
+    def test_media_music_poster_save_updates_preference_and_item(self, _accent_mock, _palette_mock):
+        user = get_user_model().objects.create_user(
+            username="musicposter2",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            media_id="f32fab67-77dd-3937-addc-9062e28e4c37",
+            title="Thriller",
+            image="https://coverartarchive.org/release/release-id/original.jpg",
+        )
+        self.client.force_authenticate(user)
+
+        response = self.client.put(
+            "/api/v1/media/musicbrainz/music/f32fab67-77dd-3937-addc-9062e28e4c37/poster/",
+            {
+                "poster_url": "https://coverartarchive.org/release/release-id/alternate.jpg",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        item.refresh_from_db()
+        self.assertEqual(
+            item.image,
+            "https://coverartarchive.org/release/release-id/alternate.jpg",
+        )
+        self.assertEqual(item.poster_accent_color, "#d9bc7a")
+        self.assertEqual(
+            CustomPosterPreference.objects.get(user=user, item=item).custom_image_url,
+            "https://coverartarchive.org/release/release-id/alternate.jpg",
+        )
 
     @patch("api.services.media.build_accent_palette", return_value={"accent": "#abcdef", "contrast": "#000000"})
     @patch("api.services.media.compute_and_store_poster_accent", return_value="#abcdef")

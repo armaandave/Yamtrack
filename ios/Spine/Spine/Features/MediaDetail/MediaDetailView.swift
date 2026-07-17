@@ -439,6 +439,9 @@ enum MediaArtworkCustomization {
         if source == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
             return true
         }
+        if source == "musicbrainz", mediaType == "music" {
+            return true
+        }
         if source == "igdb", mediaType == "game" {
             return true
         }
@@ -463,7 +466,7 @@ enum MediaArtworkCustomization {
 enum MediaExternalRatingPresentation {
     static func includes(source: String, mediaType: String) -> Bool {
         let normalizedSource = source.lowercased()
-        if normalizedSource == "spine" {
+        if mediaType == "music" || normalizedSource == "spine" {
             return false
         }
         if normalizedSource == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
@@ -1021,7 +1024,7 @@ private struct MediaDetailPageView: View {
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
                     title: "Customize Poster",
-                    showsLanguageFilter: !isBook(detail) && detail.ref.mediaType != "game",
+                    showsLanguageFilter: !["book", "game", "music"].contains(detail.ref.mediaType),
                     contentMode: isBook(detail) ? .fit : .fill,
                     onUnauthorized: onUnauthorized
                 ) { response in
@@ -1462,45 +1465,72 @@ private struct MediaDetailPageView: View {
     }
 
     private func musicHero(_ detail: MediaDetail) -> some View {
-        VStack(spacing: 18) {
-            heroPoster(detail)
-                .scaleEffect(1.2)
-                .frame(width: 230, height: 230)
-                .accessibilityLabel("Album cover for \(detail.displayTitle)")
+        let artworkScale: CGFloat = 1.28
+        let artworkSize = MediaDetailLayout.heroPosterWidth * artworkScale
 
-            VStack(spacing: 8) {
-                Text(detail.displayTitle)
-                    .font(.largeTitle.weight(.black))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .accessibilityAddTraits(.isHeader)
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                heroPoster(detail)
+                    .scaleEffect(artworkScale)
+                    .frame(width: artworkSize, height: artworkSize)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 16)
 
-                if let artist = musicArtist(detail) {
-                    Text(artist)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: 11) {
+                    titleDisplay(
+                        detail: detail,
+                        title: detail.displayTitle,
+                        showsLogo: $showsTitleLogo,
+                        font: .system(size: 33, weight: .heavy),
+                        lineLimit: nil,
+                        minimumScaleFactor: 0.66,
+                        maxLogoHeight: 48
+                    )
+
+                    if let artist = musicArtist(detail) {
+                        bylineText(artist, lineLimit: 1, alignment: .leading)
+                    }
+
+                    musicHeroChips(detail)
+                    RatingChipRow(chips: ratingChips(detail), stacked: false)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.top, resolvedTopSafeAreaInset + MediaDetailLayout.heroPosterTopOffset)
+            .padding(.bottom, 18)
+            .background {
+                HeroArtwork(detail: detail)
             }
 
-            musicHeroChips(detail)
-            RatingChipRow(chips: ratingChips(detail), stacked: false)
             MusicStreamingButtons(
                 links: detail.music?.representativeRelease?.streamingLinks ?? []
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 18)
-        .padding(.top, resolvedTopSafeAreaInset + 104)
-        .padding(.bottom, 28)
-        .background {
-            HeroArtwork(detail: detail)
-        }
     }
 
     @ViewBuilder
     private func musicHeroChips(_ detail: MediaDetail) -> some View {
-        let chips = musicHeroChipValues(detail)
+        let genres = detailArray(detail, "genres")
+        let release = [
+            detail.music.flatMap { MusicAlbumPresentation.releaseType($0) },
+            formattedDate(detail.music?.firstReleaseDate),
+        ].compactMap { $0?.nilIfEmpty }
+
+        VStack(spacing: 8) {
+            musicHeroChipRow(genres)
+            musicHeroChipRow(release)
+        }
+    }
+
+    @ViewBuilder
+    private func musicHeroChipRow(_ chips: [String]) -> some View {
         if !chips.isEmpty {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
@@ -1519,16 +1549,8 @@ private struct MediaDetailPageView: View {
                 }
                 .contentMargins(.horizontal, 2)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    private func musicHeroChipValues(_ detail: MediaDetail) -> [String] {
-        guard let music = detail.music else { return [] }
-        var values = [MusicAlbumPresentation.releaseType(music), formattedDate(music.firstReleaseDate)]
-            .compactMap { $0?.nilIfEmpty }
-        values += detailArray(detail, "genres")
-        var seen = Set<String>()
-        return values.filter { seen.insert($0.lowercased()).inserted }
     }
 
     private func musicArtist(_ detail: MediaDetail) -> String? {
@@ -1739,7 +1761,7 @@ private struct MediaDetailPageView: View {
     @ViewBuilder
     private func heroHeader(_ detail: MediaDetail) -> some View {
         if backdropURLString(for: detail) != nil {
-            HStack(alignment: .bottom, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 11) {
                     titleDisplay(
                         detail: detail,
@@ -2008,15 +2030,6 @@ private struct MediaDetailPageView: View {
             }
             trackingSummarySection(detail)
             SpineRatingDistributionSection(community: detail.community)
-            MediaFactsSection(
-                rows: detailRows(detail),
-                onPersonSelected: { person in
-                    presentedPerson = person
-                },
-                onCompanySelected: { company in
-                    presentedCompany = company
-                }
-            )
             MusicAlbumTracklistSection(
                 release: detail.music?.representativeRelease,
                 albumCredits: detail.music?.artistCredit ?? [],
@@ -2026,6 +2039,15 @@ private struct MediaDetailPageView: View {
                         track: track,
                         artworkURL: detail.displayPosterURL
                     )
+                }
+            )
+            MediaFactsSection(
+                rows: detailRows(detail),
+                onPersonSelected: { person in
+                    presentedPerson = person
+                },
+                onCompanySelected: { company in
+                    presentedCompany = company
                 }
             )
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
@@ -2495,24 +2517,11 @@ private struct MediaDetailPageView: View {
     private func musicDetailRows(_ detail: MediaDetail) -> [DetailFactRow] {
         guard let music = detail.music else { return [] }
         let release = music.representativeRelease
-        let selectedEdition = [
-            release?.title.nilIfEmpty,
-            formattedDate(release?.date),
-        ].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
         return [
             DetailFactRow(label: "Artist", value: musicArtist(detail)),
             DetailFactRow(label: "Release Date", value: formattedDate(music.firstReleaseDate)),
             DetailFactRow(label: "Release Type", value: MusicAlbumPresentation.releaseType(music)),
-            DetailFactRow(label: "Selected Edition", value: selectedEdition),
             DetailFactRow(label: "Track Count", value: release.map { String($0.trackCount) }),
-            DetailFactRow(label: "Disc Count", value: release.map { String($0.discCount) }),
-            DetailFactRow(label: "Country", value: MusicAlbumPresentation.countryName(release?.country)),
-            DetailFactRow(label: "Format", value: release.flatMap { MusicAlbumPresentation.format($0) }),
-            DetailFactRow(
-                label: "MusicBrainz",
-                value: "Open release group",
-                destination: MusicAlbumPresentation.musicBrainzURL(releaseGroupMbid: music.releaseGroupMbid)
-            ),
         ].filter { !$0.isEmpty }
     }
 
@@ -3546,6 +3555,10 @@ struct BackdropArtwork: View {
 private struct ActionRail: View {
     private static let buttonSize: CGFloat = 44
 
+    @State private var isPressing = false
+    @State private var pressHaptics = UIImpactFeedbackGenerator(style: .light)
+    @State private var actionHaptics = UISelectionFeedbackGenerator()
+
     let isTracked: Bool
     let isLiked: Bool
     var trackLabel: String?
@@ -3589,6 +3602,20 @@ private struct ActionRail: View {
             Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75)
         }
         .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !isPressing else { return }
+                    isPressing = true
+                    pressHaptics.impactOccurred()
+                    pressHaptics.prepare()
+                }
+                .onEnded { _ in isPressing = false }
+        )
+        .onAppear {
+            pressHaptics.prepare()
+            actionHaptics.prepare()
+        }
         .accessibilityIdentifier("media-detail.actions")
     }
 
@@ -3600,7 +3627,11 @@ private struct ActionRail: View {
         isDisabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button {
+            actionHaptics.selectionChanged()
+            actionHaptics.prepare()
+            action()
+        } label: {
             ZStack {
                 Group {
                     if isLoading {
@@ -3629,16 +3660,19 @@ private struct ActionRail: View {
 }
 
 private struct StarRatingPill: View {
-    @State private var rating = 0
+    @State private var halfSteps = 0
+    @State private var haptics = UISelectionFeedbackGenerator()
+
+    private let duneGold = Color(red: 0.94, green: 0.64, blue: 0.24)
 
     var body: some View {
         GeometryReader { proxy in
-            HStack(spacing: 3) {
+            HStack(spacing: 1.25) {
                 ForEach(1...5, id: \.self) { value in
-                    Image(systemName: value <= rating ? "star.fill" : "star")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(value <= rating ? .yellow : .white.opacity(0.84))
-                        .frame(width: 18, height: 28)
+                    Image(systemName: starSymbol(for: value))
+                        .font(.system(size: 17.5, weight: .medium))
+                        .foregroundStyle(halfSteps >= value * 2 - 1 ? duneGold : .white.opacity(0.28))
+                        .frame(width: 22.5, height: 30)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3646,34 +3680,51 @@ private struct StarRatingPill: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
-                        rating = min(max(Int((gesture.location.x / proxy.size.width * 5).rounded()), 0), 5)
+                        let nextValue = min(
+                            max(Int((gesture.location.x / proxy.size.width * 10).rounded()), 0),
+                            10
+                        )
+                        setRating(nextValue)
                     }
             )
         }
-        .frame(width: 116, height: 28)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .background(.white.opacity(0.08), in: Capsule())
-        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 16))
+        .frame(width: 127.5, height: 30)
+        .padding(.horizontal, 3.75)
+        .padding(.vertical, 2.5)
+        .background(.white.opacity(0.06), in: Capsule())
+        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 17.5))
         .overlay {
-            Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75)
+            Capsule().stroke(.white.opacity(0.2), lineWidth: 0.875)
         }
-        .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-        .sensoryFeedback(.selection, trigger: rating)
+        .shadow(color: .black.opacity(0.16), radius: 5, y: 1.25)
+        .onAppear { haptics.prepare() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Your rating")
-        .accessibilityValue(rating == 0 ? "Not rated" : "\(rating) out of 5")
+        .accessibilityValue(halfSteps == 0 ? "Not rated" : "\(Double(halfSteps) / 2) out of 5")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                rating = min(rating + 1, 5)
+                setRating(min(halfSteps + 1, 10))
             case .decrement:
-                rating = max(rating - 1, 0)
+                setRating(max(halfSteps - 1, 0))
             @unknown default:
                 break
             }
         }
         .accessibilityIdentifier("media-detail.star-rating")
+    }
+
+    private func starSymbol(for value: Int) -> String {
+        if halfSteps >= value * 2 { return "star.fill" }
+        if halfSteps == value * 2 - 1 { return "star.leadinghalf.filled" }
+        return "star"
+    }
+
+    private func setRating(_ newValue: Int) {
+        guard newValue != halfSteps else { return }
+        halfSteps = newValue
+        haptics.selectionChanged()
+        haptics.prepare()
     }
 }
 
@@ -4161,23 +4212,11 @@ private struct MusicAlbumTracklistSection: View {
     let onSelectTrack: (MusicTrack) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 10) {
             SectionLabel(title: "Tracklist")
 
             if let release, hasTracks(release) {
                 LazyVStack(spacing: 0) {
-                    if release.isDeluxeOrRemastered {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "sparkles")
-                            Text("Selected edition: \(release.title) · Deluxe / remastered")
-                        }
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        Divider().overlay(.white.opacity(0.045))
-                    }
-
                     ForEach(release.media, id: \.position) { medium in
                         if release.discCount > 1 || release.media.count > 1 {
                             discHeader(medium)
@@ -4226,9 +4265,9 @@ private struct MusicAlbumTracklistSection: View {
         }
         .foregroundStyle(.white.opacity(0.9))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.top, 14)
-        .padding(.bottom, 7)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 5)
         .background(.white.opacity(0.035))
     }
 }
@@ -4242,7 +4281,7 @@ private struct MusicAlbumTrackRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(track.number)
                     .font(.caption.monospacedDigit().weight(.bold))
                     .foregroundStyle(.white.opacity(0.62))
@@ -4275,12 +4314,12 @@ private struct MusicAlbumTrackRow: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.white.opacity(0.28))
             }
-            .frame(minHeight: 44)
+            .frame(minHeight: 36)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(MusicAlbumPresentation.trackAccessibilityLabel(track: track, albumCredits: albumCredits))
         .accessibilityHint("Opens song details")
@@ -4292,8 +4331,10 @@ private struct MusicStreamingButtons: View {
     let links: [MusicStreamingLink]
 
     private var destinations: [MusicStreamingDestination] {
-        MusicAlbumPresentation.streamingDestinations(links).filter {
-            $0.label == "Apple Music" || $0.label == "Spotify"
+        var seen = Set<String>()
+        return MusicAlbumPresentation.streamingDestinations(links).filter {
+            ($0.label == "Apple Music" || $0.label == "Spotify")
+                && seen.insert($0.label).inserted
         }
     }
 
@@ -4324,21 +4365,9 @@ private struct MusicStreamingButton: View {
 
     var body: some View {
         Link(destination: destination.url) {
-            HStack(spacing: 6) {
-                serviceLogo
-                Text(destination.label)
-                    .font(.caption.weight(.bold))
-            }
-            .foregroundStyle(foregroundColor)
-            .padding(.horizontal, 11)
-            .frame(height: 36)
-            .background { buttonBackground }
-            .overlay {
-                Capsule()
-                    .stroke(.white.opacity(destination.label == "Spotify" ? 0.08 : 0.18), lineWidth: 0.75)
-            }
+            serviceLogo
             .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-            .contentShape(Capsule())
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Listen on \(destination.label)")
@@ -4349,69 +4378,23 @@ private struct MusicStreamingButton: View {
     private var serviceLogo: some View {
         switch destination.label {
         case "Apple Music":
-            Image(systemName: "music.note")
-                .font(.system(size: 11, weight: .bold))
-                .frame(width: 18, height: 18)
-                .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            Image("AppleMusicIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
         case "Spotify":
-            ZStack {
-                Circle().fill(.black)
-                SpotifyWaves()
-                    .stroke(
-                        Color(red: 0.12, green: 0.84, blue: 0.38),
-                        style: StrokeStyle(lineWidth: 1.8, lineCap: .round)
-                    )
-                    .padding(4)
-            }
-            .frame(width: 18, height: 18)
+            Image("SpotifyIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
         default:
             Image(systemName: "play.fill")
                 .font(.caption.weight(.bold))
-                .frame(width: 18, height: 18)
+                .frame(width: 36, height: 36)
                 .background(.white.opacity(0.12), in: Circle())
         }
-    }
-
-    @ViewBuilder
-    private var buttonBackground: some View {
-        let shape = Capsule()
-        switch destination.label {
-        case "Apple Music":
-            shape.fill(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.98, green: 0.17, blue: 0.32),
-                        Color(red: 0.78, green: 0.12, blue: 0.55),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-        case "Spotify":
-            shape.fill(Color(red: 0.12, green: 0.84, blue: 0.38))
-        default:
-            shape.fill(.white.opacity(0.12))
-        }
-    }
-
-    private var foregroundColor: Color {
-        destination.label == "Spotify" ? .black : .white
-    }
-}
-
-private struct SpotifyWaves: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        for index in 0..<3 {
-            let inset = CGFloat(index) * rect.height * 0.18
-            let y = rect.minY + rect.height * (0.28 + CGFloat(index) * 0.22)
-            path.move(to: CGPoint(x: rect.minX + inset, y: y))
-            path.addQuadCurve(
-                to: CGPoint(x: rect.maxX - inset, y: y + rect.height * 0.08),
-                control: CGPoint(x: rect.midX, y: y - rect.height * 0.12)
-            )
-        }
-        return path
     }
 }
 
@@ -5054,9 +5037,33 @@ struct MediaTitleDisplay: View {
     let lineLimit: Int?
     let minimumScaleFactor: CGFloat
     let maxLogoHeight: CGFloat
-    let alignment: Alignment = .center
+    let alignment: Alignment
     let onTap: (() -> Void)?
     let onLongPress: (() -> Void)?
+
+    init(
+        detail: MediaDetail,
+        title: String,
+        showsLogo: Binding<Bool>,
+        font: Font,
+        lineLimit: Int?,
+        minimumScaleFactor: CGFloat,
+        maxLogoHeight: CGFloat,
+        alignment: Alignment = .center,
+        onTap: (() -> Void)?,
+        onLongPress: (() -> Void)?
+    ) {
+        self.detail = detail
+        self.title = title
+        _showsLogo = showsLogo
+        self.font = font
+        self.lineLimit = lineLimit
+        self.minimumScaleFactor = minimumScaleFactor
+        self.maxLogoHeight = maxLogoHeight
+        self.alignment = alignment
+        self.onTap = onTap
+        self.onLongPress = onLongPress
+    }
 
     private var canToggle: Bool {
         supportsTitleLogo(detail)

@@ -63,7 +63,7 @@ COMPANY_GAME_SORT_OPTIONS = [
 ]
 COMPANY_GAME_OPTIONS_CACHE_VERSION = "v1"
 POSTER_UNSUPPORTED_MESSAGE = (
-    "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, and IGDB games."
+    "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, IGDB games, and MusicBrainz music."
 )
 BACKDROP_UNSUPPORTED_MESSAGE = (
     "Backdrop customization is only available for TMDB movies/TV shows/seasons/episodes and IGDB games."
@@ -731,6 +731,14 @@ def _company_release_date(value):
 
 def poster_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
     """Return selectable posters for supported media."""
+    if _supports_music_posters(source, media_type):
+        options = music_cover_options(
+            source=source,
+            media_id=media_id,
+            request=request,
+            user=user,
+        )
+        return {"posters": options["posters"]}
     if _supports_book_posters(source, media_type):
         options = book_cover_options(
             source=source,
@@ -784,7 +792,10 @@ def save_poster_preference(*, source, media_type, media_id, poster_url, user, se
     if (
         source != Sources.TMDB.value
         or media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.SEASON.value]
-    ) and not _supports_book_posters(source, media_type) and not _supports_game_posters(source, media_type):
+    ) and not _supports_book_posters(source, media_type) and not _supports_game_posters(
+        source,
+        media_type,
+    ) and not _supports_music_posters(source, media_type):
         raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
     if not poster_url:
@@ -846,6 +857,84 @@ def book_cover_options(*, source, media_id, request=None, user=None):
                 "is_selected": absolute_url == selected_absolute,
             },
         )
+    return {"item": item, "posters": posters, "current_poster": selected_url}
+
+
+def music_cover_options(*, source, media_id, request=None, user=None):
+    """Return approved front covers for a MusicBrainz release group."""
+    media_type = MediaTypes.MUSIC.value
+    if not _supports_music_posters(source, media_type):
+        raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    current = CustomPosterPreference.objects.filter(user=user, item=item).first()
+    selected_url = current.custom_image_url if current else item.image
+    selected_absolute = absolute_poster_url(request, selected_url)
+
+    posters = []
+    seen = set()
+    for image in (musicbrainz.lookup_cover_art(media_id) or {}).get("images", []):
+        if (
+            not isinstance(image, dict)
+            or image.get("approved") is False
+            or "Front" not in (image.get("types") or [])
+        ):
+            continue
+        url = _cover_art_https(image.get("image"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        thumbnails = image.get("thumbnails") or {}
+        posters.append(
+            {
+                "url": absolute_poster_url(request, url),
+                "thumbnail_url": absolute_poster_url(
+                    request,
+                    _cover_art_https(
+                        thumbnails.get("500")
+                        or thumbnails.get("large")
+                        or thumbnails.get("250")
+                        or url,
+                    ),
+                ),
+                "width": 0,
+                "height": 0,
+                "aspect_ratio": 1.0,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": None,
+                "is_original": bool(image.get("front")),
+                "is_selected": False,
+            },
+        )
+
+    if not posters:
+        posters.append(
+            {
+                "url": absolute_poster_url(request, item.image),
+                "thumbnail_url": absolute_poster_url(request, item.image),
+                "width": 0,
+                "height": 0,
+                "aspect_ratio": 1.0,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": None,
+                "is_original": True,
+                "is_selected": True,
+            },
+        )
+    else:
+        if not any(poster["is_original"] for poster in posters):
+            posters[0]["is_original"] = True
+        candidate_urls = {poster["url"] for poster in posters}
+        if selected_absolute not in candidate_urls:
+            selected_absolute = next(
+                (poster["url"] for poster in posters if poster["is_original"]),
+                posters[0]["url"],
+            )
+        for poster in posters:
+            poster["is_selected"] = poster["url"] == selected_absolute
+
     return {"item": item, "posters": posters, "current_poster": selected_url}
 
 
@@ -1303,6 +1392,13 @@ def _supports_game_posters(source, media_type):
     return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
 
 
+def _supports_music_posters(source, media_type):
+    return (
+        media_type == MediaTypes.MUSIC.value
+        and source == Sources.MUSICBRAINZ.value
+    )
+
+
 def _supports_game_backdrops(source, media_type):
     return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
 
@@ -1337,6 +1433,10 @@ def absolute_poster_url(request, url):
     if str(url).startswith(("http://", "https://")):
         return url
     return request.build_absolute_uri(url) if request is not None else url
+
+
+def _cover_art_https(url):
+    return str(url).replace("http://coverartarchive.org", "https://coverartarchive.org", 1) if url else None
 
 
 def backdrop_url(metadata):

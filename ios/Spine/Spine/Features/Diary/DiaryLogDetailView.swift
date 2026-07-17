@@ -304,9 +304,18 @@ struct DiaryLogDetailView: View {
                         .textCase(.uppercase)
 
                     if let logged = DiaryLogFormat.dateLabel(entry.consumedAt) {
-                        Text("Logged \(logged)")
-                            .font(.system(size: 13, weight: .heavy))
-                            .foregroundStyle(.white.opacity(0.72))
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if entry.isRewatch {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.74))
+                                    .accessibilityLabel(entry.media.ref.repeatLabel)
+                            }
+
+                            Text("Logged \(logged)")
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
 
                         if let age = DiaryLogFormat.ageLabel(entry.consumedAt) {
                             Text(age)
@@ -338,12 +347,6 @@ struct DiaryLogDetailView: View {
                                 .minimumScaleFactor(0.72)
                         }
 
-                        if entry.isRewatch {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 17.25, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.74))
-                                .accessibilityLabel(entry.media.ref.repeatLabel)
-                        }
                     }
 
                     if let metadata = heroMetadata(entry) {

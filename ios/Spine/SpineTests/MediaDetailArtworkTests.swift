@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class MediaDetailArtworkTests: XCTestCase {
-    func testMusicBrainzDoesNotEnableArtworkCustomization() {
-        XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "musicbrainz", mediaType: "music"))
+    func testMusicBrainzEnablesPosterCustomizationOnly() {
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "musicbrainz", mediaType: "music"))
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "musicbrainz", mediaType: "music"))
         XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "musicbrainz", mediaType: "music"))
     }
