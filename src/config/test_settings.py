@@ -17,6 +17,7 @@ CELERY_TASK_ALWAYS_EAGER = True
 
 TESTING = True
 MUSIC_ENABLED = True
+LISTENBRAINZ_TOKEN = ""
 
 # Steam API key for testing
 STEAM_API_KEY = "test_steam_api_key"

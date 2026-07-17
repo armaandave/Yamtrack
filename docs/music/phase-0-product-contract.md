@@ -202,6 +202,20 @@ Do not merge these by normalized title, ISRC, or work relationship. Recording MB
 - Do not ingest the canonical CSV dataset initially. The [canonical release mapping](https://musicbrainz.org/doc/Canonical_MusicBrainz_data) is a separate synchronized dataset and its choice can change between dumps.
 - Reconsider canonical data only if the frozen corpus cannot pass 15/15 after reasonable deterministic policy corrections, or if at least three fixtures require one-off exceptions. Any adoption needs its own sync, cache invalidation, licensing, and operations phase.
 
+## In-app attribution
+
+The iOS product identifies MusicBrainz as the metadata source and Cover Art
+Archive as the artwork source in Profile Settings under Data Sources, with links
+to both projects. Album detail also keeps the existing concise metadata/artwork
+attribution visible near provider-backed content. Artwork accessibility labels
+describe the image as an album cover without implying that Spine, MusicBrainz,
+or Cover Art Archive owns it.
+
+This attribution is required product copy, not a substitute for the unresolved
+production account and licensing decision below. The final wording and any
+additional placement must be updated if MetaBrainz's written response imposes
+specific attribution or share-alike terms.
+
 ## Licensing and production account gate
 
 This is the only incomplete Phase 0 exit criterion. No MetaBrainz confirmation has been represented as received.

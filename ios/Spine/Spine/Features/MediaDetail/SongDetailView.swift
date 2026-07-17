@@ -80,6 +80,7 @@ enum MusicSongPresentation {
 
 struct SongDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var viewModel: SongDetailViewModel
     @State private var selectedAlbum: MediaRef?
 
@@ -220,7 +221,7 @@ struct SongDetailView: View {
             Image(systemName: "chevron.left")
                 .font(.system(size: 15, weight: .heavy))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
                 .background(.black.opacity(0.48), in: Circle())
         }
         .buttonStyle(.plain)
@@ -236,17 +237,18 @@ struct SongDetailView: View {
                 mediaType: "music",
                 orientation: .square
             )
+            .accessibilityLabel("Album cover for \(detail.parentAlbum.title)")
             .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
 
             VStack(spacing: 7) {
                 Text(detail.title)
-                    .font(.system(size: 32, weight: .black))
+                    .font(.largeTitle.weight(.black))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
                 if let artist = MusicAlbumPresentation.artistCreditText(detail.artistCredit) {
                     Text(artist)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.62))
                         .multilineTextAlignment(.center)
                 }
@@ -262,15 +264,19 @@ struct SongDetailView: View {
             SongSection(title: "Song Details") {
                 VStack(spacing: 0) {
                     ForEach(rows) { row in
-                        HStack(alignment: .top, spacing: 12) {
-                            Text(row.label)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.44))
-                                .frame(width: 92, alignment: .leading)
-                            Text(row.value)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.86))
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        Group {
+                            if dynamicTypeSize.isAccessibilitySize {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    factLabel(row.label)
+                                    factValue(row.value)
+                                }
+                            } else {
+                                HStack(alignment: .top, spacing: 12) {
+                                    factLabel(row.label)
+                                        .frame(width: 92, alignment: .leading)
+                                    factValue(row.value)
+                                }
+                            }
                         }
                         .padding(14)
                         if row.id != rows.last?.id {
@@ -283,6 +289,19 @@ struct SongDetailView: View {
         }
     }
 
+    private func factLabel(_ value: String) -> some View {
+        Text(value)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.62))
+    }
+
+    private func factValue(_ value: String) -> some View {
+        Text(value)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.86))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder
     private func works(_ detail: MusicRecordingDetail) -> some View {
         if !detail.works.isEmpty {
@@ -291,18 +310,18 @@ struct SongDetailView: View {
                     ForEach(detail.works, id: \.workMbid) { work in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(work.title)
-                                .font(.system(size: 15, weight: .bold))
+                                .font(.headline)
                                 .foregroundStyle(.white.opacity(0.92))
                             let metadata = workMetadata(work)
                             if !metadata.isEmpty {
                                 Text(metadata.joined(separator: " · "))
                                     .font(.caption.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.48))
+                                    .foregroundStyle(.white.opacity(0.62))
                             }
                             ForEach(Array(work.credits.enumerated()), id: \.offset) { _, credit in
                                 if let value = MusicSongPresentation.credit(credit) {
                                     Text(value)
-                                        .font(.system(size: 13, weight: .semibold))
+                                        .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.white.opacity(0.8))
                                 }
                             }
@@ -333,12 +352,12 @@ struct SongDetailView: View {
                                 )
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(album.title)
-                                        .font(.system(size: 14, weight: .bold))
+                                        .font(.subheadline.weight(.bold))
                                         .foregroundStyle(.white.opacity(0.92))
                                     if let subtitle = nonEmpty(album.subtitle) ?? nonEmpty(album.releaseDate) {
                                         Text(subtitle)
                                             .font(.caption.weight(.medium))
-                                            .foregroundStyle(.white.opacity(0.5))
+                                            .foregroundStyle(.white.opacity(0.62))
                                     }
                                 }
                                 Spacer()
@@ -369,18 +388,18 @@ struct SongDetailView: View {
                     ForEach(detail.releases, id: \.releaseMbid) { release in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(release.title)
-                                .font(.system(size: 14, weight: .bold))
+                                .font(.subheadline.weight(.bold))
                                 .foregroundStyle(.white.opacity(0.9))
                             let metadata = releaseMetadata(release)
                             if !metadata.isEmpty {
                                 Text(metadata.joined(separator: " · "))
                                     .font(.caption.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(.white.opacity(0.62))
                             }
                             if let barcode = nonEmpty(release.barcode) {
                                 Text("Barcode \(barcode)")
                                     .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.white.opacity(0.4))
+                                    .foregroundStyle(.white.opacity(0.62))
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -400,13 +419,14 @@ struct SongDetailView: View {
             Link(destination: MusicSongPresentation.musicBrainzURL(detail)) {
                 HStack {
                     Label("View on MusicBrainz", systemImage: "music.note")
-                        .font(.system(size: 14, weight: .bold))
+                        .font(.subheadline.weight(.bold))
                     Spacer()
                     Image(systemName: "arrow.up.right")
                         .font(.caption.weight(.bold))
                 }
                 .foregroundStyle(.white.opacity(0.9))
                 .padding(14)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -480,8 +500,8 @@ private struct SongSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .heavy))
-                .foregroundStyle(.white.opacity(0.48))
+                .font(.caption2.weight(.heavy))
+                .foregroundStyle(.white.opacity(0.62))
             content
         }
     }

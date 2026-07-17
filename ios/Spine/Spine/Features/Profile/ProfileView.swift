@@ -2037,6 +2037,11 @@ private struct ProfileSettingsSheet: View {
                     LabeledContent("API Prefix", value: AppConfig.apiPrefix)
                 }
 
+                Section("Data Sources") {
+                    Link("Music metadata provided by MusicBrainz", destination: URL(string: "https://musicbrainz.org/")!)
+                    Link("Cover art provided by the Cover Art Archive", destination: URL(string: "https://coverartarchive.org/")!)
+                }
+
                 Section {
                     Button(role: .destructive) {
                         dismiss()

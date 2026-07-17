@@ -301,7 +301,7 @@ struct HomeView: View {
                     HomeInlineState(
                         title: "Nothing in progress",
                         systemImage: "play.circle",
-                        message: "Current watches, reads, and plays will appear here.",
+                        message: "Things you're watching, reading, listening to, and playing will appear here.",
                         actionTitle: "Find something"
                     ) {
                         onSelectTab(.search)
@@ -481,6 +481,12 @@ private struct HomeArtworkAtmosphere: View {
     }
 
     private var artworkURL: URL? {
+        HomeArtworkAtmosphereModel.url(for: media)
+    }
+}
+
+enum HomeArtworkAtmosphereModel {
+    static func url(for media: MediaSummary?) -> URL? {
         URL(string: media?.displayBackdropURL ?? media?.displayPosterURL ?? "")
     }
 }

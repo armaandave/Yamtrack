@@ -96,6 +96,32 @@ final class SpineTests: XCTestCase {
         )
     }
 
+    func testHomeAtmosphereUsesAlbumCoverWithoutInventingBackdrop() {
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: 902,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterUrl: "https://example.com/year-zero-square.jpg",
+            backdropUrl: nil,
+            posterOrientation: .square,
+            posterAspectRatio: 1
+        )
+
+        XCTAssertEqual(
+            HomeArtworkAtmosphereModel.url(for: album)?.absoluteString,
+            "https://example.com/year-zero-square.jpg"
+        )
+        XCTAssertNil(album.displayBackdropURL)
+        XCTAssertEqual(album.posterOrientation, .square)
+        XCTAssertEqual(album.posterAspectRatio, 1)
+    }
+
     @MainActor
     func testListComposerRequiresNameAndItemAndSupportsUndoAndOrdering() {
         let repository = ScriptedListComposerRepository()
@@ -155,24 +181,26 @@ final class SpineTests: XCTestCase {
         viewModel.draft.name = "Favorites"
         viewModel.draft.isRanked = true
         viewModel.toggleSelection(composerMedia("1"))
-        viewModel.toggleSelection(composerMedia("2"))
+        viewModel.toggleSelection(composerMedia("album", mediaType: "music"))
 
         let listID = await viewModel.save()
 
         XCTAssertEqual(listID, 77)
         XCTAssertEqual(repository.createCount, 1)
-        XCTAssertEqual(repository.addAttempts, ["1", "2"])
+        XCTAssertEqual(repository.addAttempts, ["1", "album"])
         XCTAssertEqual(repository.reorderedItemIDs, [101, 102])
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaType), ["movie", "music"])
+        XCTAssertEqual(repository.serverItems.last?.posterOrientation, .square)
         XCTAssertNil(viewModel.errorMessage)
     }
 
     @MainActor
     func testListComposerRetriesPartialCreateWithoutCreatingOrAddingTwice() async {
-        let repository = ScriptedListComposerRepository(failingMediaIDs: ["2"])
+        let repository = ScriptedListComposerRepository(failingMediaIDs: ["album"])
         let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
         viewModel.draft.name = "Favorites"
         viewModel.toggleSelection(composerMedia("1"))
-        viewModel.toggleSelection(composerMedia("2"))
+        viewModel.toggleSelection(composerMedia("album", mediaType: "music"))
 
         let firstSaveResult = await viewModel.save()
         XCTAssertNil(firstSaveResult)
@@ -184,8 +212,9 @@ final class SpineTests: XCTestCase {
         let retryResult = await viewModel.save()
         XCTAssertEqual(retryResult, 77)
         XCTAssertEqual(repository.createCount, 1)
-        XCTAssertEqual(repository.addAttempts, ["1", "2", "2"])
-        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1", "2"])
+        XCTAssertEqual(repository.addAttempts, ["1", "album", "album"])
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1", "album"])
+        XCTAssertEqual(repository.serverItems.last?.ref.mediaType, "music")
     }
 
     @MainActor
@@ -663,9 +692,9 @@ final class SpineTests: XCTestCase {
     }
 
     func testInProgressLoaderMapsMediaTypesAndSortsWithLimit() {
-        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "episode", "book"])
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "episode", "book", "music"])
 
-        XCTAssertEqual(InProgressLibraryLoader.mediaTypes(from: profile), ["movie", "season", "book"])
+        XCTAssertEqual(InProgressLibraryLoader.mediaTypes(from: profile), ["movie", "season", "book", "music"])
 
         let sorted = InProgressLibraryLoader.limitedSortedItems([
             libraryItem(id: "1", title: "Older", updatedAt: "2026-06-20T10:00:00Z"),
@@ -678,16 +707,32 @@ final class SpineTests: XCTestCase {
 
     @MainActor
     func testHomeViewModelLoadsProfileInProgressAndActivity() async throws {
-        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie"])
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "music"])
         let tracking = ScriptedLibraryTrackingRepository(responses: [
             "movie:": PagedResponse(
                 count: 1,
                 next: nil,
                 previous: nil,
                 results: [libraryItem(id: "1", title: "Watching", status: "In progress")]
-            )
+            ),
+            "music:": PagedResponse(
+                count: 1,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(
+                        id: "album",
+                        title: "Year Zero",
+                        mediaType: "music",
+                        status: "In progress",
+                        updatedAt: "2026-06-22T12:00:00Z"
+                    )
+                ]
+            ),
         ])
-        let activity = ScriptedHomeActivityRepository(items: [activityItem(id: 1, title: "Logged")])
+        let activity = ScriptedHomeActivityRepository(items: [
+            activityItem(id: 1, title: "Year Zero", type: "diary_created", mediaType: "music")
+        ])
         let viewModel = HomeViewModel(
             profileRepository: HallOfFameProfileRepository(profile: profile, setResponse: [:], clearResponse: [:]),
             trackingRepository: tracking,
@@ -698,9 +743,13 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.profile?.username, "mobile")
-        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Watching"])
-        XCTAssertEqual(viewModel.activityItems.compactMap(\.media?.title), ["Logged"])
-        XCTAssertEqual(tracking.requests, [LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress")])
+        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Year Zero", "Watching"])
+        XCTAssertEqual(viewModel.activityItems.compactMap(\.media?.title), ["Year Zero"])
+        XCTAssertEqual(ActivityFeedPresentation.actionText(for: try XCTUnwrap(viewModel.activityItems.first)), "listened to an album")
+        XCTAssertEqual(tracking.requests, [
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "In progress"),
+        ])
         XCTAssertEqual(activity.requests, [ActivityRequest(username: "mobile", limit: 6)])
         XCTAssertFalse(viewModel.isLoading)
         XCTAssertNil(viewModel.profileErrorMessage)
@@ -1961,11 +2010,16 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(updated.displayBackdropURL, "https://example.com/saved.jpg")
     }
 
-    func testTitleLogoSupportRequiresTmdbMovieOrTVWithLogo() {
+    func testTitleLogoSupportUsesAnyAvailableLogo() {
         let movie = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "550", seasonNumber: nil, episodeNumber: nil),
             title: "Movie",
             logoUrl: "https://image.tmdb.org/t/p/w500/logo.png"
+        )
+        let game = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "igdb", mediaType: "game", mediaId: "1", seasonNumber: nil, episodeNumber: nil),
+            title: "Game",
+            logoUrl: "https://example.com/game-logo.png"
         )
         let season = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "season", mediaId: "1399", seasonNumber: 1, episodeNumber: nil),
@@ -1983,8 +2037,9 @@ final class SpineTests: XCTestCase {
         )
 
         XCTAssertTrue(supportsTitleLogo(movie))
-        XCTAssertFalse(supportsTitleLogo(season))
-        XCTAssertFalse(supportsTitleLogo(anime))
+        XCTAssertTrue(supportsTitleLogo(game))
+        XCTAssertTrue(supportsTitleLogo(season))
+        XCTAssertTrue(supportsTitleLogo(anime))
         XCTAssertFalse(supportsTitleLogo(missingLogo))
     }
 
@@ -2855,7 +2910,12 @@ final class SpineTests: XCTestCase {
                       "count": 2,
                       "next": null,
                       "previous": "https://example.com/api/v1/me/liked-media/",
-                      "results": [\(TestFixtures.mediaSummaryJSON(mediaId: "551", title: "Second Like"))]
+                      "results": [\(TestFixtures.mediaSummaryJSON(
+                        mediaId: "album",
+                        source: "musicbrainz",
+                        mediaType: "music",
+                        title: "Year Zero"
+                      ))]
                     }
                     """.data(using: .utf8)!
                 )
@@ -2876,7 +2936,8 @@ final class SpineTests: XCTestCase {
 
         let media = try await repository.likedMedia()
 
-        XCTAssertEqual(media.map(\.title), ["First Like", "Second Like"])
+        XCTAssertEqual(media.map(\.title), ["First Like", "Year Zero"])
+        XCTAssertEqual(media.map(\.ref.mediaType), ["movie", "music"])
         XCTAssertEqual(requestedURLs, [
             "https://example.com/api/v1/me/liked-media/",
             "https://example.com/api/v1/me/liked-media/?page=2",
@@ -2914,10 +2975,27 @@ final class SpineTests: XCTestCase {
                   "avatar_url": null,
                   "is_private": false,
                   "viewer_relationship": { "following": false, "followed_by": false, "requested": false, "blocked": false },
-                  "counts": { "followers": 0, "following": 0, "diary_entries": 0, "lists": 0 },
-                  "hof": {},
+                  "counts": {
+                    "followers": 0,
+                    "following": 0,
+                    "diary_entries": 1,
+                    "lists": 1,
+                    "library_items": 2,
+                    "reviews": 1,
+                    "planned_items": 1,
+                    "liked_items": 1,
+                    "tags": 1
+                  },
+                  "hof": {
+                    "music": \(TestFixtures.mediaSummaryJSON(
+                      mediaId: "album",
+                      source: "musicbrainz",
+                      mediaType: "music",
+                      title: "Year Zero"
+                    ))
+                  },
                   "preferences": {
-                    "enabled_media_types": ["movie"],
+                    "enabled_media_types": ["movie", "music"],
                     "date_format": "Y-m-d",
                     "time_format": "H:i",
                     "week_start_day": "monday",
@@ -2933,6 +3011,11 @@ final class SpineTests: XCTestCase {
         let profile = try await repository.profile(username: "mika")
 
         XCTAssertEqual(profile.username, "mika")
+        XCTAssertEqual(profile.counts.libraryItems, 2)
+        XCTAssertEqual(profile.counts.likedItems, 1)
+        XCTAssertEqual(profile.counts.tags, 1)
+        XCTAssertEqual(profile.hof["music"]??.ref.mediaType, "music")
+        XCTAssertEqual(profile.preferences.enabledMediaTypes, ["movie", "music"])
         client.tokenProvider.clear()
     }
 
@@ -3170,13 +3253,21 @@ final class SpineTests: XCTestCase {
         )
         let second = try JSONDecoder.api.decode(
             DiaryEntry.self,
-            from: TestFixtures.diaryEntryJSON(id: 3, mediaId: "551", title: "Second Media", tags: ["comfort"]).data(using: .utf8)!
+            from: TestFixtures.diaryEntryJSON(
+                id: 3,
+                mediaId: "album",
+                title: "Year Zero",
+                tags: ["comfort"],
+                source: "musicbrainz",
+                mediaType: "music"
+            ).data(using: .utf8)!
         )
 
         let media = TaggedDiaryViewModel.uniqueMedia(from: [first, duplicate, second])
 
         XCTAssertEqual(media.map(\.entry.id), [1, 3])
-        XCTAssertEqual(media.map(\.media.ref.mediaId), ["550", "551"])
+        XCTAssertEqual(media.map(\.media.ref.mediaId), ["550", "album"])
+        XCTAssertEqual(media.map(\.media.ref.mediaType), ["movie", "music"])
     }
 
     @MainActor
@@ -3572,11 +3663,25 @@ final class SpineTests: XCTestCase {
                         updatedAt: "2026-06-21T12:00:00Z"
                     )
                 ]
-            )
+            ),
+            "music:": PagedResponse(
+                count: 1,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(
+                        id: "album",
+                        title: "Newest Album",
+                        mediaType: "music",
+                        status: "In progress",
+                        updatedAt: "2026-06-23T12:00:00Z"
+                    )
+                ]
+            ),
         ])
         let viewModel = ProfileViewModel(
             profileRepository: HallOfFameProfileRepository(
-                profile: profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "book"]),
+                profile: profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "book", "music"]),
                 setResponse: [:],
                 clearResponse: [:]
             ),
@@ -3587,12 +3692,13 @@ final class SpineTests: XCTestCase {
 
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Newest Season", "Middle Book", "Older Movie"])
-        XCTAssertEqual(viewModel.inProgressItems.first?.media.ref.mediaType, "season")
+        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Newest Album", "Newest Season", "Middle Book", "Older Movie"])
+        XCTAssertEqual(viewModel.inProgressItems.first?.media.ref.mediaType, "music")
         XCTAssertEqual(trackingRepository.requests, [
             LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress"),
             LibraryTrackingRequest(mediaType: "season", page: nil, status: "In progress"),
-            LibraryTrackingRequest(mediaType: "book", page: nil, status: "In progress")
+            LibraryTrackingRequest(mediaType: "book", page: nil, status: "In progress"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "In progress")
         ])
     }
 
@@ -3600,7 +3706,16 @@ final class SpineTests: XCTestCase {
     func testProfileViewModelLoadsRecentActivityFromActivityRepository() async {
         let activityRepository = ScriptedHomeActivityRepository(items: [
             activityItem(id: 1, title: "Progress"),
-            activityItem(id: 2, title: "Diary", type: "diary_created", previous: nil, current: nil, rating: "8.0", liked: true)
+            activityItem(
+                id: 2,
+                title: "Year Zero",
+                type: "diary_created",
+                previous: nil,
+                current: nil,
+                rating: "8.0",
+                liked: true,
+                mediaType: "music"
+            )
         ])
         let viewModel = ProfileViewModel(
             profileRepository: HallOfFameProfileRepository(
@@ -3616,7 +3731,40 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.recentActivityItems.map(\.type), ["progress_updated", "diary_created"])
+        XCTAssertEqual(ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).last?.media.ref.mediaType, "music")
+        XCTAssertEqual(ActivityFeedPresentation.actionText(for: viewModel.recentActivityItems[1]), "listened to an album")
         XCTAssertEqual(activityRepository.requests, [ActivityRequest(username: "mobile", limit: 6)])
+    }
+
+    @MainActor
+    func testProfileViewModelLoadsPrivateProfileWithMusicFavorite() async {
+        let album = composerMedia("album", itemID: 902, mediaType: "music")
+        let viewModel = ProfileViewModel(
+            profileRepository: HallOfFameProfileRepository(
+                profile: profileFixture(
+                    hof: ["music": album],
+                    enabledMediaTypes: ["movie", "music"],
+                    isPrivate: true
+                ),
+                setResponse: [:],
+                clearResponse: [:]
+            ),
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+
+        XCTAssertTrue(viewModel.profile?.isPrivate == true)
+        XCTAssertEqual(
+            ProfileFavorites.slots(
+                from: viewModel.profile?.hof ?? [:],
+                enabledMediaTypes: viewModel.profile?.preferences.enabledMediaTypes ?? []
+            ).map(\.id),
+            ["movie", "music"]
+        )
+        XCTAssertEqual(viewModel.profile?.hof["music"]??.ref.mediaType, "music")
     }
 
     @MainActor
@@ -5335,7 +5483,8 @@ final class SpineTests: XCTestCase {
 
     private func profileFixture(
         hof: [String: MediaSummary?],
-        enabledMediaTypes: [String] = ["movie"]
+        enabledMediaTypes: [String] = ["movie"],
+        isPrivate: Bool = false
     ) -> UserProfile {
         UserProfile(
             id: 1,
@@ -5348,7 +5497,7 @@ final class SpineTests: XCTestCase {
             avatarUrl: nil,
             profileBackdropUrl: nil,
             profileBackdropItem: nil,
-            isPrivate: false,
+            isPrivate: isPrivate,
             viewerRelationship: ViewerRelationship(following: false, followedBy: false, requested: false, blocked: false),
             counts: ProfileCounts(followers: 0, following: 0, diaryEntries: 0, lists: 0),
             hof: hof,
@@ -5697,10 +5846,17 @@ private func libraryItem(
 ) -> Spine.LibraryItem {
     Spine.LibraryItem(
         media: MediaSummary(
-            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: mediaType, mediaId: id, seasonNumber: seasonNumber, episodeNumber: nil),
+            ref: MediaRef(
+                itemId: nil,
+                source: mediaType == "music" ? "musicbrainz" : "tmdb",
+                mediaType: mediaType,
+                mediaId: id,
+                seasonNumber: seasonNumber,
+                episodeNumber: nil
+            ),
             title: title,
             posterUrl: nil,
-            posterOrientation: .portrait
+            posterOrientation: mediaType == "music" ? .square : .portrait
         ),
         tracking: TrackingState(
             trackingId: Int(id) ?? 1,
@@ -5746,7 +5902,8 @@ private func activityItem(
     current: ProgressState? = ProgressState(kind: "percentage", value: Decimal(58), max: Decimal(100), unit: "percent"),
     rating: String? = nil,
     liked: Bool? = nil,
-    hasMedia: Bool = true
+    hasMedia: Bool = true,
+    mediaType: String = "movie"
 ) -> ActivityItem {
     ActivityItem(
         id: id,
@@ -5754,10 +5911,17 @@ private func activityItem(
         createdAt: "2026-06-20T12:00:00Z",
         actor: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
         media: hasMedia ? MediaSummary(
-            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "\(id)", seasonNumber: nil, episodeNumber: nil),
+            ref: MediaRef(
+                itemId: nil,
+                source: mediaType == "music" ? "musicbrainz" : "tmdb",
+                mediaType: mediaType,
+                mediaId: "\(id)",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
             title: title,
             posterUrl: nil,
-            posterOrientation: .portrait
+            posterOrientation: mediaType == "music" ? .square : .portrait
         ) : nil,
         object: ActivityObject(
             type: type == "progress_updated" ? "progress_change" : "diary",
@@ -6057,7 +6221,8 @@ private final class ScriptedListComposerRepository: ListRepository {
                 seasonNumber: ref.seasonNumber,
                 episodeNumber: ref.episodeNumber
             ),
-            title: "Media \(ref.mediaId)"
+            title: "Media \(ref.mediaId)",
+            posterOrientation: ref.mediaType == "music" ? .square : .portrait
         )
         nextItemID += 1
         serverItems.append(saved)
@@ -6083,17 +6248,18 @@ private final class ScriptedListComposerRepository: ListRepository {
     }
 }
 
-private func composerMedia(_ mediaID: String, itemID: Int? = nil) -> MediaSummary {
+private func composerMedia(_ mediaID: String, itemID: Int? = nil, mediaType: String = "movie") -> MediaSummary {
     MediaSummary(
         ref: MediaRef(
             itemId: itemID,
-            source: "tmdb",
-            mediaType: "movie",
+            source: mediaType == "music" ? "musicbrainz" : "tmdb",
+            mediaType: mediaType,
             mediaId: mediaID,
             seasonNumber: nil,
             episodeNumber: nil
         ),
-        title: "Media \(mediaID)"
+        title: "Media \(mediaID)",
+        posterOrientation: mediaType == "music" ? .square : .portrait
     )
 }
 
@@ -6922,7 +7088,14 @@ private enum TestFixtures {
         """.data(using: .utf8)!
     )
 
-    static func diaryEntryJSON(id: Int, mediaId: String, title: String, tags: [String]) -> String {
+    static func diaryEntryJSON(
+        id: Int,
+        mediaId: String,
+        title: String,
+        tags: [String],
+        source: String = "tmdb",
+        mediaType: String = "movie"
+    ) -> String {
         let encodedTags = tags
             .map { #""\#($0)""# }
             .joined(separator: ",")
@@ -6931,11 +7104,11 @@ private enum TestFixtures {
           "id": \(id),
           "user": { "id": 1, "username": "mobile", "display_name": "Mobile", "avatar_url": null },
           "media": {
-            "ref": { "item_id": \(100 + id), "source": "tmdb", "media_type": "movie", "media_id": "\(mediaId)", "season_number": null, "episode_number": null },
+            "ref": { "item_id": \(100 + id), "source": "\(source)", "media_type": "\(mediaType)", "media_id": "\(mediaId)", "season_number": null, "episode_number": null },
             "title": "\(title)",
             "image_url": null,
             "poster_url": null,
-            "poster_orientation": "portrait"
+            "poster_orientation": "\(mediaType == "music" ? "square" : "portrait")"
           },
           "consumed_at": "2026-06-20T12:00:00Z",
           "rating": "9.0",

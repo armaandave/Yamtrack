@@ -30,6 +30,7 @@ class ServicesTests(TestCase):
             "GET",
             "https://example.com/api",
             params={"param": "value"},
+            timeout=2,
         )
 
         self.assertEqual(result, {"data": "test"})
@@ -38,7 +39,7 @@ class ServicesTests(TestCase):
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["url"], "https://example.com/api")
         self.assertEqual(kwargs["params"], {"param": "value"})
-        self.assertIn("timeout", kwargs)
+        self.assertEqual(kwargs["timeout"], 2)
 
     @patch("app.providers.services.session.post")
     def test_api_request_post(self, mock_post):

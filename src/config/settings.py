@@ -368,6 +368,10 @@ MUSICBRAINZ_CONTACT = config(
     default="github@fuzzygrim.com",
 )
 MUSIC_DEFAULT_MARKET = config("MUSIC_DEFAULT_MARKET", default="US")
+LISTENBRAINZ_TOKEN = config(
+    "LISTENBRAINZ_TOKEN",
+    default=secret("LISTENBRAINZ_TOKEN_FILE", ""),
+)
 
 ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 

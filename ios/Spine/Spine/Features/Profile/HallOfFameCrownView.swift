@@ -138,20 +138,20 @@ private struct HallOfFameCrownEmptyShell: View {
     HallOfFameCrownPreview(slots: [])
 }
 
-#Preview("7 empty shells") {
-    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic"], filledIndexes: []))
+#Preview("8 empty shells") {
+    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"], filledIndexes: []))
 }
 
-#Preview("2 filled, 5 empty") {
-    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic"], filledIndexes: [0, 5]))
+#Preview("2 filled, 6 empty") {
+    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"], filledIndexes: [0, 7]))
 }
 
 #Preview("5 filled") {
     HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(filledIndexes: [0, 1, 2, 3, 4]))
 }
 
-#Preview("7 slots, 3 filled") {
-    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic"], filledIndexes: [0, 2, 5]))
+#Preview("8 slots, 3 filled") {
+    HallOfFameCrownPreview(slots: HallOfFameCrownPreview.slots(keys: ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"], filledIndexes: [0, 2, 7]))
 }
 
 private struct HallOfFameCrownPreview: View {

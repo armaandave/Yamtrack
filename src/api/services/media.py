@@ -48,6 +48,7 @@ from app.utils.color import build_accent_palette, compute_and_store_poster_accen
 
 SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
+MUSIC_SEARCH_CACHE_VERSION = "v4"
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
@@ -109,8 +110,13 @@ def search_media(*, media_type, query, page=1, source=None, request=None, user=N
     """Search provider metadata with a versioned cache key."""
     source = source or default_source_for(media_type)
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
+    cache_version = (
+        MUSIC_SEARCH_CACHE_VERSION
+        if media_type == MediaTypes.MUSIC.value
+        else SEARCH_CACHE_VERSION
+    )
     cache_key = (
-        f"api:{SEARCH_CACHE_VERSION}:search:{media_type}:{source}:{query_hash}:"
+        f"api:{cache_version}:search:{media_type}:{source}:{query_hash}:"
         f"p{page}:u{getattr(settings, 'TMDB_LANG', 'en')}:nsfw{settings.TMDB_NSFW}"
     )
     data = cache.get(cache_key)

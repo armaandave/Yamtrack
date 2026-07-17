@@ -22,6 +22,8 @@ requires_provider_network = unittest.skipUnless(
 RELEASE_GROUP_MBID = "3bd76d40-7f0e-36b7-9348-91a33afee20e"
 RELEASE_MBID = "2d0bad69-f735-484b-bc0b-2ea54c76225e"
 RECORDING_MBID = "35518724-a25a-4627-a2cc-0786dd1d2272"
+THRILLER_ALBUM_MBID = "f32fab67-77dd-3937-addc-9062e28e4c37"
+OBSCURE_THRILLER_MBID = "d3d7a588-5113-4edb-9bcb-a6c9f2cd1a33"
 STREAMING_RELATION_ID = "320adf26-96fa-4183-9045-1f5f32f833cb"
 CORPUS_PATH = Path(__file__).parents[1] / "mock_data" / "musicbrainz_representative_releases.json"
 
@@ -174,12 +176,12 @@ class MusicBrainzTests(TestCase):
             ],
         }
 
-        result = musicbrainz.search("Nine Inch Nails", 3)
+        result = musicbrainz.search("Nine Inch Nails", 1)
 
         search_release_groups.assert_called_once_with(
             "Nine Inch Nails",
-            limit=2,
-            offset=4,
+            limit=musicbrainz.SEARCH_CANDIDATE_LIMIT,
+            offset=0,
         )
         album = result["results"][0]
         self.assertEqual(album["media_id"], RELEASE_GROUP_MBID)
@@ -190,6 +192,170 @@ class MusicBrainzTests(TestCase):
         self.assertEqual(album["poster_aspect_ratio"], 1.0)
         self.assertEqual(album["secondary_types"], ["Concept Album"])
         self.assertNotIn("provider_rank_boost", album)
+
+    @override_settings(PER_PAGE=2)
+    @patch("app.providers.musicbrainz.lookup_release_group_popularity")
+    @patch("app.providers.musicbrainz.search_release_groups")
+    def test_search_ranks_overfetched_candidates_by_listenbrainz_popularity(
+        self,
+        search_release_groups,
+        lookup_popularity,
+    ):
+        search_release_groups.return_value = {
+            "count": 3,
+            "release-groups": [
+                {
+                    "id": OBSCURE_THRILLER_MBID,
+                    "title": "Thriller",
+                    "score": 100,
+                    "first-release-date": "2007",
+                    "primary-type": "EP",
+                    "artist-credit": [{"name": "Thriller"}],
+                },
+                {
+                    "id": "78b31ce7-95c4-403a-9c74-4f6606c07bc8",
+                    "title": "Techno Thriller",
+                    "score": 83,
+                    "first-release-date": "2018",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Techno Thriller"}],
+                },
+                {
+                    "id": THRILLER_ALBUM_MBID,
+                    "title": "Thriller",
+                    "score": 46,
+                    "first-release-date": "1982-11-30",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Michael Jackson"}],
+                },
+            ],
+        }
+        lookup_popularity.return_value = {
+            OBSCURE_THRILLER_MBID: {
+                "total_listen_count": 30,
+                "total_user_count": 2,
+            },
+            THRILLER_ALBUM_MBID: {
+                "total_listen_count": 529156,
+                "total_user_count": 25295,
+            },
+        }
+
+        first_page = musicbrainz.search("thriller", 1)
+        second_page = musicbrainz.search("thriller", 2)
+
+        self.assertEqual(first_page["results"][0]["media_id"], THRILLER_ALBUM_MBID)
+        self.assertEqual(
+            [item["media_id"] for item in first_page["results"] + second_page["results"]],
+            [
+                THRILLER_ALBUM_MBID,
+                OBSCURE_THRILLER_MBID,
+                "78b31ce7-95c4-403a-9c74-4f6606c07bc8",
+            ],
+        )
+        self.assertEqual(first_page["total_results"], 3)
+        self.assertNotIn("total_user_count", first_page["results"][0])
+        self.assertNotIn("total_listen_count", first_page["results"][0])
+        search_release_groups.assert_called_with(
+            "thriller",
+            limit=musicbrainz.SEARCH_CANDIDATE_LIMIT,
+            offset=0,
+        )
+
+    @override_settings(
+        LISTENBRAINZ_TOKEN="listenbrainz-token",
+        VERSION="1.2.3",
+        MUSICBRAINZ_CONTACT="contact@example.com",
+    )
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_release_group_popularity_is_batched_cached_and_validated(self, api_request):
+        api_request.return_value = [
+            {
+                "release_group_mbid": THRILLER_ALBUM_MBID,
+                "total_listen_count": 529156,
+                "total_user_count": 25295,
+            },
+            {
+                "release_group_mbid": OBSCURE_THRILLER_MBID,
+                "total_listen_count": None,
+                "total_user_count": -1,
+            },
+            {
+                "release_group_mbid": "not-requested",
+                "total_listen_count": 999999,
+                "total_user_count": 999999,
+            },
+        ]
+
+        first = musicbrainz.lookup_release_group_popularity(
+            [THRILLER_ALBUM_MBID, OBSCURE_THRILLER_MBID, THRILLER_ALBUM_MBID],
+        )
+        second = musicbrainz.lookup_release_group_popularity(
+            [THRILLER_ALBUM_MBID, OBSCURE_THRILLER_MBID, THRILLER_ALBUM_MBID],
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first,
+            {
+                THRILLER_ALBUM_MBID: {
+                    "total_listen_count": 529156,
+                    "total_user_count": 25295,
+                },
+                OBSCURE_THRILLER_MBID: {
+                    "total_listen_count": None,
+                    "total_user_count": None,
+                },
+            },
+        )
+        api_request.assert_called_once_with(
+            "listenbrainz",
+            "POST",
+            musicbrainz.LISTENBRAINZ_URL,
+            params={
+                "release_group_mbids": [
+                    THRILLER_ALBUM_MBID,
+                    OBSCURE_THRILLER_MBID,
+                ],
+            },
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Spine/1.2.3 (contact@example.com)",
+                "Authorization": "Token listenbrainz-token",
+                "Content-Type": "application/json",
+            },
+            request_session=services.session,
+            timeout=musicbrainz.LISTENBRAINZ_TIMEOUT,
+        )
+
+    @override_settings(LISTENBRAINZ_TOKEN="listenbrainz-token")
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_release_group_popularity_failure_falls_back_and_is_short_cached(
+        self,
+        api_request,
+    ):
+        api_request.side_effect = requests.exceptions.Timeout("timed out")
+
+        with self.assertLogs(musicbrainz.logger, level="WARNING"):
+            first = musicbrainz.lookup_release_group_popularity(
+                [THRILLER_ALBUM_MBID],
+            )
+        second = musicbrainz.lookup_release_group_popularity(
+            [THRILLER_ALBUM_MBID],
+        )
+
+        self.assertEqual(first, {})
+        self.assertEqual(second, {})
+        api_request.assert_called_once()
+
+    @override_settings(LISTENBRAINZ_TOKEN="")
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_release_group_popularity_without_token_skips_provider(self, api_request):
+        self.assertEqual(
+            musicbrainz.lookup_release_group_popularity([THRILLER_ALBUM_MBID]),
+            {},
+        )
+        api_request.assert_not_called()
 
     @patch(
         "app.providers.musicbrainz.resolve_representative_release",

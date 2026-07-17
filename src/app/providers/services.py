@@ -158,6 +158,7 @@ def api_request(
     headers=None,
     response_format="json",
     request_session=None,
+    timeout=None,
 ):
     """Make a request to the API and return the response.
 
@@ -170,6 +171,7 @@ def api_request(
         headers: Request headers
         response_format: "json" (default) or "xml" for XML parsing
         request_session: Optional requests session; defaults to the shared provider session
+        timeout: Optional request timeout; defaults to the global provider timeout
 
     Returns:
         Parsed JSON dict or ElementTree for XML
@@ -178,7 +180,7 @@ def api_request(
         request_kwargs = {
             "url": url,
             "headers": headers,
-            "timeout": settings.REQUEST_TIMEOUT,
+            "timeout": timeout or settings.REQUEST_TIMEOUT,
         }
 
         active_session = request_session or session
@@ -217,6 +219,7 @@ def api_request(
                 headers=headers,
                 response_format=response_format,
                 request_session=request_session,
+                timeout=timeout,
             )
 
         raise error from None

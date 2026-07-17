@@ -19,6 +19,8 @@ RANKING_KEYS = {
     "ratings_count",
     "total_rating",
     "total_rating_count",
+    "total_listen_count",
+    "total_user_count",
     "vote_count",
 }
 STOP_WORDS = {
@@ -131,6 +133,7 @@ def _popularity_score(result):
         result,
         (
             "total_rating_count",
+            "total_user_count",
             "ratings_count",
             "score_count",
             "num_scoring_users",
@@ -138,7 +141,7 @@ def _popularity_score(result):
             "edition_count",
         ),
     )
-    popularity = _first_number(result, ("popularity",))
+    popularity = _first_number(result, ("total_listen_count", "popularity"))
     count_score = min(45, math.log10(count + 1) * 11) if count else 0
     popularity_score = min(25, math.log10(popularity + 1) * 8) if popularity else 0
     return count_score + popularity_score

@@ -231,7 +231,7 @@ struct PersonDetailView: View {
                         filmographySection
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, topSafeAreaInset + 44)
+                    .padding(.top, topSafeAreaInset + 68)
                     .padding(.bottom, 36)
                 }
             }
@@ -319,10 +319,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private func biographySection(_ detail: PersonDetail) -> some View {
         if let biography = clean(detail.biography) {
-            VStack(alignment: .leading, spacing: 12) {
-                PersonSectionLabel(title: "Biography")
-                PersonBiographyCard(text: biography)
-            }
+            SynopsisText(text: biography)
         }
     }
 
@@ -720,85 +717,6 @@ private struct PersonHeroArtwork: View {
             return nil
         }
         return URL(string: urlString)
-    }
-}
-
-private struct PersonBiographyCard: View {
-    let text: String
-    @State private var isExpanded = false
-    @State private var truncatedHeight: CGFloat = 0
-    @State private var fullHeight: CGFloat = 0
-
-    private var canExpand: Bool {
-        fullHeight > truncatedHeight + 1
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(text)
-                .font(biographyFont)
-                .foregroundStyle(.white.opacity(0.9))
-                .lineSpacing(2)
-                .lineLimit(isExpanded ? nil : 3)
-                .background {
-                    measuredText(lineLimit: 3, key: PersonBiographyTruncatedHeightKey.self)
-                }
-                .background {
-                    measuredText(lineLimit: nil, key: PersonBiographyFullHeightKey.self)
-                }
-
-            if canExpand {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isExpanded.toggle()
-                    }
-                } label: {
-                    Label(isExpanded ? "READ LESS" : "READ MORE", systemImage: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .heavy))
-                        .foregroundStyle(.white.opacity(0.62))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
-        .onPreferenceChange(PersonBiographyTruncatedHeightKey.self) { truncatedHeight = $0 }
-        .onPreferenceChange(PersonBiographyFullHeightKey.self) { fullHeight = $0 }
-    }
-
-    private func measuredText<Key: PreferenceKey>(lineLimit: Int?, key: Key.Type) -> some View where Key.Value == CGFloat {
-        Text(text)
-            .font(biographyFont)
-            .lineSpacing(2)
-            .lineLimit(lineLimit)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: key, value: proxy.size.height)
-                }
-            }
-            .hidden()
-    }
-
-    private var biographyFont: Font {
-        .system(size: 14, weight: .semibold)
-    }
-}
-
-private struct PersonBiographyTruncatedHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct PersonBiographyFullHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

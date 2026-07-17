@@ -403,7 +403,9 @@ enum ActivityFeedPresentation {
         case "progress_updated":
             "updated progress"
         case "diary_created":
-            "logged \(mediaTypePhrase(for: activity.media?.ref.mediaType))"
+            activity.media?.ref.mediaType == "music"
+                ? "listened to an album"
+                : "logged \(mediaTypePhrase(for: activity.media?.ref.mediaType))"
         case "diary_updated":
             "updated a log"
         case "diary_deleted":
@@ -457,6 +459,7 @@ enum ActivityFeedPresentation {
         case "game": "a game"
         case "book": "a book"
         case "comic": "a comic"
+        case "music": "an album"
         case "boardgame": "a board game"
         default: "media"
         }

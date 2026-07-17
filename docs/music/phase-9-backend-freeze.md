@@ -64,6 +64,25 @@ Protected routes return `401` without valid authentication. Missing resources
 return `404`; music exposure also intentionally uses `404` so a disabled media
 type is not discoverable.
 
+Provider failures use the existing standard API error envelope:
+
+```json
+{
+  "error": {
+    "code": "provider_unavailable",
+    "message": "MusicBrainz is temporarily unavailable.",
+    "request_id": "opaque-request-id"
+  }
+}
+```
+
+The iOS client decodes that nested envelope and presents the provider message
+and request ID for `provider_unavailable`, so the user gets a retryable state
+instead of an unrelated generic fallback. Unknown `5xx` bodies and upstream
+proxy/CDN failures remain deliberately redacted to a safe generic message. DRF
+field-error dictionaries are unchanged; this documents existing wire behavior
+and adds no endpoint or response field.
+
 Music search accepts `q` (required), `page` (one-based, default `1`), and
 `media_type=music`. Its body is empty and its provider pagination fields are
 `page`, `total_pages`, `total_results`, and `results`.
@@ -76,6 +95,15 @@ There is no separate representative-release endpoint. Album detail returns it at
 explicit degraded state `representative_release: null`. Track and Recording MBIDs
 remain distinct, and recording detail returns `404` unless the Recording MBID is
 present on the representative release in the requested album context.
+
+Album detail is the complete tracklist boundary. Loading or scrolling an album
+must not issue a request per track; recording detail is requested only after the
+user opens a track. Release-group detail, release candidates, representative
+release data, recording detail, and Cover Art Archive hits or misses use the
+versioned server cache described in Phase 0. Reopening a cached album therefore
+must not call MusicBrainz again. Clients may retry explicit provider and network
+error states, but must not replace a successful newer search with a stale result
+from an older request.
 
 ### Tracking requests
 

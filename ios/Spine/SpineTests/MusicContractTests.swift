@@ -119,6 +119,10 @@ final class MusicContractTests: XCTestCase {
             MusicAlbumPresentation.musicBrainzURL(releaseGroupMbid: music.releaseGroupMbid).absoluteString,
             "https://musicbrainz.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e"
         )
+        XCTAssertEqual(
+            MusicAlbumPresentation.trackAccessibilityLabel(track: track, albumCredits: music.artistCredit),
+            "Disc 1, track 1, HYPERPOWER!, by Nine Inch Nails, 1:41"
+        )
     }
 
     func testAlbumPresentationShowsDifferentTrackArtist() throws {
@@ -584,6 +588,69 @@ final class MusicContractTests: XCTestCase {
         XCTAssertEqual(movie.searchResultSubtitle, "Drama · April 13, 2007")
     }
 
+    func testProviderErrorEnvelopeSurfacesMessageAndRequestIDWithoutExposingUnknownServerBodies() {
+        let provider = APIError.httpStatus(
+            503,
+            #"{"error":{"code":"provider_unavailable","message":"There was an error contacting the MusicBrainz API.","fields":null,"request_id":"phase16"}}"#
+        )
+        let invalidLogin = APIError.httpStatus(
+            400,
+            #"{"error":{"code":"validation_error","message":"One or more fields are invalid.","fields":{"non_field_errors":["Invalid username/email or password."]},"request_id":null}}"#
+        )
+        let unknown = APIError.httpStatus(500, #"{"debug":"internal stack detail"}"#)
+
+        XCTAssertEqual(
+            provider.localizedDescription,
+            "There was an error contacting the MusicBrainz API. Request ID: phase16"
+        )
+        XCTAssertEqual(invalidLogin.localizedDescription, "Invalid username/email or password.")
+        XCTAssertFalse(unknown.localizedDescription.contains("internal stack detail"))
+        XCTAssertTrue(unknown.localizedDescription.contains("HTTP 500"))
+    }
+
+    func testRecentMediaFiltersOnceForSupportedTypes() throws {
+        let music = try Self.responseData(
+            key: "music_search",
+            fileName: "phase-9-api-responses.example.json"
+        )
+        let response = try JSONDecoder.api.decode(PagedResponse<MediaSummary>.self, from: music)
+        let album = try XCTUnwrap(response.results.first)
+        let movie = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "tmdb",
+                mediaType: "movie",
+                mediaId: "1",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Movie"
+        )
+        let data = try JSONEncoder().encode([album, movie])
+        let encoded = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertEqual(
+            RecentMedia.decodeList(from: encoded, supportedMediaTypes: ["music"]).map(\.ref.mediaType),
+            ["music"]
+        )
+    }
+
+    func testChangingSearchCancelsOldRequestWithoutSurfacingAnError() async throws {
+        let repository = DelayedSearchMediaRepository()
+        let viewModel = SearchViewModel(mediaRepository: repository, onUnauthorized: {})
+
+        let oldSearch = Task { await viewModel.search("slow", mediaType: "music") }
+        try await Task.sleep(for: .milliseconds(10))
+        oldSearch.cancel()
+        await viewModel.search("new", mediaType: "music")
+        await oldSearch.value
+
+        XCTAssertEqual(viewModel.query, "new")
+        XCTAssertEqual(viewModel.results.map(\.title), ["new"])
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
     private static func albumDetail() throws -> MediaDetail {
         try JSONDecoder.api.decode(MediaDetail.self, from: contractData("album-detail.example.json"))
     }
@@ -665,6 +732,35 @@ private struct MetaOnlyMediaRepository: MediaRepository {
 
     func meta() async throws -> MetaResponse { meta }
     func search(query _: String, mediaType _: String) async throws -> [MediaSummary] { fatalError("Not used") }
+    func detail(ref _: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
+    func reviews(ref _: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
+    func posters(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func savePoster(ref _: MediaRef, posterURL _: String) async throws -> PosterSaveResponse { fatalError("Not used") }
+    func backdrops(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func saveBackdrop(ref _: MediaRef, backdropURL _: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref _: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref _: MediaRef, logoURL _: String) async throws -> LogoSaveResponse { fatalError("Not used") }
+}
+
+@MainActor
+private struct DelayedSearchMediaRepository: MediaRepository {
+    func meta() async throws -> MetaResponse { fatalError("Not used") }
+
+    func search(query: String, mediaType: String) async throws -> [MediaSummary] {
+        try await Task.sleep(for: .milliseconds(query == "slow" ? 100 : 1))
+        return [MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "musicbrainz",
+                mediaType: mediaType,
+                mediaId: query,
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: query
+        )]
+    }
+
     func detail(ref _: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
     func reviews(ref _: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
     func posters(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }

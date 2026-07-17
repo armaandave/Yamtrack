@@ -37,14 +37,14 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertEqual(placements[1].rotation.degrees, 0, accuracy: 0.001)
     }
 
-    func testCrownLayoutShowsSevenSlots() {
+    func testCrownLayoutShowsEightSlots() {
         let placements = HallOfFameCrownLayout.placements(
-            count: 7,
+            count: 8,
             cardSize: CGSize(width: 50, height: 75),
             avatarDiameter: 128
         )
 
-        XCTAssertEqual(placements.count, 7)
+        XCTAssertEqual(placements.count, 8)
     }
 
     func testFavoriteSlotsSortOrderPreserved() {
@@ -91,18 +91,18 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertNil(slots[1].item)
     }
 
-    func testCrownLayoutUsesGeometricArcForSevenSlots() {
+    func testCrownLayoutUsesGeometricArcForEightSlots() {
         let placements = HallOfFameCrownLayout.placements(
-            count: 7,
-            cardSize: CGSize(width: 54, height: 81),
+            count: 8,
+            cardSize: CGSize(width: 50, height: 75),
             avatarDiameter: 128
         )
 
-        XCTAssertEqual(placements[3].x, 0, accuracy: 0.001)
-        XCTAssertEqual(placements[3].rotation.degrees, 0, accuracy: 0.001)
-        XCTAssertEqual(placements[0].x, -placements[6].x, accuracy: 0.001)
-        XCTAssertEqual(placements[0].y, placements[6].y, accuracy: 0.001)
-        XCTAssertEqual(placements[0].rotation.degrees, -placements[6].rotation.degrees, accuracy: 0.001)
+        XCTAssertEqual(placements[3].x, -placements[4].x, accuracy: 0.001)
+        XCTAssertEqual(placements[3].rotation.degrees, -placements[4].rotation.degrees, accuracy: 0.001)
+        XCTAssertEqual(placements[0].x, -placements[7].x, accuracy: 0.001)
+        XCTAssertEqual(placements[0].y, placements[7].y, accuracy: 0.001)
+        XCTAssertEqual(placements[0].rotation.degrees, -placements[7].rotation.degrees, accuracy: 0.001)
     }
 
     func testCrownLayoutRaisesCenterCardAboveAvatar() {

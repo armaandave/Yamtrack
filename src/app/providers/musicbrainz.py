@@ -15,14 +15,19 @@ from app.providers import services
 from app.providers.search_rank import rank_results
 
 MUSICBRAINZ_URL = "https://musicbrainz.org/ws/2"
+LISTENBRAINZ_URL = "https://api.listenbrainz.org/1/popularity/release-group"
 COVER_ART_URL = "https://coverartarchive.org"
 COVER_ART_PROVIDER = "cover art archive"
 CACHE_VERSION = "v2"
+LISTENBRAINZ_CACHE_VERSION = "v1"
 RESOLVER_VERSION = "v1"
 RECORDING_CACHE_VERSION = "v2"
 SEARCH_CACHE_TTL = 6 * 60 * 60
+LISTENBRAINZ_FAILURE_CACHE_TTL = 5 * 60
 DETAIL_CACHE_TTL = 24 * 60 * 60
 MISSING_COVER_CACHE_TTL = 6 * 60 * 60
+SEARCH_CANDIDATE_LIMIT = 100
+LISTENBRAINZ_TIMEOUT = 5
 MAX_ATTEMPTS = 3
 _CACHE_MISS = object()
 _LUCENE_SPECIAL = re.compile(r"(&&|\|\||[+\-!(){}\[\]^\"~*?:\\/])")
@@ -74,20 +79,96 @@ def search(query, page):
     page = max(1, int(page))
     response = search_release_groups(
         query,
-        limit=settings.PER_PAGE,
-        offset=(page - 1) * settings.PER_PAGE,
+        limit=SEARCH_CANDIDATE_LIMIT,
+        offset=0,
     )
-    results = rank_results(
+    candidates = [
+        _search_result(group) for group in response.get("release-groups", [])
+    ]
+    popularity = lookup_release_group_popularity(
+        [candidate["media_id"] for candidate in candidates],
+    )
+    if popularity:
+        for candidate in candidates:
+            candidate.pop("provider_rank_boost", None)
+            candidate.update(popularity.get(candidate["media_id"], {}))
+
+    ranked = rank_results(
         query,
-        [_search_result(group) for group in response.get("release-groups", [])],
+        candidates,
         MediaTypes.MUSIC.value,
     )
+    start = (page - 1) * settings.PER_PAGE
+    results = ranked[start : start + settings.PER_PAGE]
+    try:
+        total_results = int(response.get("count", len(ranked)))
+    except (TypeError, ValueError):
+        total_results = len(ranked)
+    total_results = min(max(0, total_results), SEARCH_CANDIDATE_LIMIT)
     return helpers.format_search_response(
         page,
         settings.PER_PAGE,
-        response.get("count", len(results)),
+        total_results,
         results,
     )
+
+
+def lookup_release_group_popularity(release_group_mbids):
+    """Return cached ListenBrainz popularity for a batch of release groups."""
+    token = str(settings.LISTENBRAINZ_TOKEN or "").strip()
+    mbids = list(dict.fromkeys(str(mbid) for mbid in release_group_mbids if mbid))
+    if not token or not mbids:
+        return {}
+
+    digest = hashlib.sha256("\n".join(sorted(mbids)).encode()).hexdigest()
+    cache_key = (
+        f"listenbrainz_{LISTENBRAINZ_CACHE_VERSION}_release_group_popularity_"
+        f"{digest}"
+    )
+    cached = cache.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+
+    try:
+        response = services.api_request(
+            "listenbrainz",
+            "POST",
+            LISTENBRAINZ_URL,
+            params={"release_group_mbids": mbids},
+            headers={
+                **_headers(),
+                "Authorization": f"Token {token}",
+                "Content-Type": "application/json",
+            },
+            request_session=services.session,
+            timeout=LISTENBRAINZ_TIMEOUT,
+        )
+        if not isinstance(response, list):
+            msg = "ListenBrainz popularity response must be a list"
+            raise TypeError(msg)
+        requested = set(mbids)
+        popularity = {}
+        for item in response:
+            if not isinstance(item, dict):
+                continue
+            mbid = str(item.get("release_group_mbid") or "")
+            if mbid not in requested:
+                continue
+            popularity[mbid] = {
+                "total_listen_count": _popularity_count(
+                    item.get("total_listen_count"),
+                ),
+                "total_user_count": _popularity_count(
+                    item.get("total_user_count"),
+                ),
+            }
+    except (requests.RequestException, TypeError, ValueError) as error:
+        logger.warning("ListenBrainz popularity unavailable: %s", error)
+        cache.set(cache_key, {}, LISTENBRAINZ_FAILURE_CACHE_TTL)
+        return {}
+
+    cache.set(cache_key, popularity, SEARCH_CACHE_TTL)
+    return popularity
 
 
 def lookup_release_group(release_group_mbid):
@@ -531,6 +612,16 @@ def _positive_int(value):
     except (TypeError, ValueError):
         return 0
     return value if value > 0 else 0
+
+
+def _popularity_count(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def lookup_recording(recording_mbid):

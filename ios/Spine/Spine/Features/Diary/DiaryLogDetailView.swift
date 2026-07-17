@@ -317,11 +317,26 @@ struct DiaryLogDetailView: View {
 
                     let parts = titleParts(entry.media.displayTitle)
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(parts.title)
-                            .font(.system(size: 31, weight: .black))
-                            .foregroundStyle(.white)
-                            .lineLimit(4)
-                            .minimumScaleFactor(0.72)
+                        if let detail = viewModel.mediaDetail {
+                            MediaTitleDisplay(
+                                detail: detail,
+                                title: parts.title,
+                                showsLogo: .constant(true),
+                                font: .system(size: 31, weight: .black),
+                                lineLimit: 4,
+                                minimumScaleFactor: 0.72,
+                                maxLogoHeight: 48,
+                                alignment: .leading,
+                                onTap: { presentedRef = entry.media.ref },
+                                onLongPress: nil
+                            )
+                        } else {
+                            Text(parts.title)
+                                .font(.system(size: 31, weight: .black))
+                                .foregroundStyle(.white)
+                                .lineLimit(4)
+                                .minimumScaleFactor(0.72)
+                        }
 
                         if entry.isRewatch {
                             Image(systemName: "arrow.clockwise")
@@ -442,7 +457,6 @@ struct DiaryLogDetailView: View {
     private func heroMetadata(_ entry: DiaryEntry) -> String? {
         var parts = [titleParts(entry.media.displayTitle).year, DiaryLogFormat.year(viewModel.mediaDetail?.releaseDate), detailString(viewModel.mediaDetail, "runtime")]
             .compactMap { clean($0) }
-        parts += detailArray(viewModel.mediaDetail, "genres").prefix(2)
         var seen = Set<String>()
         parts = parts.filter { seen.insert($0.lowercased()).inserted }
         return parts.isEmpty ? nil : parts.joined(separator: " - ")
@@ -458,16 +472,6 @@ struct DiaryLogDetailView: View {
         case let .bool(bool):
             return bool ? "Yes" : "No"
         default:
-            return nil
-        }
-    }
-
-    private func detailArray(_ detail: MediaDetail?, _ key: String) -> [String] {
-        guard case let .array(values)? = detail?.details?[key] else { return [] }
-        return values.compactMap { value in
-            if case let .string(string) = value {
-                return clean(string)
-            }
             return nil
         }
     }

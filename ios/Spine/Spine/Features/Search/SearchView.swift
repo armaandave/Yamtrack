@@ -275,6 +275,7 @@ private struct SearchViewContent: View {
     @State private var viewModel: SearchViewModel
     @State private var isMediaLensExpanded = false
     @State private var draftText = ""
+    @State private var recentMedia: [MediaSummary] = []
     @AppStorage("recentMedia") private var recentMediaData = "[]"
 
     let mediaLensStore: MediaLensStore
@@ -378,7 +379,9 @@ private struct SearchViewContent: View {
                         await viewModel.loadMeta()
                     }
                     validateSelectedMediaType()
+                    loadRecentMedia()
                 }
+                .onChange(of: recentMediaData) { _, _ in loadRecentMedia() }
                 .task(id: draftText) {
                     try? await Task.sleep(for: .milliseconds(300))
                     guard !Task.isCancelled else { return }
@@ -387,12 +390,6 @@ private struct SearchViewContent: View {
             }
             .background(Color.black)
         }
-    }
-
-    private var recentMedia: [MediaSummary] {
-        let media = RecentMedia.decodeList(from: recentMediaData)
-        guard let supportedMediaTypes else { return media }
-        return media.filter { supportedMediaTypes.contains($0.ref.mediaType) }
     }
 
     private var currentTheme: MediaTypeTheme {
@@ -421,20 +418,30 @@ private struct SearchViewContent: View {
         mediaLensStore.validateSelection(in: viewModel.mediaTypes)
     }
 
+    private func loadRecentMedia() {
+        recentMedia = RecentMedia.decodeList(
+            from: recentMediaData,
+            supportedMediaTypes: supportedMediaTypes
+        )
+    }
+
     private func saveRecentMedia(_ media: MediaSummary) {
         var mediaItems = recentMedia.filter { $0.ref != media.ref }
         mediaItems.insert(media, at: 0)
         mediaItems = Array(mediaItems.prefix(8))
         if let data = try? JSONEncoder().encode(mediaItems),
            let string = String(data: data, encoding: .utf8) {
+            recentMedia = mediaItems
             recentMediaData = string
         }
     }
 }
 
 enum RecentMedia {
-    static func decodeList(from string: String) -> [MediaSummary] {
-        (try? JSONDecoder().decode([MediaSummary].self, from: Data(string.utf8))) ?? []
+    static func decodeList(from string: String, supportedMediaTypes: [String]? = nil) -> [MediaSummary] {
+        let media = (try? JSONDecoder().decode([MediaSummary].self, from: Data(string.utf8))) ?? []
+        guard let supportedMediaTypes else { return media }
+        return media.filter { supportedMediaTypes.contains($0.ref.mediaType) }
     }
 }
 

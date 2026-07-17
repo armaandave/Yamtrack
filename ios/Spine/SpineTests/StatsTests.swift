@@ -67,6 +67,121 @@ final class StatsTests: XCTestCase {
         XCTAssertFalse(summary.isEmpty)
     }
 
+    func testMusicStatsFixtureDrivesEveryBucketAndExcludesSongs() throws {
+        let data = Data(
+            """
+            {
+              "schema_version": 1,
+              "range": {"start_date": null, "end_date": null, "timezone": "UTC", "is_all_time": true},
+              "overview": {
+                "tracked_count": 3,
+                "completed_count": 2,
+                "diary_entry_count": 4,
+                "unique_logged_count": 2,
+                "review_count": 1,
+                "repeat_count": 1,
+                "rated_count": 2,
+                "average_rating": "8.5",
+                "liked_count": 1
+              },
+              "media_types": [
+                {
+                  "media_type": "music",
+                  "tracked_count": 3,
+                  "completed_count": 2,
+                  "diary_entry_count": 4,
+                  "unique_logged_count": 2,
+                  "review_count": 1,
+                  "repeat_count": 1,
+                  "rated_count": 2,
+                  "average_rating": "8.5",
+                  "liked_count": 1,
+                  "statuses": {"in_progress": 1, "completed": 2},
+                  "rating_distribution": [{"rating": "9.0", "count": 2}],
+                  "release_years": [{"year": 2007, "count": 3}],
+                  "top_genres": [{"name": "Industrial", "count": 2}],
+                  "top_languages": [{"name": "English", "count": 3}],
+                  "metadata_coverage": {"total_items": 3, "release_year_items": 3, "genre_items": 2, "language_items": 3},
+                  "top_rated": [
+                    {
+                      "media": {
+                        "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                        "title": "Year Zero",
+                        "poster_url": "https://example.com/year-zero.jpg",
+                        "poster_orientation": "square"
+                      },
+                      "rating": "9.0"
+                    }
+                  ],
+                  "most_logged": [
+                    {
+                      "media": {
+                        "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                        "title": "Year Zero",
+                        "poster_url": "https://example.com/year-zero.jpg",
+                        "poster_orientation": "square"
+                      },
+                      "log_count": 4
+                    }
+                  ]
+                }
+              ],
+              "activity": {"days": [{"date": "2026-07-13", "count": 1}], "months": [{"month": "2026-07", "count": 1}]},
+              "rating_distribution": [{"rating": "9.0", "count": 2}],
+              "release_years": [{"year": 2007, "count": 3}],
+              "top_genres": [{"name": "Industrial", "count": 2}],
+              "top_languages": [{"name": "English", "count": 3}],
+              "metadata_coverage": {"total_items": 3, "release_year_items": 3, "genre_items": 2, "language_items": 3},
+              "diary_top_rated": [
+                {
+                  "media": {
+                    "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                    "title": "Year Zero",
+                    "poster_url": "https://example.com/year-zero.jpg",
+                    "poster_orientation": "square"
+                  },
+                  "rating": "9.0"
+                }
+              ],
+              "most_logged": [
+                {
+                  "media": {
+                    "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                    "title": "Year Zero",
+                    "poster_url": "https://example.com/year-zero.jpg",
+                    "poster_orientation": "square"
+                  },
+                  "log_count": 4
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let summary = try JSONDecoder.api.decode(StatsSummary.self, from: data)
+        let music = try XCTUnwrap(summary.mediaTypeSummary(for: "music"))
+
+        XCTAssertEqual(summary.overview.trackedCount, 3)
+        XCTAssertEqual(summary.overview.diaryEntryCount, 4)
+        XCTAssertEqual(summary.mediaTypes.map(\.mediaType), ["music"])
+        XCTAssertFalse(summary.mediaTypes.contains { $0.mediaType == "song" })
+        XCTAssertEqual(music.statuses, ["in_progress": 1, "completed": 2])
+        XCTAssertEqual(music.ratingDistribution.first?.numericRating, 9)
+        XCTAssertEqual(music.releaseYears.first?.year, 2007)
+        XCTAssertEqual(music.topGenres.first?.name, "Industrial")
+        XCTAssertEqual(music.topLanguages.first?.name, "English")
+        XCTAssertEqual(music.topRated.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(music.topRated.first?.media.posterOrientation, .square)
+        XCTAssertEqual(music.mostLogged.first?.logCount, 4)
+        XCTAssertEqual(summary.ratingDistribution.first?.count, 2)
+        XCTAssertEqual(summary.releaseYears.first?.count, 3)
+        XCTAssertEqual(summary.topGenres.first?.count, 2)
+        XCTAssertEqual(summary.topLanguages.first?.count, 3)
+        XCTAssertEqual(summary.topRated.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(summary.mostLogged.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(MediaTypeTheme.theme(for: "music").statsColor, MediaTypeTheme.theme(for: "music").accentColor)
+    }
+
     func testStatsSummaryDefaultsAdditiveFieldsAndTreatsZeroBucketsAsEmpty() throws {
         let data = Data(
             """

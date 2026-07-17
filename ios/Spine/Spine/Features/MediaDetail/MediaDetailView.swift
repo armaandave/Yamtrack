@@ -531,6 +531,17 @@ enum MusicAlbumPresentation {
         return trackArtist.caseInsensitiveCompare(albumArtist) == .orderedSame ? nil : trackArtist
     }
 
+    static func trackAccessibilityLabel(track: MusicTrack, albumCredits: [MusicArtistCredit]) -> String {
+        var values = ["Disc \(track.discNumber), track \(track.number)", track.title]
+        if let artist = artistCreditText(track.artistCredit) ?? artistCreditText(albumCredits) {
+            values.append("by \(artist)")
+        }
+        if let duration = duration(track.lengthMs) {
+            values.append(duration)
+        }
+        return values.joined(separator: ", ")
+    }
+
     static func streamingDestinations(_ links: [MusicStreamingLink]) -> [MusicStreamingDestination] {
         var seen = Set<String>()
         return links.compactMap { streamingDestination($0) }.filter { seen.insert($0.id).inserted }
@@ -716,6 +727,7 @@ struct MediaDetailView: View {
 
 private struct MediaDetailPageView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var viewModel: MediaDetailViewModel
     @State private var presentedSheet: MediaDetailSheet?
@@ -822,11 +834,10 @@ private struct MediaDetailPageView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, resolvedTopSafeAreaInset + 6)
 
-            if progressUpdateDetail == nil {
-                MediaDetailBottomBar(selectedTab: selectedTab, onSelectTab: navigateToTab)
-                    .padding(.horizontal, 18)
+            if progressUpdateDetail == nil, let detail = viewModel.detail {
+                bottomActionRail(detail)
                     .padding(.bottom, 8)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
         }
         .navigationBarBackButtonHidden()
@@ -1223,7 +1234,7 @@ private struct MediaDetailPageView: View {
                 if value.translation.width > 90 {
                     dismiss()
                 } else {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)) {
                         edgeDragOffset = 0
                     }
                 }
@@ -1396,15 +1407,30 @@ private struct MediaDetailPageView: View {
         isLogoPickerPresented = true
     }
 
-    private func navigateToTab(_ tab: AppTab) {
-        onSelectTab(tab)
-        if !dismissPresentedViewControllerStack() {
-            dismiss()
-        }
-    }
-
     private func isShowingTitleLogo(_ detail: MediaDetail) -> Bool {
         showsTitleLogo && supportsTitleLogo(detail)
+    }
+
+    private func bottomActionRail(_ detail: MediaDetail) -> some View {
+        let isEpisode = detail.ref.mediaType == "episode"
+        let isWatched = detail.userState?.isTracked == true
+        let usesQuickActions = usesBookGameActions(detail)
+
+        return ActionRail(
+            isTracked: isEpisode ? isWatched : currentStatus(detail) != nil,
+            isLiked: detail.userState?.hasLiked ?? false,
+            trackLabel: isEpisode ? "Log episode" : (usesQuickActions ? "Track" : nil),
+            eyeLabel: isEpisode
+                ? (isWatched ? "Episode watched" : "Mark episode watched")
+                : (usesQuickActions ? bookGameCopy(for: detail.ref.mediaType).finished : nil),
+            isEyeSelected: isEpisode && isWatched,
+            isEyeDisabled: isEpisode && isWatched,
+            isEyeLoading: (isEpisode || usesQuickActions) && viewModel.isSavingQuickAction,
+            isLikeLoading: viewModel.isSavingLike,
+            onTrack: { trackAction(for: detail) },
+            onLike: { likeAction(for: detail) },
+            onEye: { eyeAction(for: detail) }
+        )
     }
 
     @ViewBuilder
@@ -1436,19 +1462,22 @@ private struct MediaDetailPageView: View {
     }
 
     private func musicHero(_ detail: MediaDetail) -> some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 18) {
             heroPoster(detail)
+                .scaleEffect(1.2)
+                .frame(width: 230, height: 230)
+                .accessibilityLabel("Album cover for \(detail.displayTitle)")
 
             VStack(spacing: 8) {
                 Text(detail.displayTitle)
-                    .font(.system(size: 33, weight: .black))
+                    .font(.largeTitle.weight(.black))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
 
                 if let artist = musicArtist(detail) {
                     Text(artist)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.68))
                         .multilineTextAlignment(.center)
                 }
@@ -1456,28 +1485,13 @@ private struct MediaDetailPageView: View {
 
             musicHeroChips(detail)
             RatingChipRow(chips: ratingChips(detail), stacked: false)
-
-            ActionRail(
-                isTracked: currentStatus(detail) != nil,
-                isLiked: detail.userState?.hasLiked ?? false,
-                isHorizontal: true,
-                trackLabel: "Track",
-                eyeLabel: bookGameCopy(for: detail.ref.mediaType).finished,
-                isEyeLoading: viewModel.isSavingQuickAction,
-                isLikeLoading: viewModel.isSavingLike,
-                onTrack: { trackAction(for: detail) },
-                onLike: { likeAction(for: detail) },
-                onEye: { eyeAction(for: detail) }
+            MusicStreamingButtons(
+                links: detail.music?.representativeRelease?.streamingLinks ?? []
             )
-
-            Text(musicProviderAttribution(detail))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.46))
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 18)
-        .padding(.top, resolvedTopSafeAreaInset + 76)
+        .padding(.top, resolvedTopSafeAreaInset + 104)
         .padding(.bottom, 28)
         .background {
             HeroArtwork(detail: detail)
@@ -1488,20 +1502,29 @@ private struct MediaDetailPageView: View {
     private func musicHeroChips(_ detail: MediaDetail) -> some View {
         let chips = musicHeroChipValues(detail)
         if !chips.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     ForEach(chips, id: \.self) { value in
                         chipLabel(value)
                     }
                 }
+                .fixedSize(horizontal: true, vertical: false)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(chips, id: \.self) { value in
+                            chipLabel(value)
+                        }
+                    }
+                }
+                .contentMargins(.horizontal, 2)
             }
-            .contentMargins(.horizontal, 2)
         }
     }
 
     private func musicHeroChipValues(_ detail: MediaDetail) -> [String] {
         guard let music = detail.music else { return [] }
-        var values = [MusicAlbumPresentation.releaseType(music), music.firstReleaseDate?.yearPrefix]
+        var values = [MusicAlbumPresentation.releaseType(music), formattedDate(music.firstReleaseDate)]
             .compactMap { $0?.nilIfEmpty }
         values += detailArray(detail, "genres")
         var seen = Set<String>()
@@ -1591,19 +1614,7 @@ private struct MediaDetailPageView: View {
             }
 
             episodeMetadata(detail)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .bottom, spacing: 12) {
-                    episodeRatings(detail)
-                    Spacer(minLength: 8)
-                    episodeActionRail(detail)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    episodeRatings(detail)
-                    episodeActionRail(detail)
-                }
-            }
+            episodeRatings(detail)
         }
         .padding(.top, overlaysArtwork ? 56 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1664,24 +1675,6 @@ private struct MediaDetailPageView: View {
                 IMDbExternalLinkPill(destination: destination)
             }
         }
-    }
-
-    private func episodeActionRail(_ detail: MediaDetail) -> some View {
-        let isWatched = detail.userState?.isTracked == true
-        return ActionRail(
-            isTracked: isWatched,
-            isLiked: detail.userState?.hasLiked ?? false,
-            isHorizontal: true,
-            trackLabel: "Log episode",
-            eyeLabel: isWatched ? "Episode watched" : "Mark episode watched",
-            isEyeSelected: isWatched,
-            isEyeDisabled: isWatched,
-            isEyeLoading: viewModel.isSavingQuickAction,
-            isLikeLoading: viewModel.isSavingLike,
-            onTrack: { trackAction(for: detail) },
-            onLike: { likeAction(for: detail) },
-            onEye: { eyeAction(for: detail) }
-        )
     }
 
     private func episodeEyebrow(_ detail: MediaDetail) -> String {
@@ -1746,7 +1739,7 @@ private struct MediaDetailPageView: View {
     @ViewBuilder
     private func heroHeader(_ detail: MediaDetail) -> some View {
         if backdropURLString(for: detail) != nil {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .bottom, spacing: 14) {
                 VStack(alignment: .leading, spacing: 11) {
                     titleDisplay(
                         detail: detail,
@@ -1772,21 +1765,9 @@ private struct MediaDetailPageView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 10)
 
-                VStack(spacing: 14) {
+                VStack(spacing: 10) {
                     heroPoster(detail)
-
-                    ActionRail(
-                        isTracked: currentStatus(detail) != nil,
-                        isLiked: detail.userState?.hasLiked ?? false,
-                        isHorizontal: true,
-                        trackLabel: usesBookGameActions(detail) ? "Track" : nil,
-                        eyeLabel: usesBookGameActions(detail) ? bookGameCopy(for: detail.ref.mediaType).finished : nil,
-                        isEyeLoading: usesBookGameActions(detail) && viewModel.isSavingQuickAction,
-                        isLikeLoading: viewModel.isSavingLike,
-                        onTrack: { trackAction(for: detail) },
-                        onLike: { likeAction(for: detail) },
-                        onEye: { eyeAction(for: detail) }
-                    )
+                    StarRatingPill()
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -1796,44 +1777,29 @@ private struct MediaDetailPageView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 16)
 
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 11) {
-                        titleDisplay(
-                            detail: detail,
-                            title: detail.displayTitle,
-                            showsLogo: $showsTitleLogo,
-                            font: .system(size: 33, weight: .heavy),
-                            lineLimit: nil,
-                            minimumScaleFactor: 0.66,
-                            maxLogoHeight: 48
-                        )
-
-                        if let credits = gameDeveloperCredits(detail) {
-                            companyCreditBylineView(credits)
-                        } else if let credits = MediaCreditPresentation.make(for: detail) {
-                            creditBylineView(credits)
-                        } else if let byline = byline(detail) {
-                            bylineView(byline, detail: detail, lineLimit: 1)
-                        }
-
-                        genreChips(detail, wrapsAfterThird: false)
-                        RatingChipRow(chips: ratingChips(detail), stacked: false)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    ActionRail(
-                        isTracked: currentStatus(detail) != nil,
-                        isLiked: detail.userState?.hasLiked ?? false,
-                        isHorizontal: false,
-                        trackLabel: usesBookGameActions(detail) ? "Track" : nil,
-                        eyeLabel: usesBookGameActions(detail) ? bookGameCopy(for: detail.ref.mediaType).finished : nil,
-                        isEyeLoading: usesBookGameActions(detail) && viewModel.isSavingQuickAction,
-                        isLikeLoading: viewModel.isSavingLike,
-                        onTrack: { trackAction(for: detail) },
-                        onLike: { likeAction(for: detail) },
-                        onEye: { eyeAction(for: detail) }
+                VStack(alignment: .leading, spacing: 11) {
+                    titleDisplay(
+                        detail: detail,
+                        title: detail.displayTitle,
+                        showsLogo: $showsTitleLogo,
+                        font: .system(size: 33, weight: .heavy),
+                        lineLimit: nil,
+                        minimumScaleFactor: 0.66,
+                        maxLogoHeight: 48
                     )
+
+                    if let credits = gameDeveloperCredits(detail) {
+                        companyCreditBylineView(credits)
+                    } else if let credits = MediaCreditPresentation.make(for: detail) {
+                        creditBylineView(credits)
+                    } else if let byline = byline(detail) {
+                        bylineView(byline, detail: detail, lineLimit: 1)
+                    }
+
+                    genreChips(detail, wrapsAfterThird: false)
+                    RatingChipRow(chips: ratingChips(detail), stacked: false)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -2062,11 +2028,15 @@ private struct MediaDetailPageView: View {
                     )
                 }
             )
-            MusicStreamingLinksSection(links: detail.music?.representativeRelease?.streamingLinks ?? [])
             ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
             RecommendationsSection(sections: relatedSections(detail)) { item in
                 presentedRef = item.ref
             }
+            Text(musicProviderAttribution(detail))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.46))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 14)
         .padding(.top, 8)
@@ -2798,23 +2768,6 @@ private struct MediaDetailPageView: View {
     }
 }
 
-@discardableResult
-private func dismissPresentedViewControllerStack() -> Bool {
-    guard
-        let root = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .rootViewController,
-        root.presentedViewController != nil
-    else {
-        return false
-    }
-
-    root.dismiss(animated: true)
-    return true
-}
-
 private enum MediaDetailLayout {
     static let heroPosterWidth: CGFloat = 191
     static let heroHeight: CGFloat = 455
@@ -2854,7 +2807,7 @@ private struct CircleIconButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
+                .frame(width: 44, height: 44)
                 .background(.black.opacity(0.34), in: Circle())
         }
         .buttonStyle(.plain)
@@ -3591,12 +3544,10 @@ struct BackdropArtwork: View {
 }
 
 private struct ActionRail: View {
-    private static let buttonSize: CGFloat = 42
-    private static let buttonSpacing: CGFloat = 9
+    private static let buttonSize: CGFloat = 44
 
     let isTracked: Bool
     let isLiked: Bool
-    let isHorizontal: Bool
     var trackLabel: String?
     var eyeLabel: String?
     var isEyeSelected = false
@@ -3608,57 +3559,37 @@ private struct ActionRail: View {
     var onEye: () -> Void = {}
 
     var body: some View {
-        GlassEffectContainer(spacing: Self.buttonSpacing) {
-            if isHorizontal {
-                HStack(spacing: Self.buttonSpacing) {
-                    railButton(
-                        systemName: "plus",
-                        label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                        usesLargePlus: true,
-                        action: onTrack
-                    )
-                    railButton(
-                        systemName: isLiked ? "heart.fill" : "heart",
-                        label: isLiked ? "Unlike" : "Like",
-                        usesLargePlus: false,
-                        isLoading: isLikeLoading,
-                        action: onLike
-                    )
-                    railButton(
-                        systemName: isEyeSelected ? "eye.fill" : "eye",
-                        label: eyeLabel ?? "Mark as watched",
-                        usesLargePlus: false,
-                        isLoading: isEyeLoading,
-                        isDisabled: isEyeDisabled,
-                        action: onEye
-                    )
-                }
-            } else {
-                VStack(spacing: Self.buttonSpacing) {
-                    railButton(
-                        systemName: isLiked ? "heart.fill" : "heart",
-                        label: isLiked ? "Unlike" : "Like",
-                        usesLargePlus: false,
-                        isLoading: isLikeLoading,
-                        action: onLike
-                    )
-                    railButton(
-                        systemName: isEyeSelected ? "eye.fill" : "eye",
-                        label: eyeLabel ?? "Mark as watched",
-                        usesLargePlus: false,
-                        isLoading: isEyeLoading,
-                        isDisabled: isEyeDisabled,
-                        action: onEye
-                    )
-                    railButton(
-                        systemName: "plus",
-                        label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
-                        usesLargePlus: false,
-                        action: onTrack
-                    )
-                }
-            }
+        HStack(spacing: 0) {
+            railButton(
+                systemName: "plus",
+                label: trackLabel ?? (isTracked ? "Edit tracking" : "Log"),
+                usesLargePlus: true,
+                action: onTrack
+            )
+            railButton(
+                systemName: isEyeSelected ? "eye.fill" : "eye",
+                label: eyeLabel ?? "Mark as watched",
+                usesLargePlus: false,
+                isLoading: isEyeLoading,
+                isDisabled: isEyeDisabled,
+                action: onEye
+            )
+            railButton(
+                systemName: isLiked ? "heart.fill" : "heart",
+                label: isLiked ? "Unlike" : "Like",
+                usesLargePlus: false,
+                isLoading: isLikeLoading,
+                action: onLike
+            )
         }
+        .padding(4)
+        .background(.white.opacity(0.08), in: Capsule())
+        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 26))
+        .overlay {
+            Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+        .accessibilityIdentifier("media-detail.actions")
     }
 
     private func railButton(
@@ -3684,12 +3615,6 @@ private struct ActionRail: View {
                 .spineContentTransition(value: isLoading)
             }
             .frame(width: Self.buttonSize, height: Self.buttonSize)
-            .background(.white.opacity(0.08), in: Circle())
-            .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Circle())
-            .overlay {
-                Circle().stroke(.white.opacity(0.16), lineWidth: 0.75)
-            }
-            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
         .disabled(isLoading || isDisabled)
@@ -3703,13 +3628,62 @@ private struct ActionRail: View {
     }
 }
 
+private struct StarRatingPill: View {
+    @State private var rating = 0
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 3) {
+                ForEach(1...5, id: \.self) { value in
+                    Image(systemName: value <= rating ? "star.fill" : "star")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(value <= rating ? .yellow : .white.opacity(0.84))
+                        .frame(width: 18, height: 28)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        rating = min(max(Int((gesture.location.x / proxy.size.width * 5).rounded()), 0), 5)
+                    }
+            )
+        }
+        .frame(width: 116, height: 28)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(.white.opacity(0.08), in: Capsule())
+        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .rect(cornerRadius: 16))
+        .overlay {
+            Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
+        .sensoryFeedback(.selection, trigger: rating)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Your rating")
+        .accessibilityValue(rating == 0 ? "Not rated" : "\(rating) out of 5")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                rating = min(rating + 1, 5)
+            case .decrement:
+                rating = max(rating - 1, 0)
+            @unknown default:
+                break
+            }
+        }
+        .accessibilityIdentifier("media-detail.star-rating")
+    }
+}
+
 private struct SectionLabel: View {
     let title: String
 
     var body: some View {
         Text(title.uppercased())
             .font(.system(size: 11, weight: .heavy))
-            .foregroundStyle(.white.opacity(0.48))
+            .foregroundStyle(.white.opacity(0.62))
             .tracking(0)
     }
 }
@@ -4004,13 +3978,14 @@ private struct TrackingSummarySection: View {
 
 }
 
-private struct SynopsisText: View {
+struct SynopsisText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let text: String
     @State private var isExpanded = false
 
     var body: some View {
         Button {
-            withAnimation(.smooth(duration: 0.3)) {
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
                 isExpanded.toggle()
             }
         } label: {
@@ -4020,7 +3995,7 @@ private struct SynopsisText: View {
         .accessibilityLabel(isExpanded ? "Collapse synopsis" : "Expand synopsis")
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
-        .animation(.smooth(duration: 0.3), value: isExpanded)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: isExpanded)
     }
 
     private var synopsisCopy: some View {
@@ -4242,11 +4217,11 @@ private struct MusicAlbumTracklistSection: View {
     private func discHeader(_ medium: MusicMedium) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Disc \(medium.position)")
-                .font(.system(size: 13, weight: .heavy))
+                .font(.subheadline.weight(.heavy))
             if let title = medium.title?.nilIfEmpty {
                 Text(title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.52))
+                    .foregroundStyle(.white.opacity(0.62))
             }
         }
         .foregroundStyle(.white.opacity(0.9))
@@ -4259,6 +4234,8 @@ private struct MusicAlbumTracklistSection: View {
 }
 
 private struct MusicAlbumTrackRow: View {
+    @ScaledMetric(relativeTo: .caption) private var numberWidth = 28
+
     let track: MusicTrack
     let albumCredits: [MusicArtistCredit]
     let onSelect: () -> Void
@@ -4267,13 +4244,13 @@ private struct MusicAlbumTrackRow: View {
         Button(action: onSelect) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(track.number)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .frame(width: 28, alignment: .trailing)
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .frame(width: numberWidth, alignment: .trailing)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
                     if let artist = MusicAlbumPresentation.differingArtistCredit(
@@ -4282,7 +4259,7 @@ private struct MusicAlbumTrackRow: View {
                     ) {
                         Text(artist)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(.white.opacity(0.62))
                     }
                 }
 
@@ -4290,65 +4267,151 @@ private struct MusicAlbumTrackRow: View {
 
                 if let duration = MusicAlbumPresentation.duration(track.lengthMs) {
                     Text(duration)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.46))
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.white.opacity(0.62))
                 }
 
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.white.opacity(0.28))
             }
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .accessibilityLabel("Open \(track.title)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(MusicAlbumPresentation.trackAccessibilityLabel(track: track, albumCredits: albumCredits))
+        .accessibilityHint("Opens song details")
         .accessibilityIdentifier("music.track.\(track.recording.recordingMbid)")
     }
 }
 
-private struct MusicStreamingLinksSection: View {
+private struct MusicStreamingButtons: View {
     let links: [MusicStreamingLink]
 
     private var destinations: [MusicStreamingDestination] {
-        MusicAlbumPresentation.streamingDestinations(links)
+        MusicAlbumPresentation.streamingDestinations(links).filter {
+            $0.label == "Apple Music" || $0.label == "Spotify"
+        }
     }
 
     var body: some View {
         if !destinations.isEmpty {
-            VStack(alignment: .leading, spacing: 13) {
-                SectionLabel(title: "Listen")
-
-                VStack(spacing: 0) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
                     ForEach(destinations) { destination in
-                        Link(destination: destination.url) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "play.circle.fill")
-                                    .font(.title3)
-                                Text(destination.label)
-                                    .font(.system(size: 14, weight: .semibold))
-                                Spacer()
-                                Image(systemName: "arrow.up.right")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(.white.opacity(0.42))
-                            }
-                            .foregroundStyle(.white.opacity(0.9))
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 48)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens \(destination.label) using the system URL behavior")
+                        MusicStreamingButton(destination: destination)
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
 
-                        if destination.id != destinations.last?.id {
-                            Divider().overlay(.white.opacity(0.045))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(destinations) { destination in
+                            MusicStreamingButton(destination: destination)
                         }
                     }
                 }
-                .mediaDetailSurface(cornerRadius: 14)
             }
         }
+    }
+}
+
+private struct MusicStreamingButton: View {
+    let destination: MusicStreamingDestination
+
+    var body: some View {
+        Link(destination: destination.url) {
+            HStack(spacing: 6) {
+                serviceLogo
+                Text(destination.label)
+                    .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 11)
+            .frame(height: 36)
+            .background { buttonBackground }
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(destination.label == "Spotify" ? 0.08 : 0.18), lineWidth: 0.75)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Listen on \(destination.label)")
+        .accessibilityHint("Opens using the system URL behavior")
+    }
+
+    @ViewBuilder
+    private var serviceLogo: some View {
+        switch destination.label {
+        case "Apple Music":
+            Image(systemName: "music.note")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 18, height: 18)
+                .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        case "Spotify":
+            ZStack {
+                Circle().fill(.black)
+                SpotifyWaves()
+                    .stroke(
+                        Color(red: 0.12, green: 0.84, blue: 0.38),
+                        style: StrokeStyle(lineWidth: 1.8, lineCap: .round)
+                    )
+                    .padding(4)
+            }
+            .frame(width: 18, height: 18)
+        default:
+            Image(systemName: "play.fill")
+                .font(.caption.weight(.bold))
+                .frame(width: 18, height: 18)
+                .background(.white.opacity(0.12), in: Circle())
+        }
+    }
+
+    @ViewBuilder
+    private var buttonBackground: some View {
+        let shape = Capsule()
+        switch destination.label {
+        case "Apple Music":
+            shape.fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.98, green: 0.17, blue: 0.32),
+                        Color(red: 0.78, green: 0.12, blue: 0.55),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        case "Spotify":
+            shape.fill(Color(red: 0.12, green: 0.84, blue: 0.38))
+        default:
+            shape.fill(.white.opacity(0.12))
+        }
+    }
+
+    private var foregroundColor: Color {
+        destination.label == "Spotify" ? .black : .white
+    }
+}
+
+private struct SpotifyWaves: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for index in 0..<3 {
+            let inset = CGFloat(index) * rect.height * 0.18
+            let y = rect.minY + rect.height * (0.28 + CGFloat(index) * 0.22)
+            path.move(to: CGPoint(x: rect.minX + inset, y: y))
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX - inset, y: y + rect.height * 0.08),
+                control: CGPoint(x: rect.midX, y: y - rect.height * 0.12)
+            )
+        }
+        return path
     }
 }
 
@@ -4905,70 +4968,6 @@ private struct RecommendationsSection: View {
     }
 }
 
-private struct MediaDetailBottomBar: View {
-    let selectedTab: AppTab
-    let onSelectTab: (AppTab) -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 0) {
-                BottomBarItem(title: "Home", systemName: "house.fill", isSelected: selectedTab == .home) {
-                    onSelectTab(.home)
-                }
-                BottomBarItem(title: "Library", systemName: "books.vertical.fill", isSelected: selectedTab == .library) {
-                    onSelectTab(.library)
-                }
-                BottomBarItem(title: "Profile", systemName: "person.fill", isSelected: selectedTab == .profile) {
-                    onSelectTab(.profile)
-                }
-            }
-            .padding(5)
-            .background(.black.opacity(0.74), in: Capsule())
-            .overlay {
-                Capsule().stroke(.white.opacity(0.06))
-            }
-
-            Button {
-                onSelectTab(.search)
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(.black.opacity(0.82), in: Circle())
-                    .overlay {
-                        Circle().stroke(.white.opacity(0.06))
-                    }
-                }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Search")
-        }
-    }
-}
-
-private struct BottomBarItem: View {
-    let title: String
-    let systemName: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemName)
-                    .font(.system(size: 21, weight: .bold))
-                Text(title)
-                    .font(.system(size: 9, weight: .heavy))
-            }
-            .foregroundStyle(.white)
-            .frame(width: isSelected ? 88 : 76, height: 48)
-            .background(isSelected ? Color.white.opacity(0.16) : .clear, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-    }
-}
-
 private extension JSONValue {
     var displayString: String? {
         switch self {
@@ -5044,13 +5043,10 @@ private extension Color {
 }
 
 func supportsTitleLogo(_ detail: MediaDetail) -> Bool {
-    detail.displayLogoURL != nil && (
-        detail.ref.source == "tmdb" && ["movie", "tv"].contains(detail.ref.mediaType)
-            || detail.ref.source == "igdb" && detail.ref.mediaType == "game"
-    )
+    detail.displayLogoURL != nil
 }
 
-private struct MediaTitleDisplay: View {
+struct MediaTitleDisplay: View {
     let detail: MediaDetail
     let title: String
     @Binding var showsLogo: Bool
@@ -5058,6 +5054,7 @@ private struct MediaTitleDisplay: View {
     let lineLimit: Int?
     let minimumScaleFactor: CGFloat
     let maxLogoHeight: CGFloat
+    let alignment: Alignment = .center
     let onTap: (() -> Void)?
     let onLongPress: (() -> Void)?
 
@@ -5087,7 +5084,7 @@ private struct MediaTitleDisplay: View {
                             .frame(height: maxLogoHeight)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: alignment)
             } else {
                 titleText
             }
@@ -5108,7 +5105,7 @@ private struct MediaTitleDisplay: View {
             onLongPress?()
         }
         .accessibilityLabel(title)
-        .accessibilityHint(onTap != nil ? "Open TV show" : canToggle ? "Double tap to switch between logo and text title" : "")
+        .accessibilityHint(onTap != nil ? "Open media" : canToggle ? "Double tap to switch between logo and text title" : "")
         .accessibilityAddTraits(isInteractive ? .isButton : [])
     }
 

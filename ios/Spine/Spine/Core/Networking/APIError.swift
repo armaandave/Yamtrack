@@ -31,6 +31,23 @@ enum APIError: LocalizedError {
         if let body, !body.isEmpty {
             if let data = body.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let error = json["error"] as? [String: Any],
+                   let code = error["code"] as? String,
+                   let message = error["message"] as? String,
+                   !message.isEmpty {
+                    if code == "provider_unavailable" {
+                        return messageWithRequestID(message, error: error)
+                    }
+                    if code == "validation_error",
+                       let fields = error["fields"] as? [String: Any],
+                       let validationMessage = validationMessage(from: fields) {
+                        return validationMessage
+                    }
+                    if (400..<500).contains(statusCode) {
+                        return message
+                    }
+                }
+
                 if let errors = json["errors"] as? [[String: Any]],
                    let first = errors.first {
                     let detail = (first["detail"] as? String) ?? (first["message"] as? String) ?? ""
@@ -70,6 +87,13 @@ enum APIError: LocalizedError {
         }
 
         return "Request to \(host) failed (HTTP \(statusCode))."
+    }
+
+    private static func messageWithRequestID(_ message: String, error: [String: Any]) -> String {
+        guard let requestID = error["request_id"] as? String, !requestID.isEmpty else {
+            return message
+        }
+        return "\(message) Request ID: \(requestID)"
     }
 
     private static func validationMessage(from json: [String: Any]) -> String? {
