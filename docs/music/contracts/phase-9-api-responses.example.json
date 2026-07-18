@@ -11,7 +11,7 @@
           "username": "phase9"
         },
         "created_at": "2026-07-16T12:00:00Z",
-        "id": 3,
+        "id": 4,
         "media": {
           "backdrop_url": null,
           "custom_backdrop_url": null,
@@ -57,7 +57,7 @@
           "username": "phase9"
         },
         "created_at": "2026-07-16T12:00:00Z",
-        "id": 1,
+        "id": 2,
         "media": {
           "backdrop_url": null,
           "custom_backdrop_url": null,
@@ -87,10 +87,56 @@
         "object": {
           "id": 1,
           "liked": true,
-          "rating": "9.0",
+          "rating": "4.5",
           "type": "diary"
         },
         "type": "diary_created",
+        "viewer": {
+          "can_view": true,
+          "has_liked": false
+        }
+      },
+      {
+        "actor": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "created_at": "2026-07-16T12:00:00Z",
+        "id": 1,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "object": {
+          "id": 903,
+          "rating": "4.5",
+          "type": "tracking"
+        },
+        "type": "rating_updated",
         "viewer": {
           "can_view": true,
           "has_liked": false
@@ -237,7 +283,7 @@
     "overview": null,
     "parent": null,
     "poster_accent_color": null,
-    "poster_aspect_ratio": 1,
+    "poster_aspect_ratio": 1.0,
     "poster_height": 500,
     "poster_orientation": "square",
     "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
@@ -272,7 +318,7 @@
     }
   },
   "diary_create": {
-    "consumed_at": "2026-07-16T12:00:00Z",
+    "consumed_at": "2026-07-16",
     "contains_spoilers": false,
     "created_at": "2026-07-16T12:00:00Z",
     "id": 1,
@@ -305,7 +351,7 @@
       "title": "Year Zero",
       "user_state": null
     },
-    "rating": "9.0",
+    "rating": "4.5",
     "review": "Still sounds dangerous.",
     "review_title": "A loud future",
     "tags": [
@@ -322,7 +368,7 @@
     "visibility": "public"
   },
   "diary_detail": {
-    "consumed_at": "2026-07-16T12:00:00Z",
+    "consumed_at": "2026-07-16",
     "contains_spoilers": false,
     "created_at": "2026-07-16T12:00:00Z",
     "id": 1,
@@ -355,7 +401,7 @@
       "title": "Year Zero",
       "user_state": null
     },
-    "rating": "9.0",
+    "rating": "4.5",
     "review": "Still sounds dangerous.",
     "review_title": "A loud future",
     "tags": [
@@ -377,7 +423,7 @@
     "previous": null,
     "results": [
       {
-        "consumed_at": "2026-07-16T12:00:00Z",
+        "consumed_at": "2026-07-16",
         "contains_spoilers": false,
         "created_at": "2026-07-16T12:00:00Z",
         "id": 1,
@@ -410,7 +456,7 @@
           "title": "Year Zero",
           "user_state": null
         },
-        "rating": "9.0",
+        "rating": "4.5",
         "review": "Still sounds dangerous.",
         "review_title": "A loud future",
         "tags": [
@@ -508,16 +554,20 @@
         "subtitle": null,
         "title": "Year Zero",
         "user_state": {
-          "diary_consumed_at": "2026-07-16T12:00:00Z",
+          "diary_consumed_at": "2026-07-16",
           "diary_count": 1,
           "diary_entry_id": 1,
-          "diary_rating": "9.0",
+          "diary_rating": "4.5",
+          "direct_consumption": true,
           "has_liked": true,
           "in_lists": [
             1
           ],
           "is_tracked": true,
-          "rating": "8.5",
+          "like_is_independent": false,
+          "like_source_diary_entry_id": 1,
+          "rating": "4.5",
+          "rating_source_diary_entry_id": 1,
           "status": "Completed",
           "tracking_id": 903
         }
@@ -620,16 +670,20 @@
       "subtitle": null,
       "title": "Year Zero",
       "user_state": {
-        "diary_consumed_at": "2026-07-16T12:00:00Z",
+        "diary_consumed_at": "2026-07-16",
         "diary_count": 1,
         "diary_entry_id": 1,
-        "diary_rating": "9.0",
+        "diary_rating": "4.5",
+        "direct_consumption": true,
         "has_liked": true,
         "in_lists": [
           1
         ],
         "is_tracked": true,
-        "rating": "8.5",
+        "like_is_independent": false,
+        "like_source_diary_entry_id": 1,
+        "rating": "4.5",
+        "rating_source_diary_entry_id": 1,
         "status": "Completed",
         "tracking_id": 903
       }
@@ -833,7 +887,7 @@
         ],
         "overview": null,
         "poster_accent_color": null,
-        "poster_aspect_ratio": 1,
+        "poster_aspect_ratio": 1.0,
         "poster_height": 500,
         "poster_orientation": "square",
         "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
@@ -931,16 +985,20 @@
         "subtitle": null,
         "title": "Year Zero",
         "user_state": {
-          "diary_consumed_at": "2026-07-16T12:00:00Z",
+          "diary_consumed_at": "2026-07-16",
           "diary_count": 1,
           "diary_entry_id": 1,
-          "diary_rating": "9.0",
+          "diary_rating": "4.5",
+          "direct_consumption": true,
           "has_liked": true,
           "in_lists": [
             1
           ],
           "is_tracked": true,
-          "rating": "8.5",
+          "like_is_independent": false,
+          "like_source_diary_entry_id": 1,
+          "rating": "4.5",
+          "rating_source_diary_entry_id": 1,
           "status": "Completed",
           "tracking_id": 903
         }
@@ -996,7 +1054,7 @@
         ],
         "overview": null,
         "poster_accent_color": null,
-        "poster_aspect_ratio": 1,
+        "poster_aspect_ratio": 1.0,
         "poster_height": 500,
         "poster_orientation": "square",
         "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
@@ -1102,7 +1160,7 @@
       ],
       "overview": null,
       "poster_accent_color": null,
-      "poster_aspect_ratio": 1,
+      "poster_aspect_ratio": 1.0,
       "poster_height": 500,
       "poster_orientation": "square",
       "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
@@ -1172,7 +1230,7 @@
       "most_active_weekday": {
         "active_day_count": 1,
         "name": "Thursday",
-        "percentage": 100,
+        "percentage": 100.0,
         "weekday": 3
       }
     },
@@ -1204,7 +1262,7 @@
           "title": "Year Zero",
           "user_state": null
         },
-        "rating": "9.0"
+        "rating": "4.5"
       }
     ],
     "end_date": "2026-07-16T23:59:59.999999Z",
@@ -2049,7 +2107,7 @@
         "unique_logged_count": 0
       },
       {
-        "average_rating": "9.0",
+        "average_rating": "4.5",
         "completed_count": 1,
         "diary_entry_count": 1,
         "liked_count": 1,
@@ -2130,7 +2188,7 @@
             "rating": "4.0"
           },
           {
-            "count": 0,
+            "count": 1,
             "rating": "4.5"
           },
           {
@@ -2166,7 +2224,7 @@
             "rating": "8.5"
           },
           {
-            "count": 1,
+            "count": 0,
             "rating": "9.0"
           },
           {
@@ -2233,7 +2291,7 @@
               "title": "Year Zero",
               "user_state": null
             },
-            "rating": "9.0"
+            "rating": "4.5"
           }
         ],
         "tracked_count": 1,
@@ -2279,7 +2337,7 @@
     ],
     "overview": {
       "active_days": 1,
-      "average_rating": "9.0",
+      "average_rating": "4.5",
       "completed_count": 1,
       "current_streak_days": 1,
       "diary_entry_count": 1,
@@ -2335,7 +2393,7 @@
         "rating": "4.0"
       },
       {
-        "count": 0,
+        "count": 1,
         "rating": "4.5"
       },
       {
@@ -2371,7 +2429,7 @@
         "rating": "8.5"
       },
       {
-        "count": 1,
+        "count": 0,
         "rating": "9.0"
       },
       {
@@ -2391,11 +2449,21 @@
     ],
     "schema_version": 1,
     "score_distribution": {
-      "average_score": 8.5,
+      "average_score": 4.5,
       "datasets": [
         {
           "background_color": "#10b981",
           "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -2423,6 +2491,16 @@
             0,
             0,
             0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           "label": "TV Season"
@@ -2430,6 +2508,16 @@
         {
           "background_color": "#f97316",
           "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -2457,6 +2545,16 @@
             0,
             0,
             0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           "label": "Anime"
@@ -2464,6 +2562,16 @@
         {
           "background_color": "#ef4444",
           "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -2491,6 +2599,16 @@
             0,
             0,
             0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           "label": "Game"
@@ -2498,6 +2616,16 @@
         {
           "background_color": "#d946ef",
           "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -2525,6 +2653,16 @@
             0,
             0,
             0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           "label": "Comic"
@@ -2540,7 +2678,17 @@
             0,
             0,
             0,
+            0,
             1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0
           ],
@@ -2548,17 +2696,27 @@
         }
       ],
       "labels": [
-        "0",
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-        "8",
-        "9",
-        "10"
+        "0.0",
+        "0.5",
+        "1.0",
+        "1.5",
+        "2.0",
+        "2.5",
+        "3.0",
+        "3.5",
+        "4.0",
+        "4.5",
+        "5.0",
+        "5.5",
+        "6.0",
+        "6.5",
+        "7.0",
+        "7.5",
+        "8.0",
+        "8.5",
+        "9.0",
+        "9.5",
+        "10.0"
       ],
       "total_scored": 1
     },
@@ -2699,13 +2857,18 @@
           "title": "Year Zero",
           "user_state": null
         },
-        "rating": "8.5"
+        "rating": "4.5"
       }
     ]
   },
   "tracking_action": {
-    "end_date": "2026-07-16T12:00:00Z",
+    "diary_count": 0,
+    "direct_consumption": true,
+    "end_date": null,
     "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
     "notes": "Headphones recommended.",
     "progress": {
       "kind": "binary",
@@ -2713,7 +2876,8 @@
       "unit": "album",
       "value": 1
     },
-    "rating": "8.5",
+    "rating": "4.5",
+    "rating_source_diary_entry_id": null,
     "repeats": 1,
     "start_date": "2026-07-15T12:00:00Z",
     "status": "Completed",
@@ -2721,8 +2885,13 @@
     "updated_at": "2026-07-16T12:00:00Z"
   },
   "tracking_detail": {
+    "diary_count": 0,
+    "direct_consumption": false,
     "end_date": null,
     "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
     "notes": "",
     "progress": {
       "kind": "binary",
@@ -2731,6 +2900,7 @@
       "value": 0
     },
     "rating": null,
+    "rating_source_diary_entry_id": null,
     "repeats": 1,
     "start_date": null,
     "status": "Planning",
@@ -2738,19 +2908,25 @@
     "updated_at": "2026-07-16T12:00:00Z"
   },
   "tracking_update": {
+    "diary_count": 0,
+    "direct_consumption": true,
     "end_date": null,
     "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
     "notes": "Headphones recommended.",
     "progress": {
       "kind": "binary",
       "max": 1,
       "unit": "album",
-      "value": 0
+      "value": 1
     },
-    "rating": "8.5",
+    "rating": "4.5",
+    "rating_source_diary_entry_id": null,
     "repeats": 1,
     "start_date": "2026-07-15T12:00:00Z",
-    "status": "In progress",
+    "status": "Completed",
     "tracking_id": 903,
     "updated_at": "2026-07-16T12:00:00Z"
   }

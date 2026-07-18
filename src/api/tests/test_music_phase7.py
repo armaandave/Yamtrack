@@ -203,7 +203,7 @@ class MusicListsSocialTests(TestCase):
         list_activity.refresh_from_db()
         diary_activity.refresh_from_db()
         self.assertEqual(list_activity.visibility, "private")
-        self.assertEqual(diary_activity.visibility, "followers")
+        self.assertEqual(diary_activity.visibility, "public")
 
         self.client.force_authenticate(self.follower)
         follower_activity = self.client.get(
@@ -236,8 +236,11 @@ class MusicListsSocialTests(TestCase):
             {"target_type": "diary", "target_id": entry.id},
             format="json",
         )
-        self.assertEqual(outsider_activity.data["results"], [])
-        self.assertEqual(outsider_diary_like.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            [activity["type"] for activity in outsider_activity.data["results"]],
+            ["diary_created"],
+        )
+        self.assertEqual(outsider_diary_like.status_code, status.HTTP_200_OK)
 
         self.client.force_authenticate(self.follower)
         blocked = self.client.post(f"/api/v1/users/{self.owner.username}/block/")

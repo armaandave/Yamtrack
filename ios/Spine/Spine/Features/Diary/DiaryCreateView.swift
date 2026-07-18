@@ -15,6 +15,7 @@ final class DiaryCreateViewModel {
     var tagsText = ""
     var visibility = "public"
     var containsSpoilers = false
+    var liked = false
     var isRewatch = false
     var isSearching = false
     var isSaving = false
@@ -68,6 +69,9 @@ final class DiaryCreateViewModel {
         defer { isSaving = false }
 
         do {
+            if selectedMedia.ref.isSingleWeight, CalendarDateCodec.isFuture(consumedAt) {
+                throw DiaryCreateError.futureDate
+            }
             let tags = tagsText
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -78,11 +82,11 @@ final class DiaryCreateViewModel {
                 rating: Decimal(string: ratingText),
                 review: review,
                 reviewTitle: reviewTitle,
-                liked: false,
+                liked: liked,
                 isRewatch: isRewatch,
                 autoMarkConsumed: true,
                 containsSpoilers: containsSpoilers,
-                visibility: visibility,
+                visibility: selectedMedia.ref.isSingleWeight ? "public" : visibility,
                 tags: tags
             )
             _ = try await diaryRepository.create(request)
@@ -94,6 +98,30 @@ final class DiaryCreateViewModel {
             }
             return false
         }
+    }
+
+    func select(_ media: MediaSummary) {
+        selectedMedia = media
+        ratingText = media.userState?.rating ?? ""
+        liked = media.userState?.hasLiked ?? false
+        if media.ref.isSingleWeight {
+            let state = media.userState
+            isRewatch = state?.directConsumption == true
+                || (state?.diaryCount ?? 0) > 0
+                || (state?.directConsumption == nil
+                    && state?.isTracked == true
+                    && state?.status == "Completed")
+        } else {
+            isRewatch = (media.userState?.diaryCount ?? 0) > 0
+        }
+    }
+}
+
+private enum DiaryCreateError: LocalizedError {
+    case futureDate
+
+    var errorDescription: String? {
+        "Consumption dates cannot be in the future."
     }
 }
 
@@ -197,7 +225,7 @@ struct DiaryCreateView: View {
 
                 ForEach(viewModel.results.prefix(6)) { result in
                     Button {
-                        viewModel.selectedMedia = result
+                        viewModel.select(result)
                     } label: {
                         HStack {
                             MediaArtwork(
@@ -238,19 +266,28 @@ struct DiaryCreateView: View {
             DatePicker(
                 viewModel.selectedMedia?.ref.mediaType == "music" ? "Date listened" : "Consumed",
                 selection: $viewModel.consumedAt,
-                displayedComponents: [.date, .hourAndMinute]
+                in: Date.distantPast...(viewModel.selectedMedia?.ref.isSingleWeight == true ? Date() : Date.distantFuture),
+                displayedComponents: viewModel.selectedMedia?.ref.isSingleWeight == true
+                    ? [.date]
+                    : [.date, .hourAndMinute]
             )
-            TextField("Rating 0-10", text: $viewModel.ratingText)
+            TextField(
+                viewModel.selectedMedia?.ref.isSingleWeight == true ? "Rating 0.5-5" : "Rating 0-10",
+                text: $viewModel.ratingText
+            )
                 .keyboardType(.decimalPad)
             TextField("Review title", text: $viewModel.reviewTitle)
             TextField("Review", text: $viewModel.review, axis: .vertical)
                 .lineLimit(4...8)
             TextField("Tags, comma separated", text: $viewModel.tagsText)
-            Picker("Visibility", selection: $viewModel.visibility) {
-                ForEach(APIConstants.visibilityChoices, id: \.self) { value in
-                    Text(value.capitalized).tag(value)
+            if viewModel.selectedMedia?.ref.isSingleWeight != true {
+                Picker("Visibility", selection: $viewModel.visibility) {
+                    ForEach(APIConstants.visibilityChoices, id: \.self) { value in
+                        Text(value.capitalized).tag(value)
+                    }
                 }
             }
+            Toggle("Liked", isOn: $viewModel.liked)
             Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
             Toggle(viewModel.selectedMedia?.ref.repeatLabel ?? "Rewatch", isOn: $viewModel.isRewatch)
         }

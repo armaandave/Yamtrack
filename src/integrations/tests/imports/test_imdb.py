@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from django.utils import timezone
 
 from app.models import (
     TV,
@@ -104,10 +103,8 @@ class ImportIMDB(TestCase):
         self.assertEqual(movie_1.score, 9)
         self.assertEqual(movie_1.status, Status.COMPLETED.value)
         self.assertEqual(movie_1.progress, 1)
-        self.assertEqual(
-            movie_1.end_date,
-            datetime(2025, 2, 3, tzinfo=timezone.get_current_timezone()),
-        )
+        self.assertTrue(movie_1.direct_consumption)
+        self.assertIsNone(movie_1.end_date)
 
         game_of_thrones = TV.objects.get(item__title="Game of Thrones")
         self.assertEqual(game_of_thrones.status, Status.PLANNING.value)

@@ -9,6 +9,11 @@ struct HallOfFameCrownPlacement: Equatable {
     let zIndex: Double
 }
 
+struct HallOfFameCrownArrangement {
+    let above: FavoriteSlot?
+    let below: [FavoriteSlot]
+}
+
 enum HallOfFameCrownPosition {
     case aboveAvatar
     case belowAvatar
@@ -29,9 +34,28 @@ enum HallOfFameCrownPosition {
 }
 
 struct HallOfFameCrownLayout {
+    static let avatarDiameter: CGFloat = 128
+    static let crownHeight: CGFloat = 210
+
+    static func arrangement(for slots: [FavoriteSlot]) -> HallOfFameCrownArrangement {
+        guard let musicIndex = slots.firstIndex(where: { $0.id == "music" }) else {
+            return HallOfFameCrownArrangement(above: nil, below: slots)
+        }
+
+        let music = slots[musicIndex]
+        var below = slots
+        below.remove(at: musicIndex)
+
+        if slots.count.isMultiple(of: 2) {
+            return HallOfFameCrownArrangement(above: music, below: below)
+        }
+
+        below.insert(music, at: below.count / 2)
+        return HallOfFameCrownArrangement(above: nil, below: below)
+    }
+
     static func placements(
         count: Int,
-        cardSize: CGSize,
         avatarDiameter: CGFloat,
         collapseProgress: CGFloat = 0,
         position: HallOfFameCrownPosition = .aboveAvatar
@@ -39,9 +63,9 @@ struct HallOfFameCrownLayout {
         let count = max(count, 0)
         guard count > 0 else { return [] }
 
-        let collapseProgress = min(1, max(0, collapseProgress))
-        let horizontalRemaining = (1 - collapseProgress) * (1 - collapseProgress)
-        let verticalRemaining = 1 - collapseProgress * collapseProgress
+        let collapseProgress = clampedCollapseProgress(collapseProgress)
+        let horizontalRemaining = horizontalRemaining(for: collapseProgress)
+        let verticalRemaining = verticalRemaining(for: collapseProgress)
         let collapsedScale: CGFloat = 0.28
         let maxAngle = maxAngle(for: count)
         let angles: [Double]
@@ -79,6 +103,49 @@ struct HallOfFameCrownLayout {
         }
     }
 
+    static func aboveMusicPlacement(
+        cardSize: CGSize,
+        lowerCount: Int,
+        avatarDiameter: CGFloat,
+        collapseProgress: CGFloat = 0
+    ) -> HallOfFameCrownPlacement {
+        let collapseProgress = clampedCollapseProgress(collapseProgress)
+        let expandedScale: CGFloat = 1.04
+        let collapsedScale: CGFloat = 0.28
+        let expandedY = -(avatarDiameter / 2 + musicAvatarGap(forLowerCount: lowerCount) + cardSize.height / 2)
+
+        return HallOfFameCrownPlacement(
+            index: 0,
+            x: 0,
+            y: expandedY * verticalRemaining(for: collapseProgress),
+            rotation: .zero,
+            scale: expandedScale + (collapsedScale - expandedScale) * collapseProgress,
+            zIndex: 10 * Double(1 - collapseProgress)
+        )
+    }
+
+    static func visualSize(for slot: FavoriteSlot, cardSize: CGSize) -> CGSize {
+        let isSquare = slot.id == "music"
+            || slot.item?.ref.mediaType == "music"
+            || slot.item?.posterOrientation == .square
+        return isSquare ? CGSize(width: cardSize.width, height: cardSize.width) : cardSize
+    }
+
+    static func aboveMusicClearance(for slots: [FavoriteSlot], collapseProgress: CGFloat) -> CGFloat {
+        let arrangement = arrangement(for: slots)
+        guard let music = arrangement.above else { return 0 }
+        let cardSize = cardSize(for: max(arrangement.below.count, 1))
+        let musicSize = visualSize(for: music, cardSize: cardSize)
+        return (musicSize.height + musicAvatarGap(forLowerCount: arrangement.below.count))
+            * verticalRemaining(for: collapseProgress)
+    }
+
+    static func musicAvatarGap(forLowerCount count: Int) -> CGFloat {
+        let cardSize = cardSize(for: count)
+        let center = placements(count: count, avatarDiameter: avatarDiameter, position: .belowAvatar)[count / 2]
+        return crownHeight / 2 + center.y - cardSize.height / 2 - avatarDiameter
+    }
+
     static func cardSize(for count: Int) -> CGSize {
         switch max(count, 1) {
         case 1:
@@ -96,6 +163,20 @@ struct HallOfFameCrownLayout {
         default:
             CGSize(width: 50, height: 75)
         }
+    }
+
+    static func verticalRemaining(for collapseProgress: CGFloat) -> CGFloat {
+        let collapseProgress = clampedCollapseProgress(collapseProgress)
+        return 1 - collapseProgress * collapseProgress
+    }
+
+    private static func horizontalRemaining(for collapseProgress: CGFloat) -> CGFloat {
+        let remaining = 1 - collapseProgress
+        return remaining * remaining
+    }
+
+    private static func clampedCollapseProgress(_ collapseProgress: CGFloat) -> CGFloat {
+        min(1, max(0, collapseProgress))
     }
 
     private static func maxAngle(for count: Int) -> Double {

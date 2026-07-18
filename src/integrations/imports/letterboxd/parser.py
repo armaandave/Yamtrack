@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import io
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -71,6 +73,7 @@ def parse_export(file_or_bytes):
             continue
         if path in STANDARD_FILES:
             rows = [_normalize_row(row) for row in _read_dicts(archive, member)]
+            _add_source_identity(rows)
             setattr(export, _attr_for_path(path), rows)
         elif path.startswith("lists/") and path.endswith(".csv"):
             export.lists.append(_read_list(archive, member, path))
@@ -135,11 +138,24 @@ def _normalize_row(row):
     row["year"] = _int_or_none(row.get("Year"))
     row["rating"] = _rating(row.get("Rating"))
     row["date"] = _date(row.get("Watched Date") or row.get("Date"))
-    row["rewatch"] = row.get("Rewatch") == "Yes"
+    rewatch = row.get("Rewatch")
+    row["rewatch"] = None if rewatch == "" else rewatch == "Yes"
     row["tags"] = _tags(row.get("Tags", ""))
     row["review"] = row.get("Review", "")
     row["position"] = _int_or_none(row.get("Position"))
     return row
+
+
+def _add_source_identity(rows):
+    """Add stable per-record identity without treating a date as unique."""
+    occurrences = Counter()
+    for order, row in enumerate(rows):
+        key = (row.get("uri"), row.get("date"))
+        occurrence = occurrences[key]
+        occurrences[key] += 1
+        identity = f"{key[0]}|{key[1].date().isoformat() if key[1] else ''}|{occurrence}"
+        row["source_id"] = hashlib.sha256(identity.encode()).hexdigest()
+        row["source_order"] = order
 
 
 def _tags(value):

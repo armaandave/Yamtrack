@@ -6,6 +6,14 @@ from rest_framework.views import exception_handler
 from app.providers.services import ProviderAPIError
 
 
+class DiaryHistoryConflict(exceptions.APIException):
+    """Consumed tracking is protected by existing diary history."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Delete your logs before marking this as unwatched."
+    default_code = "diary_history_exists"
+
+
 def _code_for_status(status_code):
     if status_code == status.HTTP_401_UNAUTHORIZED:
         return "authentication_required"

@@ -2,14 +2,18 @@ from contextlib import suppress
 from decimal import Decimal
 
 from django.apps import apps
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
+from rest_framework import serializers
 
+from api.exceptions import DiaryHistoryConflict
 from api.serializers.common import (
     get_or_create_item_from_metadata,
     progress_for_media,
     tracking_state,
 )
+from app import single_weight
 from app.models import BasicMedia, Book, MediaTypes, Status
 from app.providers import services as provider_services
 from social.models import Activity, ProgressChange
@@ -59,6 +63,14 @@ def create_or_update_tracking(user, *, source, media_type, media_id, data, parti
         model = apps.get_model("app", media_type)
         media = model(item=item, user=user)
 
+    if single_weight.supports(media_type):
+        return _write_single_weight_tracking(
+            user,
+            media if existing_media else None,
+            media.item,
+            data,
+        )
+
     for api_field, model_field in {
         "status": "status",
         "rating": "score",
@@ -87,7 +99,13 @@ def delete_tracking(user, *, source, media_type, media_id, season_number=None):
         season_number=season_number,
     )
     if media is not None:
-        media.delete()
+        if single_weight.supports(media_type):
+            try:
+                single_weight.unwatch(user, media.item)
+            except single_weight.DiaryHistoryExists as error:
+                raise DiaryHistoryConflict from error
+        else:
+            media.delete()
 
 
 def consume_media(user, *, source, media_type, media_id, consumed_at=None):
@@ -101,6 +119,8 @@ def consume_media(user, *, source, media_type, media_id, consumed_at=None):
             media_id=media_id,
             data={"status": Status.COMPLETED.value},
         )
+    if single_weight.supports(media_type):
+        return single_weight.mark_consumed(user, media.item)
     media.end_date = consumed_at or timezone.now()
     media.mark_consumed()
     return media
@@ -226,6 +246,25 @@ def serialize_tracking(media):
         with suppress(Exception):
             BasicMedia.objects.annotate_max_progress([media], media.item.media_type)
     return tracking_state(media)
+
+
+def _write_single_weight_tracking(user, media, item, data):
+    """Apply direct single-weight tracking and rating mutations."""
+    try:
+        rating = single_weight.UNSET
+        if "rating" in data:
+            rating = single_weight.rating_from_wire(data["rating"])
+        media = single_weight.apply_tracking_state(
+            user,
+            item,
+            status=data.get("status", single_weight.UNSET),
+            rating=rating,
+            start_date=data.get("start_date", single_weight.UNSET),
+            notes=data.get("notes", single_weight.UNSET),
+        )
+    except DjangoValidationError as error:
+        raise serializers.ValidationError({"rating": error.messages[0]}) from error
+    return media
 
 
 def _progress_snapshot(media):

@@ -4,7 +4,7 @@ from django.conf import settings
 from django.utils.text import slugify
 from rest_framework import serializers
 
-from app import config
+from app import config, single_weight
 from app.models import (
     BasicMedia,
     DiaryEntry,
@@ -554,24 +554,47 @@ def user_state_for_item(user, item):
         ).values_list("id", flat=True),
     )
     diary_entries = DiaryEntry.objects.filter(user=user, item=item)
-    latest_diary = diary_entries.order_by("-consumed_at").first()
+    latest_diary = diary_entries.order_by("-consumed_at", "-id").first()
+    is_single_weight = single_weight.supports(item)
     diary_state = {
         "diary_entry_id": latest_diary.id if latest_diary else None,
         "diary_count": diary_entries.count(),
-        "diary_rating": decimal_string(latest_diary.rating) if latest_diary else None,
-        "diary_consumed_at": latest_diary.consumed_at if latest_diary else None,
+        "diary_rating": (
+            decimal_string(single_weight.rating_to_wire(latest_diary.rating))
+            if is_single_weight and latest_diary and latest_diary.rating is not None
+            else decimal_string(latest_diary.rating) if latest_diary else None
+        ),
+        "diary_consumed_at": (
+            single_weight.calendar_date(latest_diary.consumed_at).isoformat()
+            if is_single_weight and latest_diary
+            else latest_diary.consumed_at if latest_diary else None
+        ),
         "has_liked": MediaLike.objects.filter(user=user, item=item).exists(),
     }
     if media is None:
         return {"is_tracked": False, "status": None, "rating": None, "in_lists": list_ids, **diary_state}
-    return {
+    state = {
         "is_tracked": True,
         "tracking_id": media.id,
         "status": getattr(media, "status", None),
-        "rating": decimal_string(getattr(media, "score", None)),
+        "rating": (
+            decimal_string(single_weight.rating_to_wire(media.score))
+            if is_single_weight and media.score is not None
+            else decimal_string(getattr(media, "score", None))
+        ),
         "in_lists": list_ids,
         **diary_state,
     }
+    if is_single_weight:
+        state.update(
+            {
+                "direct_consumption": media.direct_consumption,
+                "rating_source_diary_entry_id": media.rating_source_id,
+                "like_source_diary_entry_id": media.like_source_id,
+                "like_is_independent": media.like_is_independent,
+            },
+        )
+    return state
 
 
 def decimal_string(value):
@@ -589,11 +612,7 @@ def progress_for_media(media):
     max_progress = getattr(media, "max_progress", None)
     value = getattr(media, "progress", 0)
     if media_type in (MediaTypes.MOVIE.value, MediaTypes.MUSIC.value):
-        is_complete = (
-            media.status == Status.COMPLETED.value
-            if media_type == MediaTypes.MUSIC.value
-            else bool(media.end_date)
-        )
+        is_complete = media.status == Status.COMPLETED.value
         return {
             "kind": "binary",
             "value": 1 if is_complete else 0,
@@ -647,20 +666,41 @@ def latest_progress_change_for(media):
 
 def tracking_state(media):
     """Serialize any tracked media model into TrackingState."""
+    is_single_weight = single_weight.supports(media.item)
     state = {
         "tracking_id": media.id,
         "status": getattr(media, "status", None),
-        "rating": decimal_string(getattr(media, "score", None)),
+        "rating": (
+            decimal_string(single_weight.rating_to_wire(media.score))
+            if is_single_weight and media.score is not None
+            else decimal_string(getattr(media, "score", None))
+        ),
         "progress": progress_for_media(media),
         "repeats": getattr(media, "repeats", 1),
         "start_date": getattr(media, "start_date", None),
-        "end_date": getattr(media, "end_date", None),
+        "end_date": (
+            single_weight.calendar_date(media.end_date).isoformat()
+            if is_single_weight and media.end_date
+            else getattr(media, "end_date", None)
+        ),
         "notes": getattr(media, "notes", ""),
         "updated_at": getattr(media, "progressed_at", None) or getattr(media, "created_at", None),
         "latest_progress_change": progress_change_payload(latest_progress_change_for(media)),
     }
-    if media.item.media_type == MediaTypes.MOVIE.value:
-        state["liked"] = getattr(media, "liked", False)
+    if is_single_weight:
+        state.update(
+            {
+                "liked": MediaLike.objects.filter(user=media.user, item=media.item).exists(),
+                "direct_consumption": media.direct_consumption,
+                "rating_source_diary_entry_id": media.rating_source_id,
+                "like_source_diary_entry_id": media.like_source_id,
+                "like_is_independent": media.like_is_independent,
+                "diary_count": DiaryEntry.objects.filter(
+                    user=media.user,
+                    item=media.item,
+                ).count(),
+            },
+        )
     return state
 
 

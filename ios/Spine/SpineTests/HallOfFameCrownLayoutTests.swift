@@ -6,7 +6,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutReturnsEmptyForZeroCount() {
         let placements = HallOfFameCrownLayout.placements(
             count: 0,
-            cardSize: CGSize(width: 50, height: 75),
             avatarDiameter: 128
         )
 
@@ -16,7 +15,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutSymmetricForTwoCards() {
         let placements = HallOfFameCrownLayout.placements(
             count: 2,
-            cardSize: CGSize(width: 60, height: 90),
             avatarDiameter: 128
         )
 
@@ -28,7 +26,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutCenterCardUprightForThree() {
         let placements = HallOfFameCrownLayout.placements(
             count: 3,
-            cardSize: CGSize(width: 58, height: 87),
             avatarDiameter: 128
         )
 
@@ -40,7 +37,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutShowsEightSlots() {
         let placements = HallOfFameCrownLayout.placements(
             count: 8,
-            cardSize: CGSize(width: 50, height: 75),
             avatarDiameter: 128
         )
 
@@ -94,7 +90,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutUsesGeometricArcForEightSlots() {
         let placements = HallOfFameCrownLayout.placements(
             count: 8,
-            cardSize: CGSize(width: 50, height: 75),
             avatarDiameter: 128
         )
 
@@ -108,7 +103,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCrownLayoutRaisesCenterCardAboveAvatar() {
         let placements = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128
         )
 
@@ -118,12 +112,10 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testBelowAvatarCrownMirrorsExpandedArcVertically() {
         let above = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128
         )
         let below = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128,
             position: .belowAvatar
         )
@@ -140,12 +132,10 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCollapsedCrownProgressZeroMatchesExpandedLayout() {
         let expanded = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128
         )
         let collapsedAtZero = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128,
             collapseProgress: 0
         )
@@ -156,7 +146,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCollapsedCrownProgressOneConvergesAtAvatarCenter() {
         let placements = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128,
             collapseProgress: 1
         )
@@ -174,7 +163,6 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testBelowAvatarCrownProgressOneConvergesAtAvatarCenter() {
         let placements = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128,
             collapseProgress: 1,
             position: .belowAvatar
@@ -190,12 +178,10 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
     func testCollapsedCrownMidpointClosesArcInward() {
         let expanded = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128
         )
         let midpoint = HallOfFameCrownLayout.placements(
             count: 7,
-            cardSize: CGSize(width: 54, height: 81),
             avatarDiameter: 128,
             collapseProgress: 0.5
         )
@@ -204,6 +190,114 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertEqual(midpoint[0].y, expanded[0].y * 0.75, accuracy: 0.001)
         XCTAssertEqual(midpoint[0].rotation.degrees, expanded[0].rotation.degrees * 0.5, accuracy: 0.001)
         XCTAssertEqual(midpoint[0].scale, (expanded[0].scale + 0.28) / 2, accuracy: 0.001)
+    }
+
+    func testCrownArrangementPositionsMusicByEnabledSlotParity() {
+        let noMusic = HallOfFameCrownLayout.arrangement(for: slots(["movie", "tv", "book", "comic"]))
+        XCTAssertNil(noMusic.above)
+        XCTAssertEqual(noMusic.below.map(\.id), ["movie", "tv", "book", "comic"])
+
+        for ids in [
+            ["music"],
+            ["movie", "tv", "music"],
+            ["movie", "tv", "anime", "manga", "music"],
+            ["movie", "tv", "anime", "manga", "game", "book", "music"],
+        ] {
+            let arrangement = HallOfFameCrownLayout.arrangement(for: slots(ids))
+            XCTAssertNil(arrangement.above)
+            XCTAssertEqual(arrangement.below[arrangement.below.count / 2].id, "music")
+        }
+
+        for ids in [
+            ["movie", "music"],
+            ["movie", "tv", "anime", "music"],
+            ["movie", "tv", "anime", "manga", "game", "music"],
+            ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"],
+        ] {
+            let arrangement = HallOfFameCrownLayout.arrangement(for: slots(ids))
+            XCTAssertEqual(arrangement.above?.id, "music")
+            XCTAssertFalse(arrangement.below.contains(where: { $0.id == "music" }))
+            XCTAssertEqual(arrangement.below.map(\.id), ids.filter { $0 != "music" })
+        }
+    }
+
+    func testMusicFrameAndArrangementIgnoreFilledState() {
+        let emptySlots = slots(["movie", "music"])
+        let filledSlots = [
+            FavoriteSlot(id: "movie", title: "Movie", item: nil),
+            FavoriteSlot(id: "music", title: "Music", item: media(index: 9, mediaType: "music")),
+        ]
+        let cardSize = CGSize(width: 70, height: 105)
+
+        XCTAssertEqual(HallOfFameCrownLayout.arrangement(for: emptySlots).above?.id, "music")
+        XCTAssertEqual(HallOfFameCrownLayout.arrangement(for: filledSlots).above?.id, "music")
+        XCTAssertEqual(
+            HallOfFameCrownLayout.visualSize(for: emptySlots[1], cardSize: cardSize),
+            CGSize(width: 70, height: 70)
+        )
+        XCTAssertEqual(
+            HallOfFameCrownLayout.visualSize(for: filledSlots[1], cardSize: cardSize),
+            CGSize(width: 70, height: 70)
+        )
+        XCTAssertEqual(HallOfFameCrownLayout.visualSize(for: emptySlots[0], cardSize: cardSize), cardSize)
+    }
+
+    func testMusicPlacementMirrorsExistingCollapse() {
+        let expanded = HallOfFameCrownLayout.aboveMusicPlacement(
+            cardSize: CGSize(width: 60, height: 60),
+            lowerCount: 3,
+            avatarDiameter: 128,
+            collapseProgress: 0
+        )
+        let halfway = HallOfFameCrownLayout.aboveMusicPlacement(
+            cardSize: CGSize(width: 60, height: 60),
+            lowerCount: 3,
+            avatarDiameter: 128,
+            collapseProgress: 0.5
+        )
+        let collapsed = HallOfFameCrownLayout.aboveMusicPlacement(
+            cardSize: CGSize(width: 60, height: 60),
+            lowerCount: 3,
+            avatarDiameter: 128,
+            collapseProgress: 1
+        )
+
+        XCTAssertEqual(expanded.x, 0)
+        XCTAssertEqual(expanded.y, -130.3, accuracy: 0.001)
+        XCTAssertEqual(expanded.rotation, .zero)
+        XCTAssertEqual(expanded.scale, 1.04, accuracy: 0.001)
+        XCTAssertEqual(halfway.y, -97.725, accuracy: 0.001)
+        XCTAssertEqual(collapsed.y, 0, accuracy: 0.001)
+        XCTAssertEqual(collapsed.scale, 0.28, accuracy: 0.001)
+    }
+
+    func testAboveMusicGapMatchesCenteredLowerCard() {
+        for lowerCount in [1, 3, 5, 7] {
+            let cardSize = HallOfFameCrownLayout.cardSize(for: lowerCount)
+            let lower = HallOfFameCrownLayout.placements(
+                count: lowerCount,
+                avatarDiameter: 128,
+                position: .belowAvatar
+            )[lowerCount / 2]
+            let music = HallOfFameCrownLayout.aboveMusicPlacement(
+                cardSize: CGSize(width: cardSize.width, height: cardSize.width),
+                lowerCount: lowerCount,
+                avatarDiameter: 128
+            )
+            let lowerGap = HallOfFameCrownLayout.crownHeight / 2 + lower.y - cardSize.height / 2 - 128
+            let musicGap = -(128 / 2 + music.y + cardSize.width / 2)
+
+            XCTAssertEqual(musicGap, lowerGap, accuracy: 0.001)
+        }
+    }
+
+    func testAboveMusicClearanceUsesExistingVerticalCurve() {
+        let evenSlots = slots(["movie", "music"])
+
+        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 0), 104.3, accuracy: 0.001)
+        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 0.5), 78.225, accuracy: 0.001)
+        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 1), 0)
+        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: slots(["music"]), collapseProgress: 0), 0)
     }
 
     func testProfileHeroCollapseProgressClampsAtRestAndRefreshPull() {
@@ -228,7 +322,11 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
                 episodeNumber: nil
             ),
             title: "Favorite \(index)",
-            posterOrientation: .portrait
+            posterOrientation: mediaType == "music" ? .square : .portrait
         )
+    }
+
+    private func slots(_ ids: [String]) -> [FavoriteSlot] {
+        ids.map { FavoriteSlot(id: $0, title: $0.capitalized, item: nil) }
     }
 }

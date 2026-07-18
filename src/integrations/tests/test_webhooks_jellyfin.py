@@ -18,9 +18,10 @@ from app.models import (
     Status,
 )
 from integrations.webhooks.jellyfin import JellyfinWebhookProcessor
+from integrations.tests.webhook_provider_mocks import WebhookProviderMocksMixin
 
 
-class JellyfinWebhookTests(TestCase):
+class JellyfinWebhookTests(WebhookProviderMocksMixin, TestCase):
     """Tests for Jellyfin webhook."""
 
     def setUp(self):
@@ -29,6 +30,7 @@ class JellyfinWebhookTests(TestCase):
         self.credentials = {"username": "testuser", "token": "test-token"}
         self.user = get_user_model().objects.create_superuser(**self.credentials)
         self.url = reverse("jellyfin_webhook", kwargs={"token": "test-token"})
+        self.patch_webhook_providers()
 
     def test_invalid_token(self):
         """Test webhook with invalid token returns 401."""
@@ -741,9 +743,10 @@ class JellyfinWebhookTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         movie = Movie.objects.filter(item__media_id="603")
-        self.assertEqual(movie.count(), 2)
+        self.assertEqual(movie.count(), 1)
         self.assertEqual(movie[0].status, Status.COMPLETED.value)
-        self.assertEqual(movie[1].status, Status.COMPLETED.value)
+        self.assertTrue(movie[0].direct_consumption)
+        self.assertIsNone(movie[0].end_date)
 
     def test_extract_external_ids(self):
         """Test extracting external IDs from provider payload."""

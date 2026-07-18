@@ -769,8 +769,12 @@ struct ProfileView: View {
     private func hero(_ profile: UserProfile, collapseProgress: CGFloat) -> some View {
         let allSlots = favoriteSlots(from: profile)
         let backdropURL = profileBackdropURL(from: profile)
-        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress)
-        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress)
+        let musicClearance = HallOfFameCrownLayout.aboveMusicClearance(
+            for: allSlots,
+            collapseProgress: collapseProgress
+        )
+        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress) + musicClearance
+        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress) + musicClearance
         let crownNameSpacing = ProfileHeroBackdropLayout.crownNameSpacing(for: collapseProgress)
         let backdropContentOffset = backdropURL == nil ? 0 : ProfileHeroBackdropLayout.contentTopOffset
 
@@ -791,8 +795,7 @@ struct ProfileView: View {
                         HallOfFameCrownView(
                             slots: allSlots,
                             savingSlotIDs: viewModel.savingHallOfFameSlots,
-                            collapseProgress: collapseProgress,
-                            position: .belowAvatar
+                            collapseProgress: collapseProgress
                         ) { slot in
                             if let item = slot.item {
                                 selectedRef = item.ref
@@ -812,6 +815,7 @@ struct ProfileView: View {
                         avatar(profile)
                             .zIndex(1)
                     }
+                    .padding(.top, musicClearance)
                     .frame(height: crownHeight)
 
                     if allSlots.isEmpty {
@@ -1895,7 +1899,11 @@ private struct RecentActivityPoster: View {
                   ProfileRecentActivityRailModel.rating(for: item.activity) != nil || ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
             HStack(spacing: 5) {
                 if let rating = ProfileRecentActivityRailModel.rating(for: item.activity) {
-                    ProfileStarRating(rating: rating, reservesWidth: !ProfileRecentActivityRailModel.isLikedDiary(item.activity))
+                    ProfileStarRating(
+                        rating: rating,
+                        reservesWidth: !ProfileRecentActivityRailModel.isLikedDiary(item.activity),
+                        mediaType: item.activity.media?.ref.mediaType
+                    )
                 }
 
                 if ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
@@ -1920,6 +1928,7 @@ private struct RecentActivityPoster: View {
 private struct ProfileStarRating: View {
     let rating: String?
     var reservesWidth = true
+    var mediaType: String?
 
     var body: some View {
         HStack(spacing: 1) {
@@ -1936,7 +1945,7 @@ private struct ProfileStarRating: View {
 
     private var value: Double? {
         guard let rating, let raw = Double(rating) else { return nil }
-        return raw / 2
+        return mediaType == "movie" || mediaType == "music" ? raw : raw / 2
     }
 
     private var symbolNames: [String] {

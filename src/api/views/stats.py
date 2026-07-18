@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -27,6 +29,7 @@ def stats_payload(user, request):
     )
     if request.user == user:
         score_distribution, top_rated = legacy_stats.get_score_distribution(user_media)
+        score_distribution = _wire_score_distribution(score_distribution, user_media)
         legacy_top_rated = [
             {
                 "media": media_summary_from_item(
@@ -35,7 +38,11 @@ def stats_payload(user, request):
                     user=None,
                     include_user_state=False,
                 ),
-                "rating": str(media.score) if media.score is not None else None,
+                "rating": (
+                    str(stats_service.wire_rating(media.score, media.item.media_type))
+                    if media.score is not None
+                    else None
+                ),
             }
             for media in top_rated
         ]
@@ -56,6 +63,33 @@ def stats_payload(user, request):
     }
     payload.update(native_payload)
     return payload
+
+
+def _wire_score_distribution(distribution, user_media):
+    """Project legacy tracking-score buckets onto the public rating scale."""
+    labels = [f"{Decimal(index) / 2:.1f}" for index in range(21)]
+    total = Decimal(0)
+    count = 0
+    datasets = []
+    for (media_type, media_list), dataset in zip(
+        user_media.items(),
+        distribution["datasets"],
+        strict=True,
+    ):
+        values = [0] * len(labels)
+        for storage_bucket, bucket_count in enumerate(dataset["data"]):
+            index = storage_bucket if media_type in stats_service.SINGLE_WEIGHT_MEDIA_TYPES else storage_bucket * 2
+            values[index] += bucket_count
+        datasets.append({**dataset, "data": values})
+        for rating in media_list.exclude(score__isnull=True).values_list("score", flat=True):
+            total += stats_service.wire_rating(rating, media_type)
+            count += 1
+    return {
+        "labels": labels,
+        "datasets": datasets,
+        "average_score": float(round(total / count, 2)) if count else None,
+        "total_scored": count,
+    }
 
 
 class MyStatsSummaryView(APIView):

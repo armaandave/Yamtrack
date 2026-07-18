@@ -14,6 +14,7 @@ from django_celery_beat.models import CrontabSchedule, PeriodicTask
 from simple_history.utils import bulk_create_with_history, bulk_update_with_history
 
 import app
+from app import single_weight
 from app.models import MediaTypes
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,12 @@ def cleanup_existing_media(to_delete, user):
 
         model = apps.get_model(app_label="app", model_name=media_type)
         total_deleted = 0
+
+        # Single-weight imports reconcile through their domain service. Deleting
+        # tracking here could violate the universal diary-history guard and is
+        # unnecessary because canonical tracking is unique per user/title.
+        if single_weight.supports(media_type):
+            continue
 
         for source, media_ids in sources.items():
             if not media_ids:
@@ -175,6 +182,10 @@ def bulk_create_media(bulk_media_list, user):
 
         logger.info("Bulk importing %s", media_type)
 
+        if single_weight.supports(media_type):
+            _import_single_weight_rows(bulk_media, user, model)
+            continue
+
         # Update references for seasons and episodes
         if media_type == MediaTypes.SEASON.value:
             logger.info("Updating references for season to existing TV shows")
@@ -191,6 +202,35 @@ def bulk_create_media(bulk_media_list, user):
             batch_size=500,
             default_user=user,
         )
+
+
+def _import_single_weight_rows(rows, user, model):
+    """Collapse legacy title imports into canonical undated tracking."""
+    rows_by_item = defaultdict(list)
+    for row in rows:
+        rows_by_item[row.item_id].append(row)
+    for item_rows in rows_by_item.values():
+        latest = item_rows[-1]
+        completed = any(row.status == app.models.Status.COMPLETED.value for row in item_rows)
+        rating = next((row.score for row in reversed(item_rows) if row.score is not None), single_weight.UNSET)
+        if completed or rating is not single_weight.UNSET:
+            tracking = single_weight.import_title_state(
+                user,
+                latest.item,
+                consumed=completed,
+                rating=rating,
+                history_date=getattr(latest, "_history_date", None),
+            )
+        else:
+            tracking, _ = model.objects.get_or_create(
+                user=user,
+                item=latest.item,
+                defaults={"status": latest.status},
+            )
+        notes = next((row.notes for row in reversed(item_rows) if row.notes), "")
+        if notes and tracking.notes != notes:
+            tracking.notes = notes
+            tracking.save(update_fields=["notes"])
 
 
 def bulk_update_media(bulk_media_list, fields_by_media_type, user):

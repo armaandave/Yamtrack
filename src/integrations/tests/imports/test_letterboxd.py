@@ -98,7 +98,7 @@ class ImportLetterboxdTests(TestCase):
         counts, warnings = self._import()
 
         self.assertIsNone(warnings)
-        self.assertEqual(counts[MediaTypes.MOVIE.value], 1)
+        self.assertEqual(counts[MediaTypes.MOVIE.value], 2)
         self.assertEqual(counts["diary"], 1)
         self.assertEqual(Movie.objects.count(), 3)
 
@@ -117,7 +117,7 @@ class ImportLetterboxdTests(TestCase):
         film_two = Movie.objects.get(item__media_id="202")
         self.assertEqual(film_two.status, Status.COMPLETED.value)
         self.assertEqual(film_two.score, 7)
-        self.assertFalse(film_two.liked)
+        self.assertTrue(film_two.liked)
         self.assertTrue(MediaLike.objects.filter(user=self.user, item=film_two.item).exists())
 
         film_three = Movie.objects.get(item__media_id="303")
@@ -208,11 +208,11 @@ class ImportLetterboxdTests(TestCase):
 
         self.assertTrue(CustomList.objects.filter(id=manual_list.id).exists())
         self.assertFalse(CustomList.objects.filter(id=old_letterboxd_list.id).exists())
-        self.assertFalse(Movie.objects.filter(item=item).exists())
-        self.assertFalse(DiaryEntry.objects.filter(item=item).exists())
-        self.assertFalse(Activity.objects.filter(target_id=entry.id, target_type="diary").exists())
+        self.assertTrue(Movie.objects.filter(item=item).exists())
+        self.assertTrue(DiaryEntry.objects.filter(item=item).exists())
+        self.assertTrue(Activity.objects.filter(target_id=entry.id, target_type="diary").exists())
         self.assertTrue(Activity.objects.filter(target_id=tv_entry.id, target_type="diary").exists())
-        self.assertFalse(MediaLike.objects.filter(item=item).exists())
+        self.assertTrue(MediaLike.objects.filter(item=item).exists())
         self.assertTrue(DiaryEntry.objects.filter(id=tv_entry.id).exists())
 
     def test_new_mode_skips_duplicate_diary_and_list_items(self):
@@ -239,9 +239,9 @@ class ImportLetterboxdTests(TestCase):
         entries = DiaryEntry.objects.filter(item__media_id="101").order_by("consumed_at")
         self.assertEqual(entries.count(), 2)
         self.assertEqual([entry.consumed_at.date().isoformat() for entry in entries], ["2024-01-02", "2025-02-06"])
-        self.assertEqual(Movie.objects.get(item__media_id="101").end_date.date().isoformat(), "2024-01-02")
+        self.assertEqual(Movie.objects.get(item__media_id="101").end_date.date().isoformat(), "2025-02-06")
 
-    def test_likes_do_not_upgrade_watchlist_to_completed(self):
+    def test_likes_upgrade_watchlist_to_direct_completed_tracking(self):
         payload = export_zip(
             {
                 "watchlist.csv": (
@@ -258,11 +258,12 @@ class ImportLetterboxdTests(TestCase):
         self._import_bytes(payload)
 
         film_three = Movie.objects.get(item__media_id="303")
-        self.assertEqual(film_three.status, Status.PLANNING.value)
-        self.assertFalse(film_three.liked)
+        self.assertEqual(film_three.status, Status.COMPLETED.value)
+        self.assertTrue(film_three.direct_consumption)
+        self.assertTrue(film_three.liked)
         self.assertTrue(MediaLike.objects.filter(user=self.user, item=film_three.item).exists())
 
-    def test_likes_import_does_not_create_tracking_row(self):
+    def test_likes_import_creates_direct_tracking_row(self):
         payload = export_zip(
             {
                 "likes/films.csv": (
@@ -277,7 +278,9 @@ class ImportLetterboxdTests(TestCase):
         item = Item.objects.get(media_id="202")
         self.assertEqual(counts["likes"], 1)
         self.assertTrue(MediaLike.objects.filter(user=self.user, item=item).exists())
-        self.assertFalse(Movie.objects.filter(user=self.user, item=item).exists())
+        tracking = Movie.objects.get(user=self.user, item=item)
+        self.assertTrue(tracking.direct_consumption)
+        self.assertIsNone(tracking.end_date)
 
     def test_rating_uses_name_year_fallback_and_single_existing_diary(self):
         payload = export_zip(
@@ -300,8 +303,10 @@ class ImportLetterboxdTests(TestCase):
         self._import_bytes(payload)
 
         entry = DiaryEntry.objects.get(item__media_id="101")
-        self.assertEqual(entry.rating, 8)
-        self.assertIsNone(Movie.objects.get(item__media_id="101").score)
+        self.assertIsNone(entry.rating)
+        tracking = Movie.objects.get(item__media_id="101")
+        self.assertEqual(tracking.score, 8)
+        self.assertIsNone(tracking.rating_source_id)
 
     def test_api_surfaces_imported_letterboxd_data(self):
         self._import()

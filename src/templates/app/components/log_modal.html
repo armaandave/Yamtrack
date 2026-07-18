@@ -47,10 +47,10 @@
                         
                         <!-- Stars Rating -->
                         <div class="rating flex items-center" x-data="{ 
-                            rating: 0, 
+                            rating: {{ current_rating|default:0 }},
                             temp: 0, 
                             isRewatch: {{ is_repeat|yesno:'true,false' }},
-                            liked: false,
+                            liked: {{ current_liked|yesno:'true,false' }},
                             updateTagsBeforeSubmit() {
                                 // Force update tags before form submission
                                 const tagInputComponent = this.$refs.tagInput;
@@ -59,6 +59,24 @@
                                 }
                             }
                         }">
+                            {% if item.media_type == 'movie' or item.media_type == 'music' %}
+                            <select name="rating"
+                                    x-model.number="rating"
+                                    aria-label="Rating"
+                                    class="bg-[#1f2329] text-white px-2 py-1 rounded border border-gray-600 text-sm">
+                                <option value="0">No rating</option>
+                                <option value="0.5">½</option>
+                                <option value="1">★</option>
+                                <option value="1.5">★½</option>
+                                <option value="2">★★</option>
+                                <option value="2.5">★★½</option>
+                                <option value="3">★★★</option>
+                                <option value="3.5">★★★½</option>
+                                <option value="4">★★★★</option>
+                                <option value="4.5">★★★★½</option>
+                                <option value="5">★★★★★</option>
+                            </select>
+                            {% else %}
                             <button type="button" 
                                     class="text-gray-400 hover:text-yellow-400"
                                     :class="{ 'text-yellow-400': rating >= 1 || temp >= 1 }"
@@ -110,6 +128,7 @@
                                 </svg>
                             </button>
                             <input type="hidden" name="rating" :value="rating">
+                            {% endif %}
                             
                             <div class="ml-4 flex items-center gap-4">
                                 <label class="inline-flex items-center cursor-pointer">
@@ -165,14 +184,14 @@
                             <input type="checkbox" name="contains_spoilers" class="rounded bg-[#1f2329] border-gray-600">
                             Contains spoilers
                         </label>
-                        <label class="inline-flex items-center gap-2">
+                        {% if item.media_type != 'movie' and item.media_type != 'music' %}<label class="inline-flex items-center gap-2">
                             Visibility
                             <select name="visibility" class="bg-[#1f2329] text-white px-2 py-1 rounded border border-gray-600">
                                 <option value="public">Public</option>
                                 <option value="followers">Followers</option>
                                 <option value="private">Private</option>
                             </select>
-                        </label>
+                        </label>{% endif %}
                     </div>
                     
                     <!-- Tags -->

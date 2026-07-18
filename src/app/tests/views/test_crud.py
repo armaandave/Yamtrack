@@ -219,13 +219,14 @@ class EditMedia(TestCase):
                 "media_id": "10494",
                 "source": Sources.TMDB.value,
                 "media_type": MediaTypes.MOVIE.value,
-                "score": 10,
+                "score": 5,
                 "progress": 1,
                 "status": Status.PLANNING.value,
                 "notes": "Nice",
             },
         )
         self.assertEqual(Movie.objects.get(item__media_id="10494").score, 10)
+        self.assertTrue(Movie.objects.get(item__media_id="10494").direct_consumption)
 
     def test_cannot_edit_another_users_media(self):
         """Test users cannot edit another user's media by instance ID."""
@@ -252,7 +253,7 @@ class EditMedia(TestCase):
                 "media_id": "10494",
                 "source": Sources.TMDB.value,
                 "media_type": MediaTypes.MOVIE.value,
-                "score": 10,
+                "score": 5,
                 "progress": 0,
                 "status": Status.PLANNING.value,
                 "notes": "Changed",

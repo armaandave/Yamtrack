@@ -404,7 +404,11 @@ struct DiaryLogDetailView: View {
     private func ratingLikeLine(_ entry: DiaryEntry) -> some View {
         HStack(spacing: 10) {
             if let rating = clean(entry.rating) {
-                DiaryStarRating(rating: rating, fontSize: 17)
+                DiaryStarRating(
+                    rating: rating,
+                    fontSize: 17,
+                    mediaType: entry.media.ref.mediaType
+                )
             }
 
             if entry.liked {
@@ -610,8 +614,13 @@ private final class DiaryLogEditViewModel {
     init(entry: DiaryEntry, diaryRepository: DiaryRepository) {
         self.entry = entry
         self.diaryRepository = diaryRepository
-        consumedAt = ISO8601DateFormatter().date(from: entry.consumedAt ?? "") ?? Date()
-        ratingSteps = entry.rating.flatMap { Decimal(string: $0).map { NSDecimalNumber(decimal: $0).intValue } } ?? 0
+        consumedAt = CalendarDateCodec.date(from: entry.consumedAt) ?? Date()
+        let rating = entry.rating.flatMap { Decimal(string: $0) }
+        ratingSteps = rating.map {
+            entry.media.ref.isSingleWeight
+                ? NSDecimalNumber(decimal: $0 * 2).intValue
+                : NSDecimalNumber(decimal: $0).intValue
+        } ?? 0
         reviewTitle = entry.reviewTitle ?? ""
         review = entry.review ?? ""
         tags = entry.tags
@@ -665,14 +674,18 @@ private final class DiaryLogEditViewModel {
     func request() -> DiaryEntryUpdateRequest {
         DiaryEntryUpdateRequest(
             consumedAt: consumedAt,
-            rating: ratingSteps > 0 ? Decimal(ratingSteps) : nil,
+            rating: ratingSteps > 0
+                ? entry.media.ref.isSingleWeight ? Decimal(ratingSteps) / 2 : Decimal(ratingSteps)
+                : nil,
             review: review,
             reviewTitle: reviewTitle,
             tags: tags,
             liked: liked,
             isRewatch: isRewatch,
             containsSpoilers: containsSpoilers,
-            visibility: visibility
+            visibility: entry.media.ref.isSingleWeight ? nil : visibility,
+            calendarDateOnly: entry.media.ref.isSingleWeight,
+            includesRating: true
         )
     }
 }
@@ -758,6 +771,7 @@ private struct DiaryLogEditSheet: View {
                 DatePicker(
                     viewModel.entry.media.ref.consumedDateLabel,
                     selection: $viewModel.consumedAt,
+                    in: Date.distantPast...(viewModel.entry.media.ref.isSingleWeight ? Date() : Date.distantFuture),
                     displayedComponents: [.date]
                 )
                     .datePickerStyle(.compact)
@@ -771,9 +785,11 @@ private struct DiaryLogEditSheet: View {
                     .lineLimit(5...9)
             }
             fieldGroup {
-                Picker("Visibility", selection: $viewModel.visibility) {
-                    ForEach(APIConstants.visibilityChoices, id: \.self) { value in
-                        Text(value.capitalized).tag(value)
+                if !viewModel.entry.media.ref.isSingleWeight {
+                    Picker("Visibility", selection: $viewModel.visibility) {
+                        ForEach(APIConstants.visibilityChoices, id: \.self) { value in
+                            Text(value.capitalized).tag(value)
+                        }
                     }
                 }
                 Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
@@ -785,21 +801,26 @@ private struct DiaryLogEditSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 GeometryReader { proxy in
-                    HStack(spacing: 6) {
-                        ForEach(1...5, id: \.self) { star in
-                            Image(systemName: starSystemName(star))
-                                .font(.system(size: 32, weight: .bold))
-                                .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
-                                .frame(width: 33)
+                    ZStack {
+                        HStack(spacing: 6) {
+                            ForEach(1...5, id: \.self) { star in
+                                Image(systemName: starSystemName(star))
+                                    .font(.system(size: 32, weight: .bold))
+                                    .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
+                                    .frame(width: 33)
+                            }
                         }
+                        .accessibilityHidden(true)
+
+                        HalfStarRatingTapOverlay(steps: $viewModel.ratingSteps)
                     }
                     .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { value in
                         viewModel.setRating(locationX: value.location.x, width: proxy.size.width)
                     })
                 }
                 .frame(width: 189, height: 42)
-                .accessibilityElement(children: .ignore)
+                .accessibilityElement(children: .contain)
                 .accessibilityLabel("Rating")
                 .accessibilityValue(viewModel.ratingLabel())
                 .accessibilityAdjustableAction { direction in

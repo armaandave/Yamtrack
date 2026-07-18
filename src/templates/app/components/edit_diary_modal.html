@@ -41,7 +41,7 @@
         <input type="hidden" name="current_year" value="{{ request.GET.year|default:'' }}">
         
         <div class="flex gap-4 flex-1" x-data="{ 
-          rating: {{ entry.rating|default:0 }}, 
+          rating: {{ display_rating|default:0 }},
           temp: 0, 
           liked: {{ entry.liked|yesno:'true,false' }},
           isRewatch: {{ entry.is_rewatch|yesno:'true,false' }},
@@ -62,6 +62,23 @@
             <div>
               <label class="block text-sm font-medium mb-2 text-gray-300">Rating</label>
               <div class="space-y-2">
+                {% if entry.item.media_type == 'movie' or entry.item.media_type == 'music' %}
+                <select name="rating"
+                        x-model.number="rating"
+                        class="w-full p-2.5 bg-[#39404b] rounded-md text-white border border-gray-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm">
+                  <option value="0">No rating</option>
+                  <option value="0.5">½</option>
+                  <option value="1">★</option>
+                  <option value="1.5">★½</option>
+                  <option value="2">★★</option>
+                  <option value="2.5">★★½</option>
+                  <option value="3">★★★</option>
+                  <option value="3.5">★★★½</option>
+                  <option value="4">★★★★</option>
+                  <option value="4.5">★★★★½</option>
+                  <option value="5">★★★★★</option>
+                </select>
+                {% else %}
                 <div class="flex items-center space-x-1">
                   <template x-for="i in 5" :key="i">
                     <button type="button" 
@@ -76,6 +93,7 @@
                   <span class="ml-2 text-sm text-gray-400" x-text="rating ? rating + '/5' : 'No rating'"></span>
                 </div>
                 <input type="hidden" name="rating" :value="rating">
+                {% endif %}
               </div>
             </div>
 
@@ -134,14 +152,14 @@
                 <input type="checkbox" name="contains_spoilers" {% if entry.contains_spoilers %}checked{% endif %} class="rounded bg-[#39404b] border-gray-600">
                 Contains spoilers
               </label>
-              <label class="inline-flex items-center gap-2">
+              {% if entry.item.media_type != 'movie' and entry.item.media_type != 'music' %}<label class="inline-flex items-center gap-2">
                 Visibility
                 <select name="visibility" class="bg-[#39404b] text-white p-2 rounded border border-gray-600">
                   <option value="public" {% if entry.visibility == 'public' %}selected{% endif %}>Public</option>
                   <option value="followers" {% if entry.visibility == 'followers' %}selected{% endif %}>Followers</option>
                   <option value="private" {% if entry.visibility == 'private' %}selected{% endif %}>Private</option>
                 </select>
-              </label>
+              </label>{% endif %}
             </div>
             
             <!-- Tags -->

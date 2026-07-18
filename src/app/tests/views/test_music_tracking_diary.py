@@ -57,7 +57,7 @@ class MusicTrackingDiaryWebTests(TestCase):
                     "source": Sources.MUSICBRAINZ.value,
                     "media_type": MediaTypes.MUSIC.value,
                     "status": Status.IN_PROGRESS.value,
-                    "score": "8.5",
+                    "score": "",
                     "start_date": "2025-01-01 00:00:00",
                     "notes": "Listen loudly.",
                 },
@@ -112,7 +112,7 @@ class MusicTrackingDiaryWebTests(TestCase):
 
         self.assertEqual(created.status_code, 302)
         self.assertEqual(music.status, Status.IN_PROGRESS.value)
-        self.assertEqual(music.score, 8.5)
+        self.assertIsNone(music.score)
         self.assertEqual(music.notes, "Listen loudly.")
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused_status, Status.PAUSED.value)
@@ -157,7 +157,7 @@ class MusicTrackingDiaryWebTests(TestCase):
                 create_url,
                 {
                     "watch_date": "2025-04-05",
-                    "rating": "9",
+                    "rating": "4.5",
                     "review_title": "A loud future",
                     "review": "Still sounds dangerous.",
                     "liked": "true",
@@ -173,7 +173,7 @@ class MusicTrackingDiaryWebTests(TestCase):
         self.assertContains(modal, "Log Album")
         self.assertContains(modal, "Date listened")
         self.assertContains(modal, 'name="review_title"')
-        self.assertContains(modal, 'name="visibility"')
+        self.assertNotContains(modal, 'name="visibility"')
         self.assertContains(modal, 'name="contains_spoilers"')
         self.assertContains(repeat_modal, "Relisten")
 
@@ -185,7 +185,7 @@ class MusicTrackingDiaryWebTests(TestCase):
         self.assertTrue(entry.liked)
         self.assertTrue(entry.is_rewatch)
         self.assertTrue(entry.contains_spoilers)
-        self.assertEqual(entry.visibility, "followers")
+        self.assertEqual(entry.visibility, "public")
         self.assertCountEqual(
             entry.tags.values_list("name", flat=True),
             ["industrial", "headphones"],
@@ -195,14 +195,14 @@ class MusicTrackingDiaryWebTests(TestCase):
         self.assertEqual(music.status, Status.COMPLETED.value)
         self.assertEqual(
             music.end_date,
-            datetime(2025, 4, 5, 23, 59, 59, 999999, tzinfo=UTC),
+            datetime(2025, 4, 5, tzinfo=UTC),
         )
 
         updated = self.client.post(
             reverse("update_diary_entry", args=[entry.id]),
             {
                 "watch_date": "2025-04-06",
-                "rating": "8.5",
+                "rating": "4",
                 "review_title": "A quieter pass",
                 "review": "Different details.",
                 "liked": "false",
@@ -216,8 +216,8 @@ class MusicTrackingDiaryWebTests(TestCase):
         self.assertEqual(updated.status_code, 200)
         entry.refresh_from_db()
         self.assertEqual(entry.review_title, "A quieter pass")
-        self.assertEqual(entry.rating, 8.5)
-        self.assertEqual(entry.visibility, "private")
+        self.assertEqual(entry.rating, 8)
+        self.assertEqual(entry.visibility, "public")
         self.assertFalse(entry.contains_spoilers)
         self.assertEqual(list(entry.tags.values_list("name", flat=True)), ["relisten"])
 
@@ -279,7 +279,7 @@ class MusicTrackingDiaryWebTests(TestCase):
                 "media_type": MediaTypes.MUSIC.value,
                 "title": "Manual Album",
                 "status": Status.IN_PROGRESS.value,
-                "score": "8.5",
+                "score": "4.5",
             },
         )
 
@@ -289,5 +289,6 @@ class MusicTrackingDiaryWebTests(TestCase):
             item__source=Sources.MANUAL.value,
             item__title="Manual Album",
         )
-        self.assertEqual(music.status, Status.IN_PROGRESS.value)
-        self.assertEqual(music.score, 8.5)
+        self.assertEqual(music.score, 9)
+        self.assertEqual(music.status, Status.COMPLETED.value)
+        self.assertTrue(music.direct_consumption)

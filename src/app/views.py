@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_date
 from django.utils.timezone import datetime
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from app import config, exposure, helpers, history_processor
+from app import config, exposure, helpers, history_processor, single_weight
 from app import statistics as stats
 from app.forms import EpisodeForm, ManualItemForm, get_form_class, BookProgressForm, BookLogForm, BookStartReadingForm
 from app.models import TV, BasicMedia, Item, MediaTypes, Season, Sources, Status, Movie, Episode, Book, BookSession, UserMessage
@@ -26,7 +26,7 @@ from app.providers import igdb, manual, mdblist, services, tmdb
 from app.templatetags import app_tags
 from users.models import HomeSortChoices, MediaSortChoices, MediaStatusChoices, User
 from app.forms import DiaryEntryForm
-from app.models import DiaryEntry
+from app.models import DiaryEntry, MediaLike
 from app.utils.color import (
     build_accent_palette,
     compute_and_store_poster_accent,
@@ -531,8 +531,15 @@ def update_media_score(request, media_type, instance_id):
     )
 
     score = float(request.POST.get("score"))
-    media.score = score
-    media.save()
+    if single_weight.supports(media_type):
+        media = single_weight.set_rating(
+            request.user,
+            media.item,
+            single_weight.rating_from_wire(score),
+        )
+    else:
+        media.score = score
+        media.save()
     logger.info(
         "%s score updated to %s",
         media,
@@ -711,7 +718,10 @@ def track_modal(
         if media_type == MediaTypes.SEASON.value:
             title += f" S{season_number}"
 
-    form = get_form_class(media_type)(instance=media, initial=initial_data)
+    form_kwargs = (
+        {"public_rating_scale": True} if single_weight.supports(media_type) else {}
+    )
+    form = get_form_class(media_type)(instance=media, initial=initial_data, **form_kwargs)
 
     return render(
         request,
@@ -766,10 +776,24 @@ def media_save(request):
 
     # Validate the form and save the instance if it's valid
     form_class = get_form_class(media_type)
-    form = form_class(request.POST, instance=instance)
+    form_kwargs = (
+        {"public_rating_scale": True} if single_weight.supports(media_type) else {}
+    )
+    form = form_class(request.POST, instance=instance, **form_kwargs)
     if form.is_valid():
-        form.save()
-        logger.info("%s saved successfully.", form.instance)
+        if single_weight.supports(media_type):
+            rating = single_weight.rating_from_wire(form.cleaned_data.get("score"))
+            saved = single_weight.apply_tracking_state(
+                request.user,
+                instance.item,
+                status=form.cleaned_data["status"],
+                rating=rating,
+                start_date=form.cleaned_data.get("start_date"),
+                notes=form.cleaned_data.get("notes", ""),
+            )
+        else:
+            saved = form.save()
+        logger.info("%s saved successfully.", saved)
     else:
         logger.error(form.errors.as_json())
         for field, errors in form.errors.items():
@@ -796,7 +820,14 @@ def media_delete(request):
             media_type,
             instance_id,
         )
-        media.delete()
+        if single_weight.supports(media_type):
+            try:
+                single_weight.unwatch(request.user, media.item)
+            except single_weight.DiaryHistoryExists as error:
+                messages.error(request, str(error))
+                return helpers.redirect_back(request)
+        else:
+            media.delete()
         logger.info("%s deleted successfully.", media)
 
     except model.DoesNotExist:
@@ -913,7 +944,8 @@ def create_entry(request):
     # Prepare and validate the media form
     updated_request = request.POST.copy()
     updated_request.update({"source": item.source, "media_id": item.media_id})
-    media_form = get_form_class(item.media_type)(updated_request)
+    form_kwargs = {"public_rating_scale": True} if single_weight.supports(item) else {}
+    media_form = get_form_class(item.media_type)(updated_request, **form_kwargs)
 
     if not media_form.is_valid():
         # Handle media form validation errors
@@ -935,7 +967,17 @@ def create_entry(request):
     elif item.media_type == MediaTypes.EPISODE.value:
         media_form.instance.related_season = form.cleaned_data["parent_season"]
 
-    media_form.save()
+    if single_weight.supports(item):
+        single_weight.apply_tracking_state(
+            request.user,
+            item,
+            status=media_form.cleaned_data["status"],
+            rating=single_weight.rating_from_wire(media_form.cleaned_data.get("score")),
+            start_date=media_form.cleaned_data.get("start_date"),
+            notes=media_form.cleaned_data.get("notes", ""),
+        )
+    else:
+        media_form.save()
 
     # Success message
     msg = f"{item} added successfully."
@@ -1736,7 +1778,11 @@ def add_diary_entry(request, media_type, instance_id):
             user=request.user,
             item=media.item,
             consumed_at=form.cleaned_data["consumed_at"],
-            rating=form.cleaned_data["rating"],
+            rating=(
+                single_weight.rating_from_wire(form.cleaned_data["rating"])
+                if single_weight.supports(media.item) and form.cleaned_data["rating"] is not None
+                else form.cleaned_data["rating"]
+            ),
             review=form.cleaned_data["review"],
             auto_mark_consumed=request.POST.get("auto_mark_consumed") == "true",
             tags=form.cleaned_data.get("tags", []),
@@ -1930,12 +1976,26 @@ def log_modal(request, source, media_type, media_id, season_number=None):
             pass
     
     # Use the same template for both movies and TV shows
+    tracking_model = apps.get_model(app_label="app", model_name=media_type)
+    tracking = tracking_model.objects.filter(user=request.user, item=item).first()
+    is_single_weight = single_weight.supports(item)
+    current_rating = (
+        single_weight.rating_to_wire(tracking.score)
+        if is_single_weight and tracking and tracking.score is not None
+        else tracking.score if tracking else None
+    )
     return render(request, 'app/components/log_modal.html', {
         'item': item,
         'user': request.user,
         'today': default_date,
         'book_completion': request.GET.get('book_complete') == '1',
-        'is_repeat': request.GET.get('relisten') == '1',
+        'is_repeat': (
+            single_weight.default_repeat(request.user, item)
+            if is_single_weight
+            else request.GET.get('relisten') == '1'
+        ),
+        'current_rating': current_rating,
+        'current_liked': MediaLike.objects.filter(user=request.user, item=item).exists(),
     })
 
 
@@ -1956,19 +2016,7 @@ def mark_movie_watched(request, source, media_id):
         },
     )
     
-    # Get or create the media instance
-    from app.models import Movie
-    media_instance, created = Movie.objects.get_or_create(
-        item=item,
-        user=request.user,
-        defaults={
-            "status": Status.COMPLETED.value,
-        }
-    )
-    
-    if not created:
-        # If it already exists, mark it as consumed
-        media_instance.mark_consumed()
+    media_instance = single_weight.mark_consumed(request.user, item)
     
     # Get diary entries for this media
     diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).order_by('-consumed_at')
@@ -2007,8 +2055,11 @@ def unmark_movie_watched(request, source, media_id):
             user=request.user
         )
         
-        # Delete the media instance to "unwatch" it
-        media_instance.delete()
+        try:
+            single_weight.unwatch(request.user, item)
+            media_instance = None
+        except single_weight.DiaryHistoryExists as error:
+            messages.error(request, str(error))
         
         # Get metadata for template
         metadata = services.get_media_metadata(media_type, media_id, source)
@@ -2022,7 +2073,7 @@ def unmark_movie_watched(request, source, media_id):
         context = {
             "media": metadata,
             "media_type": media_type,
-            "current_instance": None,  # No instance after unwatching
+            "current_instance": media_instance,
             "diary_entries": diary_entries,
         }
         return render(request, "app/components/media_actions.html", context)
@@ -3132,8 +3183,11 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
         # Parse form data
         consumed_at = parse_date(request.POST.get('watch_date'))
         if not consumed_at:
-            # Use current datetime to allow multiple entries per day (rewatches)
+            if single_weight.supports(media_type):
+                return JsonResponse({"error": "A consumption date is required."}, status=400)
             consumed_at = timezone.now()
+        elif single_weight.supports(media_type) and consumed_at > timezone.localdate():
+            return JsonResponse({"error": "Consumption dates cannot be in the future."}, status=400)
         else:
             # Convert date to datetime at end of day to allow multiple entries per day
             consumed_at = timezone.datetime.combine(consumed_at, timezone.datetime.max.time())
@@ -3142,6 +3196,8 @@ def add_movie_diary_entry(request, source, media_type, media_id, season_number=N
         rating = request.POST.get('rating')
         if rating and rating.strip():
             rating = float(rating)
+            if single_weight.supports(media_type):
+                rating = single_weight.rating_from_wire(rating)
         else:
             rating = None
             
@@ -3390,7 +3446,11 @@ def edit_diary_entry(request, entry_id):
         
         # Prepare initial data
         initial_data = {
-            'rating': entry.rating,
+            'rating': (
+                single_weight.rating_to_wire(entry.rating)
+                if single_weight.supports(entry.item) and entry.rating is not None
+                else entry.rating
+            ),
             'review': entry.review or '',
         }
         
@@ -3422,6 +3482,7 @@ def edit_diary_entry(request, entry_id):
             'entry': entry,
             'form': form,
             'user': request.user,
+            'display_rating': initial_data['rating'],
         }
         
         return render(request, 'app/components/edit_diary_modal.html', context)
@@ -3451,6 +3512,8 @@ def update_diary_entry(request, entry_id):
         if not consumed_at:
             # Keep the original datetime to preserve ordering
             consumed_at = entry.consumed_at
+        elif single_weight.supports(entry.item) and consumed_at > timezone.localdate():
+            return JsonResponse({"error": "Consumption dates cannot be in the future."}, status=400)
         else:
             # Convert date to datetime at end of day to allow multiple entries per day
             consumed_at = timezone.datetime.combine(consumed_at, timezone.datetime.max.time())
@@ -3459,6 +3522,8 @@ def update_diary_entry(request, entry_id):
         rating = request.POST.get('rating')
         if rating and rating.strip():
             rating = float(rating)
+            if single_weight.supports(entry.item):
+                rating = single_weight.rating_from_wire(rating)
         else:
             rating = None
             

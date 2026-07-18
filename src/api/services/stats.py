@@ -50,6 +50,7 @@ STATUS_KEYS = {
 }
 
 RATING_BUCKETS = [Decimal(index) / Decimal(2) for index in range(21)]
+SINGLE_WEIGHT_MEDIA_TYPES = {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
 TOP_LEVEL_MEDIA_LIMIT = 12
 MEDIA_TYPE_MEDIA_LIMIT = 6
 FACET_LIMIT = 10
@@ -194,18 +195,18 @@ def legacy_score_distribution(native_payload):
     """Project visibility-filtered diary ratings into the legacy chart shape."""
     datasets = []
     for media in native_payload["media_types"]:
-        counts = dict.fromkeys(range(11), 0)
+        counts = dict.fromkeys(RATING_BUCKETS, 0)
         for bucket in media["rating_distribution"]:
-            counts[int(Decimal(bucket["rating"]))] += bucket["count"]
+            counts[Decimal(bucket["rating"])] += bucket["count"]
         datasets.append({
             "label": app_tags.media_type_readable(media["media_type"]),
-            "data": [counts[score] for score in range(11)],
+            "data": [counts[score] for score in RATING_BUCKETS],
             "background_color": config.get_stats_color(media["media_type"]),
         })
 
     average = native_payload["overview"]["average_rating"]
     return {
-        "labels": [str(score) for score in range(11)],
+        "labels": [f"{score:.1f}" for score in RATING_BUCKETS],
         "datasets": datasets,
         "average_score": float(average) if average is not None else None,
         "total_scored": native_payload["overview"]["rated_count"],
@@ -218,7 +219,12 @@ def visible_diary_entries(*, user, viewer):
     if viewer and viewer.is_authenticated and viewer == user:
         return entries
 
-    visibility = Q(visibility="public")
+    visibility = Q(
+        item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value],
+    ) | Q(
+        ~Q(item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value]),
+        visibility="public",
+    )
     if (
         viewer
         and viewer.is_authenticated
@@ -228,7 +234,10 @@ def visible_diary_entries(*, user, viewer):
             status=FollowStatus.ACCEPTED,
         ).exists()
     ):
-        visibility |= Q(visibility="followers")
+        visibility |= Q(
+            ~Q(item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value]),
+            visibility="followers",
+        )
     return entries.filter(visibility)
 
 
@@ -252,6 +261,18 @@ def _diary_summaries(entries):
         average_rating=Avg("rating"),
         review_count=Count("id", filter=review_filter),
     )
+    rating_values = [
+        wire_rating(rating, media_type)
+        for media_type, rating in entries.exclude(rating__isnull=True).values_list(
+            "item__media_type",
+            "rating",
+        )
+    ]
+    aggregate["average_rating"] = (
+        sum(rating_values, Decimal(0)) / len(rating_values)
+        if rating_values
+        else None
+    )
     summary = _normalized_diary_summary(aggregate)
 
     by_type = {media_type: _empty_diary_summary() for media_type in _primary_media_types()}
@@ -269,6 +290,7 @@ def _diary_summaries(entries):
     for row in rows:
         media_type = row.pop("stats_media_type")
         if media_type in by_type:
+            row["average_rating"] = wire_rating(row.get("average_rating"), media_type)
             by_type[media_type] = _normalized_diary_summary(row)
     return summary, by_type
 
@@ -418,9 +440,9 @@ def _rating_distributions(entries):
         .annotate(count=Count("id"))
     )
     for row in rows:
-        bucket = _rating_bucket(row["rating"])
-        overall_counts[bucket] += row["count"]
         media_type = row["stats_media_type"]
+        bucket = _rating_bucket(wire_rating(row["rating"], media_type))
+        overall_counts[bucket] += row["count"]
         if media_type in by_type_counts:
             by_type_counts[media_type][bucket] += row["count"]
 
@@ -442,6 +464,14 @@ def _rating_bucket(value):
     return min(max(bucket, RATING_BUCKETS[0]), RATING_BUCKETS[-1])
 
 
+def wire_rating(value, media_type):
+    """Return the user-facing scale without changing legacy storage."""
+    if value is None:
+        return None
+    rating = Decimal(value)
+    return rating / 2 if media_type in SINGLE_WEIGHT_MEDIA_TYPES else rating
+
+
 def _top_rated_payloads(entries, request):
     rows = list(
         entries.exclude(rating__isnull=True)
@@ -449,6 +479,8 @@ def _top_rated_payloads(entries, request):
         .values("item_id", "stats_media_type")
         .annotate(rating=Max("rating"), last_consumed_at=Max("consumed_at"))
     )
+    for row in rows:
+        row["rating"] = wire_rating(row["rating"], row["stats_media_type"])
     rows.sort(
         key=lambda row: (
             -Decimal(row["rating"]),

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 from collections import defaultdict
 
@@ -10,6 +11,7 @@ from django_celery_beat.models import PeriodicTask
 
 import app
 from app import helpers as app_helpers
+from app import single_weight
 from app.models import MediaTypes, Sources, Status
 from app.providers import services
 from integrations.imports import helpers
@@ -191,6 +193,8 @@ class TraktImporter:
 
         # Track media instances being created
         self.media_instances = defaultdict(lambda: defaultdict(list))
+        self.single_weight_logs = defaultdict(list)
+        self.single_weight_items = {}
 
         logger.info(
             "Initialized Trakt importer for user %s with mode %s",
@@ -208,10 +212,14 @@ class TraktImporter:
         helpers.cleanup_existing_media(self.to_delete, self.user)
         helpers.bulk_create_media(self.bulk_media, self.user)
 
+        history_counts = self._import_single_weight_history()
+
         imported_counts = {
             media_type: len(media_list)
             for media_type, media_list in self.bulk_media.items()
         }
+        for media_type, count in history_counts.items():
+            imported_counts[media_type] = imported_counts.get(media_type, 0) + count
         deduplicated_messages = "\n".join(dict.fromkeys(self.warnings))
 
         return imported_counts, deduplicated_messages
@@ -292,7 +300,7 @@ class TraktImporter:
         full_history = self._get_paginated_data(history_endpoint, "history entries")
 
         # Process in chronological order (oldest first)
-        for entry in reversed(full_history):
+        for source_order, entry in enumerate(reversed(full_history)):
             watched_at = entry["watched_at"]
             try:
                 if entry["type"] == "movie":
@@ -301,7 +309,7 @@ class TraktImporter:
                         entry["movie"]["title"],
                         watched_at,
                     )
-                    self.process_watched_movie(entry)
+                    self.process_watched_movie(entry, source_order=source_order)
                 elif entry["type"] == "episode":
                     logger.info(
                         "Processing episode %s S%sE%s watched at %s",
@@ -385,22 +393,11 @@ class TraktImporter:
 
         return item
 
-    def process_watched_movie(self, entry):
+    def process_watched_movie(self, entry, *, source_order=0):
         """Process a single movie watch event."""
         movie = entry["movie"]
         tmdb_id = self._get_tmdb_id(movie)
         if not tmdb_id:
-            return
-
-        # Check if we should process this movie based on mode
-        if not helpers.should_process_media(
-            self.existing_media,
-            self.to_delete,
-            MediaTypes.MOVIE.value,
-            Sources.TMDB.value,
-            tmdb_id,
-            self.mode,
-        ):
             return
 
         metadata = self._get_metadata(MediaTypes.MOVIE.value, tmdb_id, movie["title"])
@@ -408,21 +405,33 @@ class TraktImporter:
             return
 
         item = self._get_or_create_item(MediaTypes.MOVIE.value, tmdb_id, metadata)
-        watched_at = entry["watched_at"]
-
-        key = f"{tmdb_id}"
-
-        movie_obj = app.models.Movie(
-            item=item,
-            user=self.user,
-            end_date=watched_at,
-            status=Status.COMPLETED.value,
-            progress=1,
+        watched_at = parse_datetime(entry["watched_at"])
+        source_id = entry.get("id")
+        if source_id is None:
+            identity = f"{tmdb_id}:{entry['watched_at']}:{source_order}"
+            source_id = hashlib.sha256(identity.encode()).hexdigest()
+        self.single_weight_items[item.id] = item
+        self.single_weight_logs[item.id].append(
+            {
+                "source_id": str(source_id),
+                "source_order": source_order,
+                "consumed_at": watched_at.date(),
+                "is_rewatch": None,
+            },
         )
-        movie_obj._history_date = parse_datetime(watched_at)
 
-        self.media_instances[MediaTypes.MOVIE.value][key].append(movie_obj)
-        self.bulk_media[MediaTypes.MOVIE.value].append(movie_obj)
+    def _import_single_weight_history(self):
+        """Persist Trakt movie history as idempotent diary rows."""
+        counts = defaultdict(int)
+        for item_id, rows in self.single_weight_logs.items():
+            created = single_weight.import_logs(
+                self.user,
+                self.single_weight_items[item_id],
+                rows,
+                source="trakt",
+            )
+            counts[MediaTypes.MOVIE.value] += len(created)
+        return counts
 
     def _get_episode_image(self, episode_number, season_metadata):
         """Extract episode image URL from season metadata."""

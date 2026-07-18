@@ -39,6 +39,12 @@ struct TrackingState: Codable, Equatable {
     let endDate: String?
     let notes: String?
     let updatedAt: String?
+    let liked: Bool?
+    let directConsumption: Bool?
+    let ratingSourceDiaryEntryId: Int?
+    let likeSourceDiaryEntryId: Int?
+    let likeIsIndependent: Bool?
+    let diaryCount: Int?
 
     init(
         trackingId: Int,
@@ -50,7 +56,13 @@ struct TrackingState: Codable, Equatable {
         startDate: String?,
         endDate: String?,
         notes: String?,
-        updatedAt: String?
+        updatedAt: String?,
+        liked: Bool? = nil,
+        directConsumption: Bool? = nil,
+        ratingSourceDiaryEntryId: Int? = nil,
+        likeSourceDiaryEntryId: Int? = nil,
+        likeIsIndependent: Bool? = nil,
+        diaryCount: Int? = nil
     ) {
         self.trackingId = trackingId
         self.status = status
@@ -62,6 +74,12 @@ struct TrackingState: Codable, Equatable {
         self.endDate = endDate
         self.notes = notes
         self.updatedAt = updatedAt
+        self.liked = liked
+        self.directConsumption = directConsumption
+        self.ratingSourceDiaryEntryId = ratingSourceDiaryEntryId
+        self.likeSourceDiaryEntryId = likeSourceDiaryEntryId
+        self.likeIsIndependent = likeIsIndependent
+        self.diaryCount = diaryCount
     }
 
     func replacingProgress(_ progress: ProgressState?) -> TrackingState {
@@ -75,7 +93,13 @@ struct TrackingState: Codable, Equatable {
             startDate: startDate,
             endDate: endDate,
             notes: notes,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            liked: liked,
+            directConsumption: directConsumption,
+            ratingSourceDiaryEntryId: ratingSourceDiaryEntryId,
+            likeSourceDiaryEntryId: likeSourceDiaryEntryId,
+            likeIsIndependent: likeIsIndependent,
+            diaryCount: diaryCount
         )
     }
 
@@ -280,12 +304,37 @@ struct TrackingWriteRequest: Encodable {
     let rating: Decimal?
     let progress: Int?
     let notes: String?
+    let includesRating: Bool
 
-    init(status: String? = nil, rating: Decimal? = nil, progress: Int? = nil, notes: String? = nil) {
+    init(
+        status: String? = nil,
+        rating: Decimal? = nil,
+        progress: Int? = nil,
+        notes: String? = nil,
+        includesRating: Bool = false
+    ) {
         self.status = status
         self.rating = rating
         self.progress = progress
         self.notes = notes
+        self.includesRating = includesRating || rating != nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case rating
+        case progress
+        case notes
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(status, forKey: .status)
+        if includesRating {
+            try container.encode(rating, forKey: .rating)
+        }
+        try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(notes, forKey: .notes)
     }
 }
 

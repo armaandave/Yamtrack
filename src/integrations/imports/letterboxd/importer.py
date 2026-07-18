@@ -5,13 +5,12 @@ from django.conf import settings
 from django.db import transaction
 from django.utils.text import slugify
 
+from app import single_weight
 from app.models import DiaryEntry, Item, MediaLike, MediaTypes, Movie, Sources, Status
 from app.providers import tmdb
-from app.services import create_diary_entry, set_media_like, update_diary_entry_tags
 from integrations.imports.letterboxd.parser import parse_export
 from integrations.imports.letterboxd.resolver import LetterboxdResolver
 from lists.models import CustomList, CustomListItem
-from social.models import Activity
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +43,7 @@ class LetterboxdImporter:
         with transaction.atomic():
             if self.mode == "overwrite":
                 self._cleanup()
-            self._import_diary(export.diary, resolved)
-            self._import_reviews(export.reviews, resolved)
+            self._import_history(export.diary, export.reviews, resolved)
             self._import_watched(export.watched, resolved)
             self._import_ratings(export.ratings, resolved)
             self._import_watchlist(export.watchlist, resolved)
@@ -56,86 +54,75 @@ class LetterboxdImporter:
         return dict(self.counts), warnings if warnings else None
 
     def _cleanup(self):
-        diary_ids = list(
-            DiaryEntry.objects.filter(
-                user=self.user,
-                item__media_type=MediaTypes.MOVIE.value,
-            ).values_list("id", flat=True),
-        )
-        Activity.objects.filter(
-            actor=self.user,
-            target_type="diary",
-            target_id__in=diary_ids,
-        ).delete()
-        Movie.objects.filter(user=self.user).delete()
-        DiaryEntry.objects.filter(
+        imported_entries = list(DiaryEntry.objects.filter(
             user=self.user,
             item__media_type=MediaTypes.MOVIE.value,
-        ).delete()
-        MediaLike.objects.filter(
-            user=self.user,
-            item__media_type=MediaTypes.MOVIE.value,
-        ).delete()
+            import_source="letterboxd",
+        ))
+        for entry in imported_entries:
+            single_weight.delete_log(self.user, entry)
         CustomList.objects.filter(
             owner=self.user,
             import_source="letterboxd",
         ).delete()
 
-    def _import_diary(self, rows, resolved):
-        for row in rows:
-            item = self._item_for(row, resolved)
-            if not item:
-                continue
-            self._ensure_movie(item, Status.COMPLETED.value, row.get("date"), row.get("rating"))
-            if self.mode == "new" and self._diary_for_date(item, row.get("date")):
-                continue
-            create_diary_entry(
-                self.user,
-                item,
-                consumed_at=row.get("date"),
-                rating=row.get("rating"),
-                is_rewatch=row.get("rewatch", False),
-                tags=row.get("tags", []),
+    def _import_history(self, diary_rows, review_rows, resolved):
+        rows_by_id = {}
+        for row in diary_rows:
+            rows_by_id[row["source_id"]] = {**row, "from_diary": True, "from_review": False}
+        for row in review_rows:
+            combined = rows_by_id.setdefault(
+                row["source_id"],
+                {**row, "from_diary": False, "from_review": True},
             )
-            self.counts["diary"] += 1
+            combined["from_review"] = True
+            for field in ("rating", "review", "rewatch", "tags"):
+                if row.get(field) not in (None, "", []):
+                    combined[field] = row[field]
 
-    def _import_reviews(self, rows, resolved):
-        for row in rows:
+        rows_by_item = defaultdict(list)
+        item_by_id = {}
+        for row in rows_by_id.values():
             item = self._item_for(row, resolved)
-            if not item:
+            if not item or row.get("date") is None:
                 continue
-            self._ensure_movie(item, Status.COMPLETED.value, row.get("date"), row.get("rating"))
-            entry = self._diary_for_date(item, row.get("date"))
-            if entry:
-                fields = []
-                for field in ("review", "rating", "is_rewatch"):
-                    value = row.get("rewatch") if field == "is_rewatch" else row.get(field)
-                    if value not in (None, ""):
-                        setattr(entry, field, value)
-                        fields.append(field)
-                if fields:
-                    entry.save(update_fields=fields)
-                if row.get("tags"):
-                    update_diary_entry_tags(entry, row["tags"])
-            else:
-                create_diary_entry(
-                    self.user,
-                    item,
-                    consumed_at=row.get("date"),
-                    rating=row.get("rating"),
-                    review=row.get("review", ""),
-                    is_rewatch=row.get("rewatch", False),
-                    tags=row.get("tags", []),
-                )
-            self.counts["reviews"] += 1
+            item_by_id[item.id] = item
+            rows_by_item[item.id].append(
+                {
+                    "source_id": row["source_id"],
+                    "source_order": row["source_order"],
+                    "consumed_at": row["date"],
+                    "rating": row.get("rating"),
+                    "review": row.get("review", ""),
+                    "is_rewatch": row.get("rewatch"),
+                    "tags": row.get("tags", []),
+                    "from_diary": row["from_diary"],
+                    "from_review": row["from_review"],
+                },
+            )
+
+        for item_id, rows in rows_by_item.items():
+            created = single_weight.import_logs(
+                self.user,
+                item_by_id[item_id],
+                rows,
+                source="letterboxd",
+            )
+            created_ids = {entry.import_source_id for entry in created}
+            for row in rows:
+                if row["source_id"] not in created_ids:
+                    continue
+                self.counts["diary"] += int(row["from_diary"])
+                self.counts["reviews"] += int(row["from_review"])
 
     def _import_watched(self, rows, resolved):
         for row in rows:
             item = self._item_for(row, resolved)
             if not item:
                 continue
-            _, changed = self._ensure_movie(item, Status.COMPLETED.value, row.get("date"))
-            if changed:
+            existed = Movie.objects.filter(user=self.user, item=item, direct_consumption=True).exists()
+            single_weight.import_title_state(self.user, item)
+            if not existed:
                 self.counts[MediaTypes.MOVIE.value] += 1
 
     def _import_ratings(self, rows, resolved):
@@ -145,15 +132,11 @@ class LetterboxdImporter:
             item = self._item_for(row, resolved)
             if not item:
                 continue
-            movie, _ = self._ensure_movie(item, Status.COMPLETED.value, row.get("date"))
-            entry = self._diary_for_rating(item, row.get("date"))
-            if entry:
-                if entry.rating is None:
-                    entry.rating = row["rating"]
-                    entry.save(update_fields=["rating"])
-            elif movie.score is None:
-                movie.score = row["rating"]
-                movie.save(update_fields=["score"])
+            single_weight.import_title_state(
+                self.user,
+                item,
+                rating=row["rating"],
+            )
             self.counts["ratings"] += 1
 
     def _import_watchlist(self, rows, resolved):
@@ -209,7 +192,7 @@ class LetterboxdImporter:
             if not item:
                 continue
             created = not MediaLike.objects.filter(user=self.user, item=item).exists()
-            set_media_like(self.user, item, True, audit=False)
+            single_weight.import_title_state(self.user, item, liked=True)
             if created:
                 self.counts["likes"] += 1
 
@@ -285,22 +268,6 @@ class LetterboxdImporter:
         if fields:
             movie.save(update_fields=fields)
         return movie, bool(fields)
-
-    def _diary_for_date(self, item, consumed_at):
-        if consumed_at is None:
-            return None
-        return DiaryEntry.objects.filter(
-            user=self.user,
-            item=item,
-            consumed_at__date=consumed_at.date(),
-        ).first()
-
-    def _diary_for_rating(self, item, rated_at):
-        entry = self._diary_for_date(item, rated_at)
-        if entry:
-            return entry
-        entries = list(DiaryEntry.objects.filter(user=self.user, item=item).order_by("-consumed_at")[:2])
-        return entries[0] if len(entries) == 1 else None
 
     def _warn_unresolved(self, row):
         label = row.get("name") or row.get("uri") or "Unknown film"

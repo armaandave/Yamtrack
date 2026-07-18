@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db.models import Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils.http import urlencode
@@ -13,7 +14,7 @@ from api.services import filters as filter_service
 from api.services import media as media_service
 from api.throttling import SearchRateThrottle
 from api.views.mixins import MediaExposureMixin
-from app import config, exposure
+from app import config, exposure, single_weight
 from app.forms import ManualItemForm
 from app.models import BasicMedia, DiaryEntry, MediaTypes, Status
 from app.providers import services as provider_services
@@ -351,13 +352,32 @@ class MediaReviewsView(MediaExposureMixin, APIView):
         if item is None:
             return Response({"count": 0, "next": None, "previous": None, "results": []})
 
-        entries = (
-            DiaryEntry.objects.filter(item=item)
-            .exclude(visibility="private")
-            .exclude(review="")
-            .select_related("item", "user")
-            .prefetch_related("tags")
-        )
+        entries = DiaryEntry.objects.filter(item=item).exclude(review="")
+        if single_weight.supports(media_type):
+            visibility = Q(user__profile_private=False)
+            if request.user.is_authenticated:
+                from social.models import Block, Follow, FollowStatus
+
+                followed = Follow.objects.filter(
+                    from_user=request.user,
+                    status=FollowStatus.ACCEPTED,
+                ).values("to_user")
+                blocked = Block.objects.filter(
+                    Q(blocker=request.user) | Q(blocked=request.user),
+                ).values_list("blocker_id", "blocked_id")
+                blocked_ids = {
+                    user_id
+                    for pair in blocked
+                    for user_id in pair
+                    if user_id != request.user.id
+                }
+                visibility |= Q(user=request.user) | Q(user__in=followed)
+                entries = entries.filter(visibility).exclude(user_id__in=blocked_ids)
+            else:
+                entries = entries.filter(visibility)
+        else:
+            entries = entries.exclude(visibility="private")
+        entries = entries.select_related("item", "user").prefetch_related("tags")
         if request.query_params.get("sort", "popular") == "recent":
             entries = entries.order_by("-created_at")
         else:

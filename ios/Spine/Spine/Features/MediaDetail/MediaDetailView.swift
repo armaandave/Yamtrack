@@ -115,10 +115,54 @@ final class MediaDetailViewModel {
         do {
             let response = try await mediaRepository.setLiked(ref: detail.ref, liked: next)
             self.detail = self.detail?.replacingHasLiked(response.liked)
+            await load()
             return true
         } catch {
             self.detail = detail
             likeErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+            return false
+        }
+    }
+
+    func markConsumed(for detail: MediaDetail) async -> Bool {
+        guard !isSavingQuickAction else { return false }
+        isSavingQuickAction = true
+        quickActionErrorMessage = nil
+        defer { isSavingQuickAction = false }
+
+        do {
+            tracking = try await trackingRepository.consume(ref: detail.ref, consumedAt: nil)
+            self.detail = detail.replacingIsTracked(true)
+            await load()
+            return true
+        } catch {
+            quickActionErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+            return false
+        }
+    }
+
+    func setCurrentRating(for detail: MediaDetail, halfSteps: Int) async -> Bool {
+        guard !isSavingQuickAction else { return false }
+        isSavingQuickAction = true
+        quickActionErrorMessage = nil
+        defer { isSavingQuickAction = false }
+
+        do {
+            let rating = halfSteps > 0 ? Decimal(halfSteps) / 2 : nil
+            tracking = try await trackingRepository.update(
+                ref: detail.ref,
+                request: TrackingWriteRequest(rating: rating, includesRating: true)
+            )
+            await load()
+            return true
+        } catch {
+            quickActionErrorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
@@ -158,7 +202,10 @@ final class MediaDetailViewModel {
                         completedAt: completedAt
                     )
                 } else {
-                    state = try await trackingRepository.consume(ref: detail.ref, consumedAt: completedAt)
+                    state = try await trackingRepository.consume(
+                        ref: detail.ref,
+                        consumedAt: detail.ref.isSingleWeight ? nil : completedAt
+                    )
                 }
             case .stopped:
                 state = try await trackingRepository.update(
@@ -322,7 +369,7 @@ struct MediaRatingPickerState: Equatable {
     private(set) var confirmedHalfSteps = 0
     private(set) var hasLocallyWatched = false
 
-    var showsConfirm: Bool { draftHalfSteps > 0 }
+    var showsConfirm: Bool { draftHalfSteps != confirmedHalfSteps }
 
     mutating func open() {
         draftHalfSteps = confirmedHalfSteps
@@ -338,6 +385,21 @@ struct MediaRatingPickerState: Equatable {
     mutating func confirm() {
         confirmedHalfSteps = draftHalfSteps
         isPresented = false
+    }
+
+    mutating func syncConfirmed(_ halfSteps: Int) {
+        confirmedHalfSteps = halfSteps
+        if !isPresented {
+            draftHalfSteps = halfSteps
+        }
+    }
+
+    mutating func rollbackWatch() {
+        hasLocallyWatched = false
+    }
+
+    mutating func reset() {
+        self = MediaRatingPickerState()
     }
 }
 
@@ -875,10 +937,6 @@ private struct MediaDetailPageView: View {
                 pageScrollContent
                     .spineContentTransition(value: contentPhase)
             }
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                TapGesture().onEnded { dismissRatingPicker() }
-            )
             .onScrollPhaseChange { _, phase in
                 if phase != .idle {
                     dismissRatingPicker()
@@ -1218,6 +1276,12 @@ private struct MediaDetailPageView: View {
         .onChange(of: viewModel.detail?.id) {
             showsTitleLogo = true
         }
+        .onChange(of: viewModel.detail?.userState?.rating) { _, rating in
+            ratingPicker.syncConfirmed(ratingHalfSteps(rating))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .diaryEntriesDidChange)) { _ in
+            Task { await viewModel.load() }
+        }
     }
 
     @ViewBuilder
@@ -1413,6 +1477,25 @@ private struct MediaDetailPageView: View {
     }
 
     private func eyeAction(for detail: MediaDetail) {
+        if detail.ref.isSingleWeight {
+            Task {
+                let succeeded: Bool
+                if isEyeCompleted(detail) {
+                    succeeded = await viewModel.removeTracking(for: detail)
+                    if succeeded {
+                        ratingPicker.reset()
+                        await viewModel.load()
+                    }
+                } else {
+                    succeeded = await viewModel.markConsumed(for: detail)
+                }
+                if !succeeded {
+                    ratingPicker.rollbackWatch()
+                    isQuickActionAlertPresented = true
+                }
+            }
+            return
+        }
         guard !isEyeCompleted(detail) else { return }
         if detail.ref.mediaType == "episode" {
             Task {
@@ -1451,9 +1534,26 @@ private struct MediaDetailPageView: View {
         Task {
             let succeeded = await viewModel.toggleMediaLike(for: detail)
             if !succeeded {
+                ratingPicker.rollbackWatch()
                 isLikeAlertPresented = true
             }
         }
+    }
+
+    private func ratingAction(for detail: MediaDetail, halfSteps: Int) {
+        guard detail.ref.isSingleWeight else { return }
+        Task {
+            if !(await viewModel.setCurrentRating(for: detail, halfSteps: halfSteps)) {
+                ratingPicker.syncConfirmed(ratingHalfSteps(detail.userState?.rating))
+                isQuickActionAlertPresented = true
+            }
+        }
+    }
+
+    private func ratingHalfSteps(_ rating: String?) -> Int {
+        guard let rating, let value = Decimal(string: rating) else { return 0 }
+        let steps = viewModel.detail?.ref.isSingleWeight == true ? value * 2 : value
+        return NSDecimalNumber(decimal: steps).intValue
     }
 
     private func openProgressUpdate(for detail: MediaDetail) {
@@ -1493,17 +1593,25 @@ private struct MediaDetailPageView: View {
             ratingPicker: $ratingPicker,
             isTracked: isEpisode ? isWatched : currentStatus(detail) != nil,
             isLiked: detail.userState?.hasLiked ?? false,
-            showsEye: detail.ref.mediaType != "music",
+            showsEye: true,
+            showsRating: detail.ref.isSingleWeight && isEyeCompleted(detail),
+            offersRatingAfterBaseAction: detail.ref.isSingleWeight,
             trackLabel: isEpisode ? "Log episode" : (usesQuickActions ? "Track" : nil),
             eyeLabel: isEpisode
                 ? (isWatched ? "Episode watched" : "Mark episode watched")
-                : (usesQuickActions ? bookGameCopy(for: detail.ref.mediaType).finished : nil),
+                : detail.ref.isSingleWeight
+                    ? (detail.ref.mediaType == "music"
+                        ? (isEyeCompleted(detail) ? "Listened" : "Mark as listened")
+                        : (isEyeCompleted(detail) ? "Watched" : "Mark as watched"))
+                    : (usesQuickActions ? bookGameCopy(for: detail.ref.mediaType).finished : nil),
             isEyeSelected: isEyeCompleted(detail),
-            isEyeLoading: (isEpisode || usesQuickActions) && viewModel.isSavingQuickAction,
+            isEyeLoading: (isEpisode || usesQuickActions || detail.ref.isSingleWeight)
+                && viewModel.isSavingQuickAction,
             isLikeLoading: viewModel.isSavingLike,
             onTrack: { trackAction(for: detail) },
             onLike: { likeAction(for: detail) },
-            onEye: { eyeAction(for: detail) }
+            onEye: { eyeAction(for: detail) },
+            onRating: { ratingAction(for: detail, halfSteps: $0) }
         )
     }
 
@@ -2062,7 +2170,10 @@ private struct MediaDetailPageView: View {
                 SynopsisText(text: synopsisPreview(detail))
                 trackingSummarySection(detail)
                 if detail.ref.mediaType != "episode" || (detail.community?.ratingCount ?? 0) > 0 {
-                    SpineRatingDistributionSection(community: detail.community)
+                    SpineRatingDistributionSection(
+                        community: detail.community,
+                        mediaType: detail.ref.mediaType
+                    )
                 }
 
                 if detail.ref.mediaType == "tv" {
@@ -2093,7 +2204,12 @@ private struct MediaDetailPageView: View {
                         presentEpisode(episode, from: detail)
                     }
                 }
-                ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
+                ReviewsSection(
+                    reviews: viewModel.reviews,
+                    isLoading: viewModel.isLoadingReviews,
+                    error: viewModel.reviewsErrorMessage,
+                    mediaType: detail.ref.mediaType
+                )
                 RecommendationsSection(sections: relatedSections(detail)) { item in
                     presentedRef = item.ref
                 }
@@ -2109,7 +2225,10 @@ private struct MediaDetailPageView: View {
                 SynopsisText(text: annotation)
             }
             trackingSummarySection(detail)
-            SpineRatingDistributionSection(community: detail.community)
+            SpineRatingDistributionSection(
+                community: detail.community,
+                mediaType: detail.ref.mediaType
+            )
             MusicAlbumTracklistSection(
                 release: detail.music?.representativeRelease,
                 albumCredits: detail.music?.artistCredit ?? [],
@@ -2130,7 +2249,12 @@ private struct MediaDetailPageView: View {
                     presentedCompany = company
                 }
             )
-            ReviewsSection(reviews: viewModel.reviews, isLoading: viewModel.isLoadingReviews, error: viewModel.reviewsErrorMessage)
+            ReviewsSection(
+                reviews: viewModel.reviews,
+                isLoading: viewModel.isLoadingReviews,
+                error: viewModel.reviewsErrorMessage,
+                mediaType: detail.ref.mediaType
+            )
             RecommendationsSection(sections: relatedSections(detail)) { item in
                 presentedRef = item.ref
             }
@@ -2411,7 +2535,7 @@ private struct MediaDetailPageView: View {
         if let rating = detail.community?.averageRating, !rating.isEmpty {
             chips.append(RatingChip(
                 source: "SP",
-                value: "\(rating.starRatingValue)/5",
+                value: "\(rating.starRatingValue(mediaType: detail.ref.mediaType))/5",
                 assetName: nil,
                 providerName: "Spine",
                 voteCount: detail.community?.ratingCount,
@@ -2436,7 +2560,11 @@ private struct MediaDetailPageView: View {
             ))
         }
         if let rating = currentRating(detail), !rating.isEmpty {
-            chips.append(RatingChip(source: "You", value: rating.starRatingLabel, assetName: nil))
+            chips.append(RatingChip(
+                source: "You",
+                value: rating.starRatingLabel(mediaType: detail.ref.mediaType),
+                assetName: nil
+            ))
         }
         return chips
     }
@@ -3648,6 +3776,8 @@ private struct ActionRail: View {
     let isTracked: Bool
     let isLiked: Bool
     var showsEye = true
+    var showsRating = false
+    var offersRatingAfterBaseAction = false
     var trackLabel: String?
     var eyeLabel: String?
     var isEyeSelected = false
@@ -3656,6 +3786,7 @@ private struct ActionRail: View {
     let onTrack: () -> Void
     let onLike: () -> Void
     var onEye: () -> Void = {}
+    var onRating: (Int) -> Void = { _ in }
 
     var body: some View {
         GlassEffectContainer(spacing: 16) {
@@ -3672,6 +3803,13 @@ private struct ActionRail: View {
             pressHaptics.prepare()
             actionHaptics.prepare()
         }
+    }
+
+    private var glassShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: ratingPicker.isPresented ? 26 : 29,
+            style: .continuous
+        )
     }
 
     private var rail: some View {
@@ -3693,6 +3831,14 @@ private struct ActionRail: View {
                 .accessibilityValue(ratingPicker.isPresented ? "Expanded" : "Collapsed")
                 .accessibilityHint(ratingPicker.isPresented ? "Closes the rating picker" : "Opens the rating picker")
             }
+            if showsRating {
+                railButton(
+                    systemName: ratingPicker.confirmedHalfSteps > 0 ? "star.fill" : "star",
+                    label: ratingPicker.confirmedHalfSteps > 0 ? "Edit rating" : "Rate",
+                    usesLargePlus: false,
+                    action: handleRating
+                )
+            }
             railButton(
                 systemName: isLiked ? "heart.fill" : "heart",
                 label: isLiked ? "Unlike" : "Like",
@@ -3702,7 +3848,7 @@ private struct ActionRail: View {
             )
         }
         .padding(5)
-        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
+        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
         .glassEffectID("media-actions", in: glassNamespace)
         .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
         .simultaneousGesture(
@@ -3720,8 +3866,14 @@ private struct ActionRail: View {
 
     private var ratingComposer: some View {
         ZStack {
-            StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
-                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
+            StarRatingPill(
+                halfSteps: $ratingPicker.draftHalfSteps,
+                onAccessibilitySelect: { step in
+                    ratingPicker.draftHalfSteps = step
+                    confirmRating()
+                }
+            )
+                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
                 .glassEffectID("media-rating", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
                 .glassEffectTransition(.matchedGeometry)
@@ -3734,18 +3886,30 @@ private struct ActionRail: View {
                         .frame(width: 60, height: 60)
                 }
                 .buttonStyle(.plain)
-                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: Capsule())
+                .disabled(isEyeLoading || isLikeLoading)
+                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
                 .offset(x: 71.25)
                 .glassEffectID("media-rating-confirm", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
-                .glassEffectTransition(.matchedGeometry)
-                .transition(.opacity)
+                .glassEffectTransition(.materialize)
+                .transition(confirmTransition)
                 .accessibilityLabel("Confirm rating")
                 .accessibilityIdentifier("media-detail.rating-confirm")
             }
         }
         .frame(width: 280, height: 60)
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.84),
+            value: ratingPicker.showsConfirm
+        )
         .accessibilityIdentifier("media-detail.rating-picker")
+    }
+
+    private var confirmTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .offset(x: -23.75)
+            .combined(with: .opacity)
+            .animation(.easeInOut(duration: 0.32))
     }
 
     private func handleTrack() {
@@ -3754,7 +3918,10 @@ private struct ActionRail: View {
     }
 
     private func handleEye() {
-        if ratingPicker.isPresented {
+        if isEyeSelected {
+            dismissRatingPickerIfNeeded()
+            onEye()
+        } else if ratingPicker.isPresented {
             animate { ratingPicker.dismiss() }
         } else {
             let shouldTrack = !isEyeSelected && !ratingPicker.hasLocallyWatched
@@ -3766,14 +3933,28 @@ private struct ActionRail: View {
     }
 
     private func handleLike() {
-        dismissRatingPickerIfNeeded()
+        if !isLiked, offersRatingAfterBaseAction, !ratingPicker.isPresented {
+            animate { ratingPicker.open() }
+        } else {
+            dismissRatingPickerIfNeeded()
+        }
         onLike()
     }
 
+    private func handleRating() {
+        if ratingPicker.isPresented {
+            animate { ratingPicker.dismiss() }
+        } else {
+            animate { ratingPicker.open() }
+        }
+    }
+
     private func confirmRating() {
+        let halfSteps = ratingPicker.draftHalfSteps
         actionHaptics.selectionChanged()
         actionHaptics.prepare()
         animate { ratingPicker.confirm() }
+        onRating(halfSteps)
     }
 
     private func dismissRatingPickerIfNeeded() {
@@ -3821,29 +4002,39 @@ private struct ActionRail: View {
 
     private func railIconColor(systemName: String) -> Color {
         if systemName == "heart.fill" { return .pink }
+        if systemName == "star.fill" { return .yellow }
         return .white.opacity(0.84)
     }
 }
 
 private struct StarRatingPill: View {
     @Binding var halfSteps: Int
+    var onAccessibilitySelect: ((Int) -> Void)?
     @State private var haptics = UISelectionFeedbackGenerator()
 
     private let duneGold = Color(red: 0.94, green: 0.64, blue: 0.24)
 
     var body: some View {
         GeometryReader { proxy in
-            HStack(spacing: 1.25) {
-                ForEach(1...5, id: \.self) { value in
-                    Image(systemName: starSymbol(for: value))
-                        .font(.system(size: 17.5, weight: .medium))
-                        .foregroundStyle(halfSteps >= value * 2 - 1 ? duneGold : .white.opacity(0.28))
-                        .frame(width: 22.5, height: 30)
+            ZStack {
+                HStack(spacing: 1.25) {
+                    ForEach(1...5, id: \.self) { value in
+                        Image(systemName: starSymbol(for: value))
+                            .font(.system(size: 17.5, weight: .medium))
+                            .foregroundStyle(halfSteps >= value * 2 - 1 ? duneGold : .white.opacity(0.28))
+                            .frame(width: 22.5, height: 30)
+                    }
                 }
+                .accessibilityHidden(true)
+
+                HalfStarRatingTapOverlay(
+                    steps: $halfSteps,
+                    onSelect: onAccessibilitySelect
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Capsule())
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         let nextValue = min(
@@ -3858,7 +4049,7 @@ private struct StarRatingPill: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 15)
         .onAppear { haptics.prepare() }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Your rating")
         .accessibilityValue(halfSteps == 0 ? "Not rated" : "\(Double(halfSteps) / 2) out of 5")
         .accessibilityAdjustableAction { direction in
@@ -3885,6 +4076,35 @@ private struct StarRatingPill: View {
         halfSteps = newValue
         haptics.selectionChanged()
         haptics.prepare()
+    }
+}
+
+struct HalfStarRatingTapOverlay: View {
+    @Binding var steps: Int
+    var onSelect: ((Int) -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(1...10, id: \.self) { step in
+                Button {
+                    select(step)
+                } label: {
+                    Color.clear
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Self.label(for: step))
+            }
+        }
+    }
+
+    private func select(_ step: Int) {
+        steps = step
+        onSelect?(step)
+    }
+
+    private static func label(for step: Int) -> String {
+        String(format: "%.1f stars", Double(step) / 2)
     }
 }
 
@@ -4174,7 +4394,7 @@ private struct TrackingSummarySection: View {
             values.append(logLine)
         }
         if let rating = userState?.diaryRating ?? tracking?.rating ?? userState?.rating {
-            values.append("Rated \(rating.starRatingLabel)")
+            values.append("Rated \(rating.starRatingLabel(mediaType: detail.ref.mediaType))")
         }
         if !hasMultipleLogs, let consumedAt = userState?.diaryConsumedAt {
             values.append("Logged \(consumedAt.shortDateLabel)")
@@ -4372,7 +4592,9 @@ private struct MusicAlbumTracklistSection: View {
     let onSelectTrack: (MusicTrack) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel(title: "Tracklist")
+
             if let release, hasTracks(release) {
                 LazyVStack(spacing: 0) {
                     ForEach(release.media, id: \.position) { medium in
@@ -4580,12 +4802,13 @@ private extension View {
 
 private struct SpineRatingDistributionSection: View {
     let community: CommunityStats?
+    let mediaType: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 if let average = community?.averageRating {
-                    Label(average.starRatingLabel, systemImage: "star.fill")
+                    Label(average.starRatingLabel(mediaType: mediaType), systemImage: "star.fill")
                         .font(.system(size: 18, weight: .heavy))
                         .foregroundStyle(.white)
                 }
@@ -4623,7 +4846,10 @@ private struct SpineRatingDistributionSection: View {
     private var buckets: [RatingDistributionBucket] {
         let rawBuckets = community?.ratingDistribution ?? []
         guard !rawBuckets.isEmpty else { return [] }
-        let counts = Dictionary(grouping: rawBuckets, by: { $0.rating.starRatingStep })
+        let counts = Dictionary(
+            grouping: rawBuckets,
+            by: { $0.rating.starRatingStep(mediaType: mediaType) }
+        )
             .mapValues { $0.reduce(0) { $0 + $1.count } }
         return (1...10).map { step in
             RatingDistributionBucket(rating: String.starRatingLabel(forStep: step), count: counts[step, default: 0])
@@ -5022,6 +5248,7 @@ private struct ReviewsSection: View {
     let reviews: [MediaReview]
     let isLoading: Bool
     let error: String?
+    let mediaType: String
 
     var body: some View {
         Group {
@@ -5037,7 +5264,10 @@ private struct ReviewsSection: View {
                                         .foregroundStyle(.white)
                                     Spacer()
                                     if let rating = review.rating {
-                                        Label(rating.starRatingLabel, systemImage: "star.fill")
+                                        Label(
+                                            rating.starRatingLabel(mediaType: mediaType),
+                                            systemImage: "star.fill"
+                                        )
                                             .font(.system(size: 11, weight: .heavy))
                                             .foregroundStyle(.white.opacity(0.85))
                                     }
@@ -5249,7 +5479,7 @@ struct MediaTitleDisplay: View {
                 SpineAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        TitleLogoLayout(maxLogoHeight: maxLogoHeight, aspectRatio: aspectRatio) {
+                        TitleLogoLayout(maxLogoHeight: maxLogoHeight, aspectRatio: aspectRatio, alignment: alignment) {
                             image
                                 .resizable()
                                 .scaledToFit()
@@ -5308,6 +5538,7 @@ struct MediaTitleDisplay: View {
 private struct TitleLogoLayout: Layout {
     let maxLogoHeight: CGFloat
     let aspectRatio: CGFloat?
+    let alignment: Alignment
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? 0
@@ -5317,8 +5548,13 @@ private struct TitleLogoLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard let subview = subviews.first else { return }
         let size = logoSize(for: bounds.width)
+        let x = alignment == .leading
+            ? bounds.minX
+            : alignment == .trailing
+                ? bounds.maxX - size.width
+                : bounds.midX - size.width / 2
         let origin = CGPoint(
-            x: bounds.midX - size.width / 2,
+            x: x,
             y: bounds.minY
         )
         subview.place(
@@ -5377,6 +5613,24 @@ private extension String {
     var starRatingStep: Int {
         guard let raw = Double(self) else { return 0 }
         return min(max(Int(round(raw)), 1), 10)
+    }
+
+    func starRatingLabel(mediaType: String) -> String {
+        guard let raw = Double(self) else { return self }
+        let stars = ["movie", "music"].contains(mediaType) ? raw : raw / 2
+        return "\(Self.cleanRating(stars))/5"
+    }
+
+    func starRatingValue(mediaType: String) -> String {
+        guard let raw = Double(self) else { return self }
+        let stars = ["movie", "music"].contains(mediaType) ? raw : raw / 2
+        return String(format: "%.1f", stars)
+    }
+
+    func starRatingStep(mediaType: String) -> Int {
+        guard let raw = Double(self) else { return 0 }
+        let step = ["movie", "music"].contains(mediaType) ? raw * 2 : raw
+        return min(max(Int(round(step)), 1), 10)
     }
 
     var shortDateLabel: String {

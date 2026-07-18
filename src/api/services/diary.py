@@ -1,6 +1,8 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
+from rest_framework import serializers
 
 from api.serializers.common import (
     get_or_create_item_from_metadata,
@@ -8,6 +10,7 @@ from api.serializers.common import (
     user_summary,
 )
 from api.services import tracking as tracking_service
+from app import single_weight
 from app.models import MediaLike, MediaTypes, Tag
 from app.providers import services as provider_services
 from app.services import create_diary_entry, update_diary_entry
@@ -29,6 +32,7 @@ def diary_payload(entry, request=None, viewer=None):
             target_id=entry.id,
         ).exists()
     )
+    is_single_weight = single_weight.supports(entry.item)
     return {
         "id": entry.id,
         "user": user_summary(entry.user, request=request),
@@ -38,15 +42,23 @@ def diary_payload(entry, request=None, viewer=None):
             user=viewer,
             include_user_state=False,
         ),
-        "consumed_at": entry.consumed_at,
-        "rating": str(entry.rating) if entry.rating is not None else None,
+        "consumed_at": (
+            single_weight.calendar_date(entry.consumed_at).isoformat()
+            if is_single_weight
+            else entry.consumed_at
+        ),
+        "rating": (
+            str(single_weight.rating_to_wire(entry.rating))
+            if is_single_weight and entry.rating is not None
+            else str(entry.rating) if entry.rating is not None else None
+        ),
         "review_title": entry.review_title,
         "review": entry.review,
         "contains_spoilers": entry.contains_spoilers,
-        "liked": entry.liked or MediaLike.objects.filter(user=entry.user, item=entry.item).exists(),
+        "liked": entry.liked,
         "is_rewatch": entry.is_rewatch,
         "tags": [tag.name for tag in entry.tags.all()],
-        "visibility": entry.visibility,
+        "visibility": "public" if is_single_weight else entry.visibility,
         "like_count": like_count,
         "viewer_has_liked": bool(viewer_has_liked),
         "created_at": entry.created_at,
@@ -64,7 +76,18 @@ def create_entry(user, data):
         [ref.get("season_number")] if ref.get("season_number") is not None else None,
         ref.get("episode_number"),
     )
-    consumed_at = data.get("consumed_at") or timezone.now()
+    is_single_weight = single_weight.supports(ref["media_type"])
+    consumed_at = data.get("consumed_at")
+    if is_single_weight and consumed_at is None:
+        raise serializers.ValidationError({"consumed_at": "A consumption date is required."})
+    consumed_at = consumed_at or timezone.now()
+    rating = data.get("rating")
+    if is_single_weight:
+        try:
+            rating = single_weight.rating_from_wire(rating)
+            consumed_at = single_weight.calendar_datetime(consumed_at)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({"detail": error.messages[0]}) from error
     auto_mark_consumed = data.get("auto_mark_consumed", False)
     watch_episode = auto_mark_consumed and ref["media_type"] == MediaTypes.EPISODE.value
 
@@ -74,17 +97,25 @@ def create_entry(user, data):
             user=user,
             item=item,
             consumed_at=consumed_at,
-            rating=data.get("rating"),
+            rating=rating,
             review=data.get("review", ""),
-            liked=data.get("liked", False),
-            is_rewatch=data.get("is_rewatch", False),
+            liked=(
+                data["liked"]
+                if "liked" in data
+                else MediaLike.objects.filter(user=user, item=item).exists()
+            ),
+            is_rewatch=(
+                data.get("is_rewatch")
+                if is_single_weight
+                else data.get("is_rewatch", False)
+            ),
             # Episodes use Season.watch below so every rewatch remains a distinct
             # Episode row instead of rewriting all repeats for the same Item.
             auto_mark_consumed=auto_mark_consumed and not watch_episode,
             tags=data.get("tags", []),
             review_title=data.get("review_title", ""),
             contains_spoilers=data.get("contains_spoilers", False),
-            visibility=data.get("visibility", "public"),
+            visibility="public" if is_single_weight else data.get("visibility", "public"),
         )
         if watch_episode:
             tracking_service.watch_episode(
@@ -95,18 +126,19 @@ def create_entry(user, data):
                 episode_number=ref["episode_number"],
                 watched_at=consumed_at,
             )
-        Activity.objects.create(
-            actor=user,
-            verb="diary_created",
-            target_type="diary",
-            target_id=entry.id,
-            item=item,
-            visibility=entry.visibility,
-            snapshot={
-                "rating": str(entry.rating) if entry.rating is not None else None,
-                "liked": bool(entry.liked),
-            },
-        )
+        if not is_single_weight:
+            Activity.objects.create(
+                actor=user,
+                verb="diary_created",
+                target_type="diary",
+                target_id=entry.id,
+                item=item,
+                visibility=entry.visibility,
+                snapshot={
+                    "rating": str(entry.rating) if entry.rating is not None else None,
+                    "liked": bool(entry.liked),
+                },
+            )
     return entry
 
 
@@ -114,6 +146,15 @@ def update_entry(entry, data):
     """Update a diary entry from API payload."""
     data = dict(data)
     tags = data.pop("tags", None)
+    if single_weight.supports(entry.item):
+        try:
+            if "rating" in data:
+                data["rating"] = single_weight.rating_from_wire(data["rating"])
+            if "consumed_at" in data:
+                data["consumed_at"] = single_weight.calendar_datetime(data["consumed_at"])
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({"detail": error.messages[0]}) from error
+        data.pop("visibility", None)
     return update_diary_entry(entry, data, tags=tags)
 
 

@@ -6,11 +6,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from api.pagination import StandardResultsSetPagination
+from api.permissions import can_view_user_profile
 from api.serializers.diary import DiaryEntryWriteSerializer
 from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services.social import set_like
-from app import exposure
+from app import exposure, single_weight
 from app.models import CustomBackdropPreference, CustomPosterPreference, DiaryEntry
 from app.services import delete_diary_entry
 from social.models import ContentLike
@@ -107,8 +108,11 @@ class DiaryDetailView(APIView):
             DiaryEntry.objects.select_related("item", "user").prefetch_related("tags"),
             id=entry_id,
         )
-        if entry.user != request.user and entry.visibility == "private":
-            return Response(status=status.HTTP_404_NOT_FOUND)
+        if entry.user != request.user:
+            if not can_view_user_profile(request.user, entry.user):
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            if not single_weight.supports(entry.item) and entry.visibility == "private":
+                return Response(status=status.HTTP_404_NOT_FOUND)
         exposure.require_media_type(entry.item.media_type)
         return Response(diary_service.diary_payload(entry, request=request, viewer=request.user))
 

@@ -47,7 +47,22 @@ final class MediaLogViewModel {
         self.diaryRepository = diaryRepository
         self.onUnauthorized = onUnauthorized
         self.onSaved = onSaved
-        isRepeat = (detail.userState?.diaryCount ?? 0) > 0
+        if detail.ref.isSingleWeight {
+            let state = detail.userState
+            isRepeat = state?.directConsumption == true
+                || (state?.diaryCount ?? 0) > 0
+                || (state?.directConsumption == nil
+                    && state?.isTracked == true
+                    && state?.status == "Completed")
+        } else {
+            isRepeat = (detail.userState?.diaryCount ?? 0) > 0
+        }
+        liked = detail.userState?.hasLiked ?? false
+        if let rating = detail.userState?.rating.flatMap({ Decimal(string: $0) }) {
+            ratingSteps = detail.ref.isSingleWeight
+                ? NSDecimalNumber(decimal: rating * 2).intValue
+                : NSDecimalNumber(decimal: rating).intValue
+        }
     }
 
     var supportsProgress: Bool {
@@ -143,9 +158,11 @@ final class MediaLogViewModel {
         }
     }
 
-    static func ratingDecimal(for steps: Int) -> Decimal? {
+    static func ratingDecimal(for steps: Int, mediaType: String) -> Decimal? {
         guard steps > 0 else { return nil }
-        return Decimal(steps)
+        return mediaType == "movie" || mediaType == "music"
+            ? Decimal(steps) / 2
+            : Decimal(steps)
     }
 
     func ratingLabel(for steps: Int? = nil) -> String {
@@ -231,24 +248,30 @@ final class MediaLogViewModel {
             } else if ref.mediaType == "book" {
                 _ = try await trackingRepository.completeBook(source: ref.source, mediaId: ref.mediaId, completedAt: consumedAt)
             } else {
-                _ = try await trackingRepository.consume(ref: ref, consumedAt: consumedAt)
+                _ = try await trackingRepository.consume(
+                    ref: ref,
+                    consumedAt: ref.isSingleWeight ? nil : consumedAt
+                )
             }
         }
     }
 
     private func saveFinishedLog() async -> Bool {
         await performSave {
+            guard !selectedRef.isSingleWeight || !CalendarDateCodec.isFuture(consumedAt) else {
+                throw MediaLogError.futureDate
+            }
             _ = try await diaryRepository.create(DiaryEntryWriteRequest(
                 ref: selectedRef,
                 consumedAt: consumedAt,
-                rating: Self.ratingDecimal(for: ratingSteps),
+                rating: Self.ratingDecimal(for: ratingSteps, mediaType: selectedRef.mediaType),
                 review: review,
                 reviewTitle: reviewTitle,
                 liked: liked,
                 isRewatch: isRepeat,
                 autoMarkConsumed: true,
                 containsSpoilers: containsSpoilers,
-                visibility: visibility,
+                visibility: selectedRef.isSingleWeight ? "public" : visibility,
                 tags: tags
             ))
         }
@@ -301,9 +324,15 @@ final class MediaLogViewModel {
 
 private enum MediaLogError: LocalizedError {
     case invalidProgress
+    case futureDate
 
     var errorDescription: String? {
-        "Enter a valid progress value."
+        switch self {
+        case .invalidProgress:
+            "Enter a valid progress value."
+        case .futureDate:
+            "Consumption dates cannot be in the future."
+        }
     }
 }
 
@@ -572,7 +601,12 @@ struct MediaLogView: View {
 
             Spacer(minLength: 12)
 
-            DatePicker("Date", selection: $viewModel.consumedAt, displayedComponents: [.date])
+            DatePicker(
+                "Date",
+                selection: $viewModel.consumedAt,
+                in: Date.distantPast...(viewModel.selectedRef.isSingleWeight ? Date() : Date.distantFuture),
+                displayedComponents: [.date]
+            )
                 .labelsHidden()
                 .datePickerStyle(.compact)
                 .colorScheme(.dark)
@@ -585,16 +619,21 @@ struct MediaLogView: View {
             sectionLabel("Your rating")
             HStack(alignment: .center, spacing: 10) {
                 GeometryReader { proxy in
-                    HStack(spacing: 5) {
-                        ForEach(1...5, id: \.self) { star in
-                            Image(systemName: starSystemName(star))
-                                .font(.system(size: 34, weight: .bold))
-                                .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
-                                .frame(maxWidth: .infinity)
+                    ZStack {
+                        HStack(spacing: 5) {
+                            ForEach(1...5, id: \.self) { star in
+                                Image(systemName: starSystemName(star))
+                                    .font(.system(size: 34, weight: .bold))
+                                    .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
+                                    .frame(maxWidth: .infinity)
+                            }
                         }
+                        .accessibilityHidden(true)
+
+                        HalfStarRatingTapOverlay(steps: $viewModel.ratingSteps)
                     }
                     .contentShape(Rectangle())
-                    .gesture(
+                    .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
                                 viewModel.setRating(locationX: value.location.x, width: proxy.size.width)
@@ -603,7 +642,7 @@ struct MediaLogView: View {
                 }
                 .frame(maxWidth: 218)
                 .frame(height: 44)
-                .accessibilityElement(children: .ignore)
+                .accessibilityElement(children: .contain)
                 .accessibilityLabel("Rating")
                 .accessibilityValue(viewModel.ratingLabel())
                 .accessibilityHint("Drag all the way left to clear your rating")
@@ -733,12 +772,14 @@ struct MediaLogView: View {
 
     private var options: some View {
         composerSurface {
-            Picker("Visibility", selection: $viewModel.visibility) {
-                ForEach(APIConstants.visibilityChoices, id: \.self) { value in
-                    Text(value.capitalized).tag(value)
+            if !viewModel.selectedRef.isSingleWeight {
+                Picker("Visibility", selection: $viewModel.visibility) {
+                    ForEach(APIConstants.visibilityChoices, id: \.self) { value in
+                        Text(value.capitalized).tag(value)
+                    }
                 }
+                Divider().overlay(.white.opacity(0.1))
             }
-            Divider().overlay(.white.opacity(0.1))
             Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .tint(.red)

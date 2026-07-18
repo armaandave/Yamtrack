@@ -2,6 +2,7 @@ import logging
 
 from celery import states
 from celery.signals import before_task_publish
+from django.db import transaction
 from django.db.backends.signals import connection_created
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
@@ -48,7 +49,9 @@ def create_task_result_on_publish(sender=None, headers=None, body=None, **kwargs
 @receiver(post_save, sender=DiaryEntry)
 def handle_diary_entry_save(sender, instance, created, **kwargs):
     """Queue statistics update when a diary entry is saved."""
-    update_daily_statistics.delay(
-        user_id=instance.user.id,
-        date_str=instance.consumed_at.isoformat(),
+    transaction.on_commit(
+        lambda: update_daily_statistics.delay(
+            user_id=instance.user_id,
+            date_str=instance.consumed_at.isoformat(),
+        ),
     )

@@ -18,7 +18,12 @@ from social.models import (
     Visibility,
 )
 
-MEDIA_ACTIVITY_VERBS = ("diary_created", "progress_updated", "list_item_added")
+MEDIA_ACTIVITY_VERBS = (
+    "diary_created",
+    "rating_updated",
+    "progress_updated",
+    "list_item_added",
+)
 
 
 def follow_user(actor, username):
@@ -162,6 +167,10 @@ def _can_view_diary_entry(viewer, entry):
     if not can_view_user_profile(viewer, entry.user):
         return False
     if viewer == entry.user:
+        return True
+    from app import single_weight
+
+    if single_weight.supports(entry.item):
         return True
     if entry.visibility == Visibility.PUBLIC:
         return True

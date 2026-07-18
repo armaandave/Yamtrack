@@ -5174,9 +5174,10 @@ final class SpineTests: XCTestCase {
 
     @MainActor
     func testMediaLogRatingMapping() {
-        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: 0))
-        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 1), Decimal(1))
-        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10), Decimal(10))
+        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: 0, mediaType: "movie"))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 1, mediaType: "movie"), Decimal(string: "0.5"))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "music"), Decimal(5))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "book"), Decimal(10))
 
         let viewModel = MediaLogViewModel(
             detail: TestFixtures.movieDetail,
@@ -5195,7 +5196,7 @@ final class SpineTests: XCTestCase {
 
         viewModel.setRating(locationX: 0, width: 100)
         XCTAssertEqual(viewModel.ratingSteps, 0)
-        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: viewModel.ratingSteps))
+        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: viewModel.ratingSteps, mediaType: "movie"))
     }
 
     @MainActor
@@ -5240,6 +5241,66 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testSingleWeightLogPrefillsCanonicalDraftAndRepeatEvidence() async {
+        let diary = RecordingDiaryRepository()
+        let detail = MediaDetail(
+            ref: MediaRef(
+                itemId: 41,
+                source: "tmdb",
+                mediaType: "movie",
+                mediaId: "41",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Prefilled",
+            userState: UserMediaState(
+                isTracked: true,
+                status: "Completed",
+                rating: "4.0",
+                diaryCount: 0,
+                hasLiked: true,
+                directConsumption: true
+            )
+        )
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        XCTAssertEqual(viewModel.ratingSteps, 8)
+        XCTAssertTrue(viewModel.liked)
+        XCTAssertTrue(viewModel.isRepeat)
+
+        let didSave = await viewModel.save()
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(4))
+        XCTAssertEqual(diary.createdRequests.first?.liked, true)
+        XCTAssertEqual(diary.createdRequests.first?.isRewatch, true)
+
+        let planned = MediaDetail(
+            ref: detail.ref,
+            title: "Planned",
+            userState: UserMediaState(
+                isTracked: true,
+                status: "Planning",
+                diaryCount: 0,
+                directConsumption: false
+            )
+        )
+        let plannedViewModel = MediaLogViewModel(
+            detail: planned,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        XCTAssertFalse(plannedViewModel.isRepeat)
+    }
+
+    @MainActor
     func testMusicLogPassesFullDiaryFieldsThroughSharedRepository() async {
         let diary = RecordingDiaryRepository()
         let detail = TestFixtures.logDetail(mediaType: "music")
@@ -5264,14 +5325,14 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(didSave)
         let request = diary.createdRequests.first
         XCTAssertEqual(request?.ref, detail.ref)
-        XCTAssertEqual(request?.rating, Decimal(9))
+        XCTAssertEqual(request?.rating, Decimal(string: "4.5"))
         XCTAssertEqual(request?.reviewTitle, "A second spin")
         XCTAssertEqual(request?.review, "New details emerged.")
         XCTAssertEqual(request?.tags, ["relisten", "headphones"])
         XCTAssertEqual(request?.liked, true)
         XCTAssertEqual(request?.isRewatch, true)
         XCTAssertEqual(request?.containsSpoilers, true)
-        XCTAssertEqual(request?.visibility, "followers")
+        XCTAssertEqual(request?.visibility, "public")
         XCTAssertEqual(request?.autoMarkConsumed, true)
     }
 
@@ -5313,7 +5374,7 @@ final class SpineTests: XCTestCase {
             ["Planning", "In progress", "Paused", "Dropped", "In progress"]
         )
         XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
-        XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, completedAt)
+        XCTAssertNil(tracking.consumedRefs.first?.consumedAt)
         XCTAssertEqual(tracking.deletedRefs, [detail.ref])
         XCTAssertTrue(tracking.completedBooks.isEmpty)
     }
@@ -5363,7 +5424,7 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(didSave)
         XCTAssertTrue(diary.createdRequests.isEmpty)
         XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
-        XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, listenedAt)
+        XCTAssertNil(tracking.consumedRefs.first?.consumedAt)
     }
 
     @MainActor
@@ -5414,7 +5475,7 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(savedCount, 1)
         XCTAssertEqual(diary.createdRequests.count, 1)
         XCTAssertEqual(diary.createdRequests.first?.ref.mediaType, "movie")
-        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(9))
+        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(string: "4.5"))
         XCTAssertEqual(diary.createdRequests.first?.autoMarkConsumed, true)
         XCTAssertEqual(diary.createdRequests.first?.reviewTitle, "")
         XCTAssertEqual(diary.createdRequests.first?.visibility, "public")

@@ -41,7 +41,7 @@ class CreateEntryViewTests(TestCase):
             "title": "Test Movie",
             "media_type": MediaTypes.MOVIE.value,
             "status": Status.COMPLETED.value,
-            "score": 8,
+            "score": 4,
             "progress": 1,
             "start_date": "2023-01-01T00:00",
             "end_date": "2023-01-02T00:00",
@@ -62,6 +62,8 @@ class CreateEntryViewTests(TestCase):
         self.assertEqual(movie.status, Status.COMPLETED.value)
         self.assertEqual(movie.score, 8)
         self.assertEqual(movie.progress, 1)
+        self.assertTrue(movie.direct_consumption)
+        self.assertIsNone(movie.end_date)
         self.assertEqual(movie.user, self.user)
 
     def test_create_entry_post_tv(self):

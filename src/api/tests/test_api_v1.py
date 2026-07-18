@@ -101,7 +101,7 @@ class ApiV1FoundationTests(TestCase):
                 detail_url,
                 {
                     "status": Status.IN_PROGRESS.value,
-                    "rating": "8.5",
+                    "rating": "4.5",
                     "start_date": "2025-01-02T00:00:00Z",
                     "notes": "Headphones recommended.",
                 },
@@ -122,7 +122,6 @@ class ApiV1FoundationTests(TestCase):
             )
 
             item = Item.objects.get(media_id=media_id, media_type=MediaTypes.MUSIC.value)
-            Music.objects.create(user=user, item=item, status=Status.PLANNING.value)
             listed = self.client.get(
                 "/api/v1/tracking/",
                 {"media_type": MediaTypes.MUSIC.value},
@@ -137,30 +136,27 @@ class ApiV1FoundationTests(TestCase):
             {"kind": "binary", "value": 0, "max": 1, "unit": "album"},
         )
         self.assertEqual(started.status_code, status.HTTP_200_OK)
-        self.assertEqual(started.data["status"], Status.IN_PROGRESS.value)
-        self.assertEqual(started.data["rating"], "8.5")
+        self.assertEqual(started.data["status"], Status.COMPLETED.value)
+        self.assertEqual(started.data["rating"], "4.5")
         self.assertEqual(started.data["notes"], "Headphones recommended.")
         self.assertEqual(
             started.data["progress"],
-            {"kind": "binary", "value": 0, "max": 1, "unit": "album"},
+            {"kind": "binary", "value": 1, "max": 1, "unit": "album"},
         )
-        self.assertEqual(paused.data["status"], Status.PAUSED.value)
-        self.assertEqual(resumed.data["status"], Status.IN_PROGRESS.value)
-        self.assertEqual(dropped.data["status"], Status.DROPPED.value)
-        self.assertEqual(resumed_after_drop.data["status"], Status.IN_PROGRESS.value)
+        self.assertEqual(paused.data["status"], Status.COMPLETED.value)
+        self.assertEqual(resumed.data["status"], Status.COMPLETED.value)
+        self.assertEqual(dropped.data["status"], Status.COMPLETED.value)
+        self.assertEqual(resumed_after_drop.data["status"], Status.COMPLETED.value)
         self.assertEqual(listened.status_code, status.HTTP_200_OK)
         self.assertEqual(listened.data["status"], Status.COMPLETED.value)
         self.assertEqual(
             listened.data["progress"],
             {"kind": "binary", "value": 1, "max": 1, "unit": "album"},
         )
-        self.assertEqual(
-            listened.data["end_date"],
-            datetime(2025, 1, 3, tzinfo=UTC),
-        )
+        self.assertIsNone(listened.data["end_date"])
         self.assertEqual(listed.status_code, status.HTTP_200_OK)
         self.assertEqual(listed.data["count"], 1)
-        self.assertEqual(listed.data["results"][0]["tracking"]["repeats"], 2)
+        self.assertEqual(listed.data["results"][0]["tracking"]["repeats"], 1)
         self.assertEqual(first_delete.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(second_delete.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(Music.objects.filter(user=user, item=item).exists())
@@ -195,7 +191,7 @@ class ApiV1FoundationTests(TestCase):
                 {
                     "ref": ref(untracked_id),
                     "consumed_at": "2025-02-01T00:00:00Z",
-                    "rating": "9.0",
+                    "rating": "4.5",
                     "review_title": "Industrial revelation",
                     "review": "Dense and rewarding.",
                     "liked": True,
@@ -221,7 +217,7 @@ class ApiV1FoundationTests(TestCase):
                 {
                     "ref": ref(tracked_id),
                     "consumed_at": "2025-03-02T00:00:00Z",
-                    "rating": "8.5",
+                    "rating": "4.5",
                     "review_title": "Second spin",
                     "review": "New details emerged.",
                     "liked": True,
@@ -241,7 +237,7 @@ class ApiV1FoundationTests(TestCase):
                 f"/api/v1/diary/{relisten.data['id']}/",
                 {
                     "consumed_at": "2025-03-03T00:00:00Z",
-                    "rating": "9.5",
+                    "rating": "5.0",
                     "review_title": "Third pass",
                     "review": "Best listen yet.",
                     "liked": False,
@@ -255,11 +251,11 @@ class ApiV1FoundationTests(TestCase):
             deleted = self.client.delete(f"/api/v1/diary/{first_listen.data['id']}/")
 
         self.assertEqual(untracked.status_code, status.HTTP_201_CREATED)
-        self.assertFalse(
+        self.assertTrue(
             Music.objects.filter(user=user, item__media_id=untracked_id).exists(),
         )
         self.assertEqual(untracked.data["review_title"], "Industrial revelation")
-        self.assertEqual(untracked.data["visibility"], "followers")
+        self.assertEqual(untracked.data["visibility"], "public")
         self.assertTrue(untracked.data["contains_spoilers"])
         self.assertCountEqual(untracked.data["tags"], ["industrial", "night listen"])
 
@@ -269,7 +265,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(relisten.status_code, status.HTTP_201_CREATED)
         self.assertTrue(relisten.data["is_rewatch"])
         self.assertEqual(relisten.data["review_title"], "Second spin")
-        self.assertEqual(relisten.data["visibility"], "private")
+        self.assertEqual(relisten.data["visibility"], "public")
 
         self.assertEqual(filtered.status_code, status.HTTP_200_OK)
         self.assertEqual(filtered.data["count"], 3)
@@ -281,7 +277,7 @@ class ApiV1FoundationTests(TestCase):
         )
         self.assertEqual(updated.status_code, status.HTTP_200_OK)
         self.assertEqual(updated.data["review_title"], "Third pass")
-        self.assertEqual(updated.data["rating"], "9.5")
+        self.assertEqual(updated.data["rating"], "5.0")
         self.assertEqual(updated.data["visibility"], "public")
         self.assertFalse(updated.data["contains_spoilers"])
         self.assertEqual(updated.data["tags"], ["headphones"])
@@ -1668,7 +1664,10 @@ class ApiV1FoundationTests(TestCase):
 
         entry.refresh_from_db()
         self.assertEqual(MediaLike.objects.filter(user=user, item=item).count(), 0)
-        self.assertFalse(entry.liked)
+        self.assertTrue(entry.liked)
+        tracking = Movie.objects.get(user=user, item=item)
+        self.assertTrue(tracking.direct_consumption)
+        self.assertTrue(tracking.like_is_independent)
         self.assertEqual(ContentLike.objects.filter(user=user, target_type=ContentLike.DIARY_ENTRY).count(), 1)
 
     @patch("api.views.profile.provider_services.get_media_metadata")
@@ -1697,7 +1696,9 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(unliked.status_code, status.HTTP_200_OK)
         self.assertFalse(unliked.data["liked"])
         self.assertFalse(MediaLike.objects.filter(user=user, item=item).exists())
-        self.assertFalse(Movie.objects.filter(user=user, item=item).exists())
+        tracking = Movie.objects.get(user=user, item=item)
+        self.assertTrue(tracking.direct_consumption)
+        self.assertEqual(tracking.status, Status.COMPLETED.value)
         self.assertFalse(DiaryEntry.objects.filter(user=user, item=item).exists())
 
     def test_liked_media_list_paginates_and_filters_media_type(self):
@@ -1731,6 +1732,7 @@ class ApiV1FoundationTests(TestCase):
                 "media_type": MediaTypes.MOVIE.value,
                 "media_id": "diary-like",
             },
+            "consumed_at": "2025-01-01",
             "liked": True,
         }
 
@@ -1771,7 +1773,7 @@ class ApiV1FoundationTests(TestCase):
             f"/api/v1/diary/{entry.id}/",
             {
                 "consumed_at": "2025-02-03T04:05:06Z",
-                "rating": "8.5",
+                "rating": "4.5",
                 "review_title": "Tighter",
                 "review": "Still works.",
                 "tags": ["theater", "rewatch night"],
@@ -1784,11 +1786,11 @@ class ApiV1FoundationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["rating"], "8.5")
+        self.assertEqual(response.data["rating"], "4.5")
         self.assertEqual(response.data["review_title"], "Tighter")
         self.assertEqual(response.data["review"], "Still works.")
         self.assertCountEqual(response.data["tags"], ["theater", "rewatch night"])
-        self.assertEqual(response.data["visibility"], "followers")
+        self.assertEqual(response.data["visibility"], "public")
         self.assertTrue(response.data["contains_spoilers"])
         self.assertTrue(response.data["is_rewatch"])
         self.assertTrue(response.data["liked"])
@@ -1992,7 +1994,7 @@ class ApiV1FoundationTests(TestCase):
         entry = DiaryEntry.objects.create(user=user, item=item, consumed_at=datetime(2025, 1, 1, tzinfo=UTC))
         self.client.force_authenticate(user)
 
-        patched = self.client.patch(f"/api/v1/diary/{entry.id}/", {"rating": "7.0"}, format="json")
+        patched = self.client.patch(f"/api/v1/diary/{entry.id}/", {"rating": "3.5"}, format="json")
         activity_response = self.client.get("/api/v1/users/diary-social-log/activity/")
         deleted = self.client.delete(f"/api/v1/diary/{entry.id}/")
 
@@ -2916,8 +2918,11 @@ class ApiV1FoundationTests(TestCase):
         )
         self.assertEqual(response.data["related_sections"][1]["items"][0]["poster_orientation"], "portrait")
         self.assertNotIn("seasons", [section["id"] for section in response.data["related_sections"]])
-        self.assertEqual(response.data["user_state"]["diary_rating"], "10.0")
-        self.assertEqual(response.data["user_state"]["diary_consumed_at"], consumed_at)
+        self.assertEqual(response.data["user_state"]["diary_rating"], "5.0")
+        self.assertEqual(
+            response.data["user_state"]["diary_consumed_at"],
+            timezone.localdate(consumed_at).isoformat(),
+        )
         self.assertEqual(response.data["user_state"]["diary_entry_id"], diary_entry.id)
         self.assertEqual(response.data["user_state"]["diary_count"], 1)
         item.refresh_from_db()
@@ -4359,9 +4364,12 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/media/tmdb/movie/550/community/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["average_rating"], "8.00")
-        self.assertEqual(response.data["rating_count"], 2)
-        self.assertEqual(response.data["rating_distribution"], [{"rating": "8.0", "count": 2}])
+        self.assertEqual(response.data["average_rating"], "4.17")
+        self.assertEqual(response.data["rating_count"], 3)
+        self.assertEqual(
+            response.data["rating_distribution"],
+            [{"rating": "4.0", "count": 2}, {"rating": "4.5", "count": 1}],
+        )
 
     def test_media_reviews_endpoint_returns_public_review_cards(self):
         user = get_user_model().objects.create_user(username="reviewer", password="strong-password-123")
@@ -4392,8 +4400,11 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/media/tmdb/movie/550/reviews/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["review"], "Sharp and strange.")
+        self.assertEqual(response.data["count"], 2)
+        self.assertCountEqual(
+            [entry["review"] for entry in response.data["results"]],
+            ["Sharp and strange.", "Hidden."],
+        )
 
     def test_diary_media_embed_includes_artwork_fields(self):
         user = get_user_model().objects.create_user(username="diary-art", password="strong-password-123")

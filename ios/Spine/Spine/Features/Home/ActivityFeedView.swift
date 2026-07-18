@@ -322,7 +322,7 @@ struct ActivityFeedRow: View {
         } else if ActivityFeedPresentation.rating(for: activity) != nil || activity.object.liked == true {
             HStack(spacing: 6) {
                 if let rating = ActivityFeedPresentation.rating(for: activity) {
-                    DiaryStarRating(rating: rating)
+                    DiaryStarRating(rating: rating, mediaType: activity.media?.ref.mediaType)
                 }
 
                 if activity.object.liked == true {

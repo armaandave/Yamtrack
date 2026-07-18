@@ -85,5 +85,19 @@ class BaseWebhookProcessor(TVWebhookMixin, MovieWebhookMixin, AnimeWebhookMixin)
             return
 
         item = current_instance.item
+        from app import single_weight
+
+        if single_weight.supports(item):
+            try:
+                single_weight.unwatch(current_instance.user, item)
+            except single_weight.DiaryHistoryExists:
+                logger.info(
+                    "Kept %s tracked because diary history exists: %s",
+                    media_label,
+                    item,
+                )
+                return
+            logger.info("Marked existing %s instance as unplayed: %s", media_label, item)
+            return
         current_instance.delete()
         logger.info("Marked existing %s instance as unplayed: %s", media_label, item)

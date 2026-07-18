@@ -1015,7 +1015,7 @@ class Media(models.Model):
                 self.item.media_type,
                 self.item.media_id,
                 self.item.source,
-            )["max_progress"]
+            ).get("max_progress")
 
             if max_progress:
                 self.progress = min(self.progress, max_progress)
@@ -1029,14 +1029,17 @@ class Media(models.Model):
     def process_status(self):
         """Update fields depending on the status of the media."""
         if self.status == Status.COMPLETED.value:
-            max_progress = providers.services.get_media_metadata(
-                self.item.media_type,
-                self.item.media_id,
-                self.item.source,
-            )["max_progress"]
+            if self.item.media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+                self.progress = 1
+            else:
+                max_progress = providers.services.get_media_metadata(
+                    self.item.media_type,
+                    self.item.media_id,
+                    self.item.source,
+                ).get("max_progress")
 
-            if max_progress:
-                self.progress = max_progress
+                if max_progress:
+                    self.progress = max_progress
 
         self.item.fetch_releases(delay=True)
 
@@ -2056,8 +2059,33 @@ class Movie(Media):
     """Model for movies."""
 
     liked = models.BooleanField(default=False)
+    direct_consumption = models.BooleanField(default=False)
+    like_is_independent = models.BooleanField(default=False)
+    rating_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    like_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
 
     tracker = FieldTracker()
+
+    class Meta:
+        ordering = ["user", "item", "-created_at"]
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "item"],
+                name="app_movie_unique_user_item",
+            ),
+        ]
 
 
 class Game(Media):
@@ -2384,7 +2412,33 @@ class Comic(Media):
 class Music(Media):
     """Model for music releases."""
 
+    direct_consumption = models.BooleanField(default=False)
+    like_is_independent = models.BooleanField(default=False)
+    rating_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    like_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
     tracker = FieldTracker()
+
+    class Meta:
+        ordering = ["user", "item", "-created_at"]
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "item"],
+                name="app_music_unique_user_item",
+            ),
+        ]
 
 
 class CustomPosterPreference(models.Model):
@@ -2519,11 +2573,21 @@ class DiaryEntry(models.Model):
     progress_snapshot = models.JSONField(null=True, blank=True)
     liked = models.BooleanField(default=False)
     is_rewatch = models.BooleanField(default=False)
+    import_source = models.CharField(max_length=50, blank=True, default="")
+    import_source_id = models.CharField(max_length=255, blank=True, default="")
+    import_source_order = models.PositiveIntegerField(null=True, blank=True)
     tags = models.ManyToManyField('Tag', through='DiaryEntryTag', blank=True, related_name='diary_entries')
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         """Meta options for the model."""
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "import_source", "import_source_id"],
+                condition=~Q(import_source="") & ~Q(import_source_id=""),
+                name="app_diary_unique_import_source_record",
+            ),
+        ]
         indexes = [
             models.Index(fields=["user", "-consumed_at"]),
         ]

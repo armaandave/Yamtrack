@@ -231,7 +231,7 @@ struct DiaryEntryRow: View {
     private var ratingLikeLine: some View {
         HStack(spacing: 6) {
             if let rating = clean(entry.rating) {
-                DiaryStarRating(rating: rating)
+                DiaryStarRating(rating: rating, mediaType: entry.media.ref.mediaType)
             }
 
             if entry.liked {
@@ -318,6 +318,7 @@ struct DiaryEntryRow: View {
 struct DiaryStarRating: View {
     let rating: String
     var fontSize: CGFloat = 9
+    var mediaType: String?
 
     var body: some View {
         HStack(spacing: 1) {
@@ -332,7 +333,7 @@ struct DiaryStarRating: View {
 
     private var value: Double {
         guard let raw = Double(rating) else { return 0 }
-        return max(0, min(5, raw / 2))
+        return max(0, min(5, mediaType == "movie" || mediaType == "music" ? raw : raw / 2))
     }
 
     private var displayValue: String {

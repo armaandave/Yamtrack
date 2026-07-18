@@ -68,6 +68,41 @@ struct DiaryEntryWriteRequest: Encodable {
     let containsSpoilers: Bool
     let visibility: String
     let tags: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case ref
+        case consumedAt
+        case rating
+        case review
+        case reviewTitle
+        case liked
+        case isRewatch
+        case autoMarkConsumed
+        case containsSpoilers
+        case visibility
+        case tags
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ref, forKey: .ref)
+        if let consumedAt {
+            if ref.isSingleWeight {
+                try container.encode(CalendarDateCodec.string(from: consumedAt), forKey: .consumedAt)
+            } else {
+                try container.encode(consumedAt, forKey: .consumedAt)
+            }
+        }
+        try container.encodeIfPresent(rating, forKey: .rating)
+        try container.encode(review, forKey: .review)
+        try container.encode(reviewTitle, forKey: .reviewTitle)
+        try container.encode(liked, forKey: .liked)
+        try container.encode(isRewatch, forKey: .isRewatch)
+        try container.encode(autoMarkConsumed, forKey: .autoMarkConsumed)
+        try container.encode(containsSpoilers, forKey: .containsSpoilers)
+        try container.encode(visibility, forKey: .visibility)
+        try container.encode(tags, forKey: .tags)
+    }
 }
 
 struct DiaryEntryUpdateRequest: Encodable {
@@ -80,6 +115,85 @@ struct DiaryEntryUpdateRequest: Encodable {
     let isRewatch: Bool?
     let containsSpoilers: Bool?
     let visibility: String?
+    let calendarDateOnly: Bool
+    let includesRating: Bool
+
+    init(
+        consumedAt: Date?,
+        rating: Decimal?,
+        review: String?,
+        reviewTitle: String?,
+        tags: [String]?,
+        liked: Bool?,
+        isRewatch: Bool?,
+        containsSpoilers: Bool?,
+        visibility: String?,
+        calendarDateOnly: Bool = false,
+        includesRating: Bool = false
+    ) {
+        self.consumedAt = consumedAt
+        self.rating = rating
+        self.review = review
+        self.reviewTitle = reviewTitle
+        self.tags = tags
+        self.liked = liked
+        self.isRewatch = isRewatch
+        self.containsSpoilers = containsSpoilers
+        self.visibility = visibility
+        self.calendarDateOnly = calendarDateOnly
+        self.includesRating = includesRating || rating != nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case consumedAt
+        case rating
+        case review
+        case reviewTitle
+        case tags
+        case liked
+        case isRewatch
+        case containsSpoilers
+        case visibility
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let consumedAt {
+            if calendarDateOnly {
+                try container.encode(CalendarDateCodec.string(from: consumedAt), forKey: .consumedAt)
+            } else {
+                try container.encode(consumedAt, forKey: .consumedAt)
+            }
+        }
+        if includesRating {
+            try container.encode(rating, forKey: .rating)
+        }
+        try container.encodeIfPresent(review, forKey: .review)
+        try container.encodeIfPresent(reviewTitle, forKey: .reviewTitle)
+        try container.encodeIfPresent(tags, forKey: .tags)
+        try container.encodeIfPresent(liked, forKey: .liked)
+        try container.encodeIfPresent(isRewatch, forKey: .isRewatch)
+        try container.encodeIfPresent(containsSpoilers, forKey: .containsSpoilers)
+        try container.encodeIfPresent(visibility, forKey: .visibility)
+    }
+}
+
+enum CalendarDateCodec {
+    static func string(from date: Date, calendar: Calendar = .autoupdatingCurrent) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    static func date(from value: String?, calendar: Calendar = .autoupdatingCurrent) -> Date? {
+        guard let value else { return nil }
+        let parts = value.prefix(10).split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return ISO8601DateFormatter().date(from: value) }
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+
+    static func isFuture(_ date: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) -> Bool {
+        calendar.startOfDay(for: date) > calendar.startOfDay(for: now)
+    }
 }
 
 struct DiaryTagSuggestion: Codable, Hashable {

@@ -262,7 +262,7 @@ class MusicPhase9ContractTests(TransactionTestCase):
             tracking_url,
             {
                 "status": Status.IN_PROGRESS.value,
-                "rating": "8.5",
+                "rating": "4.5",
                 "start_date": "2026-07-15T12:00:00Z",
                 "notes": "Headphones recommended.",
             },
@@ -278,7 +278,7 @@ class MusicPhase9ContractTests(TransactionTestCase):
             {
                 "ref": ref,
                 "consumed_at": "2026-07-16T12:00:00Z",
-                "rating": "9.0",
+                "rating": "4.5",
                 "review_title": "A loud future",
                 "review": "Still sounds dangerous.",
                 "liked": True,

@@ -33,7 +33,7 @@ from api.services.filters import (
     update_item_external_ratings,
     update_item_filter_metadata,
 )
-from app import config
+from app import config, single_weight
 from app.models import (
     CustomBackdropPreference,
     CustomLogoPreference,
@@ -2026,21 +2026,39 @@ def community_stats(
             "liked_count": 0,
             "rating_distribution": [],
         }
-    entries = DiaryEntry.objects.filter(item=item).exclude(visibility="private")
+    entries = DiaryEntry.objects.filter(item=item)
+    if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+        # Single-weight privacy is account-level; legacy per-entry visibility is
+        # intentionally ignored for these media types.
+        entries = entries.filter(user__profile_private=False)
+    else:
+        entries = entries.exclude(visibility="private")
     rating_values = [entry.rating for entry in entries if entry.rating is not None]
+    if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+        rating_values = [single_weight.rating_to_wire(value) for value in rating_values]
     average = round(sum(rating_values) / len(rating_values), 2) if rating_values else None
     distribution = [
-        {"rating": str(bucket["rating"]), "count": bucket["count"]}
+        {
+            "rating": str(
+                bucket["rating"] / 2
+                if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
+                else bucket["rating"]
+            ),
+            "count": bucket["count"],
+        }
         for bucket in entries.exclude(rating__isnull=True)
         .values("rating")
         .annotate(count=Count("id"))
         .order_by("rating")
     ]
+    liked = MediaLike.objects.filter(item=item)
+    if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+        liked = liked.filter(user__profile_private=False)
     return {
         "average_rating": str(average) if average is not None else None,
         "rating_count": len(rating_values),
         "diary_count": entries.count(),
         "review_count": entries.exclude(review="").count(),
-        "liked_count": MediaLike.objects.filter(item=item).count(),
+        "liked_count": liked.count(),
         "rating_distribution": distribution,
     }

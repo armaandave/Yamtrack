@@ -110,7 +110,7 @@ class StatsAPITests(TestCase):
                 user=self.user,
                 item=item,
                 consumed_at=listened_at,
-                rating=Decimal("8.5"),
+                rating=Decimal("8.0"),
                 review="Still sounds dangerous.",
                 visibility="public",
             ),
@@ -157,8 +157,8 @@ class StatsAPITests(TestCase):
         self.assertEqual(music["completed_count"], 1)
         self.assertEqual(music["statuses"]["completed"], 1)
         self.assertEqual(music["diary_entry_count"], 2)
-        self.assertEqual(music["rating_distribution"][17]["count"], 1)
-        self.assertEqual(music["rating_distribution"][18]["count"], 1)
+        self.assertEqual(music["rating_distribution"][8]["count"], 1)
+        self.assertEqual(music["rating_distribution"][9]["count"], 1)
         self.assertEqual(music["release_years"], [{"year": 2007, "count": 1}])
         self.assertEqual(music["top_genres"], [{"name": "Industrial Rock", "count": 1}])
         self.assertEqual(music["top_languages"], [{"name": "English", "count": 1}])
@@ -171,7 +171,7 @@ class StatsAPITests(TestCase):
                 "language_items": 1,
             },
         )
-        self.assertEqual(music["top_rated"][0]["rating"], "9.0")
+        self.assertEqual(music["top_rated"][0]["rating"], "4.5")
         self.assertEqual(music["most_logged"][0]["log_count"], 2)
 
     @patch("app.providers.services.get_media_metadata")
@@ -215,7 +215,7 @@ class StatsAPITests(TestCase):
                 user=self.user,
                 item=movie_item,
                 consumed_at=watched_at,
-                rating=Decimal("8.5"),
+                rating=Decimal("8.0"),
                 review="Sharp and restless.",
                 visibility="public",
             ),
@@ -257,7 +257,7 @@ class StatsAPITests(TestCase):
         self.assertEqual(overview["unique_logged_count"], 1)
         self.assertEqual(overview["repeat_count"], 1)
         self.assertEqual(overview["rated_count"], 2)
-        self.assertEqual(overview["average_rating"], "8.75")
+        self.assertEqual(overview["average_rating"], "4.25")
         self.assertEqual(overview["review_count"], 1)
         self.assertEqual(overview["liked_count"], 1)
         self.assertEqual(overview["active_days"], 2)
@@ -267,8 +267,8 @@ class StatsAPITests(TestCase):
             entry["rating"]: entry["count"]
             for entry in response.data["rating_distribution"]
         }
-        self.assertEqual(distribution["8.5"], 1)
-        self.assertEqual(distribution["9.0"], 1)
+        self.assertEqual(distribution["4.0"], 1)
+        self.assertEqual(distribution["4.5"], 1)
         self.assertEqual(response.data["release_years"], [{"year": 1999, "count": 1}])
         self.assertEqual(response.data["top_genres"], [{"name": "Drama", "count": 1}])
         self.assertEqual(response.data["top_languages"], [{"name": "English", "count": 1}])
@@ -281,7 +281,7 @@ class StatsAPITests(TestCase):
                 "language_items": 1,
             },
         )
-        self.assertEqual(response.data["top_rated"][0]["rating"], "9.0")
+        self.assertEqual(response.data["top_rated"][0]["rating"], "4.5")
         self.assertIsNone(response.data["top_rated"][0]["media"]["user_state"])
         self.assertEqual(response.data["most_logged"][0]["log_count"], 2)
         self.assertEqual(
@@ -299,7 +299,7 @@ class StatsAPITests(TestCase):
         self.assertEqual(movie_stats["completed_count"], 1)
         self.assertEqual(movie_stats["statuses"]["completed"], 1)
         self.assertEqual(movie_stats["diary_entry_count"], 2)
-        self.assertEqual(movie_stats["top_rated"][0]["rating"], "9.0")
+        self.assertEqual(movie_stats["top_rated"][0]["rating"], "4.5")
         self.assertEqual(movie_stats["most_logged"][0]["log_count"], 2)
         self.assertEqual(movie_stats["release_years"], [{"year": 1999, "count": 1}])
 
@@ -385,7 +385,7 @@ class StatsAPITests(TestCase):
             [entry["media_type"] for entry in response.data["media_types"]],
         )
 
-    def test_public_user_stats_honor_entry_visibility_and_omit_target_state(self):
+    def test_public_user_stats_use_account_visibility_and_omit_target_state(self):
         target = get_user_model().objects.create_user(
             username="public-stats-user",
             password="strong-password-123",
@@ -450,12 +450,12 @@ class StatsAPITests(TestCase):
         )
 
         self.assertEqual(public_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(public_response.data["overview"]["diary_entry_count"], 1)
-        self.assertEqual(public_response.data["diary_top_rated"][0]["rating"], "7.0")
+        self.assertEqual(public_response.data["overview"]["diary_entry_count"], 3)
+        self.assertEqual(public_response.data["diary_top_rated"][0]["rating"], "5.0")
         self.assertIsNone(public_response.data["diary_top_rated"][0]["media"]["user_state"])
-        self.assertEqual(public_response.data["score_distribution"]["total_scored"], 1)
-        self.assertEqual(public_response.data["score_distribution"]["average_score"], 7.0)
-        self.assertEqual(public_response.data["top_rated"][0]["rating"], "7.0")
+        self.assertEqual(public_response.data["score_distribution"]["total_scored"], 3)
+        self.assertEqual(public_response.data["score_distribution"]["average_score"], 4.17)
+        self.assertEqual(public_response.data["top_rated"][0]["rating"], "5.0")
 
         Follow.objects.create(
             from_user=viewer,
@@ -468,15 +468,15 @@ class StatsAPITests(TestCase):
         )
 
         self.assertEqual(follower_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(follower_response.data["overview"]["diary_entry_count"], 2)
-        self.assertEqual(follower_response.data["diary_top_rated"][0]["rating"], "8.0")
-        self.assertEqual(follower_response.data["score_distribution"]["total_scored"], 2)
-        self.assertEqual(follower_response.data["score_distribution"]["average_score"], 7.5)
+        self.assertEqual(follower_response.data["overview"]["diary_entry_count"], 3)
+        self.assertEqual(follower_response.data["diary_top_rated"][0]["rating"], "5.0")
+        self.assertEqual(follower_response.data["score_distribution"]["total_scored"], 3)
+        self.assertEqual(follower_response.data["score_distribution"]["average_score"], 4.17)
         returned_ids = {
             entry["media"]["ref"]["item_id"]
             for entry in follower_response.data["diary_top_rated"]
         }
-        self.assertNotIn(items[2].id, returned_ids)
+        self.assertIn(items[2].id, returned_ids)
 
     @staticmethod
     def _aware(year, month, day):

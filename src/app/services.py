@@ -60,6 +60,11 @@ def update_diary_entry_tags(entry, tag_names):
 
 def set_media_like(user, item: Item, liked: bool, *, audit=True, sync_diary=True):
     """Set the canonical user/title like."""
+    from app import single_weight
+
+    if single_weight.supports(item):
+        return single_weight.set_like(user, item, liked, audit=audit)
+
     if liked:
         media_like, created = MediaLike.objects.get_or_create(user=user, item=item)
         action = "media_like"
@@ -98,6 +103,10 @@ def create_diary_entry(
     review_title="",
     contains_spoilers=False,
     visibility="public",
+    import_source="",
+    import_source_id="",
+    import_source_order=None,
+    emit_activity=True,
 ) -> DiaryEntry:
     """
     Create a diary entry for a media item.
@@ -116,6 +125,27 @@ def create_diary_entry(
     Returns:
         The created DiaryEntry instance
     """
+    from app import single_weight
+
+    if single_weight.supports(item):
+        entry, _ = single_weight.create_log(
+            user,
+            item,
+            consumed_at=consumed_at,
+            rating=rating,
+            review=review,
+            liked=liked,
+            is_rewatch=is_rewatch,
+            tags=tags,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            import_source=import_source,
+            import_source_id=import_source_id,
+            import_source_order=import_source_order,
+            emit_activity=emit_activity,
+        )
+        return entry
+
     if consumed_at is None:
         consumed_at = timezone.now()
     
@@ -204,6 +234,11 @@ def create_diary_entry(
 
 def sync_tracking_from_diary_entry(entry, *, previous_consumed_at=None):
     """Sync completed tracking dates from a diary entry date edit."""
+    from app import single_weight
+
+    if single_weight.supports(entry.item):
+        return
+
     if previous_consumed_at == entry.consumed_at:
         return
 
@@ -233,6 +268,11 @@ def sync_tracking_from_diary_entry(entry, *, previous_consumed_at=None):
 
 def update_diary_entry(entry, data, *, tags=None):
     """Update a diary entry and keep title-level state in sync."""
+    from app import single_weight
+
+    if single_weight.supports(entry.item):
+        return single_weight.update_log(entry, data, tags=tags)
+
     from social.models import Activity, SocialAuditLog
 
     previous_consumed_at = entry.consumed_at
@@ -289,6 +329,11 @@ def update_diary_entry(entry, data, *, tags=None):
 
 def delete_diary_entry(user, entry):
     """Delete a diary entry and mirror web tracking side effects."""
+    from app import single_weight
+
+    if single_weight.supports(entry.item):
+        return single_weight.delete_log(user, entry)
+
     from social.models import Activity, SocialAuditLog
     from app.models import Book, Movie, Season, TV
 
@@ -352,6 +397,11 @@ def mark_consumed(user, media_instance: Media, when=None):
         media_instance: The Media instance to mark
         when: Optional datetime for when it was consumed (defaults to now)
     """
+    from app import single_weight
+
+    if single_weight.supports(media_instance.item):
+        return single_weight.mark_consumed(user, media_instance.item)
+
     if when is None:
         when = timezone.now()
         
