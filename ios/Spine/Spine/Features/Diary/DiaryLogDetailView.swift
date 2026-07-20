@@ -801,26 +801,22 @@ private struct DiaryLogEditSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 GeometryReader { proxy in
-                    ZStack {
-                        HStack(spacing: 6) {
-                            ForEach(1...5, id: \.self) { star in
-                                Image(systemName: starSystemName(star))
-                                    .font(.system(size: 32, weight: .bold))
-                                    .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
-                                    .frame(width: 33)
-                            }
+                    HStack(spacing: 6) {
+                        ForEach(1...5, id: \.self) { star in
+                            Image(systemName: starSystemName(star))
+                                .font(.system(size: 32, weight: .bold))
+                                .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
+                                .frame(width: 33)
                         }
-                        .accessibilityHidden(true)
-
-                        HalfStarRatingTapOverlay(steps: $viewModel.ratingSteps)
                     }
+                    .accessibilityHidden(true)
                     .contentShape(Rectangle())
                     .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { value in
                         viewModel.setRating(locationX: value.location.x, width: proxy.size.width)
                     })
                 }
                 .frame(width: 189, height: 42)
-                .accessibilityElement(children: .contain)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Rating")
                 .accessibilityValue(viewModel.ratingLabel())
                 .accessibilityAdjustableAction { direction in

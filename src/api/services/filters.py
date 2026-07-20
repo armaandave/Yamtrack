@@ -414,6 +414,8 @@ def apply_person_credit_filters(credit_list, params):
         "language",
         "exclude_genre",
         "exclude_language",
+        "rating_min",
+        "rating_max",
         "sort",
         "ordering",
         "direction",
@@ -431,6 +433,8 @@ def apply_person_credit_filters(credit_list, params):
     languages = set(values(params, "language"))
     excluded_genres = set(values(params, "exclude_genre"))
     excluded_languages = set(values(params, "exclude_language"))
+    rating_min = decimal_param(params, "rating_min")
+    rating_max = decimal_param(params, "rating_max")
 
     filtered = [
         credit
@@ -448,11 +452,12 @@ def apply_person_credit_filters(credit_list, params):
             excluded_genres,
             excluded_languages,
         )
+        and _credit_rating_matches(credit, rating_min, rating_max)
     ]
     if length in {"feature", "short"}:
         filtered = [
             credit
-            for credit in _credits_with_cached_runtime(filtered)
+            for credit in _credits_with_runtime(filtered)
             if _person_credit_matches(
                 credit,
                 media_types,
@@ -533,6 +538,13 @@ def _person_credit_matches(  # noqa: C901, PLR0911
     if length == "short":
         return credit.get("media_type") == MediaTypes.MOVIE.value and runtime is not None and runtime < SHORT_FILM_MINUTES
     return True
+
+
+def _credit_rating_matches(credit, rating_min, rating_max):
+    rating = _credit_number(credit, "vote_average")
+    if rating_min is not None and (rating is None or rating < rating_min):
+        return False
+    return rating_max is None or (rating is not None and rating <= rating_max)
 
 
 def _replace_facets(item, facet_type, facet_values):
@@ -720,7 +732,7 @@ def _credit_date_text(credit):
     return credit.get("release_date") or credit.get("first_air_date") or credit.get("publish_date")
 
 
-def _credits_with_cached_runtime(credit_list):
+def _credits_with_runtime(credit_list):
     missing = [
         credit
         for credit in credit_list
@@ -740,12 +752,39 @@ def _credits_with_cached_runtime(credit_list):
             runtime_minutes__isnull=False,
         )
     }
-    return [
+    enriched = [
         {**credit, "runtime_minutes": cached[(credit.get("source"), str(credit.get("media_id") or ""))]}
         if (credit.get("source"), str(credit.get("media_id") or "")) in cached
         else credit
         for credit in credit_list
     ]
+
+    from app.providers import services as provider_services
+
+    results = []
+    for credit in enriched:
+        if credit.get("media_type") != MediaTypes.MOVIE.value or _credit_runtime_minutes(credit) is not None:
+            results.append(credit)
+            continue
+        try:
+            metadata = provider_services.get_media_metadata(
+                credit["media_type"],
+                credit["media_id"],
+                credit["source"],
+            )
+            runtime = _runtime_minutes(metadata)
+        except (
+            provider_services.ProviderAPIError,
+            RequestException,
+            NotImplementedError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logger.debug("Skipping runtime lookup for person credit %s: %s", credit.get("media_id"), error)
+            runtime = None
+        results.append({**credit, "runtime_minutes": runtime} if runtime is not None else credit)
+    return results
 
 
 def _credit_runtime_minutes(credit):

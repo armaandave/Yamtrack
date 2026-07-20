@@ -3149,6 +3149,7 @@ class ApiV1FoundationTests(TestCase):
     @patch("app.providers.services.get_media_metadata")
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_filters_released_feature_films(self, person_mock, metadata_mock):
+        metadata_mock.return_value = {"runtime": "2h 5m"}
         Item.objects.create(
             source=Sources.TMDB.value,
             media_type=MediaTypes.MOVIE.value,
@@ -3222,11 +3223,76 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
             [item["title"] for item in response.data["credits"]["cast"]],
-            ["Released Feature"],
+            ["Released Feature", "Released Uncached Runtime"],
         )
         self.assertEqual(response.data["credits"]["cast"][0]["genres"], ["Science Fiction"])
         self.assertEqual(response.data["credits"]["cast"][0]["languages"], ["English"])
-        metadata_mock.assert_not_called()
+        metadata_mock.assert_called_once_with(
+            MediaTypes.MOVIE.value,
+            "released-uncached-runtime",
+            Sources.TMDB.value,
+        )
+
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_applies_each_non_length_filter(self, person_mock):
+        person_mock.return_value = {
+            "source": Sources.TMDB.value,
+            "person_id": "525",
+            "name": "Director",
+            "credits": [
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "match",
+                    "title": "Match",
+                    "release_date": "2024-01-01",
+                    "genres": ["Drama"],
+                    "languages": ["English"],
+                    "vote_average": 8.0,
+                },
+                {
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "other",
+                    "title": "Other",
+                    "release_date": "2020-01-01",
+                    "genres": ["Comedy"],
+                    "languages": ["French"],
+                    "vote_average": 6.0,
+                },
+                {
+                    "media_type": MediaTypes.TV.value,
+                    "source": Sources.TMDB.value,
+                    "media_id": "tv",
+                    "title": "TV",
+                    "release_date": "2024-01-01",
+                    "genres": ["Drama"],
+                    "languages": ["English"],
+                    "vote_average": 9.0,
+                },
+            ],
+        }
+        cases = [
+            ({"media_type": "movie"}, ["Match", "Other"]),
+            ({"year": "2024"}, ["TV", "Match"]),
+            ({"year_min": "2021", "year_max": "2024"}, ["TV", "Match"]),
+            ({"release_status": "unreleased"}, []),
+            ({"genre": "Drama"}, ["TV", "Match"]),
+            ({"exclude_genre": "Comedy"}, ["TV", "Match"]),
+            ({"language": "English"}, ["TV", "Match"]),
+            ({"exclude_language": "French"}, ["TV", "Match"]),
+            ({"rating_min": "7", "rating_max": "8.5"}, ["Match"]),
+            ({"sort": "title", "direction": "desc"}, ["TV", "Other", "Match"]),
+        ]
+
+        for params, expected in cases:
+            with self.subTest(params=params):
+                response = self.client.get("/api/v1/people/tmdb/525/", params)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(
+                    [item["title"] for item in response.data["credits"]["cast"]],
+                    expected,
+                )
 
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_returns_hardcover_author_books(self, person_mock):

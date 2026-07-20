@@ -619,19 +619,15 @@ struct MediaLogView: View {
             sectionLabel("Your rating")
             HStack(alignment: .center, spacing: 10) {
                 GeometryReader { proxy in
-                    ZStack {
-                        HStack(spacing: 5) {
-                            ForEach(1...5, id: \.self) { star in
-                                Image(systemName: starSystemName(star))
-                                    .font(.system(size: 34, weight: .bold))
-                                    .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
-                                    .frame(maxWidth: .infinity)
-                            }
+                    HStack(spacing: 5) {
+                        ForEach(1...5, id: \.self) { star in
+                            Image(systemName: starSystemName(star))
+                                .font(.system(size: 34, weight: .bold))
+                                .foregroundStyle(viewModel.ratingSteps >= star * 2 - 1 ? .yellow : .white.opacity(0.26))
+                                .frame(maxWidth: .infinity)
                         }
-                        .accessibilityHidden(true)
-
-                        HalfStarRatingTapOverlay(steps: $viewModel.ratingSteps)
                     }
+                    .accessibilityHidden(true)
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
@@ -642,7 +638,7 @@ struct MediaLogView: View {
                 }
                 .frame(maxWidth: 218)
                 .frame(height: 44)
-                .accessibilityElement(children: .contain)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Rating")
                 .accessibilityValue(viewModel.ratingLabel())
                 .accessibilityHint("Drag all the way left to clear your rating")

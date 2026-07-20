@@ -2522,10 +2522,6 @@ private struct MediaDetailPageView: View {
         viewModel.tracking?.status ?? detail.userState?.status
     }
 
-    private func currentRating(_ detail: MediaDetail) -> String? {
-        viewModel.tracking?.rating ?? detail.userState?.rating
-    }
-
     private func currentProgress(_ detail: MediaDetail) -> ProgressState? {
         viewModel.tracking?.progress ?? detail.userState?.progress
     }
@@ -2557,13 +2553,6 @@ private struct MediaDetailPageView: View {
                 destination: rating.destinationURL,
                 voteCount: rating.voteCount,
                 voteCountLabel: rating.source.ratingCountLabel
-            ))
-        }
-        if let rating = currentRating(detail), !rating.isEmpty {
-            chips.append(RatingChip(
-                source: "You",
-                value: rating.starRatingLabel(mediaType: detail.ref.mediaType),
-                assetName: nil
             ))
         }
         return chips
@@ -3822,7 +3811,7 @@ private struct ActionRail: View {
             )
             if showsEye {
                 railButton(
-                    systemName: isEyeSelected || ratingPicker.hasLocallyWatched ? "eye.fill" : "eye",
+                    systemName: isEyeSelected || ratingPicker.hasLocallyWatched ? "eye.slash.fill" : "eye",
                     label: eyeLabel ?? "Mark as watched",
                     usesLargePlus: false,
                     isLoading: isEyeLoading && !ratingPicker.isPresented,
@@ -3866,13 +3855,7 @@ private struct ActionRail: View {
 
     private var ratingComposer: some View {
         ZStack {
-            StarRatingPill(
-                halfSteps: $ratingPicker.draftHalfSteps,
-                onAccessibilitySelect: { step in
-                    ratingPicker.draftHalfSteps = step
-                    confirmRating()
-                }
-            )
+            StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
                 .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
                 .glassEffectID("media-rating", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
@@ -3994,6 +3977,7 @@ private struct ActionRail: View {
                 .spineContentTransition(value: isLoading)
             }
             .frame(width: Self.buttonSize, height: Self.buttonSize)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isLoading)
@@ -4009,36 +3993,29 @@ private struct ActionRail: View {
 
 private struct StarRatingPill: View {
     @Binding var halfSteps: Int
-    var onAccessibilitySelect: ((Int) -> Void)?
     @State private var haptics = UISelectionFeedbackGenerator()
 
     private let duneGold = Color(red: 0.94, green: 0.64, blue: 0.24)
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                HStack(spacing: 1.25) {
-                    ForEach(1...5, id: \.self) { value in
-                        Image(systemName: starSymbol(for: value))
-                            .font(.system(size: 17.5, weight: .medium))
-                            .foregroundStyle(halfSteps >= value * 2 - 1 ? duneGold : .white.opacity(0.28))
-                            .frame(width: 22.5, height: 30)
-                    }
+            HStack(spacing: 1.25) {
+                ForEach(1...5, id: \.self) { value in
+                    Image(systemName: starSymbol(for: value))
+                        .font(.system(size: 17.5, weight: .medium))
+                        .foregroundStyle(halfSteps >= value * 2 - 1 ? duneGold : .white.opacity(0.28))
+                        .frame(width: 22.5, height: 30)
                 }
-                .accessibilityHidden(true)
-
-                HalfStarRatingTapOverlay(
-                    steps: $halfSteps,
-                    onSelect: onAccessibilitySelect
-                )
             }
+            .accessibilityHidden(true)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Capsule())
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
+                        let clamped = min(max(gesture.location.x, 0), proxy.size.width)
                         let nextValue = min(
-                            max(Int((gesture.location.x / proxy.size.width * 10).rounded()), 0),
+                            max(Int(ceil((clamped / proxy.size.width) * 10)), 0),
                             10
                         )
                         setRating(nextValue)
@@ -4049,7 +4026,7 @@ private struct StarRatingPill: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 15)
         .onAppear { haptics.prepare() }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Your rating")
         .accessibilityValue(halfSteps == 0 ? "Not rated" : "\(Double(halfSteps) / 2) out of 5")
         .accessibilityAdjustableAction { direction in
@@ -4076,35 +4053,6 @@ private struct StarRatingPill: View {
         halfSteps = newValue
         haptics.selectionChanged()
         haptics.prepare()
-    }
-}
-
-struct HalfStarRatingTapOverlay: View {
-    @Binding var steps: Int
-    var onSelect: ((Int) -> Void)? = nil
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(1...10, id: \.self) { step in
-                Button {
-                    select(step)
-                } label: {
-                    Color.clear
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Self.label(for: step))
-            }
-        }
-    }
-
-    private func select(_ step: Int) {
-        steps = step
-        onSelect?(step)
-    }
-
-    private static func label(for step: Int) -> String {
-        String(format: "%.1f stars", Double(step) / 2)
     }
 }
 

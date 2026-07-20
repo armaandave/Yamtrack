@@ -14,6 +14,8 @@ final class MediaRatingPickerStateTests: XCTestCase {
 
         state.draftHalfSteps = 7
         XCTAssertTrue(state.showsConfirm)
+        XCTAssertTrue(state.isPresented)
+        XCTAssertEqual(state.confirmedHalfSteps, 0)
         state.draftHalfSteps = 0
         XCTAssertFalse(state.showsConfirm)
 
