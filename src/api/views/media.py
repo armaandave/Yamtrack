@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.exceptions import AllMediaSearchUnavailable
 from api.pagination import StandardResultsSetPagination
 from api.services import diary as diary_service
 from api.services import filters as filter_service
@@ -28,8 +29,13 @@ class MediaSearchView(MediaExposureMixin, APIView):
     throttle_classes = [SearchRateThrottle]
 
     def get(self, request):
+        scope = request.query_params.get("scope")
         media_type = request.query_params.get("media_type")
         query = request.query_params.get("q", "").strip()
+        if scope == "all":
+            return self._search_all(request, query)
+        if scope:
+            return Response({"scope": ["Use all."]}, status=status.HTTP_400_BAD_REQUEST)
         if not media_type or not query:
             return Response(
                 {"media_type": ["This field is required."], "q": ["This field is required."]},
@@ -45,6 +51,40 @@ class MediaSearchView(MediaExposureMixin, APIView):
             user=request.user,
         )
         return Response({"count": len(results), "next": None, "previous": None, "results": results})
+
+    @staticmethod
+    def _search_all(request, query):
+        if not query:
+            return Response({"q": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        if request.query_params.get("page", "1") != "1":
+            return Response(
+                {"page": ["All-media search only supports the first page."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        enabled = set(request.user.get_enabled_media_types())
+        media_types = [value for value in exposure.primary_media_types() if value in enabled]
+        if not media_types:
+            return Response(
+                {"media_types": ["Enable at least one media type in Settings."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        payload = media_service.search_all_media(
+            media_types=media_types,
+            query=query,
+            request=request,
+            user=request.user,
+        )
+        if not payload["completed_media_types"]:
+            raise AllMediaSearchUnavailable
+        return Response(
+            {
+                "count": len(payload["results"]),
+                "next": None,
+                "previous": None,
+                "results": payload["results"],
+                "unavailable_media_types": payload["unavailable_media_types"],
+            },
+        )
 
 
 class MediaSourcesView(APIView):

@@ -11,6 +11,7 @@ protocol AuthRepository {
 protocol MediaRepository {
     func meta() async throws -> MetaResponse
     func search(query: String, mediaType: String) async throws -> [MediaSummary]
+    func searchAll(query: String) async throws -> MediaSearchResponse
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary>
     func detail(ref: MediaRef) async throws -> MediaDetail
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
@@ -56,6 +57,10 @@ extension PeopleRepository {
 }
 
 extension MediaRepository {
+    func searchAll(query: String) async throws -> MediaSearchResponse {
+        MediaSearchResponse(results: try await search(query: query, mediaType: APIConstants.allMedia))
+    }
+
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary> {
         fatalError("Not implemented")
     }
@@ -382,7 +387,7 @@ struct APIMediaRepository: MediaRepository {
     let client: APIClient
 
     func meta() async throws -> MetaResponse {
-        try await client.get("/meta/")
+        try await client.get("/meta/", authenticated: true)
     }
 
     func search(query: String, mediaType: String) async throws -> [MediaSummary] {
@@ -395,6 +400,18 @@ struct APIMediaRepository: MediaRepository {
             authenticated: true
         )
         return response.results
+    }
+
+    func searchAll(query: String) async throws -> MediaSearchResponse {
+        try await client.get(
+            "/media/search/",
+            query: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "scope", value: APIConstants.allMedia),
+            ],
+            authenticated: true,
+            requestTimeout: 12
+        )
     }
 
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary> {

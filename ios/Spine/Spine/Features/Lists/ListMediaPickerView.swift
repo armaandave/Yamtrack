@@ -15,7 +15,7 @@ struct ListMediaPickerView: View {
     private let viewModel: ListComposerViewModel
 
     @State private var searchViewModel: SearchViewModel
-    @State private var mediaLensStore: MediaLensStore
+    @State private var selectedSearchType = APIConstants.allMedia
     @State private var isMediaLensExpanded = false
     @State private var searchText = ""
     @AppStorage("recentMedia") private var recentMediaData = "[]"
@@ -30,7 +30,6 @@ struct ListMediaPickerView: View {
             mediaRepository: mediaRepository,
             onUnauthorized: onUnauthorized
         ))
-        _mediaLensStore = State(initialValue: MediaLensStore())
     }
 
     var body: some View {
@@ -44,15 +43,28 @@ struct ListMediaPickerView: View {
                     text: $searchText,
                     selectedMediaType: selectedMediaTypeBinding,
                     isLensExpanded: $isMediaLensExpanded,
-                    availableTypes: SearchViewModel.lensMediaTypes(from: searchViewModel.mediaTypes),
+                    availableTypes: SearchViewModel.allSearchScopes(from: searchViewModel.mediaTypes),
                     onLensTap: { isMediaLensExpanded = true },
                     onLensSelect: searchSelectedMediaType,
                     onSearch: searchSubmittedText,
                     onClear: searchViewModel.clear
                 )
 
+                if !searchViewModel.unavailableMediaTypes.isEmpty {
+                    MediaSearchWarning(mediaTypes: searchViewModel.unavailableMediaTypes)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 6)
+                }
+
                 ScrollView(showsIndicators: false) {
                     resultsContent
+                        .opacity(searchViewModel.isLoading && !searchViewModel.results.isEmpty ? 0.55 : 1)
+                        .overlay(alignment: .topTrailing) {
+                            if searchViewModel.isLoading && !searchViewModel.results.isEmpty {
+                                ProgressView("Searching…")
+                                    .padding(12)
+                            }
+                        }
                         .frame(maxWidth: .infinity, minHeight: 420, alignment: .top)
                         .spineContentTransition(value: resultsPhase)
                         .padding(.horizontal, 16)
@@ -64,13 +76,19 @@ struct ListMediaPickerView: View {
                 .allowsHitTesting(!isMediaLensExpanded)
             }
         }
-        .mediaLensAtmosphere(theme: mediaLensStore.theme(for: mediaLensStore.selectedMediaType))
+        .mediaLensAtmosphere(theme: MediaTypeTheme.theme(for: selectedSearchType))
         .task {
             await searchViewModel.loadMeta()
             validateSelectedMediaType()
         }
         .task(id: searchText) {
             await searchAfterDebounce()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { notification in
+            guard let profile = notification.userInfo?["profile"] as? UserProfile else { return }
+            searchViewModel.mediaTypes = SearchViewModel.enabledMediaTypes(from: profile.preferences.enabledMediaTypes)
+            validateSelectedMediaType()
+            Task { await searchViewModel.search(searchText, mediaType: selectedSearchType) }
         }
         .preferredColorScheme(.dark)
     }
@@ -129,7 +147,7 @@ struct ListMediaPickerView: View {
             }
         } else {
             ContentUnavailableView(
-                "No results",
+                selectedSearchType == APIConstants.allMedia ? "No media found" : "No results",
                 systemImage: "magnifyingglass",
                 description: Text("Try another title or media type.")
             )
@@ -156,6 +174,7 @@ struct ListMediaPickerView: View {
                 } label: {
                     SearchResultRow(
                         result: item,
+                        showsMediaType: selectedSearchType == APIConstants.allMedia,
                         accessory: .selection(isSelected: viewModel.contains(item))
                     )
                     .padding(.horizontal, 12)
@@ -180,14 +199,18 @@ struct ListMediaPickerView: View {
 
     private var selectedMediaTypeBinding: Binding<String> {
         Binding(
-            get: { mediaLensStore.selectedMediaType },
-            set: { mediaLensStore.setMediaType($0) }
+            get: { selectedSearchType },
+            set: { selectedSearchType = $0 }
         )
     }
 
     private var recentMedia: [MediaSummary] {
-        RecentMedia.decodeList(from: recentMediaData)
-            .filter { $0.ref.mediaType == mediaLensStore.selectedMediaType }
+        let enabled = Set(searchViewModel.mediaTypes)
+        return RecentMedia.decodeList(from: recentMediaData)
+            .filter { enabled.contains($0.ref.mediaType) }
+            .filter {
+                selectedSearchType == APIConstants.allMedia || $0.ref.mediaType == selectedSearchType
+            }
     }
 
     private func searchSelectedMediaType(_ mediaType: String) {
@@ -200,7 +223,7 @@ struct ListMediaPickerView: View {
 
     private func searchSubmittedText(_ text: String) {
         Task {
-            await searchViewModel.search(text, mediaType: mediaLensStore.selectedMediaType)
+            await searchViewModel.search(text, mediaType: selectedSearchType)
         }
     }
 
@@ -217,12 +240,14 @@ struct ListMediaPickerView: View {
             searchViewModel.clear()
             return
         }
-        await searchViewModel.search(trimmed, mediaType: mediaLensStore.selectedMediaType)
+        await searchViewModel.search(trimmed, mediaType: selectedSearchType)
     }
 
     private func validateSelectedMediaType() {
-        let available = SearchViewModel.lensMediaTypes(from: searchViewModel.mediaTypes)
-        mediaLensStore.validateSelection(in: available)
+        let available = searchViewModel.mediaTypes
+        if selectedSearchType != APIConstants.allMedia, !available.contains(selectedSearchType) {
+            selectedSearchType = APIConstants.allMedia
+        }
     }
 
     private func saveRecentMedia(_ media: MediaSummary) {

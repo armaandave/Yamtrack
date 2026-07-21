@@ -3,7 +3,7 @@ import SwiftUI
 @MainActor
 @Observable
 final class DiaryCreateViewModel {
-    var mediaType = "movie"
+    var mediaType = APIConstants.allMedia
     var mediaTypes = APIConstants.fallbackMediaTypes
     var query = ""
     var results: [MediaSummary] = []
@@ -20,10 +20,12 @@ final class DiaryCreateViewModel {
     var isSearching = false
     var isSaving = false
     var errorMessage: String?
+    var unavailableMediaTypes: [String] = []
 
     private let diaryRepository: DiaryRepository
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
+    private var searchID = 0
 
     init(diaryRepository: DiaryRepository, mediaRepository: MediaRepository, onUnauthorized: @escaping () -> Void) {
         self.diaryRepository = diaryRepository
@@ -34,23 +36,51 @@ final class DiaryCreateViewModel {
     func loadMeta() async {
         do {
             let meta = try await mediaRepository.meta()
-            mediaTypes = meta.mediaTypes.filter { $0 != "episode" }
+            mediaTypes = meta.enabledMediaTypes.map(SearchViewModel.enabledMediaTypes(from:))
+                ?? SearchViewModel.lensMediaTypes(from: meta.mediaTypes)
         } catch {
-            mediaTypes = APIConstants.fallbackMediaTypes
+            mediaTypes = SearchViewModel.lensMediaTypes(from: APIConstants.fallbackMediaTypes)
+        }
+    }
+
+    func setEnabledMediaTypes(_ types: [String]) {
+        mediaTypes = SearchViewModel.enabledMediaTypes(from: types)
+        if mediaType != APIConstants.allMedia, !mediaTypes.contains(mediaType) {
+            mediaType = APIConstants.allMedia
         }
     }
 
     func search() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        searchID += 1
+        let currentSearchID = searchID
 
         isSearching = true
         errorMessage = nil
-        defer { isSearching = false }
+        unavailableMediaTypes = []
+        defer {
+            if currentSearchID == searchID {
+                isSearching = false
+            }
+        }
 
         do {
-            results = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+            let response: MediaSearchResponse
+            if mediaType == APIConstants.allMedia {
+                response = try await mediaRepository.searchAll(query: trimmed)
+            } else {
+                response = MediaSearchResponse(
+                    results: try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+                )
+            }
+            guard currentSearchID == searchID else { return }
+            results = response.results
+            unavailableMediaTypes = response.unavailableMediaTypes
+        } catch is CancellationError {
+            return
         } catch {
+            guard currentSearchID == searchID else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -191,15 +221,27 @@ struct DiaryCreateView: View {
             .task {
                 await viewModel.loadMeta()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { notification in
+                guard let profile = notification.userInfo?["profile"] as? UserProfile else { return }
+                let previousMediaType = viewModel.mediaType
+                viewModel.setEnabledMediaTypes(profile.preferences.enabledMediaTypes)
+                if viewModel.mediaType == previousMediaType {
+                    Task { await viewModel.search() }
+                }
+            }
         }
     }
 
     private var mediaSearchSection: some View {
         Section("Media") {
             Picker("Type", selection: $viewModel.mediaType) {
+                Text("All Media").tag(APIConstants.allMedia)
                 ForEach(viewModel.mediaTypes, id: \.self) { type in
-                    Text(type.capitalized).tag(type)
+                    Text(MediaTypeTheme.theme(for: type).displayName).tag(type)
                 }
+            }
+            .onChange(of: viewModel.mediaType) {
+                Task { await viewModel.search() }
             }
 
             HStack {
@@ -215,7 +257,11 @@ struct DiaryCreateView: View {
 
             Group {
                 if viewModel.isSearching {
-                    ProgressView()
+                    ProgressView("Searching…")
+                }
+
+                if !viewModel.unavailableMediaTypes.isEmpty {
+                    MediaSearchWarning(mediaTypes: viewModel.unavailableMediaTypes)
                 }
 
                 if let selected = viewModel.selectedMedia {
@@ -237,6 +283,9 @@ struct DiaryCreateView: View {
                             )
                             VStack(alignment: .leading) {
                                 Text(result.title)
+                                if viewModel.mediaType == APIConstants.allMedia {
+                                    MediaTypeChip(mediaType: result.ref.mediaType)
+                                }
                                 if let subtitle = result.subtitle ?? result.releaseDate {
                                     Text(subtitle)
                                         .font(.caption)
@@ -248,6 +297,7 @@ struct DiaryCreateView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .opacity(viewModel.isSearching && !viewModel.results.isEmpty ? 0.55 : 1)
             .spineContentTransition(value: searchContentPhase)
         }
     }

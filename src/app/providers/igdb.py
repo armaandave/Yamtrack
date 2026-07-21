@@ -83,7 +83,7 @@ def handle_error(error):
     raise services.ProviderAPIError(Sources.IGDB.value, error)
 
 
-def get_access_token():
+def get_access_token(*, timeout=None):
     """Return the access token for the IGDB API."""
     access_token = cache.get(f"{Sources.IGDB.value}_access_token")
     if access_token is None:
@@ -100,6 +100,7 @@ def get_access_token():
                 "POST",
                 url,
                 data=data,
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             handle_error(error)
@@ -202,14 +203,15 @@ def steam_app_id(media_id):
     return external_game_uid(media_id, ExternalGameSource.STEAM)
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for games on IGDB."""
-    cache_key = f"search_{Sources.IGDB.value}_{MediaTypes.GAME.value}_v2_{query}_{page}"
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
+    cache_key = f"search_{Sources.IGDB.value}_{MediaTypes.GAME.value}_v2_{query}_{page}{rank_suffix}"
     data = cache.get(cache_key)
 
     if data is None:
         search_query = str(query).replace("\\", "\\\\").replace('"', '\\"')
-        access_token = get_access_token()
+        access_token = get_access_token(timeout=timeout)
         search_url = f"{base_url}/games"
         count_url = f"{base_url}/games/count"
         headers = {
@@ -244,6 +246,7 @@ def search(query, page):
                 search_url,
                 data=search_body,
                 headers=headers,
+                timeout=timeout,
             )
             count_response = services.api_request(
                 Sources.IGDB.value,
@@ -251,19 +254,21 @@ def search(query, page):
                 count_url,
                 data=count_body,
                 headers=headers,
+                timeout=timeout,
             )
 
         except requests.exceptions.HTTPError as error:
             error_resp = handle_error(error)
             if error_resp and error_resp.get("retry"):
                 # Retry the request with the new access token
-                headers["Authorization"] = f"Bearer {get_access_token()}"
+                headers["Authorization"] = f"Bearer {get_access_token(timeout=timeout)}"
                 search_results = services.api_request(
                     Sources.IGDB.value,
                     "POST",
                     search_url,
                     data=search_body,
                     headers=headers,
+                    timeout=timeout,
                 )
                 count_response = services.api_request(
                     Sources.IGDB.value,
@@ -271,6 +276,7 @@ def search(query, page):
                     count_url,
                     data=count_body,
                     headers=headers,
+                    timeout=timeout,
                 )
 
         total_results = count_response.get("count", 0)
@@ -289,7 +295,12 @@ def search(query, page):
             }
             for media in search_results
         ]
-        results = rank_results(query, results, MediaTypes.GAME.value)
+        results = rank_results(
+            query,
+            results,
+            MediaTypes.GAME.value,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         data = helpers.format_search_response(
             page,

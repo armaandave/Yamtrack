@@ -37,6 +37,12 @@ struct MediaTypeTheme: Equatable {
     static func theme(for slug: String) -> MediaTypeTheme {
         let normalized = slug.lowercased()
         switch normalized {
+        case APIConstants.allMedia:
+            return MediaTypeTheme(
+                slug: normalized,
+                displayName: "All Media",
+                symbolName: "square.grid.2x2"
+            )
         case "movie":
             return MediaTypeTheme(
                 slug: normalized,

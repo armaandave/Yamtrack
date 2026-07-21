@@ -13,6 +13,7 @@ CACHE_VERSION = 1
 CACHE_TIMEOUT = 60 * 60 * 24
 FAILURE_CACHE_TIMEOUT = 60 * 5
 IMDB_ID_PATTERN = re.compile(r"tt\d+")
+_FAILURE_MARKER = {"_failed": True}
 
 
 def is_configured():
@@ -27,7 +28,7 @@ def is_configured():
     )
 
 
-def get_title_rating(imdb_id):
+def get_title_rating(imdb_id, *, raise_errors=False):
     """Return the current IMDb rating for a title ID, or ``None`` when unavailable."""
     if not is_configured() or not IMDB_ID_PATTERN.fullmatch(str(imdb_id or "")):
         return None
@@ -37,6 +38,11 @@ def get_title_rating(imdb_id):
     uncached = object()
     cached = cache.get(cache_key, uncached)
     if cached is not uncached:
+        if cached == _FAILURE_MARKER:
+            if raise_errors:
+                msg = "Cached IMDb rating lookup failure"
+                raise RuntimeError(msg)
+            return None
         return cached or None
 
     try:
@@ -76,7 +82,9 @@ def get_title_rating(imdb_id):
         # The media page remains useful with its link-only IMDb pill when the
         # optional licensed service is unavailable or temporarily misconfigured.
         logger.exception("IMDb rating lookup failed for title %s", imdb_id)
-        cache.set(cache_key, {}, timeout=FAILURE_CACHE_TIMEOUT)
+        if raise_errors:
+            raise
+        cache.set(cache_key, _FAILURE_MARKER, timeout=FAILURE_CACHE_TIMEOUT)
         return None
 
 

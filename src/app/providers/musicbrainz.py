@@ -63,7 +63,7 @@ def escape_lucene(term):
     return _LUCENE_SPECIAL.sub(r"\\\1", str(term))
 
 
-def search_release_groups(query, *, limit=settings.PER_PAGE, offset=0):
+def search_release_groups(query, *, limit=settings.PER_PAGE, offset=0, timeout=None):
     """Search MusicBrainz release groups and return the raw response."""
     query = str(query)
     digest = hashlib.sha256(query.encode()).hexdigest()
@@ -73,17 +73,19 @@ def search_release_groups(query, *, limit=settings.PER_PAGE, offset=0):
         lambda: _musicbrainz_request(
             "release-group",
             {"query": _release_group_query(query), "limit": limit, "offset": offset},
+            timeout=timeout,
         ),
     )
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search release groups and return Spine-normalized album results."""
     page = max(1, int(page))
     response = search_release_groups(
         query,
         limit=SEARCH_CANDIDATE_LIMIT,
         offset=0,
+        timeout=timeout,
     )
     candidates = [
         _search_result(group) for group in response.get("release-groups", [])
@@ -100,6 +102,7 @@ def search(query, page):
         query,
         candidates,
         MediaTypes.MUSIC.value,
+        preserve_ranking_fields=preserve_ranking_fields,
     )
     start = (page - 1) * settings.PER_PAGE
     results = ranked[start : start + settings.PER_PAGE]
@@ -1198,7 +1201,7 @@ def _external_links(relations, source_url):
     return links
 
 
-def _musicbrainz_request(path, params):
+def _musicbrainz_request(path, params, *, timeout=None):
     params = {"fmt": "json", **params}
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -1209,6 +1212,7 @@ def _musicbrainz_request(path, params):
                 params=params,
                 headers=_headers(),
                 request_session=services.musicbrainz_session,
+                timeout=timeout,
             )
         except requests.exceptions.JSONDecodeError as error:
             raise services.ProviderAPIError(

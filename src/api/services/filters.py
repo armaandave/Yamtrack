@@ -92,7 +92,7 @@ def date_param(params, key):
     return parse_date(value)
 
 
-def update_item_filter_metadata(item, metadata, ratings=None):
+def update_item_filter_metadata(item, metadata):
     """Cache provider fields needed for fast collection filtering."""
     if not item or not metadata:
         return
@@ -105,15 +105,6 @@ def update_item_filter_metadata(item, metadata, ratings=None):
         "runtime_minutes": _runtime_minutes(metadata),
         "filter_metadata_updated_at": timezone.now(),
     }
-    for source, field in {
-        "letterboxd": "letterboxd_rating",
-        "imdb": "imdb_rating",
-        "tomatoes": "rotten_tomatoes_rating",
-    }.items():
-        rating = (ratings or {}).get(source)
-        if rating:
-            updates[field] = _rating_decimal(rating.get("value") or rating.get("score"))
-
     changed = []
     for field, value in updates.items():
         if getattr(item, field) != value:
@@ -128,47 +119,6 @@ def update_item_filter_metadata(item, metadata, ratings=None):
         ItemFilterFacet.FacetType.LANGUAGE,
         _metadata_list(metadata, "languages"),
     )
-
-
-def update_item_external_ratings(
-    *,
-    source,
-    media_type,
-    media_id,
-    ratings,
-    season_number=None,
-    episode_number=None,
-):
-    """Cache external ratings for an already materialized exact item."""
-    if not ratings:
-        return
-    item = Item.objects.filter(
-        source=source,
-        media_type=media_type,
-        media_id=media_id,
-        season_number=season_number,
-        episode_number=episode_number,
-    ).first()
-    if item is None:
-        return
-    updates = {"filter_metadata_updated_at": timezone.now()}
-    for source_key, field in {
-        "letterboxd": "letterboxd_rating",
-        "imdb": "imdb_rating",
-        "tomatoes": "rotten_tomatoes_rating",
-    }.items():
-        rating = ratings.get(source_key)
-        if rating:
-            updates[field] = _rating_decimal(rating.get("value") or rating.get("score"))
-
-    changed = []
-    for field, value in updates.items():
-        if getattr(item, field) != value:
-            setattr(item, field, value)
-            changed.append(field)
-    if changed:
-        item.save(update_fields=changed)
-
 
 def apply_item_filters(queryset, params, *, item_path="item__"):
     """Apply shared Item-backed filters to a queryset."""
@@ -616,15 +566,6 @@ def _release_year(metadata, release_date):
             except (TypeError, ValueError):
                 return None
     return None
-
-
-def _rating_decimal(value):
-    if value in (None, ""):
-        return None
-    try:
-        return Decimal(str(value).replace("%", ""))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
 
 
 def _runtime_minutes(metadata):

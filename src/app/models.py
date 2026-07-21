@@ -274,6 +274,84 @@ class Item(CalendarTriggerMixin, models.Model):
             events.tasks.reload_calendar(items_to_process=items_to_process)
 
 
+class ExternalRating(models.Model):
+    """Cached external rating outcome for an exact item identity."""
+
+    class Status(models.TextChoices):
+        AVAILABLE = "available", "Available"
+        UNAVAILABLE = "unavailable", "Unavailable"
+        FAILED = "failed", "Failed"
+
+    item = models.ForeignKey(
+        Item,
+        on_delete=models.CASCADE,
+        related_name="external_ratings",
+        db_index=False,
+    )
+    rating_source = models.CharField(max_length=50)
+    value = models.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    max_value = models.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    vote_count = models.PositiveBigIntegerField(null=True, blank=True)
+    canonical_url = models.URLField(max_length=2048, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status)
+    last_attempted_at = models.DateTimeField()
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=1000, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["item", "rating_source"],
+                name="app_extrating_item_source_uniq",
+            ),
+            CheckConstraint(
+                condition=Q(status__in=["available", "unavailable", "failed"]),
+                name="app_extrating_status_valid",
+            ),
+            CheckConstraint(
+                condition=Q(value__isnull=True) | Q(value__gte=0),
+                name="app_extrating_value_nonnegative",
+            ),
+            CheckConstraint(
+                condition=Q(max_value__isnull=True) | Q(max_value__gt=0),
+                name="app_extrating_max_positive",
+            ),
+            CheckConstraint(
+                condition=Q(value__isnull=True)
+                | (
+                    Q(max_value__isnull=False)
+                    & Q(value__lte=F("max_value"))
+                    & Q(last_success_at__isnull=False)
+                ),
+                name="app_extrating_stored_value_valid",
+            ),
+            CheckConstraint(
+                condition=~Q(status="available") | Q(value__isnull=False),
+                name="app_extrating_available_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["rating_source", "value"],
+                name="app_extrating_source_value_idx",
+            ),
+            models.Index(
+                fields=["rating_source", "status", "last_attempted_at"],
+                name="app_extrating_scan_idx",
+            ),
+        ]
+
+
 class ItemFilterFacet(models.Model):
     """Indexed multi-value filter facets for stored media items."""
 

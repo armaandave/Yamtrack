@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +23,7 @@ from app.models import (
     CustomPosterPreference,
     DiaryEntry,
     Episode,
+    ExternalRating,
     Item,
     ItemFilterFacet,
     MediaLike,
@@ -1105,6 +1106,51 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNotNone(response.data["next"])
         self.assertIsNone(response.data["previous"])
         self.assertEqual(summary_mock.call_count, 25)
+
+    @patch("app.providers.steam.get_metacritic_rating")
+    @patch("app.providers.imdb.get_title_rating")
+    @patch("app.providers.mdblist.get_media_ratings")
+    def test_collection_diary_filter_and_list_reads_do_not_fetch_external_ratings(
+        self,
+        mdblist_mock,
+        imdb_mock,
+        metacritic_mock,
+    ):
+        user = get_user_model().objects.create_user(
+            username="rating-free-reads",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="rating-free",
+            title="Rating Free",
+        )
+        Movie.objects.create(user=user, item=item, status=Status.COMPLETED.value)
+        DiaryEntry.objects.create(
+            user=user,
+            item=item,
+            consumed_at=timezone.now(),
+            visibility="public",
+        )
+        custom_list = CustomList.objects.create(owner=user, name="Rating Free")
+        CustomListItem.objects.create(custom_list=custom_list, item=item)
+        self.client.force_authenticate(user)
+
+        responses = [
+            self.client.get("/api/v1/tracking/", {"media_type": "movie"}),
+            self.client.get(
+                "/api/v1/tracking/",
+                {"media_type": "movie", "sort": "imdb_rating"},
+            ),
+            self.client.get("/api/v1/diary/"),
+            self.client.get(f"/api/v1/lists/{custom_list.pk}/"),
+        ]
+
+        self.assertTrue(all(response.status_code == status.HTTP_200_OK for response in responses))
+        mdblist_mock.assert_not_called()
+        imdb_mock.assert_not_called()
+        metacritic_mock.assert_not_called()
 
     def test_tracking_list_defaults_to_newest_release_date(self):
         user = get_user_model().objects.create_user(username="tracking-default-sort", password="strong-password-123")
@@ -2786,8 +2832,10 @@ class ApiV1FoundationTests(TestCase):
     @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
     @patch("app.providers.mdblist.get_media_ratings")
     @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.tasks.enrich_external_ratings.delay")
     def test_media_detail_includes_synopsis_and_external_ratings(
         self,
+        enqueue_mock,
         metadata_mock,
         ratings_mock,
         _backdrops_mock,
@@ -2864,7 +2912,27 @@ class ApiV1FoundationTests(TestCase):
             media_type=MediaTypes.MOVIE.value,
             media_id="550",
             title="Fight Club",
+            imdb_rating="8.8",
+            letterboxd_rating="4.3",
+            rotten_tomatoes_rating="79",
         )
+        attempted_at = timezone.now()
+        for rating_source, value, maximum, votes, url in (
+            ("imdb", "8.8", 10, 2300000, "https://www.imdb.com/title/tt0137523/"),
+            ("letterboxd", "4.3", 5, 500000, "https://letterboxd.com/tmdb/550"),
+            ("tomatoes", 79, 100, 100, "https://www.rottentomatoes.com/m/fight_club"),
+        ):
+            ExternalRating.objects.create(
+                item=item,
+                rating_source=rating_source,
+                value=value,
+                max_value=maximum,
+                vote_count=votes,
+                canonical_url=url,
+                status=ExternalRating.Status.AVAILABLE,
+                last_attempted_at=attempted_at,
+                last_success_at=attempted_at,
+            )
         consumed_at = timezone.now()
         diary_entry = DiaryEntry.objects.create(
             user=user,
@@ -2926,10 +2994,64 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["user_state"]["diary_entry_id"], diary_entry.id)
         self.assertEqual(response.data["user_state"]["diary_count"], 1)
         item.refresh_from_db()
+        self.assertEqual(item.external_ratings.count(), 4)
+        self.assertEqual(
+            set(item.external_ratings.values_list("rating_source", flat=True)),
+            {"tmdb", "imdb", "letterboxd", "tomatoes"},
+        )
         self.assertEqual(str(item.imdb_rating), "8.80")
         self.assertEqual(str(item.letterboxd_rating), "4.30")
         self.assertEqual(str(item.rotten_tomatoes_rating), "79.00")
+        ratings_mock.assert_not_called()
+        enqueue_mock.assert_not_called()
         self.assertTrue(ItemFilterFacet.objects.filter(item=item, facet_type="genre", value="Drama").exists())
+
+    @patch("app.providers.tmdb.get_title_logo", return_value=None)
+    @patch("app.providers.tmdb.get_backdrop_images", return_value=[])
+    @patch("app.providers.mdblist.get_media_ratings")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.tasks.enrich_external_ratings.delay")
+    def test_tracked_detail_persists_native_and_enqueues_missing_optional_ratings(
+        self,
+        enqueue_mock,
+        metadata_mock,
+        ratings_mock,
+        _backdrops_mock,
+        _logo_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "551",
+            "media_type": "movie",
+            "source": "tmdb",
+            "source_url": "https://www.themoviedb.org/movie/551",
+            "title": "Tracked",
+            "image": "https://example.com/tracked.jpg",
+            "score": "7.5",
+            "score_count": 25,
+        }
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="551",
+            title="Tracked",
+        )
+
+        response = self.client.get("/api/v1/media/tmdb/movie/551/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [(rating["source"], rating["value"]) for rating in response.data["external_ratings"]],
+            [("TMDB", "7.5")],
+        )
+        self.assertEqual(
+            set(item.external_ratings.values_list("rating_source", flat=True)),
+            {"tmdb"},
+        )
+        enqueue_mock.assert_called_once_with(
+            item.pk,
+            ["imdb", "letterboxd", "tomatoes"],
+        )
+        ratings_mock.assert_not_called()
 
     @patch("app.providers.mdblist.get_media_ratings")
     def test_external_rating_urls_only_use_verified_fallbacks(self, ratings_mock):
@@ -2955,6 +3077,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(movie_ratings[1]["url"])
         self.assertIsNone(tv_ratings[0]["url"])
         self.assertIsNone(tv_ratings[1]["url"])
+        self.assertFalse(Item.objects.filter(media_id__in=["550", "1399"]).exists())
 
     @patch("app.providers.mdblist.get_media_ratings")
     def test_bare_imdb_value_falls_back_to_tmdb_imdb_id(self, ratings_mock):
@@ -2975,6 +3098,73 @@ class ApiV1FoundationTests(TestCase):
         )
 
         self.assertEqual(ratings[0]["url"], "https://www.imdb.com/title/tt14173636/")
+
+    @patch("app.tasks.enrich_external_ratings.delay")
+    @patch("app.providers.mdblist.get_media_ratings")
+    def test_tracked_detail_serves_retained_rating_while_refresh_is_pending(
+        self,
+        ratings_mock,
+        enqueue_mock,
+    ):
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="failure",
+            title="Failure",
+            image="https://example.com/failure.jpg",
+            imdb_rating="8.10",
+        )
+        successful_at = timezone.now()
+        rating = ExternalRating.objects.create(
+            item=item,
+            rating_source="imdb",
+            value="8.1",
+            max_value=10,
+            vote_count=50,
+            canonical_url="https://www.imdb.com/title/tt0000001/",
+            status=ExternalRating.Status.AVAILABLE,
+            last_attempted_at=successful_at - timedelta(hours=25),
+            last_success_at=successful_at,
+        )
+        ratings = external_ratings(
+            metadata={},
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="failure",
+            item=item,
+        )
+
+        self.assertEqual([(value["source"], value["value"]) for value in ratings], [("IMDb", "8.1")])
+        rating.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(rating.status, ExternalRating.Status.AVAILABLE)
+        self.assertEqual(rating.last_success_at, successful_at)
+        self.assertEqual(str(item.imdb_rating), "8.10")
+        ratings_mock.assert_not_called()
+        enqueue_mock.assert_called_once_with(
+            item.pk,
+            ["imdb", "letterboxd", "tomatoes"],
+        )
+
+    def test_manual_item_has_no_persisted_external_ratings(self):
+        item = Item.objects.create(
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id=Item.generate_manual_id(),
+            title="Manual",
+            image="https://example.com/manual.jpg",
+        )
+
+        ratings = external_ratings(
+            metadata={},
+            source=item.source,
+            media_type=item.media_type,
+            media_id=item.media_id,
+            item=item,
+        )
+
+        self.assertEqual(ratings, [])
+        self.assertFalse(item.external_ratings.exists())
 
     @patch("app.providers.mdblist.get_media_ratings")
     def test_tv_and_season_rating_urls_use_available_series_pages(self, ratings_mock):
@@ -3862,6 +4052,12 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(response.data["image_url"])
         self.assertIsNone(response.data["backdrop_url"])
 
+    @override_settings(
+        IMDB_API_KEY="key",
+        IMDB_DATA_SET_ID="dataset",
+        IMDB_REVISION_ID="revision",
+        IMDB_ASSET_ID="asset",
+    )
     @patch(
         "app.providers.imdb.get_title_rating",
         return_value={
@@ -3871,7 +4067,13 @@ class ApiV1FoundationTests(TestCase):
         },
     )
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_episode_detail_is_first_class_backdrop_only_media(self, metadata_mock, imdb_rating_mock):
+    @patch("app.tasks.enrich_external_ratings.delay")
+    def test_episode_detail_is_first_class_backdrop_only_media(
+        self,
+        enqueue_mock,
+        metadata_mock,
+        imdb_rating_mock,
+    ):
         user = get_user_model().objects.create_user(
             username="episode-viewer",
             password="strong-password-123",
@@ -3893,6 +4095,19 @@ class ApiV1FoundationTests(TestCase):
             episode_number=2,
             title="The Kingsroad",
             image="https://example.com/e2.jpg",
+            imdb_rating="8.5",
+        )
+        attempted_at = timezone.now()
+        ExternalRating.objects.create(
+            item=selected_episode,
+            rating_source="imdb",
+            value="8.5",
+            max_value=10,
+            vote_count=12000,
+            canonical_url="https://www.imdb.com/title/tt1480055/",
+            status=ExternalRating.Status.AVAILABLE,
+            last_attempted_at=attempted_at,
+            last_success_at=attempted_at,
         )
         DiaryEntry.objects.create(
             user=user,
@@ -4029,7 +4244,13 @@ class ApiV1FoundationTests(TestCase):
         selected_episode.refresh_from_db()
         self.assertIsNone(first_episode.imdb_rating)
         self.assertEqual(str(selected_episode.imdb_rating), "8.50")
-        imdb_rating_mock.assert_called_once_with("tt1480055")
+        self.assertFalse(first_episode.external_ratings.exists())
+        self.assertEqual(
+            set(selected_episode.external_ratings.values_list("rating_source", flat=True)),
+            {"tmdb", "imdb"},
+        )
+        imdb_rating_mock.assert_not_called()
+        enqueue_mock.assert_not_called()
         metadata_mock.assert_called_once_with(
             MediaTypes.EPISODE.value,
             "1399",
@@ -4258,6 +4479,13 @@ class ApiV1FoundationTests(TestCase):
             "score": 4.3,
             "score_count": 1234,
         }
+        item = Item.objects.create(
+            source=Sources.HARDCOVER.value,
+            media_type=MediaTypes.BOOK.value,
+            media_id="377193",
+            title="The Great Gatsby",
+            image="https://example.com/gatsby.jpg",
+        )
 
         response = self.client.get("/api/v1/media/hardcover/book/377193/")
 
@@ -4268,6 +4496,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(rating["max_value"], "5")
         self.assertEqual(rating["vote_count"], 1234)
         self.assertEqual(rating["url"], "https://hardcover.app/books/the-great-gatsby")
+        self.assertEqual(item.external_ratings.get().rating_source, "hardcover")
 
     def test_hardcover_rating_without_slug_uses_id_redirect_url(self):
         ratings = external_ratings(
@@ -4282,8 +4511,10 @@ class ApiV1FoundationTests(TestCase):
     @patch("app.providers.steam.get_metacritic_rating")
     @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
     @patch("api.services.media.provider_services.get_media_metadata")
+    @patch("app.tasks.enrich_external_ratings.delay")
     def test_game_detail_exposes_collection_before_other_related_sections(
         self,
+        enqueue_mock,
         metadata_mock,
         _logo_mock,
         metacritic_mock,
@@ -4345,6 +4576,24 @@ class ApiV1FoundationTests(TestCase):
                 ],
             },
         }
+        item = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="1020",
+            title="Space Game",
+            image="https://example.com/space.jpg",
+        )
+        attempted_at = timezone.now()
+        ExternalRating.objects.create(
+            item=item,
+            rating_source="metacritic",
+            value=94,
+            max_value=100,
+            canonical_url="https://www.metacritic.com/game/pc/space-game",
+            status=ExternalRating.Status.AVAILABLE,
+            last_attempted_at=attempted_at,
+            last_success_at=attempted_at,
+        )
 
         response = self.client.get("/api/v1/media/igdb/game/1020/")
 
@@ -4360,6 +4609,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_ratings"][1]["value"], "94")
         self.assertEqual(response.data["external_ratings"][1]["max_value"], "100")
         self.assertEqual(response.data["external_ratings"][1]["url"], "https://www.metacritic.com/game/pc/space-game")
+        self.assertEqual(
+            set(item.external_ratings.values_list("rating_source", flat=True)),
+            {"igdb", "metacritic"},
+        )
         self.assertEqual(response.data["release_date"], "2020-09-17")
         self.assertEqual(response.data["details"]["age_rating"], "ESRB M")
         self.assertEqual(response.data["details"]["age_ratings"], ["ESRB M", "PEGI 18"])
@@ -4370,6 +4623,8 @@ class ApiV1FoundationTests(TestCase):
             response.data["backdrop_url"],
             "https://images.igdb.com/igdb/image/upload/t_original/wide-art.jpg",
         )
+        metacritic_mock.assert_not_called()
+        enqueue_mock.assert_not_called()
 
     @patch("app.providers.steam.get_metacritic_rating", return_value=None)
     @patch("app.providers.steamgriddb.get_game_logo", return_value=None)

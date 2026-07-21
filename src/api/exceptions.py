@@ -14,6 +14,14 @@ class DiaryHistoryConflict(exceptions.APIException):
     default_code = "diary_history_exists"
 
 
+class AllMediaSearchUnavailable(exceptions.APIException):
+    """Every provider in an all-media search failed."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "Media search providers are temporarily unavailable."
+    default_code = "provider_unavailable"
+
+
 def _code_for_status(status_code):
     if status_code == status.HTTP_401_UNAUTHORIZED:
         return "authentication_required"

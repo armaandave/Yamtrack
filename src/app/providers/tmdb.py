@@ -71,9 +71,10 @@ def get_external_links(external_ids, tmdb_id=None):
     return links
 
 
-def search(media_type, query, page):
+def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for media on TMDB."""
-    cache_key = f"search_{Sources.TMDB.value}_{media_type}_{query}_{page}"
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
+    cache_key = f"search_{Sources.TMDB.value}_{media_type}_{query}_{page}{rank_suffix}"
     data = cache.get(cache_key)
 
     if data is None:
@@ -94,6 +95,7 @@ def search(media_type, query, page):
                 "GET",
                 url,
                 params=params,
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             handle_error(error)
@@ -111,7 +113,12 @@ def search(media_type, query, page):
             }
             for media in response["results"]
         ]
-        results = rank_results(query, results, media_type)
+        results = rank_results(
+            query,
+            results,
+            media_type,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         total_results = response["total_results"]
         per_page = 20  # TMDB always returns 20 results per page

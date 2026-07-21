@@ -285,39 +285,88 @@ def search(
     source=None,
     *,
     preserve_ranking_fields=False,
+    timeout=None,
 ):
     """Search for media based on the query and return the results."""
+    search_options = {}
+    if preserve_ranking_fields:
+        search_options["preserve_ranking_fields"] = True
+    if timeout is not None:
+        search_options["timeout"] = timeout
+
     search_handlers = {
         MediaTypes.MANGA.value: lambda: (
-            mangaupdates.search(query, page)
+            mangaupdates.search(
+                query,
+                page,
+                **search_options,
+            )
             if source == Sources.MANGAUPDATES.value
-            else mal.search(media_type, query, page)
+            else mal.search(
+                media_type,
+                query,
+                page,
+                **search_options,
+            )
         ),
-        MediaTypes.ANIME.value: lambda: mal.search(media_type, query, page),
-        MediaTypes.TV.value: lambda: tmdb.search(media_type, query, page),
-        MediaTypes.MOVIE.value: lambda: tmdb.search(media_type, query, page),
-        MediaTypes.SEASON.value: lambda: tmdb.search(MediaTypes.TV.value, query, page),
-        MediaTypes.EPISODE.value: lambda: tmdb.search(MediaTypes.TV.value, query, page),
-        MediaTypes.GAME.value: lambda: igdb.search(query, page),
+        MediaTypes.ANIME.value: lambda: mal.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.TV.value: lambda: tmdb.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.MOVIE.value: lambda: tmdb.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.SEASON.value: lambda: tmdb.search(
+            MediaTypes.TV.value,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.EPISODE.value: lambda: tmdb.search(
+            MediaTypes.TV.value,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.GAME.value: lambda: igdb.search(
+            query,
+            page,
+            **search_options,
+        ),
         MediaTypes.BOOK.value: lambda: (
             openlibrary.search(
                 query,
                 page,
-                preserve_ranking_fields=True,
+                **search_options,
             )
-            if source == Sources.OPENLIBRARY.value and preserve_ranking_fields
-            else openlibrary.search(query, page)
             if source == Sources.OPENLIBRARY.value
             else hardcover.search(
                 query,
                 page,
-                preserve_ranking_fields=True,
+                **search_options,
             )
-            if preserve_ranking_fields
-            else hardcover.search(query, page)
         ),
-        MediaTypes.COMIC.value: lambda: comicvine.search(query, page),
-        MediaTypes.MUSIC.value: lambda: musicbrainz.search(query, page),
+        MediaTypes.COMIC.value: lambda: comicvine.search(
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.MUSIC.value: lambda: musicbrainz.search(
+            query,
+            page,
+            **search_options,
+        ),
     }
     return search_handlers[media_type]()
 

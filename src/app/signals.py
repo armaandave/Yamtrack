@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 
 from celery import states
 from celery.signals import before_task_publish
@@ -9,10 +10,22 @@ from django.dispatch import receiver
 from django.utils import timezone
 from django_celery_results.models import TaskResult
 
-from app.models import DiaryEntry
-from app.tasks import update_daily_statistics
+from app.external_ratings import eligible_rating_sources
+from app.mixins import collect_external_rating_item_id
+from app.models import DiaryEntry, Item
+from app.tasks import enrich_external_ratings, update_daily_statistics
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(post_save, sender=Item)
+def handle_item_created(sender, instance, created, **kwargs):  # noqa: ARG001
+    """Queue eligible external ratings after a new Item is committed."""
+    if not created or not eligible_rating_sources(instance):
+        return
+    if collect_external_rating_item_id(instance.pk):
+        return
+    transaction.on_commit(partial(enrich_external_ratings.delay, instance.pk))
 
 
 @receiver(connection_created)

@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from aiohttp import ClientError
 from django.conf import settings
@@ -30,10 +32,25 @@ from api.serializers.common import (
 )
 from api.services.filters import (
     apply_person_credit_filters,
-    update_item_external_ratings,
     update_item_filter_metadata,
 )
 from app import config, single_weight
+from app.external_ratings import (
+    RATING_SOURCES,
+    max_rating_value,
+    rating_sources_needing_refresh,
+    refresh_external_ratings,
+    source_label,
+)
+from app.external_ratings import (
+    normalize_rating_url as _normalize_rating_url,
+)
+from app.external_ratings import (
+    provider_rating_url as _provider_rating_url,
+)
+from app.external_ratings import (
+    third_party_rating_url as _third_party_rating_url,
+)
 from app.models import (
     CustomBackdropPreference,
     CustomLogoPreference,
@@ -44,11 +61,13 @@ from app.models import (
 )
 from app.providers import musicbrainz
 from app.providers import services as provider_services
+from app.providers.search_rank import rank_mixed_results
 from app.utils.color import build_accent_palette, compute_and_store_poster_accent
 
 SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
 MUSIC_SEARCH_CACHE_VERSION = "v4"
+ALL_MEDIA_SEARCH_TIMEOUT = 8
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
@@ -71,43 +90,13 @@ BACKDROP_UNSUPPORTED_MESSAGE = (
 LOGO_UNSUPPORTED_MESSAGE = "Logo customization is only available for TMDB movies/TV shows and IGDB games."
 logger = logging.getLogger(__name__)
 
-RATING_URL_BASES = {
-    "comicvine": "https://comicvine.gamespot.com/",
-    "hardcover": "https://hardcover.app/",
-    "igdb": "https://www.igdb.com/",
-    "imdb": "https://www.imdb.com/",
-    "letterboxd": "https://letterboxd.com/",
-    "mal": "https://myanimelist.net/",
-    "mangaupdates": "https://www.mangaupdates.com/",
-    "metacritic": "https://www.metacritic.com/",
-    "musicbrainz": "https://musicbrainz.org/",
-    "openlibrary": "https://openlibrary.org/",
-    "tmdb": "https://www.themoviedb.org/",
-    "tomatoes": "https://www.rottentomatoes.com/",
-}
-RATING_URL_HOSTS = {
-    "comicvine": {"comicvine.gamespot.com"},
-    "hardcover": {"hardcover.app"},
-    "igdb": {"igdb.com"},
-    "imdb": {"imdb.com"},
-    "letterboxd": {"boxd.it", "letterboxd.com"},
-    "mal": {"myanimelist.net"},
-    "mangaupdates": {"mangaupdates.com"},
-    "metacritic": {"metacritic.com"},
-    "musicbrainz": {"musicbrainz.org"},
-    "openlibrary": {"openlibrary.org"},
-    "tmdb": {"themoviedb.org"},
-    "tomatoes": {"rottentomatoes.com"},
-}
-
 
 def default_source_for(media_type):
     """Return the configured default source value for a media type."""
     return config.get_default_source_name(media_type).value
 
 
-def search_media(*, media_type, query, page=1, source=None, request=None, user=None):
-    """Search provider metadata with a versioned cache key."""
+def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fields=False, timeout=None):
     source = source or default_source_for(media_type)
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
     cache_version = (
@@ -115,14 +104,33 @@ def search_media(*, media_type, query, page=1, source=None, request=None, user=N
         if media_type == MediaTypes.MUSIC.value
         else SEARCH_CACHE_VERSION
     )
+    rank_suffix = ":rank" if preserve_ranking_fields else ""
     cache_key = (
         f"api:{cache_version}:search:{media_type}:{source}:{query_hash}:"
-        f"p{page}:u{getattr(settings, 'TMDB_LANG', 'en')}:nsfw{settings.TMDB_NSFW}"
+        f"p{page}:u{getattr(settings, 'TMDB_LANG', 'en')}:nsfw{settings.TMDB_NSFW}{rank_suffix}"
     )
     data = cache.get(cache_key)
     if data is None:
-        data = provider_services.search(media_type, query, page, source)
+        data = provider_services.search(
+            media_type,
+            query,
+            page,
+            source,
+            preserve_ranking_fields=preserve_ranking_fields,
+            timeout=timeout,
+        )
         cache.set(cache_key, data, SEARCH_TTL)
+    return source, data
+
+
+def search_media(*, media_type, query, page=1, source=None, request=None, user=None):
+    """Search provider metadata with a versioned cache key."""
+    source, data = _search_data(
+        media_type=media_type,
+        query=query,
+        page=page,
+        source=source,
+    )
 
     raw_results = data.get("results") or data.get("items") or []
     return [
@@ -135,6 +143,76 @@ def search_media(*, media_type, query, page=1, source=None, request=None, user=N
         )
         for item in raw_results
     ]
+
+
+def search_all_media(*, media_types, query, request=None, user=None):
+    """Search enabled providers concurrently and return one ranked result list."""
+    started_at = time.monotonic()
+    query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
+    executor = ThreadPoolExecutor(max_workers=len(media_types))
+    futures = {
+        media_type: executor.submit(
+            _search_data,
+            media_type=media_type,
+            query=query,
+            preserve_ranking_fields=True,
+            timeout=ALL_MEDIA_SEARCH_TIMEOUT,
+        )
+        for media_type in media_types
+    }
+    done, pending = wait(futures.values(), timeout=ALL_MEDIA_SEARCH_TIMEOUT)
+    completed = []
+    unavailable = []
+    candidates = []
+
+    for media_type in media_types:
+        future = futures[media_type]
+        if future not in done:
+            unavailable.append(media_type)
+            future.cancel()
+            continue
+        try:
+            source, data = future.result()
+        except Exception:  # noqa: BLE001 - one provider must not discard other results
+            unavailable.append(media_type)
+            logger.warning("All-media search provider failed: %s", media_type, exc_info=True)
+            continue
+
+        completed.append(media_type)
+        raw_results = data.get("results") or data.get("items") or []
+        for provider_rank, item in enumerate(raw_results):
+            candidate = dict(item)
+            candidate.setdefault("media_type", media_type)
+            candidate.setdefault("source", source)
+            candidates.append((provider_rank, candidate))
+
+    for future in pending:
+        future.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+
+    ranked = rank_mixed_results(query, candidates, limit=settings.PER_PAGE)
+    results = [
+        media_summary_from_provider(
+            item,
+            media_type=item["media_type"],
+            source=item["source"],
+            request=request,
+            user=user,
+        )
+        for item in ranked
+    ]
+    logger.info(
+        "All-media search query=%s elapsed_ms=%d completed=%s unavailable=%s",
+        query_hash,
+        int((time.monotonic() - started_at) * 1000),
+        completed,
+        unavailable,
+    )
+    return {
+        "results": results,
+        "completed_media_types": completed,
+        "unavailable_media_types": unavailable,
+    }
 
 
 def discover_media(
@@ -314,6 +392,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             media_id=media_id,
             season_number=season_number,
             episode_number=episode_number,
+            item=item,
         ),
     }
 
@@ -1637,151 +1716,6 @@ def enrich_episodes(metadata, source, user):
     return payload
 
 
-def _is_allowed_rating_host(host, allowed_hosts):
-    return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
-
-
-def _is_valid_rating_path(source, path):
-    if source != "imdb":
-        return True
-
-    segments = [segment for segment in path.split("/") if segment]
-    return (
-        len(segments) == 2
-        and segments[0] == "title"
-        and segments[1].startswith("tt")
-        and segments[1][2:].isdigit()
-    )
-
-
-def _safe_urlsplit(value):
-    try:
-        return urlsplit(value)
-    except ValueError:
-        return None
-
-
-def _absolute_rating_url(source, candidate, allowed_hosts):
-    parsed = _safe_urlsplit(candidate)
-    if parsed is None:
-        return None
-    if parsed.scheme:
-        return candidate
-    if candidate.startswith("//"):
-        return f"https:{candidate}"
-
-    first_segment = candidate.lstrip("/").split("/", 1)[0].lower()
-    if _is_allowed_rating_host(first_segment, allowed_hosts):
-        return f"https://{candidate.lstrip('/')}"
-    return urljoin(RATING_URL_BASES[source], candidate)
-
-
-def _normalize_rating_url(source, value):
-    """Return a trusted absolute HTTPS URL for a known rating provider."""
-    source = str(source).lower()
-    allowed_hosts = RATING_URL_HOSTS.get(source)
-    candidate = str(value or "").strip()
-    if not allowed_hosts or not candidate:
-        return None
-
-    candidate = _absolute_rating_url(source, candidate, allowed_hosts)
-    parsed = _safe_urlsplit(candidate) if candidate else None
-    if parsed is None:
-        return None
-    host = (parsed.hostname or "").lower().rstrip(".")
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not host
-        or parsed.username
-        or parsed.password
-        or not _is_allowed_rating_host(host, allowed_hosts)
-        or not _is_valid_rating_path(source, parsed.path)
-    ):
-        return None
-
-    if parsed.scheme.lower() == "http":
-        parsed = parsed._replace(scheme="https")
-    return parsed.geturl()
-
-
-def _provider_rating_fallback(
-    *,
-    source,
-    media_type,
-    media_id,
-    season_number=None,
-    episode_number=None,
-):
-    encoded_id = quote(str(media_id), safe="")
-    if source == Sources.TMDB.value and media_type == MediaTypes.SEASON.value:
-        return (
-            f"https://www.themoviedb.org/tv/{encoded_id}/season/{season_number}"
-            if season_number is not None
-            else None
-        )
-    if source == Sources.TMDB.value and media_type == MediaTypes.EPISODE.value:
-        if season_number is None or episode_number is None:
-            return None
-        return (
-            f"https://www.themoviedb.org/tv/{encoded_id}/season/"
-            f"{season_number}/episode/{episode_number}"
-        )
-
-    return {
-        (Sources.TMDB.value, MediaTypes.MOVIE.value): f"https://www.themoviedb.org/movie/{encoded_id}",
-        (Sources.TMDB.value, MediaTypes.TV.value): f"https://www.themoviedb.org/tv/{encoded_id}",
-        (Sources.MAL.value, MediaTypes.ANIME.value): f"https://myanimelist.net/anime/{encoded_id}",
-        (Sources.MAL.value, MediaTypes.MANGA.value): f"https://myanimelist.net/manga/{encoded_id}",
-        (
-            Sources.MUSICBRAINZ.value,
-            MediaTypes.MUSIC.value,
-        ): f"https://musicbrainz.org/release-group/{encoded_id}",
-        (Sources.OPENLIBRARY.value, MediaTypes.BOOK.value): f"https://openlibrary.org/books/{encoded_id}",
-        (Sources.HARDCOVER.value, MediaTypes.BOOK.value): f"https://hardcover.app/book/{encoded_id}",
-    }.get((source, media_type))
-
-
-def _provider_rating_url(
-    *,
-    metadata,
-    source,
-    media_type,
-    media_id,
-    season_number=None,
-    episode_number=None,
-):
-    """Return the provider page for its own rating, without guessing slug-based URLs."""
-    if url := _normalize_rating_url(source, metadata.get("source_url")):
-        return url
-
-    fallback = _provider_rating_fallback(
-        source=source,
-        media_type=media_type,
-        media_id=media_id,
-        season_number=season_number,
-        episode_number=episode_number,
-    )
-
-    return _normalize_rating_url(source, fallback)
-
-
-def _third_party_rating_url(*, metadata, rating_source, rating, media_type, media_id):
-    """Prefer MDBList's provider URL, then use identifiers already resolved by TMDB."""
-    if url := _normalize_rating_url(rating_source, rating.get("url")):
-        return url
-
-    external_links = metadata.get("external_links") or {}
-    fallback = None
-    if rating_source == "imdb":
-        fallback = external_links.get("IMDb") or external_links.get("imdb")
-    elif rating_source == "letterboxd" and media_type == MediaTypes.MOVIE.value:
-        fallback = external_links.get("Letterboxd") or external_links.get("letterboxd")
-        if not fallback:
-            fallback = f"https://letterboxd.com/tmdb/{quote(str(media_id), safe='')}"
-
-    return _normalize_rating_url(rating_source, fallback)
-
-
 def _normalized_external_rating(*, metadata, rating_source, rating, media_type, media_id):
     """Normalize a provider-supplied rating or link-only rating hint."""
     value = rating.get("value") or rating.get("score")
@@ -1830,15 +1764,93 @@ def _provider_external_ratings(
         **provider_ratings.get("imdb", {}),
         **imdb_rating,
     }
-    update_item_external_ratings(
-        source=source,
-        media_type=media_type,
-        media_id=media_id,
-        season_number=season_number,
-        episode_number=episode_number,
-        ratings={"imdb": imdb_rating},
-    )
     return provider_ratings
+
+
+def _compact_decimal(value):
+    text = format(value, "f").rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _stored_external_ratings(item, metadata):
+    ratings = {}
+    if metadata.get("score") is not None:
+        ratings[item.source] = {
+            "source": source_label(item.source),
+            "value": str(metadata["score"]),
+            "vote_count": metadata.get("score_count"),
+            "max_value": max_rating_value(item.source),
+            "url": _provider_rating_url(
+                metadata=metadata,
+                source=item.source,
+                media_type=item.media_type,
+                media_id=item.media_id,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+            ),
+        }
+
+    for rating_source, rating in (metadata.get("external_ratings") or {}).items():
+        normalized = _normalized_external_rating(
+            metadata=metadata,
+            rating_source=rating_source,
+            rating=rating,
+            media_type=item.media_type,
+            media_id=item.media_id,
+        )
+        if normalized is not None:
+            ratings[rating_source] = normalized
+
+    source_order = {source: index for index, source in enumerate(RATING_SOURCES)}
+    stored = sorted(
+        item.external_ratings.exclude(value=None),
+        key=lambda rating: (
+            source_order.get(rating.rating_source, len(source_order)),
+            rating.rating_source,
+        ),
+    )
+    for rating in stored:
+        if rating.rating_source == item.source and metadata.get("score") is not None:
+            continue
+        value = _compact_decimal(rating.value)
+        if rating.rating_source == "tomatoes":
+            value = f"{value}%"
+        max_value = (
+            max_rating_value(rating.rating_source)
+            if rating.rating_source in RATING_SOURCES
+            else _compact_decimal(rating.max_value)
+        )
+        ratings[rating.rating_source] = {
+            "source": source_label(rating.rating_source),
+            "value": value,
+            "vote_count": rating.vote_count,
+            "max_value": max_value,
+            "url": rating.canonical_url,
+        }
+
+    return [
+        ratings[source]
+        for source in sorted(
+            ratings,
+            key=lambda source: (source_order.get(source, len(source_order)), source),
+        )
+    ]
+
+
+def _tracked_external_ratings(item, metadata):
+    """Persist native metadata, queue optional work, and return cached ratings."""
+    if item.source in RATING_SOURCES:
+        refresh_external_ratings(item, [item.source], metadata=metadata)
+    pending = [
+        rating_source
+        for rating_source in rating_sources_needing_refresh(item)
+        if rating_source != item.source
+    ]
+    if pending:
+        from app.tasks import enrich_external_ratings
+
+        enrich_external_ratings.delay(item.pk, pending)
+    return _stored_external_ratings(item, metadata)
 
 
 def external_ratings(
@@ -1849,8 +1861,12 @@ def external_ratings(
     media_id,
     season_number=None,
     episode_number=None,
+    item=None,
 ):
     """Normalize provider and third-party ratings for media detail."""
+    if item is not None:
+        return _tracked_external_ratings(item, metadata)
+
     ratings = []
     score = metadata.get("score")
     if score is not None:
@@ -1896,14 +1912,6 @@ def external_ratings(
 
         mdblist_type = MediaTypes.TV.value if media_type == MediaTypes.SEASON.value else media_type
         mdblist_ratings = mdblist.get_media_ratings(media_id, mdblist_type) or {}
-        update_item_external_ratings(
-            source=source,
-            media_type=media_type,
-            media_id=media_id,
-            season_number=season_number,
-            episode_number=episode_number,
-            ratings=mdblist_ratings,
-        )
         for rating_source, rating in mdblist_ratings.items():
             normalized = _normalized_external_rating(
                 metadata=metadata,
@@ -1931,36 +1939,6 @@ def external_ratings(
             )
 
     return ratings
-
-
-def source_label(source):
-    """Return user-facing source names."""
-    return {
-        "igdb": "IGDB",
-        "imdb": "IMDb",
-        "letterboxd": "Letterboxd",
-        "mal": "MAL",
-        "mangaupdates": "MangaUpdates",
-        "openlibrary": "OpenLibrary",
-        "hardcover": "Hardcover",
-        "metacritic": "Metacritic",
-        "musicbrainz": "MusicBrainz",
-        "tmdb": "TMDB",
-        "tomatoes": "Rotten Tomatoes",
-    }.get(source, source.title())
-
-
-def max_rating_value(source):
-    """Return display max for known rating scales."""
-    return {
-        "hardcover": "5",
-        "igdb": "100",
-        "letterboxd": "5",
-        "metacritic": "100",
-        "musicbrainz": "5",
-        "openlibrary": "5",
-        "tomatoes": "100%",
-    }.get(source, "10")
 
 
 def tv_seasons(*, source, media_id, request=None, user=None):

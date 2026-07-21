@@ -518,6 +518,62 @@ final class MusicContractTests: XCTestCase {
         XCTAssertFalse(viewModel.mediaTypes.contains("music"))
     }
 
+    func testSearchUsesAuthenticatedEnabledMediaTypesWhenAvailable() async throws {
+        let meta = try JSONDecoder.api.decode(MetaResponse.self, from: Data("""
+        {
+          "version": "1",
+          "media_types": ["movie", "book", "music"],
+          "enabled_media_types": ["book"],
+          "sources": {},
+          "status_choices": [],
+          "source_choices": []
+        }
+        """.utf8))
+        let viewModel = SearchViewModel(
+            mediaRepository: MetaOnlyMediaRepository(meta: meta),
+            onUnauthorized: {}
+        )
+
+        await viewModel.loadMeta()
+
+        XCTAssertEqual(viewModel.mediaTypes, ["book"])
+    }
+
+    func testEmptyAuthenticatedEnabledMediaTypesDoNotRestoreFallbackTypes() async throws {
+        let meta = try JSONDecoder.api.decode(MetaResponse.self, from: Data("""
+        {
+          "version": "1",
+          "media_types": ["movie", "book"],
+          "enabled_media_types": [],
+          "sources": {},
+          "status_choices": [],
+          "source_choices": []
+        }
+        """.utf8))
+        let viewModel = SearchViewModel(
+            mediaRepository: MetaOnlyMediaRepository(meta: meta),
+            onUnauthorized: {}
+        )
+
+        await viewModel.loadMeta()
+
+        XCTAssertTrue(viewModel.mediaTypes.isEmpty)
+    }
+
+    func testAllSearchScopesPutAllBeforeEnabledPrimaryTypes() {
+        XCTAssertEqual(
+            SearchViewModel.allSearchScopes(from: ["movie", "season", "book", "episode"]),
+            [APIConstants.allMedia, "movie", "book"]
+        )
+    }
+
+    func testAllSearchWarningFormatsUnavailableMediaNames() {
+        XCTAssertEqual(
+            MediaSearchWarning.message(for: ["book", "music"]),
+            "Books and Music couldn’t be searched. Other results are shown."
+        )
+    }
+
     func testMusicLensPersistsAndUnknownLensRecovers() {
         let defaults = UserDefaults(suiteName: "MusicLensPhase11Tests")!
         defer { defaults.removePersistentDomain(forName: "MusicLensPhase11Tests") }
@@ -534,6 +590,24 @@ final class MusicContractTests: XCTestCase {
         let recoveredStore = MediaLensStore(defaults: defaults)
         XCTAssertEqual(recoveredStore.validateSelection(in: ["movie", "music"]), "movie")
         XCTAssertEqual(defaults.string(forKey: MediaLensStore.persistenceKey), "movie")
+    }
+
+    func testAllMediaThemeUsesNeutralGridWithoutBecomingAStoredMediaType() {
+        let defaults = UserDefaults(suiteName: "AllMediaLensTests")!
+        defer { defaults.removePersistentDomain(forName: "AllMediaLensTests") }
+        defaults.removePersistentDomain(forName: "AllMediaLensTests")
+        let store = MediaLensStore(defaults: defaults)
+
+        let theme = MediaTypeTheme.theme(for: APIConstants.allMedia)
+        _ = store.theme(for: APIConstants.allMedia)
+
+        XCTAssertEqual(theme.displayName, "All Media")
+        XCTAssertEqual(theme.symbolName, "square.grid.2x2")
+        XCTAssertEqual(store.selectedMediaType, "movie")
+        XCTAssertNil(defaults.string(forKey: MediaLensStore.persistenceKey))
+
+        store.setMediaType("book")
+        XCTAssertEqual(defaults.string(forKey: MediaLensStore.persistenceKey), "book")
     }
 
     func testMusicSearchUsesExactQueryAndGenericDetailPath() async throws {
@@ -586,6 +660,56 @@ final class MusicContractTests: XCTestCase {
             "https://example.com/api/v1/media/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/"
         )
         XCTAssertEqual(detail.ref.mediaType, "music")
+    }
+
+    func testAllMediaSearchUsesScopeAndDecodesUnavailableTypes() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MusicContractURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let repository = APIMediaRepository(client: APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            session: session
+        ))
+
+        MusicContractURLProtocol.handler = { request in
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            ))
+            return (response, Data("""
+            {
+              "count": 0,
+              "next": null,
+              "previous": null,
+              "results": [],
+              "unavailable_media_types": ["book", "music"]
+            }
+            """.utf8))
+        }
+
+        let response = try await repository.searchAll(query: "deathly hallows")
+        let url = try XCTUnwrap(MusicContractURLProtocol.lastRequest?.url)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+
+        XCTAssertEqual(components.path, "/api/v1/media/search/")
+        XCTAssertEqual(query["q"]!, "deathly hallows")
+        XCTAssertEqual(query["scope"]!, APIConstants.allMedia)
+        XCTAssertEqual(MusicContractURLProtocol.lastRequest?.timeoutInterval, 12)
+        XCTAssertEqual(response.unavailableMediaTypes, ["book", "music"])
+    }
+
+    func testAllMediaSearchPublishesPartialFailureTypes() async {
+        let viewModel = SearchViewModel(mediaRepository: AllSearchMediaRepository(), onUnauthorized: {})
+
+        await viewModel.search("dune", mediaType: APIConstants.allMedia)
+
+        XCTAssertEqual(viewModel.results.map(\.title), ["Dune"])
+        XCTAssertEqual(viewModel.unavailableMediaTypes, ["music"])
+        XCTAssertNil(viewModel.errorMessage)
     }
 
     func testMusicArtworkUsesSquareLayoutAndFallback() {
@@ -702,6 +826,53 @@ final class MusicContractTests: XCTestCase {
         XCTAssertFalse(viewModel.isLoading)
     }
 
+    func testChangingAllSearchIgnoresOldResponse() async throws {
+        let repository = DelayedSearchMediaRepository()
+        let viewModel = SearchViewModel(mediaRepository: repository, onUnauthorized: {})
+
+        let oldSearch = Task { await viewModel.search("slow", mediaType: APIConstants.allMedia) }
+        try await Task.sleep(for: .milliseconds(10))
+        await viewModel.search("new", mediaType: APIConstants.allMedia)
+        await oldSearch.value
+
+        XCTAssertEqual(viewModel.query, "new")
+        XCTAssertEqual(viewModel.results.map(\.title), ["new"])
+        XCTAssertTrue(viewModel.unavailableMediaTypes.isEmpty)
+    }
+
+    func testChangingDiaryAllSearchIgnoresOldResultsAndWarnings() async throws {
+        let viewModel = DiaryCreateViewModel(
+            diaryRepository: UnusedDiaryRepository(),
+            mediaRepository: DelayedSearchMediaRepository(),
+            onUnauthorized: {}
+        )
+        viewModel.query = "slow"
+        let oldSearch = Task { await viewModel.search() }
+        try await Task.sleep(for: .milliseconds(10))
+
+        viewModel.query = "new"
+        await viewModel.search()
+        await oldSearch.value
+
+        XCTAssertEqual(viewModel.results.map(\.title), ["new"])
+        XCTAssertTrue(viewModel.unavailableMediaTypes.isEmpty)
+        XCTAssertFalse(viewModel.isSearching)
+    }
+
+    func testDiaryPreferenceUpdateRecoversDisabledScopeToAll() {
+        let viewModel = DiaryCreateViewModel(
+            diaryRepository: UnusedDiaryRepository(),
+            mediaRepository: DelayedSearchMediaRepository(),
+            onUnauthorized: {}
+        )
+        viewModel.mediaType = "book"
+
+        viewModel.setEnabledMediaTypes(["movie", "season", "episode"])
+
+        XCTAssertEqual(viewModel.mediaTypes, ["movie"])
+        XCTAssertEqual(viewModel.mediaType, APIConstants.allMedia)
+    }
+
     private static func albumDetail() throws -> MediaDetail {
         try JSONDecoder.api.decode(MediaDetail.self, from: contractData("album-detail.example.json"))
     }
@@ -793,6 +964,35 @@ private struct MetaOnlyMediaRepository: MediaRepository {
     func saveLogo(ref _: MediaRef, logoURL _: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
+private struct AllSearchMediaRepository: MediaRepository {
+    func meta() async throws -> MetaResponse { fatalError("Not used") }
+    func search(query _: String, mediaType _: String) async throws -> [MediaSummary] { fatalError("Not used") }
+    func searchAll(query _: String) async throws -> MediaSearchResponse {
+        MediaSearchResponse(
+            results: [MediaSummary(
+                ref: MediaRef(
+                    itemId: nil,
+                    source: "tmdb",
+                    mediaType: "movie",
+                    mediaId: "dune",
+                    seasonNumber: nil,
+                    episodeNumber: nil
+                ),
+                title: "Dune"
+            )],
+            unavailableMediaTypes: ["music"]
+        )
+    }
+    func detail(ref _: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
+    func reviews(ref _: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
+    func posters(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func savePoster(ref _: MediaRef, posterURL _: String) async throws -> PosterSaveResponse { fatalError("Not used") }
+    func backdrops(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func saveBackdrop(ref _: MediaRef, backdropURL _: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref _: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref _: MediaRef, logoURL _: String) async throws -> LogoSaveResponse { fatalError("Not used") }
+}
+
 @MainActor
 private struct DelayedSearchMediaRepository: MediaRepository {
     func meta() async throws -> MetaResponse { fatalError("Not used") }
@@ -812,6 +1012,13 @@ private struct DelayedSearchMediaRepository: MediaRepository {
         )]
     }
 
+    func searchAll(query: String) async throws -> MediaSearchResponse {
+        MediaSearchResponse(
+            results: try await search(query: query, mediaType: APIConstants.allMedia),
+            unavailableMediaTypes: query == "slow" ? ["music"] : []
+        )
+    }
+
     func detail(ref _: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
     func reviews(ref _: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
     func posters(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
@@ -820,6 +1027,14 @@ private struct DelayedSearchMediaRepository: MediaRepository {
     func saveBackdrop(ref _: MediaRef, backdropURL _: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
     func logos(ref _: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
     func saveLogo(ref _: MediaRef, logoURL _: String) async throws -> LogoSaveResponse { fatalError("Not used") }
+}
+
+private struct UnusedDiaryRepository: DiaryRepository {
+    func list(tag _: String?) async throws -> [DiaryEntry] { fatalError("Not used") }
+    func detail(id _: Int) async throws -> DiaryEntry { fatalError("Not used") }
+    func create(_: DiaryEntryWriteRequest) async throws -> DiaryEntry { fatalError("Not used") }
+    func setLike(entryId _: Int, liked _: Bool) async throws -> LikeState { fatalError("Not used") }
+    func tags(query _: String) async throws -> [DiaryTagSuggestion] { fatalError("Not used") }
 }
 
 private final class MusicContractURLProtocol: URLProtocol {

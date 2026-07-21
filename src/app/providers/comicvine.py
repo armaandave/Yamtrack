@@ -94,11 +94,12 @@ def handle_error(error):
     raise services.ProviderAPIError(Sources.COMICVINE.value, error)
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for comics on Comic Vine."""
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
     cache_key = (
         f"search_{COMIC_SEARCH_CACHE_VERSION}_{Sources.COMICVINE.value}_"
-        f"{MediaTypes.COMIC.value}_{query}_{page}"
+        f"{MediaTypes.COMIC.value}_{query}_{page}{rank_suffix}"
     )
     data = cache.get(cache_key)
 
@@ -122,12 +123,18 @@ def search(query, page):
                 f"{base_url}/search/",
                 params=params,
                 headers=headers,
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             handle_error(error)
 
         results = build_search_results(response["results"], query=query)
-        results = rank_results(query, results, MediaTypes.COMIC.value)
+        results = rank_results(
+            query,
+            results,
+            MediaTypes.COMIC.value,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         total_results = response["number_of_total_results"]
         data = helpers.format_search_response(

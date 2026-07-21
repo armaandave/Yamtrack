@@ -71,6 +71,9 @@ class IMDbProviderTests(TestCase):
         client.send_api_asset.side_effect = RuntimeError("temporary outage")
         self.assertIsNone(imdb.get_title_rating("tt0000002"))
 
+        with self.assertRaisesRegex(RuntimeError, "Cached IMDb rating lookup failure"):
+            imdb.get_title_rating("tt0000002", raise_errors=True)
+
     @override_settings(IMDB_API_KEY="")
     @patch("app.providers.imdb._client")
     def test_unconfigured_or_invalid_ids_do_not_call_aws(self, client_mock):

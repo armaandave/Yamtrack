@@ -51,7 +51,7 @@ def handle_error(error):
     raise services.ProviderAPIError(Sources.HARDCOVER.value, error)
 
 
-def search(query, page, *, preserve_ranking_fields=False):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for books on Hardcover."""
     query = cap_search_query(query)
     match_suffix = "_match" if preserve_ranking_fields else ""
@@ -87,6 +87,7 @@ def search(query, page, *, preserve_ranking_fields=False):
                 base_url,
                 params={"query": search_query, "variables": variables},
                 headers={"Authorization": settings.HARDCOVER_API},
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             response = handle_error(error)

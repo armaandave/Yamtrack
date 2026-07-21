@@ -1021,6 +1021,15 @@ class Metadata(TestCase):
         self.assertIn("/appdetails", api_request_mock.call_args.args[2])
         self.assertEqual(api_request_mock.call_args.kwargs["params"]["appids"], "1245620")
 
+    @patch("app.providers.steam.igdb.steam_app_id")
+    def test_steam_metacritic_failure_can_be_raised(self, steam_id_mock):
+        cache.clear()
+        steam_id_mock.side_effect = requests.ConnectionError("temporary outage")
+
+        self.assertIsNone(steam.get_metacritic_rating("119133"))
+        with self.assertRaisesRegex(RuntimeError, "Cached Steam Metacritic lookup failure"):
+            steam.get_metacritic_rating("119133", raise_errors=True)
+
     @requires_provider_network
     def test_book(self):
         """Test the metadata method for books."""

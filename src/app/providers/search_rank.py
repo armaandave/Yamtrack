@@ -60,6 +60,21 @@ def rank_results(query, results, media_type=None, *, preserve_ranking_fields=Fal
     return [_without_ranking_fields(result) for _, _, result in ranked]
 
 
+def rank_mixed_results(query, candidates, *, limit):
+    """Rank provider-ranked candidates together with the shared search score."""
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -_score(query, candidate[1], candidate[1].get("media_type")),
+            candidate[0],
+            str(candidate[1].get("media_type") or ""),
+            str(candidate[1].get("source") or ""),
+            str(candidate[1].get("media_id") or candidate[1].get("id") or ""),
+        ),
+    )
+    return [_without_ranking_fields(result) for _, result in ranked[:limit]]
+
+
 def _score(query, result, media_type):
     normalized_query = normalize_search_text(query)
     normalized_title = normalize_search_text(result.get("title") or result.get("name"))

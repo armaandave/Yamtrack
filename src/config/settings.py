@@ -676,6 +676,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "Cleanup user messages",
         "schedule": 60 * 60 * 24,  # every 24 hours
     },
+    "queue_stale_external_ratings": {
+        "task": "Queue stale external ratings",
+        "schedule": 60 * 60 * 24,  # every 24 hours
+    },
 }
 
 IS_PROD = not any(cmd in sys.argv for cmd in ("runserver", "test"))

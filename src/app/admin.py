@@ -12,6 +12,7 @@ from app.models import (
     DiaryEntry,
     DiaryEntryTag,
     Episode,
+    ExternalRating,
     Item,
     ItemFilterFacet,
     MediaLike,
@@ -35,6 +36,24 @@ class ItemAdmin(admin.ModelAdmin):
         "source",
     ]
     list_filter = ["media_type", "source"]
+
+
+@admin.register(ExternalRating)
+class ExternalRatingAdmin(admin.ModelAdmin):
+    """Admin visibility for cached external ratings."""
+
+    search_fields = ["item__title", "item__media_id", "rating_source"]
+    list_display = [
+        "item",
+        "rating_source",
+        "status",
+        "value",
+        "max_value",
+        "last_attempted_at",
+        "last_success_at",
+    ]
+    list_filter = ["status", "rating_source"]
+    list_select_related = ["item"]
 
 
 @admin.register(Episode)

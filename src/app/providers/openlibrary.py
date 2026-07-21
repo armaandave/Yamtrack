@@ -31,7 +31,7 @@ def handle_error(error):
     )
 
 
-def search(query, page, *, preserve_ranking_fields=False):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for books on Open Library."""
     match_suffix = "_match" if preserve_ranking_fields else ""
     cache_key = (
@@ -58,6 +58,7 @@ def search(query, page, *, preserve_ranking_fields=False):
                 search_url,
                 params=params,
                 headers=headers,
+                timeout=timeout,
             )
         except requests.RequestException as e:
             handle_error(e)

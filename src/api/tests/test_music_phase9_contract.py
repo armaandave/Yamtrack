@@ -179,6 +179,9 @@ class MusicPhase9ContractTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
+        enqueue_patcher = patch("app.signals.enrich_external_ratings.delay")
+        enqueue_patcher.start()
+        self.addCleanup(enqueue_patcher.stop)
         self.client = APIClient()
         self.user = get_user_model().objects.create_user(
             id=901,
