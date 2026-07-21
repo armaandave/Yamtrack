@@ -505,16 +505,8 @@
         "value": "average_rating"
       },
       {
-        "label": "Letterboxd Rating",
-        "value": "letterboxd_rating"
-      },
-      {
-        "label": "IMDb Rating",
-        "value": "imdb_rating"
-      },
-      {
-        "label": "Rotten Tomatoes",
-        "value": "rotten_tomatoes_rating"
+        "label": "MusicBrainz Rating",
+        "value": "rating:musicbrainz"
       }
     ],
     "years": [
@@ -767,6 +759,16 @@
         "label": "18 Jan, 2026",
         "value": "j M, Y"
       }
+    ],
+    "enabled_media_types": [
+      "movie",
+      "tv",
+      "anime",
+      "manga",
+      "game",
+      "book",
+      "comic",
+      "music"
     ],
     "media_types": [
       "tv",

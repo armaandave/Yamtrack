@@ -3,22 +3,35 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.apps import apps
+from django.conf import settings
 from django.db import models
-from django.db.models import Avg, Case, OuterRef, Q, Subquery, Value, When
+from django.db.models import (
+    Avg,
+    Case,
+    F,
+    FilteredRelation,
+    OuterRef,
+    Q,
+    Subquery,
+    Value,
+    When,
+)
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from requests import RequestException
+from rest_framework.exceptions import ValidationError
 
 from app import exposure
-from app.models import Item, ItemFilterFacet, MediaTypes, Status
+from app.external_ratings import RATING_SOURCES, rating_source_is_exposed
+from app.models import ExternalRating, Item, ItemFilterFacet, MediaTypes, Status
 
 logger = logging.getLogger(__name__)
 
-RATING_SORTS = {
-    "letterboxd_rating": "letterboxd_rating",
-    "imdb_rating": "imdb_rating",
-    "rotten_tomatoes_rating": "rotten_tomatoes_rating",
+LEGACY_RATING_SORTS = {
+    "letterboxd_rating": "letterboxd",
+    "imdb_rating": "imdb",
+    "rotten_tomatoes_rating": "tomatoes",
 }
 
 API_SORTS = [
@@ -26,9 +39,6 @@ API_SORTS = [
     {"value": "release_date", "label": "Release Date"},
     {"value": "your_rating", "label": "Your Rating"},
     {"value": "average_rating", "label": "Average Rating"},
-    {"value": "letterboxd_rating", "label": "Letterboxd Rating"},
-    {"value": "imdb_rating", "label": "IMDb Rating"},
-    {"value": "rotten_tomatoes_rating", "label": "Rotten Tomatoes"},
 ]
 
 DESC_SORTS = {
@@ -296,18 +306,57 @@ def order_queryset(
     your_rating_field=None,
     default_sort="title",
     extra_sorts=None,
+    rating_scope_queryset=None,
 ):
     """Apply shared sort options with stable null handling."""
     sort = params.get("sort") or params.get("ordering") or default_sort
+    rating_source = rating_source_for_sort(sort)
+    if rating_source:
+        applicable_sources = _applicable_rating_sources(
+            rating_scope_queryset if rating_scope_queryset is not None else queryset,
+            params,
+            item_path,
+        )
+        if rating_source not in applicable_sources:
+            raise ValidationError({
+                "sort": [
+                    f"External rating source '{rating_source}' is not applicable to this collection.",
+                ],
+            })
+
     direction = params.get("direction")
     if direction not in {"asc", "desc"}:
-        direction = "desc" if sort in DESC_SORTS else "asc"
+        direction = "desc" if rating_source or sort in DESC_SORTS else "asc"
     descending = direction == "desc"
+
+    if rating_source:
+        relation = f"{item_path}external_ratings"
+        queryset = queryset.alias(
+            external_rating_sort=FilteredRelation(
+                relation,
+                condition=Q(
+                    **{
+                        f"{relation}__rating_source": rating_source,
+                        f"{relation}__status": ExternalRating.Status.AVAILABLE,
+                    },
+                ),
+            ),
+        )
+        value_order = (
+            F("external_rating_sort__value").desc(nulls_last=True)
+            if descending
+            else F("external_rating_sort__value").asc(nulls_last=True)
+        )
+        return queryset.order_by(
+            value_order,
+            Lower(f"{item_path}title").asc(),
+            f"{item_path}id",
+            "id",
+        )
 
     sort_fields = {
         "title": f"{item_path}title",
         "release_date": f"{item_path}release_date",
-        **{key: f"{item_path}{field}" for key, field in RATING_SORTS.items()},
         **(extra_sorts or {}),
     }
 
@@ -334,12 +383,19 @@ def order_queryset(
     return _order_by_field(queryset, field, descending, item_path)
 
 
-def filter_options_for_items(queryset, *, item_path="item__"):
+def filter_options_for_items(queryset, params=None, *, item_path="item__"):
     """Return available facet values for an Item-backed queryset."""
     item_ids = queryset.values_list(f"{item_path}id", flat=True)
     facets = ItemFilterFacet.objects.filter(item_id__in=item_ids)
+    rating_sorts = [
+        {
+            "value": f"rating:{source}",
+            "label": f"{RATING_SOURCES[source]['label']} Rating",
+        }
+        for source in _applicable_rating_sources(queryset, params or {}, item_path)
+    ]
     return {
-        "sorts": API_SORTS,
+        "sorts": [*API_SORTS, *rating_sorts],
         "genres": _facet_values(facets, ItemFilterFacet.FacetType.GENRE),
         "languages": _facet_values(facets, ItemFilterFacet.FacetType.LANGUAGE),
         "years": list(
@@ -351,7 +407,75 @@ def filter_options_for_items(queryset, *, item_path="item__"):
     }
 
 
-def apply_person_credit_filters(credit_list, params):
+def rating_source_for_sort(sort):
+    """Return the registry key for a canonical or legacy rating sort."""
+    if sort in LEGACY_RATING_SORTS:
+        return LEGACY_RATING_SORTS[sort]
+    if sort.startswith("rating"):
+        if not sort.startswith("rating:"):
+            raise ValidationError({"sort": ["Use rating:<rating_source>."]})
+        parts = sort.split(":")
+        if len(parts) != 2 or not parts[1]:
+            raise ValidationError({"sort": ["Use rating:<rating_source>."]})
+        source = parts[1]
+        if source not in RATING_SOURCES:
+            raise ValidationError({
+                "sort": [f"Unknown external rating source '{source}'."],
+            })
+        return source
+    return None
+
+
+def _applicable_rating_sources(queryset, params, item_path):
+    """Return registry sources matching represented Item identities."""
+    media_types = values(params, "media_type")
+    if media_types:
+        queryset = queryset.filter(**{f"{item_path}media_type__in": media_types})
+    identities = set(
+        queryset.order_by()
+        .values_list(f"{item_path}source", f"{item_path}media_type")
+        .distinct(),
+    )
+    return [
+        source
+        for source, definition in RATING_SOURCES.items()
+        if rating_source_is_exposed(source)
+        and any(
+            item_source in definition["item_sources"]
+            and media_type in definition["media_types"]
+            for item_source, media_type in identities
+        )
+    ]
+
+
+def person_rating_source(credit_list, params):
+    """Validate and return an external rating source for a person sort."""
+    sort = params.get("sort") or params.get("ordering") or "average_rating"
+    source = rating_source_for_sort(sort)
+    if not source:
+        return None
+    if not settings.EXTERNAL_RATING_PERSON_PREPARATION_ENABLED:
+        raise ValidationError({
+            "sort": ["External rating filmography sorts are not enabled."],
+        })
+
+    media_types = set(values(params, "media_type"))
+    definition = RATING_SOURCES[source]
+    if not any(
+        (not media_types or credit.get("media_type") in media_types)
+        and credit.get("source") in definition["item_sources"]
+        and credit.get("media_type") in definition["media_types"]
+        for credit in credit_list
+    ):
+        raise ValidationError({
+            "sort": [
+                f"External rating source '{source}' is not applicable to this filmography.",
+            ],
+        })
+    return source
+
+
+def apply_person_credit_filters(credit_list, params, *, rating_source=None):
     """Apply in-memory filters to provider person credits."""
     active_keys = {
         "media_type",
@@ -426,10 +550,20 @@ def apply_person_credit_filters(credit_list, params):
     sort = params.get("sort") or "average_rating"
     direction = params.get("direction")
     if direction not in {"asc", "desc"}:
-        direction = "desc" if sort in DESC_SORTS else "asc"
+        direction = "desc" if rating_source or sort in DESC_SORTS else "asc"
     descending = direction == "desc"
 
-    if sort == "release_date":
+    if rating_source:
+        def key(credit):
+            rating = credit.get("_external_rating")
+            value = rating.value if rating is not None and rating.value is not None else None
+            return (
+                value is None,
+                -value if descending and value is not None else value,
+                (credit.get("title") or "").casefold(),
+                credit.get("_catalog_item_id") or 0,
+            )
+    elif sort == "release_date":
         def key(credit):
             release_date = _credit_release_date(credit)
             ordinal = release_date.toordinal() if release_date else 0

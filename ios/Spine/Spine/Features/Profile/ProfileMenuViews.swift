@@ -1287,6 +1287,7 @@ private struct ProfileListDetailView: View {
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
+                currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
                 onUnauthorized: onUnauthorized

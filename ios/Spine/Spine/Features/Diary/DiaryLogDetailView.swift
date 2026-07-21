@@ -58,6 +58,7 @@ final class DiaryLogDetailViewModel {
             self.entry = try await diaryRepository.update(id: entry.id, request: request)
             if let ref = self.entry?.media.ref {
                 await loadMediaDetail(for: ref)
+                MediaStateChange.post(ref: ref)
             }
             NotificationCenter.default.post(name: .diaryEntriesDidChange, object: nil)
             return true
@@ -77,8 +78,10 @@ final class DiaryLogDetailViewModel {
         defer { isDeleting = false }
 
         do {
+            let ref = entry.media.ref
             try await diaryRepository.delete(id: entry.id)
             NotificationCenter.default.post(name: .diaryEntriesDidChange, object: nil)
+            MediaStateChange.post(ref: ref)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -305,7 +308,7 @@ struct DiaryLogDetailView: View {
 
                     if let logged = DiaryLogFormat.dateLabel(entry.consumedAt) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            if entry.isRewatch {
+                            if entry.isTrueReread ?? entry.isRewatch {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundStyle(.white.opacity(0.74))
@@ -455,6 +458,7 @@ struct DiaryLogDetailView: View {
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
+            currentUserId: currentUserId,
             selectedTab: selectedTab,
             onSelectTab: onSelectTab,
             onUnauthorized: onUnauthorized
@@ -617,7 +621,7 @@ private final class DiaryLogEditViewModel {
         consumedAt = CalendarDateCodec.date(from: entry.consumedAt) ?? Date()
         let rating = entry.rating.flatMap { Decimal(string: $0) }
         ratingSteps = rating.map {
-            entry.media.ref.isSingleWeight
+            entry.media.ref.usesFiveStarRatingScale
                 ? NSDecimalNumber(decimal: $0 * 2).intValue
                 : NSDecimalNumber(decimal: $0).intValue
         } ?? 0
@@ -625,7 +629,7 @@ private final class DiaryLogEditViewModel {
         review = entry.review ?? ""
         tags = entry.tags
         liked = entry.liked
-        isRewatch = entry.isRewatch
+        isRewatch = entry.isTrueReread ?? entry.isRewatch
         containsSpoilers = entry.containsSpoilers
         visibility = entry.visibility
     }
@@ -675,7 +679,7 @@ private final class DiaryLogEditViewModel {
         DiaryEntryUpdateRequest(
             consumedAt: consumedAt,
             rating: ratingSteps > 0
-                ? entry.media.ref.isSingleWeight ? Decimal(ratingSteps) / 2 : Decimal(ratingSteps)
+                ? entry.media.ref.usesFiveStarRatingScale ? Decimal(ratingSteps) / 2 : Decimal(ratingSteps)
                 : nil,
             review: review,
             reviewTitle: reviewTitle,
@@ -684,7 +688,7 @@ private final class DiaryLogEditViewModel {
             isRewatch: isRewatch,
             containsSpoilers: containsSpoilers,
             visibility: entry.media.ref.isSingleWeight ? nil : visibility,
-            calendarDateOnly: entry.media.ref.isSingleWeight,
+            calendarDateOnly: entry.media.ref.usesCalendarConsumptionDate,
             includesRating: true
         )
     }
@@ -771,7 +775,7 @@ private struct DiaryLogEditSheet: View {
                 DatePicker(
                     viewModel.entry.media.ref.consumedDateLabel,
                     selection: $viewModel.consumedAt,
-                    in: Date.distantPast...(viewModel.entry.media.ref.isSingleWeight ? Date() : Date.distantFuture),
+                    in: Date.distantPast...(viewModel.entry.media.ref.usesCalendarConsumptionDate ? Date() : Date.distantFuture),
                     displayedComponents: [.date]
                 )
                     .datePickerStyle(.compact)

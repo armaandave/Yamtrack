@@ -46,6 +46,7 @@ class DiaryListView(APIView):
             )
             .order_by("-consumed_at", "-id")
         )
+        rating_scope_queryset = entries
         item_id = request.query_params.get("item_id")
         tag = request.query_params.get("tag", "").strip().lower()
         has_review = request.query_params.get("has_review") == "true"
@@ -73,10 +74,12 @@ class DiaryListView(APIView):
             your_rating_field="rating",
             default_sort="consumed_at",
             extra_sorts={"consumed_at": "consumed_at", "created_at": "created_at"},
+            rating_scope_queryset=rating_scope_queryset,
         )
 
         paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(entries, request, view=self)
+        page = list(paginator.paginate_queryset(entries, request, view=self))
+        diary_service.prime_diary_likes(page, request.user)
         return paginator.get_paginated_response(
             [
                 diary_service.diary_payload(entry, request=request, viewer=request.user)

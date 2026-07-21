@@ -77,6 +77,7 @@ from api.views.social import (
 from api.views.stats import MyStatsSummaryView, UserStatsSummaryView
 from api.views.tracking import (
     BookCompleteView,
+    BookJourneyView,
     BookProgressView,
     EpisodeWatchView,
     SeasonStartView,
@@ -142,6 +143,7 @@ urlpatterns = [
     path("tracking/<str:source>/tv/<str:media_id>/seasons/<int:season_number>/episodes/<int:episode_number>/watch/", EpisodeWatchView.as_view(), name="api-episode-watch"),
     path("tracking/<str:source>/book/<str:media_id>/progress/", BookProgressView.as_view(), name="api-book-progress"),
     path("tracking/<str:source>/book/<str:media_id>/complete/", BookCompleteView.as_view(), name="api-book-complete"),
+    path("tracking/<str:source>/book/<str:media_id>/journeys/<int:journey_id>/", BookJourneyView.as_view(), name="api-book-journey"),
     path("tracking/<str:source>/<str:media_type>/<str:media_id>/actions/<str:action>/", TrackingActionView.as_view(), name="api-tracking-action"),
     path("tracking/<str:source>/<str:media_type>/<str:media_id>/", TrackingDetailView.as_view(), name="api-tracking-detail"),
     path("diary/", DiaryListView.as_view(), name="api-diary-list"),

@@ -312,6 +312,43 @@ class MusicBrainzTests(TestCase):
         self.assertEqual(album["secondary_types"], ["Concept Album"])
         self.assertNotIn("provider_rank_boost", album)
 
+    @patch("app.providers.musicbrainz.lookup_release_group_popularity")
+    @patch("app.providers.musicbrainz.search_release_groups")
+    def test_all_search_skips_optional_popularity_and_does_not_export_provider_boost(
+        self,
+        search_release_groups,
+        lookup_popularity,
+    ):
+        search_release_groups.return_value = {
+            "count": 1,
+            "release-groups": [
+                {
+                    "id": RELEASE_GROUP_MBID,
+                    "title": "Dune",
+                    "score": 100,
+                    "first-release-date": "1995",
+                    "primary-type": "Album",
+                    "artist-credit": [{"name": "Dune"}],
+                },
+            ],
+        }
+
+        result = musicbrainz.search(
+            "dune",
+            1,
+            preserve_ranking_fields=True,
+            timeout=8,
+        )
+
+        lookup_popularity.assert_not_called()
+        search_release_groups.assert_called_once_with(
+            "dune",
+            limit=musicbrainz.SEARCH_CANDIDATE_LIMIT,
+            offset=0,
+            timeout=8,
+        )
+        self.assertNotIn("provider_rank_boost", result["results"][0])
+
     @override_settings(PER_PAGE=2)
     @patch("app.providers.musicbrainz.lookup_release_group_popularity")
     @patch("app.providers.musicbrainz.search_release_groups")
@@ -1050,6 +1087,20 @@ class MusicBrainzTests(TestCase):
 
         self.assertEqual(raised.exception.status_code, requests.codes.service_unavailable)
         self.assertEqual(api_request.call_count, musicbrainz.MAX_ATTEMPTS)
+
+    @patch("app.providers.musicbrainz.services.api_request")
+    def test_transient_connection_error_is_retried(self, api_request):
+        response = {"id": RELEASE_GROUP_MBID}
+        api_request.side_effect = [
+            requests.exceptions.SSLError("unexpected EOF"),
+            response,
+        ]
+
+        self.assertEqual(
+            musicbrainz.lookup_release_group(RELEASE_GROUP_MBID),
+            response,
+        )
+        self.assertEqual(api_request.call_count, 2)
 
     @patch("app.providers.musicbrainz.services.api_request")
     def test_invalid_json_is_translated(self, api_request):

@@ -113,6 +113,7 @@ class Item(CalendarTriggerMixin, models.Model):
     release_date = models.DateField(null=True, blank=True)
     release_year = models.PositiveIntegerField(null=True, blank=True)
     runtime_minutes = models.PositiveIntegerField(null=True, blank=True)
+    # Deprecated compatibility columns; ExternalRating owns durable provider state.
     letterboxd_rating = models.DecimalField(
         null=True,
         blank=True,
@@ -2207,6 +2208,13 @@ class Book(Media):
     """Model for books."""
 
     tracker = FieldTracker()
+    current_session = models.ForeignKey(
+        "BookSession",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     completion_diary_entry = models.OneToOneField(
         'DiaryEntry',
         null=True,
@@ -2215,6 +2223,51 @@ class Book(Media):
         related_name='completed_book',
     )
     completed_manually = models.BooleanField(default=False)
+    rating_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    like_source = models.ForeignKey(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    like_is_independent = models.BooleanField(default=False)
+    undated_read_previous_tracked = models.BooleanField(default=False)
+    undated_read_previous_status = models.CharField(
+        max_length=20,
+        choices=Status,
+        null=True,
+        blank=True,
+    )
+    undated_read_previous_session = models.ForeignKey(
+        "BookSession",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    undated_read_previous_override = models.BooleanField(default=False)
+    read_override_active = models.BooleanField(default=False)
+    read_override_previous_tracked = models.BooleanField(default=False)
+    read_override_previous_status = models.CharField(
+        max_length=20,
+        choices=Status,
+        null=True,
+        blank=True,
+    )
+    read_override_previous_session = models.ForeignKey(
+        "BookSession",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
 
     class Meta:
         """Meta options for the model."""
@@ -2229,117 +2282,25 @@ class Book(Media):
 
     @tracker  # postpone field reset until after the save
     def save(self, *args, **kwargs):
-        """Save the media instance."""
+        """Save book fields without implicitly inventing journey history."""
         super(Media, self).save(*args, **kwargs)
-
-        if self.tracker.has_changed("status"):
-            if self.status == Status.COMPLETED.value:
-                self._completed()
-
-            elif self.status == Status.DROPPED.value:
-                self._mark_in_progress_sessions_as_dropped()
-
-            elif (
-                self.status == Status.IN_PROGRESS.value
-                and not self.reading_sessions.filter(status=Status.IN_PROGRESS.value).exists()
-            ):
-                self._start_reading()
-
-            self.item.fetch_releases(delay=True)
 
     def _invalidate_progress_cache(self):
         """Clear any cached progress snapshot."""
         if hasattr(self, "_progress_snapshot"):
             delattr(self, "_progress_snapshot")
 
-    def _completed(self):
-        """Mark the book as completed and create a final reading session."""
-        total_pages = self.get_max_progress()
-        if not self.reading_sessions.filter(status=Status.COMPLETED.value).exists():
-            session_kwargs = {
-                "related_book": self,
-                "status": Status.COMPLETED.value,
-                "end_date": timezone.now(),
-            }
-            if total_pages:
-                session_kwargs.update(
-                    {
-                        "pages_read": total_pages,
-                        "percentage_read": 100,
-                    }
-                )
-            # Create a final reading session if none exists
-            BookSession.objects.create(**session_kwargs)
-        elif total_pages:
-            self.reading_sessions.filter(
-                status=Status.COMPLETED.value,
-                pages_read__isnull=True,
-            ).update(pages_read=total_pages, percentage_read=100)
-        if total_pages:
-            self.__class__.objects.filter(pk=self.pk).update(progress=total_pages)
-            self.progress = total_pages
-        self._invalidate_progress_cache()
-
-    def _mark_in_progress_sessions_as_dropped(self):
-        """Mark all in-progress reading sessions as dropped."""
-        self.reading_sessions.filter(status=Status.IN_PROGRESS.value).update(
-            status=Status.DROPPED.value
-        )
-        self._invalidate_progress_cache()
-
-    def _start_reading(self):
-        """Start reading the book by creating a reading session."""
-        if not self.reading_sessions.filter(status=Status.IN_PROGRESS.value).exists():
-            BookSession.objects.create(
-                related_book=self,
-                status=Status.IN_PROGRESS.value,
-            )
-        self._invalidate_progress_cache()
-
     def log_reading_session(self, progress_type, progress_value, notes=""):
-        """Log a reading session with progress."""
-        total_pages = getattr(self.item, "total_pages", None)
-        pages_read = None
-        percentage = None
+        """Compatibility wrapper around the authoritative book service."""
+        from app.book_tracking import update_progress
 
-        if progress_type == "percentage":
-            # Convert percentage to pages if total pages available
-            percentage = float(progress_value)
-            if total_pages:
-                pages_read = int(round((percentage / 100) * total_pages))
-        else:  # pages
-            pages_read = progress_value
-            if total_pages:
-                percentage = (progress_value / total_pages) * 100
-
-        if percentage is not None:
-            percentage = max(0.0, min(float(percentage), 100.0))
-        if pages_read is not None and total_pages:
-            pages_read = min(pages_read, total_pages)
-
-        # Create or update reading session
-        session, created = BookSession.objects.get_or_create(
-            related_book=self,
-            status=Status.IN_PROGRESS.value,
-            defaults={
-                'pages_read': pages_read,
-                'percentage_read': percentage,
-                'notes': notes,
-            }
-        )
-
-        if not created:
-            session.pages_read = pages_read
-            session.percentage_read = percentage
-            session.notes = notes
-            session.save()
-
-        if pages_read is not None and self.progress != pages_read:
-            self.progress = pages_read
-            self.save(update_fields=["progress"])
-
-        self._invalidate_progress_cache()
-        return session
+        return update_progress(
+            self.user,
+            self.item,
+            progress_type=progress_type,
+            value=progress_value,
+            notes=notes,
+        ).current_session
 
     def get_max_progress(self):
         """Return total pages for the book."""
@@ -2350,21 +2311,11 @@ class Book(Media):
         if hasattr(self, "_progress_snapshot"):
             return self._progress_snapshot
 
-        session = (
-            self.reading_sessions.filter(status=Status.IN_PROGRESS.value)
-            .order_by("-created_at")
-            .first()
-        )
-
+        session = self.current_session
         if session is None:
-            session = (
-                self.reading_sessions.filter(status=Status.COMPLETED.value)
-                .order_by("-created_at")
-                .first()
-            )
-
-        if session is None:
-            session = self.reading_sessions.order_by("-created_at").first()
+            session = self.reading_sessions.filter(
+                status__in=[Status.IN_PROGRESS.value, Status.PAUSED.value],
+            ).order_by("-created_at", "-id").first()
 
         if session is None:
             snapshot = None
@@ -2379,13 +2330,6 @@ class Book(Media):
 
             if pages is None and percentage is not None and total_pages:
                 pages = int(round((percentage / 100) * total_pages))
-
-            stored_progress = self.progress or 0
-            if stored_progress and (pages is None or stored_progress > pages):
-                pages = stored_progress
-                if total_pages:
-                    percentage = (pages / total_pages) * 100
-                    percentage = max(0.0, min(percentage, 100.0))
 
             if percentage is None and pages is not None and total_pages:
                 percentage = (pages / total_pages) * 100
@@ -2418,6 +2362,11 @@ class Book(Media):
 class BookSession(models.Model):
     """Model for reading sessions of a book."""
 
+    class Origin(models.TextChoices):
+        LIVE = "live", "Live journey"
+        DIRECT_LOG = "direct_log", "Direct log"
+        LEGACY = "legacy", "Legacy"
+
     history = HistoricalRecords(
         cascade_delete_history=True,
         excluded_fields=["related_book", "created_at"],
@@ -2448,6 +2397,42 @@ class BookSession(models.Model):
     start_date = models.DateTimeField(null=True, blank=True)
     end_date = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
+    progressed_on = models.DateField(null=True, blank=True)
+    origin = models.CharField(
+        max_length=20,
+        choices=Origin,
+        default=Origin.LIVE,
+    )
+    completion_diary_entry = models.OneToOneField(
+        "DiaryEntry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="book_journey",
+    )
+    previous_tracked = models.BooleanField(default=False)
+    previous_status = models.CharField(
+        max_length=20,
+        choices=Status,
+        null=True,
+        blank=True,
+    )
+    previous_session = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="next_sessions",
+    )
+    previous_read_override = models.BooleanField(default=False)
+    pre_completion_status = models.CharField(
+        max_length=20,
+        choices=Status,
+        null=True,
+        blank=True,
+    )
+    pre_completion_progress = models.JSONField(null=True, blank=True)
+    mutation_id = models.UUIDField(null=True, blank=True)
 
     class Meta:
         """Meta options for the model."""
@@ -2457,27 +2442,35 @@ class BookSession(models.Model):
             "-end_date",
             "-created_at",
         ]
+        constraints = [
+            UniqueConstraint(
+                fields=["related_book"],
+                condition=Q(
+                    status__in=[Status.IN_PROGRESS.value, Status.PAUSED.value],
+                ),
+                name="app_booksession_one_open_journey",
+            ),
+            UniqueConstraint(
+                fields=["related_book", "mutation_id"],
+                condition=Q(mutation_id__isnull=False),
+                name="app_booksession_unique_mutation",
+            ),
+            CheckConstraint(
+                condition=Q(start_date__isnull=True)
+                | Q(end_date__isnull=True)
+                | Q(end_date__gte=F("start_date")),
+                name="app_booksession_dates_ordered",
+            ),
+        ]
 
     def __str__(self):
         """Return the book title and session info."""
         return f"{self.related_book.item.title} - Session {self.id}"
 
     def save(self, *args, **kwargs):
-        """Save the reading session instance."""
+        """Save journey fields without recursively changing Book."""
         self.related_book._invalidate_progress_cache()
         super().save(*args, **kwargs)
-
-        # Update book status based on session status
-        if self.status == Status.COMPLETED.value:
-            self.related_book.status = Status.COMPLETED.value
-            self.related_book.end_date = self.end_date or timezone.now()
-            self.related_book.save()
-        elif self.status == Status.IN_PROGRESS.value:
-            if self.related_book.status != Status.IN_PROGRESS.value:
-                self.related_book.status = Status.IN_PROGRESS.value
-                if not self.related_book.start_date:
-                    self.related_book.start_date = self.start_date or timezone.now()
-                self.related_book.save()
         self.related_book._invalidate_progress_cache()
 
 

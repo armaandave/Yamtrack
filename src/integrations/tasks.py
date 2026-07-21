@@ -100,6 +100,7 @@ def import_media(
 
     transaction.on_commit(
         partial(enqueue_external_rating_batches, sorted(item_ids)),
+        robust=True,
     )
     events.tasks.reload_calendar.delay()
 

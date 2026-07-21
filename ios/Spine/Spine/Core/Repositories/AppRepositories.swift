@@ -87,6 +87,11 @@ protocol TrackingRepository {
     ) async throws -> TrackingState
     func updateBookProgress(source: String, mediaId: String, progressType: String, value: Decimal, notes: String) async throws -> TrackingState
     func completeBook(source: String, mediaId: String, completedAt: Date?) async throws -> TrackingState
+    func performBookAction(source: String, mediaId: String, action: String, request: BookActionRequest) async throws -> TrackingState
+    func undoBookRead(source: String, mediaId: String) async throws
+    func updateBookJourney(source: String, mediaId: String, journeyId: Int, request: BookJourneyWriteRequest) async throws -> TrackingState
+    func deleteBookJourney(source: String, mediaId: String, journeyId: Int) async throws -> TrackingState
+    func completeBook(source: String, mediaId: String, request: BookCompletionWriteRequest) async throws -> BookCompletionResponse
 }
 
 extension TrackingRepository {
@@ -118,6 +123,26 @@ extension TrackingRepository {
         episodeNumber _: Int,
         watchedAt _: Date?
     ) async throws -> TrackingState {
+        fatalError("Not implemented")
+    }
+
+    func performBookAction(source _: String, mediaId _: String, action _: String, request _: BookActionRequest) async throws -> TrackingState {
+        fatalError("Not implemented")
+    }
+
+    func undoBookRead(source _: String, mediaId _: String) async throws {
+        fatalError("Not implemented")
+    }
+
+    func updateBookJourney(source _: String, mediaId _: String, journeyId _: Int, request _: BookJourneyWriteRequest) async throws -> TrackingState {
+        fatalError("Not implemented")
+    }
+
+    func deleteBookJourney(source _: String, mediaId _: String, journeyId _: Int) async throws -> TrackingState {
+        fatalError("Not implemented")
+    }
+
+    func completeBook(source _: String, mediaId _: String, request _: BookCompletionWriteRequest) async throws -> BookCompletionResponse {
         fatalError("Not implemented")
     }
 }
@@ -692,6 +717,45 @@ struct APITrackingRepository: TrackingRepository {
         try await client.post(
             "/tracking/\(source)/book/\(mediaId)/complete/",
             body: BookCompleteRequest(completedAt: completedAt),
+            authenticated: true
+        )
+    }
+
+    func performBookAction(source: String, mediaId: String, action: String, request: BookActionRequest) async throws -> TrackingState {
+        try await client.post(
+            "/tracking/\(source)/book/\(mediaId)/actions/\(action)/",
+            body: request,
+            authenticated: true
+        )
+    }
+
+    func undoBookRead(source: String, mediaId: String) async throws {
+        let _: EmptyResponse = try await client.post(
+            "/tracking/\(source)/book/\(mediaId)/actions/undo_read/",
+            body: BookActionRequest(),
+            authenticated: true
+        )
+    }
+
+    func updateBookJourney(source: String, mediaId: String, journeyId: Int, request: BookJourneyWriteRequest) async throws -> TrackingState {
+        try await client.patch(
+            "/tracking/\(source)/book/\(mediaId)/journeys/\(journeyId)/",
+            body: request,
+            authenticated: true
+        )
+    }
+
+    func deleteBookJourney(source: String, mediaId: String, journeyId: Int) async throws -> TrackingState {
+        try await client.delete(
+            "/tracking/\(source)/book/\(mediaId)/journeys/\(journeyId)/",
+            authenticated: true
+        )
+    }
+
+    func completeBook(source: String, mediaId: String, request: BookCompletionWriteRequest) async throws -> BookCompletionResponse {
+        try await client.post(
+            "/tracking/\(source)/book/\(mediaId)/complete/",
+            body: request,
             authenticated: true
         )
     }

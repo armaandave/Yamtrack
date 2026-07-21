@@ -11,6 +11,8 @@ struct DiaryEntry: Codable, Identifiable {
     let containsSpoilers: Bool
     let liked: Bool
     let isRewatch: Bool
+    let isTrueReread: Bool?
+    let bookJourneyId: Int?
     let tags: [String]
     let visibility: String
     let likeCount: Int
@@ -68,6 +70,38 @@ struct DiaryEntryWriteRequest: Encodable {
     let containsSpoilers: Bool
     let visibility: String
     let tags: [String]
+    let journeyId: Int?
+    let mutationId: UUID?
+
+    init(
+        ref: MediaRef,
+        consumedAt: Date?,
+        rating: Decimal?,
+        review: String,
+        reviewTitle: String,
+        liked: Bool,
+        isRewatch: Bool,
+        autoMarkConsumed: Bool,
+        containsSpoilers: Bool,
+        visibility: String,
+        tags: [String],
+        journeyId: Int? = nil,
+        mutationId: UUID? = nil
+    ) {
+        self.ref = ref
+        self.consumedAt = consumedAt
+        self.rating = rating
+        self.review = review
+        self.reviewTitle = reviewTitle
+        self.liked = liked
+        self.isRewatch = isRewatch
+        self.autoMarkConsumed = autoMarkConsumed
+        self.containsSpoilers = containsSpoilers
+        self.visibility = visibility
+        self.tags = tags
+        self.journeyId = journeyId
+        self.mutationId = mutationId
+    }
 
     enum CodingKeys: String, CodingKey {
         case ref
@@ -81,13 +115,15 @@ struct DiaryEntryWriteRequest: Encodable {
         case containsSpoilers
         case visibility
         case tags
+        case journeyId
+        case mutationId
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(ref, forKey: .ref)
         if let consumedAt {
-            if ref.isSingleWeight {
+            if ref.usesCalendarConsumptionDate {
                 try container.encode(CalendarDateCodec.string(from: consumedAt), forKey: .consumedAt)
             } else {
                 try container.encode(consumedAt, forKey: .consumedAt)
@@ -102,6 +138,8 @@ struct DiaryEntryWriteRequest: Encodable {
         try container.encode(containsSpoilers, forKey: .containsSpoilers)
         try container.encode(visibility, forKey: .visibility)
         try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(journeyId, forKey: .journeyId)
+        try container.encodeIfPresent(mutationId, forKey: .mutationId)
     }
 }
 

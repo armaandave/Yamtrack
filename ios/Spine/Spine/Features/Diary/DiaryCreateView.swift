@@ -25,6 +25,7 @@ final class DiaryCreateViewModel {
     private let diaryRepository: DiaryRepository
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
+    private let mutationId = UUID()
     private var searchID = 0
 
     init(diaryRepository: DiaryRepository, mediaRepository: MediaRepository, onUnauthorized: @escaping () -> Void) {
@@ -99,7 +100,7 @@ final class DiaryCreateViewModel {
         defer { isSaving = false }
 
         do {
-            if selectedMedia.ref.isSingleWeight, CalendarDateCodec.isFuture(consumedAt) {
+            if selectedMedia.ref.usesCalendarConsumptionDate, CalendarDateCodec.isFuture(consumedAt) {
                 throw DiaryCreateError.futureDate
             }
             let tags = tagsText
@@ -117,9 +118,14 @@ final class DiaryCreateViewModel {
                 autoMarkConsumed: true,
                 containsSpoilers: containsSpoilers,
                 visibility: selectedMedia.ref.isSingleWeight ? "public" : visibility,
-                tags: tags
+                tags: tags,
+                journeyId: selectedMedia.ref.mediaType == "book"
+                    ? selectedMedia.userState?.book?.currentJourney?.id
+                    : nil,
+                mutationId: selectedMedia.ref.mediaType == "book" ? mutationId : nil
             )
             _ = try await diaryRepository.create(request)
+            MediaStateChange.post(ref: selectedMedia.ref)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -141,6 +147,8 @@ final class DiaryCreateViewModel {
                 || (state?.directConsumption == nil
                     && state?.isTracked == true
                     && state?.status == "Completed")
+        } else if media.ref.mediaType == "book" {
+            isRewatch = media.userState?.book?.isRereading ?? false
         } else {
             isRewatch = (media.userState?.diaryCount ?? 0) > 0
         }
@@ -257,7 +265,7 @@ struct DiaryCreateView: View {
 
             Group {
                 if viewModel.isSearching {
-                    ProgressView("Searching…")
+                    ProgressView()
                 }
 
                 if !viewModel.unavailableMediaTypes.isEmpty {
@@ -297,7 +305,6 @@ struct DiaryCreateView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .opacity(viewModel.isSearching && !viewModel.results.isEmpty ? 0.55 : 1)
             .spineContentTransition(value: searchContentPhase)
         }
     }
@@ -316,13 +323,13 @@ struct DiaryCreateView: View {
             DatePicker(
                 viewModel.selectedMedia?.ref.mediaType == "music" ? "Date listened" : "Consumed",
                 selection: $viewModel.consumedAt,
-                in: Date.distantPast...(viewModel.selectedMedia?.ref.isSingleWeight == true ? Date() : Date.distantFuture),
-                displayedComponents: viewModel.selectedMedia?.ref.isSingleWeight == true
+                in: Date.distantPast...(viewModel.selectedMedia?.ref.usesCalendarConsumptionDate == true ? Date() : Date.distantFuture),
+                displayedComponents: viewModel.selectedMedia?.ref.usesCalendarConsumptionDate == true
                     ? [.date]
                     : [.date, .hourAndMinute]
             )
             TextField(
-                viewModel.selectedMedia?.ref.isSingleWeight == true ? "Rating 0.5-5" : "Rating 0-10",
+                viewModel.selectedMedia?.ref.usesFiveStarRatingScale == true ? "Rating 0.5-5" : "Rating 0-10",
                 text: $viewModel.ratingText
             )
                 .keyboardType(.decimalPad)

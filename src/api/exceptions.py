@@ -14,6 +14,14 @@ class DiaryHistoryConflict(exceptions.APIException):
     default_code = "diary_history_exists"
 
 
+class BookTrackingConflict(exceptions.APIException):
+    """A book transition conflicts with its authoritative journey state."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "The book changed before this action could be completed."
+    default_code = "book_tracking_conflict"
+
+
 class AllMediaSearchUnavailable(exceptions.APIException):
     """Every provider in an all-media search failed."""
 

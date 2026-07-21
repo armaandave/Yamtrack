@@ -33,6 +33,10 @@ def metadata(media_id, media_type):
         response["details"]["episodes"] = num_episodes
     elif media_type == MediaTypes.MOVIE.value:
         response["max_progress"] = 1
+    elif media_type == MediaTypes.BOOK.value:
+        response["total_pages"] = item.total_pages
+        response["max_progress"] = item.total_pages
+        response["details"]["pages"] = item.total_pages
 
     return response
 

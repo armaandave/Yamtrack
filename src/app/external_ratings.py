@@ -11,6 +11,7 @@ from botocore.exceptions import (
     EndpointConnectionError,
     ReadTimeoutError,
 )
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -119,6 +120,10 @@ def _imdb_enabled(item):
     from app.providers import imdb
 
     return imdb.is_configured()
+
+
+def _musicbrainz_ratings_enabled(_item=None):
+    return settings.MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED
 
 
 _TMDB_TYPES = frozenset(
@@ -255,8 +260,16 @@ RATING_SOURCES = {
         "wire_max": "5",
         "fresh_for": FRESH_FOR,
         "fetch": _fetch_metadata,
+        "enabled": _musicbrainz_ratings_enabled,
+        "exposed": _musicbrainz_ratings_enabled,
     },
 }
+
+
+def rating_source_is_exposed(source):
+    """Return whether a registered source may be exposed to API clients."""
+    definition = RATING_SOURCES.get(source)
+    return definition is None or definition.get("exposed", lambda: True)()
 
 
 def source_label(source):
@@ -468,7 +481,8 @@ def rating_sources_needing_refresh(
         return sources
     rows = {
         rating.rating_source: rating
-        for rating in item.external_ratings.filter(rating_source__in=sources)
+        for rating in item.external_ratings.all()
+        if rating.rating_source in sources
     }
     now = now or timezone.now()
     return [
@@ -748,5 +762,7 @@ def refresh_external_ratings(
     if outcomes:
         _persist_outcomes(item, outcomes, attempted_at)
     if raise_transient and transient_sources:
-        raise TransientExternalRatingError(transient_sources)
+        error = TransientExternalRatingError(transient_sources)
+        error.outcomes = results
+        raise error
     return results

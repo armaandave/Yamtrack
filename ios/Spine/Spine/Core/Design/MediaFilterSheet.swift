@@ -200,7 +200,7 @@ struct MediaFilterSheet: View {
     }
 
     private var ratingSection: some View {
-        Section("Rating") {
+        Section(ratingSectionTitle) {
             TextField(ratingMinimumLabel, text: decimalText(\.ratingMin))
                 .keyboardType(.decimalPad)
             TextField(ratingMaximumLabel, text: decimalText(\.ratingMax))
@@ -226,9 +226,15 @@ struct MediaFilterSheet: View {
     }
 
     private var sortChoices: [FilterChoice] {
-        let choices = options.sorts.isEmpty ? defaultSortChoices : options.sorts
+        Self.availableSortChoices(options: options, scope: scope)
+    }
+
+    static func availableSortChoices(
+        options: MediaFilterOptionsResponse,
+        scope: MediaFilterScope
+    ) -> [FilterChoice] {
+        let choices = options.sorts.isEmpty ? fallbackSortChoices(for: scope) : options.sorts
         return choices.filter { choice in
-            guard MediaFilterSort(rawValue: choice.value) != nil else { return false }
             switch scope {
             case .tracking:
                 return choice.value != MediaFilterSort.popularity.rawValue
@@ -241,9 +247,7 @@ struct MediaFilterSheet: View {
                 return choice.value != MediaFilterSort.popularity.rawValue
                     && choice.value != MediaFilterSort.consumedAt.rawValue
             case .person:
-                return choice.value != MediaFilterSort.popularity.rawValue
-                    && choice.value != MediaFilterSort.yourRating.rawValue
-                    && choice.value != MediaFilterSort.averageRating.rawValue
+                return true
             case .company:
                 return [
                     MediaFilterSort.popularity.rawValue,
@@ -255,8 +259,20 @@ struct MediaFilterSheet: View {
         }
     }
 
-    private var defaultSortChoices: [FilterChoice] {
-        MediaFilterSort.allCases.map { FilterChoice(value: $0.rawValue, label: $0.label) }
+    private static func fallbackSortChoices(for scope: MediaFilterScope) -> [FilterChoice] {
+        let sorts: [MediaFilterSort] = switch scope {
+        case .tracking:
+            [.title, .releaseDate, .yourRating, .averageRating]
+        case .diary:
+            [.title, .releaseDate, .yourRating, .averageRating, .consumedAt]
+        case .list:
+            [.title, .releaseDate, .yourRating, .averageRating, .dateAdded]
+        case .person:
+            [.title, .releaseDate, .averageRating]
+        case .company:
+            [.popularity, .releaseDate, .averageRating, .title]
+        }
+        return sorts.map { FilterChoice(value: $0.rawValue, label: $0.label) }
     }
 
     private var resetFilter: MediaFilterState {
@@ -323,28 +339,40 @@ struct MediaFilterSheet: View {
     }
 
     private var ratingMinimumLabel: String {
-        if case .company = scope {
+        switch scope {
+        case .person:
+            return "Minimum Average Rating"
+        case .company:
             return "Minimum IGDB rating (0–100)"
+        case .tracking, .diary, .list:
+            return "Minimum"
         }
-        return "Minimum"
     }
 
     private var ratingMaximumLabel: String {
-        if case .company = scope {
+        switch scope {
+        case .person:
+            return "Maximum Average Rating"
+        case .company:
             return "Maximum IGDB rating (0–100)"
+        case .tracking, .diary, .list:
+            return "Maximum"
         }
-        return "Maximum"
+    }
+
+    private var ratingSectionTitle: String {
+        switch scope {
+        case .tracking, .diary, .list:
+            "Your Rating"
+        case .person, .company:
+            "Rating"
+        }
     }
 
     private var sortBinding: Binding<String?> {
         Binding(
             get: { draft.sort?.rawValue },
-            set: { value in
-                draft.sort = value.flatMap(MediaFilterSort.init(rawValue:))
-                if draft.sort != nil, draft.direction == nil {
-                    draft.direction = .desc
-                }
-            }
+            set: { draft.selectSort(rawValue: $0) }
         )
     }
 

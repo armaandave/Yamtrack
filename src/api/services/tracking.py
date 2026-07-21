@@ -7,13 +7,13 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from api.exceptions import DiaryHistoryConflict
+from api.exceptions import BookTrackingConflict, DiaryHistoryConflict
 from api.serializers.common import (
     get_or_create_item_from_metadata,
     progress_for_media,
     tracking_state,
 )
-from app import single_weight
+from app import book_tracking, single_weight
 from app.models import BasicMedia, Book, MediaTypes, Status
 from app.providers import services as provider_services
 from social.models import Activity, ProgressChange
@@ -71,6 +71,14 @@ def create_or_update_tracking(user, *, source, media_type, media_id, data, parti
             data,
         )
 
+    if media_type == MediaTypes.BOOK.value:
+        return _write_book_tracking(
+            user,
+            media if existing_media else None,
+            media.item,
+            data,
+        )
+
     for api_field, model_field in {
         "status": "status",
         "rating": "score",
@@ -99,6 +107,8 @@ def delete_tracking(user, *, source, media_type, media_id, season_number=None):
         season_number=season_number,
     )
     if media is not None:
+        if media_type == MediaTypes.BOOK.value:
+            return _call_book(book_tracking.remove_tracking, user, media.item)
         if single_weight.supports(media_type):
             try:
                 single_weight.unwatch(user, media.item)
@@ -106,6 +116,7 @@ def delete_tracking(user, *, source, media_type, media_id, season_number=None):
                 raise DiaryHistoryConflict from error
         else:
             media.delete()
+    return None
 
 
 def consume_media(user, *, source, media_type, media_id, consumed_at=None):
@@ -121,6 +132,8 @@ def consume_media(user, *, source, media_type, media_id, consumed_at=None):
         )
     if single_weight.supports(media_type):
         return single_weight.mark_consumed(user, media.item)
+    if media_type == MediaTypes.BOOK.value:
+        return _call_book(book_tracking.mark_read, user, media.item)
     media.end_date = consumed_at or timezone.now()
     media.mark_consumed()
     return media
@@ -219,10 +232,18 @@ def unwatch_season(user, *, source, media_id, season_number):
     return season
 
 
-def log_book_progress(user, *, source, media_id, progress_type, value, notes=""):
+def log_book_progress(
+    user,
+    *,
+    source,
+    media_id,
+    progress_type,
+    value,
+    notes="",
+    progressed_on=None,
+):
     """Log a book reading session."""
     book = get_tracking(user, source=source, media_type=MediaTypes.BOOK.value, media_id=media_id)
-    previous_progress = _progress_snapshot(book) if book is not None else None
     if book is None:
         book = create_or_update_tracking(
             user,
@@ -232,10 +253,97 @@ def log_book_progress(user, *, source, media_id, progress_type, value, notes="")
             data={"status": Status.IN_PROGRESS.value},
         )
     if isinstance(book, Book):
-        book.log_reading_session(progress_type, value, notes)
+        book = _call_book(
+            book_tracking.update_progress,
+            user,
+            book.item,
+            progress_type=progress_type,
+            value=value,
+            notes=notes,
+            progressed_on=progressed_on,
+        )
         book.refresh_from_db()
-        _record_progress_change(user, book, previous_progress)
     return book
+
+
+def perform_book_action(user, *, source, media_id, action, data):
+    """Apply one canonical book status or journey action."""
+    book = get_tracking(
+        user,
+        source=source,
+        media_type=MediaTypes.BOOK.value,
+        media_id=media_id,
+    )
+    item = book.item if book is not None else _materialize_book_item(source, media_id)
+    functions = {
+        "mark_read": (book_tracking.mark_read, set()),
+        "undo_read": (book_tracking.undo_read, set()),
+        "delete_undated_read": (book_tracking.delete_undated_read, set()),
+        "pause": (book_tracking.pause_journey, set()),
+        "resume": (book_tracking.resume_journey, {"start_date", "mutation_id"}),
+        "drop": (book_tracking.drop_journey, {"end_date"}),
+        "restart": (
+            book_tracking.restart_journey,
+            {"start_date", "end_date", "mutation_id"},
+        ),
+        "start": (book_tracking.start_journey, {"start_date", "mutation_id"}),
+    }
+    transition = functions.get(action)
+    if transition is None:
+        raise serializers.ValidationError({"action": "Unsupported book action."})
+    function, accepted = transition
+    kwargs = {
+        key: value
+        for key, value in data.items()
+        if key in accepted and value is not None
+    }
+    return _call_book(function, user, item, **kwargs)
+
+
+def complete_book(user, *, source, media_id, data):
+    """Atomically complete a book journey and its diary entry."""
+    book = get_tracking(
+        user,
+        source=source,
+        media_type=MediaTypes.BOOK.value,
+        media_id=media_id,
+    )
+    item = book.item if book is not None else _materialize_book_item(source, media_id)
+    payload = dict(data)
+    payload["rating"] = single_weight.rating_from_wire(payload.get("rating"))
+    return _call_book(book_tracking.complete, user, item, **payload)
+
+
+def update_book_journey(user, *, source, media_id, journey_id, data):
+    """Edit a book journey's user calendar dates."""
+    book = get_tracking(
+        user,
+        source=source,
+        media_type=MediaTypes.BOOK.value,
+        media_id=media_id,
+    )
+    if book is None:
+        raise serializers.ValidationError({"journey": "Book tracking does not exist."})
+    return _call_book(
+        book_tracking.update_journey,
+        user,
+        book.item,
+        journey_id,
+        **dict(data),
+    )
+
+
+def delete_book_journey(user, *, source, media_id, journey_id):
+    """Delete one book journey without touching unrelated history."""
+    book = get_tracking(
+        user,
+        source=source,
+        media_type=MediaTypes.BOOK.value,
+        media_id=media_id,
+    )
+    if book is None:
+        raise serializers.ValidationError({"journey": "Book tracking does not exist."})
+    return _call_book(book_tracking.delete_journey, user, book.item, journey_id)
 
 
 def serialize_tracking(media):
@@ -265,6 +373,92 @@ def _write_single_weight_tracking(user, media, item, data):
     except DjangoValidationError as error:
         raise serializers.ValidationError({"rating": error.messages[0]}) from error
     return media
+
+
+def _materialize_book_item(source, media_id):
+    """Resolve an Item without inventing a Book tracking row."""
+    metadata = provider_services.get_media_metadata(
+        MediaTypes.BOOK.value,
+        media_id,
+        source,
+    )
+    return get_or_create_item_from_metadata(
+        {
+            "source": source,
+            "media_type": MediaTypes.BOOK.value,
+            "media_id": media_id,
+            "season_number": None,
+            "episode_number": None,
+        },
+        metadata,
+    )
+
+
+def _write_book_tracking(user, media, item, data):
+    """Route generic tracking writes through canonical book transitions."""
+    book = media
+    try:
+        if "status" in data:
+            desired_status = data["status"]
+            if desired_status == Status.IN_PROGRESS.value:
+                book = _call_book(
+                    book_tracking.start_journey,
+                    user,
+                    item,
+                    start_date=data.get("start_date"),
+                    mutation_id=data.get("mutation_id"),
+                )
+            elif desired_status == Status.COMPLETED.value:
+                book = _call_book(book_tracking.mark_read, user, item)
+            else:
+                book = _call_book(
+                    book_tracking.assign_status,
+                    user,
+                    item,
+                    desired_status,
+                )
+        if book is None:
+            book = _call_book(
+                book_tracking.assign_status,
+                user,
+                item,
+                Status.PLANNING.value,
+            )
+        if "rating" in data:
+            book = _call_book(
+                book_tracking.set_rating,
+                user,
+                item,
+                single_weight.rating_from_wire(data["rating"]),
+            )
+        if "progress" in data:
+            book = _call_book(
+                book_tracking.update_progress,
+                user,
+                item,
+                progress_type="pages",
+                value=data["progress"],
+            )
+        if "notes" in data and book.notes != data["notes"]:
+            book.notes = data["notes"]
+            book.save(update_fields=["notes"])
+    except DjangoValidationError as error:
+        raise serializers.ValidationError({"detail": error.messages[0]}) from error
+    return book
+
+
+def _call_book(function, *args, **kwargs):
+    """Translate domain validation/conflicts into stable API errors."""
+    try:
+        return function(*args, **kwargs)
+    except book_tracking.BookTrackingConflict as error:
+        api_error = BookTrackingConflict(detail=error.message)
+        api_error.default_code = error.code
+        raise api_error from error
+    except DjangoValidationError as error:
+        if hasattr(error, "message_dict"):
+            raise serializers.ValidationError(error.message_dict) from error
+        raise serializers.ValidationError({"detail": error.messages[0]}) from error
 
 
 def _progress_snapshot(media):

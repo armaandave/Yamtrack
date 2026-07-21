@@ -531,17 +531,11 @@ private struct SearchResultsSection: View {
                     .padding(.vertical, 8)
             }
 
-            ZStack(alignment: .topTrailing) {
+            ZStack {
                 Color.black
 
                 content
-                    .opacity(isLoading && !results.isEmpty ? 0.55 : 1)
                     .spineContentTransition(value: contentPhase)
-
-                if isLoading {
-                    ProgressView("Searching…")
-                        .padding(12)
-                }
             }
         }
     }

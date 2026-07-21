@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.exceptions import BookTrackingConflict as APIBookTrackingConflict
 from api.pagination import StandardResultsSetPagination
 from api.permissions import can_view_user_profile
 from api.serializers.common import (
@@ -24,7 +25,7 @@ from api.serializers.profile import (
     preferences_payload,
     profile_payload,
 )
-from app import exposure
+from app import book_tracking, exposure
 from app.models import MediaLike, MediaTypes
 from app.providers import services as provider_services
 from app.services import set_media_like
@@ -103,7 +104,12 @@ class LikedMediaView(APIView):
         serializer = HOFItemWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item = self._item_for_ref(serializer.validated_data["ref"], create=True)
-        set_media_like(request.user, item, liked=True)
+        try:
+            set_media_like(request.user, item, liked=True)
+        except book_tracking.BookTrackingConflict as error:
+            api_error = APIBookTrackingConflict(detail=error.message)
+            api_error.default_code = error.code
+            raise api_error from error
         return Response({"liked": True, "media": media_summary_from_item(item, request=request, user=request.user)})
 
     def delete(self, request):

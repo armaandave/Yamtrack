@@ -197,6 +197,9 @@ struct HomeView: View {
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
                 Task { await viewModel.reload() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+                Task { await viewModel.reload() }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { notification in
                 if let profile = notification.userInfo?["profile"] as? UserProfile {
                     viewModel.profile = profile

@@ -22,6 +22,7 @@ from app.tasks import update_daily_statistics
 
 
 MEDIA_TYPES = {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
+HALF_STAR_MEDIA_TYPES = {*MEDIA_TYPES, MediaTypes.BOOK.value}
 WIRE_RATINGS = {Decimal(step) / 2 for step in range(1, 11)}
 STORAGE_RATINGS = {Decimal(step) for step in range(1, 11)}
 UNSET = object()
@@ -35,6 +36,12 @@ def supports(value):
     """Return whether an item or media-type value uses this contract."""
     media_type = getattr(value, "media_type", value)
     return media_type in MEDIA_TYPES
+
+
+def uses_half_star_rating(value):
+    """Return whether API ratings use the shared 0.5-to-5 wire scale."""
+    media_type = getattr(value, "media_type", value)
+    return media_type in HALF_STAR_MEDIA_TYPES
 
 
 def rating_from_wire(value):
@@ -324,20 +331,10 @@ def set_rating(user, item, rating, *, direct=True, emit_activity=True):
         if rating is None:
             return None
         tracking = _ensure_tracking(user, item, direct=direct)
-    fields = []
     if rating is not None and direct and not tracking.direct_consumption:
         tracking.direct_consumption = True
-        fields.append("direct_consumption")
-    if tracking.score != rating:
-        tracking.score = rating
-        fields.append("score")
-    if tracking.rating_source_id is not None:
-        tracking.rating_source = None
-        fields.append("rating_source")
-    if fields:
-        tracking.save(update_fields=fields)
-    if emit_activity:
-        _set_rating_activity(user, tracking, rating)
+        tracking.save(update_fields=["direct_consumption"])
+    set_current_rating(tracking, rating, emit_activity=emit_activity)
     return tracking
 
 
@@ -350,10 +347,35 @@ def set_like(user, item, liked, *, direct=True, audit=True):
             MediaLike.objects.filter(user=user, item=item).delete()
             return None
         tracking = _ensure_tracking(user, item, direct=direct)
-    fields = []
     if liked and direct and not tracking.direct_consumption:
         tracking.direct_consumption = True
-        fields.append("direct_consumption")
+        tracking.save(update_fields=["direct_consumption"])
+    changed = set_current_like(tracking, liked)
+    if audit and changed:
+        _audit_like(user, item, liked)
+    return tracking
+
+
+def set_current_rating(tracking, rating, *, emit_activity=True):
+    """Set an independent title rating on an existing provenance-aware row."""
+    rating = validate_storage_rating(rating)
+    fields = []
+    if tracking.score != rating:
+        tracking.score = rating
+        fields.append("score")
+    if tracking.rating_source_id is not None:
+        tracking.rating_source = None
+        fields.append("rating_source")
+    if fields:
+        tracking.save(update_fields=fields)
+    if emit_activity:
+        _set_rating_activity(tracking.user, tracking, rating)
+    return tracking
+
+
+def set_current_like(tracking, liked):
+    """Set an independent title heart on an existing provenance-aware row."""
+    fields = []
     if tracking.like_source_id is not None:
         tracking.like_source = None
         fields.append("like_source")
@@ -362,9 +384,51 @@ def set_like(user, item, liked, *, direct=True, audit=True):
         fields.append("like_is_independent")
     if fields:
         tracking.save(update_fields=fields)
-    changed = _set_like_row(user, item, liked)
-    if audit and changed:
-        _audit_like(user, item, liked)
+    return _set_like_row(tracking.user, tracking.item, bool(liked))
+
+
+def couple_current_to_log(tracking, entry):
+    """Apply the shared new-log rating and heart source laws."""
+    fields = ["like_source", "like_is_independent"]
+    if entry.rating is not None:
+        tracking.score = entry.rating
+        tracking.rating_source = entry
+        fields.extend(["score", "rating_source"])
+    tracking.like_source = entry
+    tracking.like_is_independent = False
+    tracking.save(update_fields=fields)
+    _set_like_row(tracking.user, tracking.item, bool(entry.liked))
+    return tracking
+
+
+def update_current_from_source_log(tracking, entry, changed_fields):
+    """Update current state only when the edited log remains its source."""
+    fields = []
+    if "rating" in changed_fields and tracking.rating_source_id == entry.id:
+        tracking.score = entry.rating
+        fields.append("score")
+        if entry.rating is None:
+            tracking.rating_source = None
+            fields.append("rating_source")
+    if "liked" in changed_fields and tracking.like_source_id == entry.id:
+        _set_like_row(tracking.user, tracking.item, bool(entry.liked))
+    if fields:
+        tracking.save(update_fields=fields)
+    return tracking
+
+
+def detach_deleted_source_log(tracking, entry_id):
+    """Preserve current values but decouple a deleted source log."""
+    fields = []
+    if tracking.rating_source_id == entry_id:
+        tracking.rating_source = None
+        fields.append("rating_source")
+    if tracking.like_source_id == entry_id:
+        tracking.like_source = None
+        tracking.like_is_independent = True
+        fields.extend(["like_source", "like_is_independent"])
+    if fields:
+        tracking.save(update_fields=fields)
     return tracking
 
 
@@ -419,16 +483,7 @@ def create_log(
     _replace_tags(entry, tags or [])
     _set_last_consumed(tracking)
     if update_current:
-        fields = []
-        if rating is not None:
-            tracking.score = rating
-            tracking.rating_source = entry
-            fields.extend(["score", "rating_source"])
-        tracking.like_source = entry
-        tracking.like_is_independent = False
-        fields.extend(["like_source", "like_is_independent"])
-        tracking.save(update_fields=fields)
-        _set_like_row(user, item, bool(liked))
+        couple_current_to_log(tracking, entry)
     if emit_activity:
         _create_diary_activity(entry)
     return entry, True
@@ -617,9 +672,10 @@ def _reconcile_imported_current_state(
 
 
 def _set_like_row(user, item, liked):
-    tracking_model = _tracking_model(item)
-    if any(field.name == "liked" for field in tracking_model._meta.fields):
-        tracking_model.objects.filter(user=user, item=item).update(liked=liked)
+    if supports(item):
+        tracking_model = _tracking_model(item)
+        if any(field.name == "liked" for field in tracking_model._meta.fields):
+            tracking_model.objects.filter(user=user, item=item).update(liked=liked)
     if liked:
         _, created = MediaLike.objects.get_or_create(user=user, item=item)
         return created

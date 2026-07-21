@@ -29,6 +29,8 @@ final class MediaLogViewModel {
     var isLoadingTags = false
     var isSaving = false
     var errorMessage: String?
+    let completionJourneyId: Int?
+    private let completionMutationId = UUID()
 
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
@@ -39,12 +41,17 @@ final class MediaLogViewModel {
         detail: MediaDetail,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        tracking: TrackingState? = nil,
+        completionJourneyId: Int? = nil,
+        preselectedLiked: Bool? = nil,
+        preselectedRatingSteps: Int? = nil,
         onUnauthorized: @escaping () -> Void,
         onSaved: @escaping () -> Void
     ) {
         self.detail = detail
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
+        self.completionJourneyId = completionJourneyId
         self.onUnauthorized = onUnauthorized
         self.onSaved = onSaved
         if detail.ref.isSingleWeight {
@@ -54,19 +61,23 @@ final class MediaLogViewModel {
                 || (state?.directConsumption == nil
                     && state?.isTracked == true
                     && state?.status == "Completed")
+        } else if detail.ref.mediaType == "book" {
+            isRepeat = tracking?.book?.isRereading ?? detail.userState?.book?.isRereading ?? false
         } else {
             isRepeat = (detail.userState?.diaryCount ?? 0) > 0
         }
-        liked = detail.userState?.hasLiked ?? false
-        if let rating = detail.userState?.rating.flatMap({ Decimal(string: $0) }) {
-            ratingSteps = detail.ref.isSingleWeight
+        liked = preselectedLiked ?? tracking?.liked ?? detail.userState?.hasLiked ?? false
+        if let preselectedRatingSteps {
+            ratingSteps = preselectedRatingSteps
+        } else if let rating = (tracking?.rating ?? detail.userState?.rating).flatMap({ Decimal(string: $0) }) {
+            ratingSteps = detail.ref.usesFiveStarRatingScale
                 ? NSDecimalNumber(decimal: rating * 2).intValue
                 : NSDecimalNumber(decimal: rating).intValue
         }
     }
 
     var supportsProgress: Bool {
-        ["book", "manga", "comic", "game", "boardgame"].contains(detail.ref.mediaType)
+        ["manga", "comic", "game", "boardgame"].contains(detail.ref.mediaType)
     }
 
     var supportsSeasonLogging: Bool {
@@ -160,7 +171,7 @@ final class MediaLogViewModel {
 
     static func ratingDecimal(for steps: Int, mediaType: String) -> Decimal? {
         guard steps > 0 else { return nil }
-        return mediaType == "movie" || mediaType == "music"
+        return ["movie", "music", "book"].contains(mediaType)
             ? Decimal(steps) / 2
             : Decimal(steps)
     }
@@ -258,8 +269,29 @@ final class MediaLogViewModel {
 
     private func saveFinishedLog() async -> Bool {
         await performSave {
-            guard !selectedRef.isSingleWeight || !CalendarDateCodec.isFuture(consumedAt) else {
+            guard !selectedRef.usesCalendarConsumptionDate || !CalendarDateCodec.isFuture(consumedAt) else {
                 throw MediaLogError.futureDate
+            }
+            if selectedRef.mediaType == "book" {
+                let response = try await trackingRepository.completeBook(
+                    source: selectedRef.source,
+                    mediaId: selectedRef.mediaId,
+                    request: BookCompletionWriteRequest(
+                        journeyId: completionJourneyId,
+                        completionDate: CalendarDateCodec.string(from: consumedAt),
+                        rating: Self.ratingDecimal(for: ratingSteps, mediaType: selectedRef.mediaType),
+                        review: review,
+                        reviewTitle: reviewTitle,
+                        liked: liked,
+                        isRewatch: isRepeat,
+                        containsSpoilers: containsSpoilers,
+                        tags: tags,
+                        mutationId: completionMutationId
+                    )
+                )
+                MediaStateChange.post(ref: selectedRef)
+                _ = response
+                return
             }
             _ = try await diaryRepository.create(DiaryEntryWriteRequest(
                 ref: selectedRef,
@@ -304,12 +336,14 @@ final class MediaLogViewModel {
     }
 
     private func performSave(_ operation: () async throws -> Void) async -> Bool {
+        guard !isSaving else { return false }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
 
         do {
             try await operation()
+            MediaStateChange.post(ref: selectedRef)
             onSaved()
             return true
         } catch {
@@ -353,6 +387,10 @@ struct MediaLogView: View {
         detail: MediaDetail,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        tracking: TrackingState? = nil,
+        completionJourneyId: Int? = nil,
+        preselectedLiked: Bool? = nil,
+        preselectedRatingSteps: Int? = nil,
         onUnauthorized: @escaping () -> Void,
         onSaved: @escaping () -> Void
     ) {
@@ -360,6 +398,10 @@ struct MediaLogView: View {
             detail: detail,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
+            tracking: tracking,
+            completionJourneyId: completionJourneyId,
+            preselectedLiked: preselectedLiked,
+            preselectedRatingSteps: preselectedRatingSteps,
             onUnauthorized: onUnauthorized,
             onSaved: onSaved
         ))
@@ -604,7 +646,7 @@ struct MediaLogView: View {
             DatePicker(
                 "Date",
                 selection: $viewModel.consumedAt,
-                in: Date.distantPast...(viewModel.selectedRef.isSingleWeight ? Date() : Date.distantFuture),
+                in: Date.distantPast...(viewModel.selectedRef.usesCalendarConsumptionDate ? Date() : Date.distantFuture),
                 displayedComponents: [.date]
             )
                 .labelsHidden()

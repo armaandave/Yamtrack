@@ -10,6 +10,8 @@ from app.external_ratings import (
     FRESH_FOR,
     RATING_SOURCES,
     TransientExternalRatingError,
+    eligible_rating_sources,
+    rating_source_is_exposed,
     rating_sources_needing_refresh,
     refresh_external_ratings,
 )
@@ -390,3 +392,15 @@ class ExternalRatingServiceTests(TestCase):
             refresh_external_ratings(manual, ["goodreads"])
         metadata_mock.assert_not_called()
         self.assertFalse(manual.external_ratings.exists())
+
+    @override_settings(MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED=False)
+    def test_musicbrainz_rating_gate_disables_fetch_and_exposure(self):
+        item = Item.objects.create(
+            media_id="release-group",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Album",
+        )
+
+        self.assertEqual(eligible_rating_sources(item), [])
+        self.assertFalse(rating_source_is_exposed("musicbrainz"))

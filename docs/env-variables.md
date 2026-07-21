@@ -46,6 +46,8 @@ See [media-imports](media-imports.md).
 | `ADMIN_ENABLED`    | Default to `False`. Set to `True` to enable the Django admin interface.                                                                                                                              |
 | `TRACK_TIME`       | Default to `True`. Set to `False` to disable time tracking in Yamtrack.                                                                                                                              |
 | `MUSIC_ENABLED`    | Defaults to the value of `DEBUG`. Set explicitly to `True` in every production web and worker process to expose Music in `/api/v1/meta/` and enable its routes.                                                                                         |
+| `MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED` | Defaults to `False`. Enable only after the owner records approval for MusicBrainz supplementary rating use. Must match in web and worker processes. |
+| `EXTERNAL_RATING_PERSON_PREPARATION_ENABLED` | Defaults to `False`. Enable after dynamic Library rating sorts are stable to advertise and prepare person-filmography rating sorts. Must match in web and worker processes. |
 
 ### Music deployment verification
 

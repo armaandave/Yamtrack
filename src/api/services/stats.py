@@ -50,7 +50,11 @@ STATUS_KEYS = {
 }
 
 RATING_BUCKETS = [Decimal(index) / Decimal(2) for index in range(21)]
-SINGLE_WEIGHT_MEDIA_TYPES = {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
+SINGLE_WEIGHT_MEDIA_TYPES = {
+    MediaTypes.MOVIE.value,
+    MediaTypes.MUSIC.value,
+    MediaTypes.BOOK.value,
+}
 TOP_LEVEL_MEDIA_LIMIT = 12
 MEDIA_TYPE_MEDIA_LIMIT = 6
 FACET_LIMIT = 10
@@ -136,6 +140,17 @@ def build_stats_payload(*, user, viewer, request, stats_range):
         )
 
     diary_summary, diary_by_type = _diary_summaries(diary_entries)
+    dated_book_reads = diary_entries.filter(
+        item__media_type=MediaTypes.BOOK.value,
+    ).count()
+    undated_book_reads = 0
+    if stats_range.is_all_time:
+        Book = apps.get_model("app", "Book")
+        undated_book_reads = Book.objects.filter(
+            user=user,
+            completed_manually=True,
+        ).count()
+    lifetime_book_reads = dated_book_reads + undated_book_reads
     tracking_by_type = _tracking_summaries(user)
     liked_total, likes_by_type = _like_summaries(user)
     activity = _activity_payload(diary_entries, stats_range)
@@ -154,12 +169,14 @@ def build_stats_payload(*, user, viewer, request, stats_range):
         "current_streak_days": activity["current_streak_days"],
         "longest_streak_days": activity["longest_streak_days"],
     }
+    if lifetime_book_reads or tracking_by_type[MediaTypes.BOOK.value]["tracked_count"]:
+        overview["book_read_count"] = lifetime_book_reads
 
     media_types = []
     for media_type in _primary_media_types():
         diary_values = diary_by_type[media_type]
         tracking_values = tracking_by_type[media_type]
-        media_types.append({
+        media_payload = {
             "media_type": media_type,
             "tracked_count": tracking_values["tracked_count"],
             "completed_count": tracking_values["completed_count"],
@@ -173,7 +190,12 @@ def build_stats_payload(*, user, viewer, request, stats_range):
             "top_genres": facets_by_type[media_type][ItemFilterFacet.FacetType.GENRE],
             "top_languages": facets_by_type[media_type][ItemFilterFacet.FacetType.LANGUAGE],
             "metadata_coverage": coverage_by_type[media_type],
-        })
+        }
+        if media_type == MediaTypes.BOOK.value and (
+            lifetime_book_reads or tracking_values["tracked_count"]
+        ):
+            media_payload["read_count"] = lifetime_book_reads
+        media_types.append(media_payload)
 
     return {
         "schema_version": 1,
@@ -220,9 +242,9 @@ def visible_diary_entries(*, user, viewer):
         return entries
 
     visibility = Q(
-        item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value],
+        item__media_type__in=list(SINGLE_WEIGHT_MEDIA_TYPES),
     ) | Q(
-        ~Q(item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value]),
+        ~Q(item__media_type__in=list(SINGLE_WEIGHT_MEDIA_TYPES)),
         visibility="public",
     )
     if (
@@ -235,7 +257,7 @@ def visible_diary_entries(*, user, viewer):
         ).exists()
     ):
         visibility |= Q(
-            ~Q(item__media_type__in=[MediaTypes.MOVIE.value, MediaTypes.MUSIC.value]),
+            ~Q(item__media_type__in=list(SINGLE_WEIGHT_MEDIA_TYPES)),
             visibility="followers",
         )
     return entries.filter(visibility)

@@ -58,13 +58,6 @@ struct ListMediaPickerView: View {
 
                 ScrollView(showsIndicators: false) {
                     resultsContent
-                        .opacity(searchViewModel.isLoading && !searchViewModel.results.isEmpty ? 0.55 : 1)
-                        .overlay(alignment: .topTrailing) {
-                            if searchViewModel.isLoading && !searchViewModel.results.isEmpty {
-                                ProgressView("Searching…")
-                                    .padding(12)
-                            }
-                        }
                         .frame(maxWidth: .infinity, minHeight: 420, alignment: .top)
                         .spineContentTransition(value: resultsPhase)
                         .padding(.horizontal, 16)

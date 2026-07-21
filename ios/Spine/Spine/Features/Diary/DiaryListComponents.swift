@@ -250,7 +250,7 @@ struct DiaryEntryRow: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
 
-            if entry.isRewatch {
+            if entry.isTrueReread ?? entry.isRewatch {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11.25, weight: .bold))
                     .foregroundStyle(.white.opacity(0.7))
@@ -333,7 +333,7 @@ struct DiaryStarRating: View {
 
     private var value: Double {
         guard let raw = Double(rating) else { return 0 }
-        return max(0, min(5, mediaType == "movie" || mediaType == "music" ? raw : raw / 2))
+        return max(0, min(5, ["movie", "music", "book"].contains(mediaType) ? raw : raw / 2))
     }
 
     private var displayValue: String {

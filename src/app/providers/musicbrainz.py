@@ -81,17 +81,22 @@ def search_release_groups(query, *, limit=settings.PER_PAGE, offset=0, timeout=N
 def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search release groups and return Spine-normalized album results."""
     page = max(1, int(page))
+    search_options = {"timeout": timeout} if timeout is not None else {}
     response = search_release_groups(
         query,
         limit=SEARCH_CANDIDATE_LIMIT,
         offset=0,
-        timeout=timeout,
+        **search_options,
     )
     candidates = [
         _search_result(group) for group in response.get("release-groups", [])
     ]
-    popularity = lookup_release_group_popularity(
-        [candidate["media_id"] for candidate in candidates],
+    popularity = (
+        {}
+        if preserve_ranking_fields
+        else lookup_release_group_popularity(
+            [candidate["media_id"] for candidate in candidates],
+        )
     )
     if popularity:
         for candidate in candidates:
@@ -104,6 +109,9 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
         MediaTypes.MUSIC.value,
         preserve_ranking_fields=preserve_ranking_fields,
     )
+    if preserve_ranking_fields:
+        for candidate in ranked:
+            candidate.pop("provider_rank_boost", None)
     start = (page - 1) * settings.PER_PAGE
     results = ranked[start : start + settings.PER_PAGE]
     try:
@@ -1203,6 +1211,7 @@ def _external_links(relations, source_url):
 
 def _musicbrainz_request(path, params, *, timeout=None):
     params = {"fmt": "json", **params}
+    request_options = {"timeout": timeout} if timeout is not None else {}
     for attempt in range(MAX_ATTEMPTS):
         try:
             return services.api_request(
@@ -1212,7 +1221,7 @@ def _musicbrainz_request(path, params, *, timeout=None):
                 params=params,
                 headers=_headers(),
                 request_session=services.musicbrainz_session,
-                timeout=timeout,
+                **request_options,
             )
         except requests.exceptions.JSONDecodeError as error:
             raise services.ProviderAPIError(
@@ -1223,6 +1232,12 @@ def _musicbrainz_request(path, params, *, timeout=None):
         except requests.exceptions.HTTPError as error:
             status_code = getattr(error.response, "status_code", None)
             if status_code == requests.codes.service_unavailable and attempt < MAX_ATTEMPTS - 1:
+                continue
+            raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
+        except requests.exceptions.Timeout as error:
+            raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
+        except requests.ConnectionError as error:
+            if attempt < MAX_ATTEMPTS - 1:
                 continue
             raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
         except requests.RequestException as error:

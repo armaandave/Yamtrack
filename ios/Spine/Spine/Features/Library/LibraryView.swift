@@ -10,8 +10,42 @@ enum LibraryViewMode: String, CaseIterable, Identifiable {
 enum LibraryShelf: String, CaseIterable, Identifiable {
     case tracked = "Tracked"
     case planning = "Planning"
+    case currentlyReading = "Currently Reading"
+    case paused = "Paused"
+    case didNotFinish = "Did Not Finish"
+    case read = "Read"
 
     var id: String { rawValue }
+
+    func title(mediaType: String) -> String {
+        if mediaType == "book", self == .planning { return "To Read" }
+        return rawValue
+    }
+
+    static func available(for mediaType: String) -> [LibraryShelf] {
+        mediaType == "book"
+            ? [.planning, .currentlyReading, .paused, .didNotFinish, .read]
+            : [.tracked, .planning]
+    }
+
+    var apiStatus: String {
+        switch self {
+        case .tracked: "tracked"
+        case .planning: "Planning"
+        case .currentlyReading: "In progress"
+        case .paused: "Paused"
+        case .didNotFinish: "Dropped"
+        case .read: "Completed"
+        }
+    }
+
+    func matches(status: String?) -> Bool {
+        let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if self == .tracked {
+            return normalized?.caseInsensitiveCompare("Planning") != .orderedSame
+        }
+        return normalized?.caseInsensitiveCompare(apiStatus) == .orderedSame
+    }
 }
 
 @MainActor
@@ -68,14 +102,11 @@ final class LibraryViewModel {
     }
 
     var displayedItems: [LibraryItem] {
-        items.filter { item in
-            switch shelf {
-            case .tracked:
-                !Self.isPlanning(item)
-            case .planning:
-                Self.isPlanning(item)
-            }
-        }
+        items.filter { shelf.matches(status: $0.tracking.status) }
+    }
+
+    var availableShelves: [LibraryShelf] {
+        LibraryShelf.available(for: mediaType)
     }
 
     static func libraryMediaTypes(from mediaTypes: [String]) -> [String] {
@@ -84,11 +115,16 @@ final class LibraryViewModel {
     }
 
     static func isPlanning(_ item: LibraryItem) -> Bool {
-        item.tracking.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "planning"
+        hasStatus(item, "Planning")
+    }
+
+    static func hasStatus(_ item: LibraryItem, _ status: String) -> Bool {
+        item.tracking.status?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(status) == .orderedSame
     }
 
     private var statusFilter: String? {
-        shelf == .planning ? "Planning" : "tracked"
+        shelf.apiStatus
     }
 
     func bootstrap(selectedMediaType: String? = nil) async {
@@ -129,6 +165,9 @@ final class LibraryViewModel {
         let selectedQuery = searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? query
         guard mediaType != type || query != selectedQuery else { return }
         mediaType = type
+        if !availableShelves.contains(shelf) {
+            shelf = type == "book" ? .currentlyReading : .tracked
+        }
         query = selectedQuery
         filter.genres = []
         filter.languages = []
@@ -137,7 +176,8 @@ final class LibraryViewModel {
         filter.year = nil
         filter.yearMin = nil
         filter.yearMax = nil
-        await loadFilterOptions()
+        await loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: true)
+        guard !Task.isCancelled else { return }
         await reload()
     }
 
@@ -239,7 +279,7 @@ final class LibraryViewModel {
         items += response.results.filter { !existingIDs.contains($0.id) }
     }
 
-    func loadFilterOptions() async {
+    func loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: Bool = false) async {
         prepareForScopeChangeIfNeeded()
         do {
             let scope = currentRequestScope
@@ -249,10 +289,20 @@ final class LibraryViewModel {
             )
             guard scope == currentRequestScope else { return }
             filterOptions = options
+            if let sort = filter.sort,
+               !options.sorts.contains(where: { $0.value == sort.rawValue }) {
+                filter.sort = nil
+                filter.direction = nil
+            }
         } catch is CancellationError {
             return
         } catch {
             filterOptions = .empty
+            if clearingUnconfirmedExternalSortOnFailure,
+               filter.sort?.isExternalRating == true {
+                filter.sort = nil
+                filter.direction = nil
+            }
         }
     }
 
@@ -380,7 +430,8 @@ struct LibraryView: View {
             }
             .onChange(of: viewModel.shelf) {
                 Task {
-                    await viewModel.loadFilterOptions()
+                    await viewModel.loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: true)
+                    guard !Task.isCancelled else { return }
                     await viewModel.reload()
                 }
             }
@@ -391,6 +442,9 @@ struct LibraryView: View {
                 Task { await viewModel.reload() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
+                Task { await viewModel.reload() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
                 Task { await viewModel.reload() }
             }
         }
@@ -455,12 +509,7 @@ struct LibraryView: View {
             )
 
             HStack(spacing: 12) {
-                Picker("Shelf", selection: $viewModel.shelf) {
-                    ForEach(LibraryShelf.allCases) { shelf in
-                        Text(shelf.rawValue).tag(shelf)
-                    }
-                }
-                .pickerStyle(.segmented)
+                shelfPicker
 
                 LibraryViewModeToggle(selection: $viewModel.viewMode)
 
@@ -472,12 +521,43 @@ struct LibraryView: View {
                 ) {
                     Task {
                         await viewModel.loadFilterOptions()
+                        guard !Task.isCancelled else { return }
                         await viewModel.reload()
                     }
                 }
             }
         }
         .padding(.bottom, 14)
+    }
+
+    @ViewBuilder
+    private var shelfPicker: some View {
+        if viewModel.mediaType == "book" {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(viewModel.availableShelves) { shelf in
+                        Button {
+                            viewModel.shelf = shelf
+                        } label: {
+                            Text(shelf.title(mediaType: viewModel.mediaType))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(viewModel.shelf == shelf ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
+                                .background(viewModel.shelf == shelf ? .white : .white.opacity(0.08), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } else {
+            Picker("Shelf", selection: $viewModel.shelf) {
+                ForEach(viewModel.availableShelves) { shelf in
+                    Text(shelf.title(mediaType: viewModel.mediaType)).tag(shelf)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
     }
 
     private var mediaPicker: some View {
@@ -570,7 +650,15 @@ struct LibraryView: View {
         case .tracked:
             return "No tracked \(mediaName)"
         case .planning:
-            return "No planned \(mediaName)"
+            return viewModel.mediaType == "book" ? "No books to read" : "No planned \(mediaName)"
+        case .currentlyReading:
+            return "No books currently reading"
+        case .paused:
+            return "No paused books"
+        case .didNotFinish:
+            return "No books marked Did Not Finish"
+        case .read:
+            return "No read books"
         }
     }
 
@@ -582,7 +670,15 @@ struct LibraryView: View {
         case .tracked:
             return "Consumed, logged, watched, read, or played media will appear here."
         case .planning:
-            return "Planning items stay separate from the rest of your library."
+            return viewModel.mediaType == "book" ? "Books saved for later will appear here." : "Planning items stay separate from the rest of your library."
+        case .currentlyReading:
+            return "Start a reading journey to see its progress here."
+        case .paused:
+            return "Paused reading journeys will appear here."
+        case .didNotFinish:
+            return "Books you stop reading will appear here."
+        case .read:
+            return "Completed reading journeys will appear here."
         }
     }
 
@@ -595,14 +691,26 @@ struct LibraryView: View {
                         within: items.map(\.media.ref)
                     )
                 } label: {
-                    MediaArtwork(
-                        url: item.media.displayPosterURL,
-                        title: item.media.title,
-                        slot: .tagGrid,
-                        mediaType: item.media.ref.mediaType,
-                        orientation: item.media.posterOrientation
-                    )
-                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                    ZStack(alignment: .bottom) {
+                        MediaArtwork(
+                            url: item.media.displayPosterURL,
+                            title: item.media.title,
+                            slot: .tagGrid,
+                            mediaType: item.media.ref.mediaType,
+                            orientation: item.media.posterOrientation
+                        )
+                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+
+                        if let progressText = bookProgressBadge(item) {
+                            Text(progressText)
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
+                                .background(.black.opacity(0.76), in: Capsule())
+                                .padding(5)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("View \(item.media.title)")
@@ -612,6 +720,16 @@ struct LibraryView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func bookProgressBadge(_ item: LibraryItem) -> String? {
+        guard item.media.ref.mediaType == "book" else { return nil }
+        if let text = item.tracking.progress?.compactDisplayText(
+            preferredMode: ProgressDisplayPreferences.mode(for: item.media.ref)
+        ) {
+            return text
+        }
+        return LibraryViewModel.hasStatus(item, "Completed") ? "Complete" : nil
     }
 
     private func libraryList(_ items: [LibraryItem]) -> some View {
@@ -788,6 +906,8 @@ private struct LibraryListRow: View {
             if let progressText = progress.compactDisplayText(preferredMode: ProgressDisplayPreferences.mode(for: item.media.ref)) {
                 parts.append(progressText)
             }
+        } else if item.media.ref.mediaType == "book", LibraryViewModel.hasStatus(item, "Completed") {
+            parts.append("Complete")
         }
         return parts.joined(separator: " - ")
     }

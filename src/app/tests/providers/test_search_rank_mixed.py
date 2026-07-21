@@ -166,6 +166,64 @@ class MixedSearchRankTests(SimpleTestCase):
 
         self.assertEqual(ranked[0]["media_id"], "exact")
 
+    def test_music_provider_relevance_does_not_overwhelm_popular_exact_adaptations(self):
+        candidates = [
+            (
+                0,
+                {
+                    "media_id": "album",
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "title": "Dune",
+                    "image": "https://example.com/album.jpg",
+                    "first_release_date": "1995",
+                },
+            ),
+            (
+                1,
+                {
+                    "media_id": "greatest-hits",
+                    "media_type": MediaTypes.MUSIC.value,
+                    "source": Sources.MUSICBRAINZ.value,
+                    "title": "Dune Greatest Hits",
+                    "image": "https://example.com/hits.jpg",
+                    "first_release_date": "1999",
+                },
+            ),
+            (
+                0,
+                {
+                    "media_id": "movie",
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "title": "Dune",
+                    "image": "https://example.com/movie.jpg",
+                    "release_date": "2021-09-15",
+                    "vote_count": 10_000,
+                },
+            ),
+            (
+                0,
+                {
+                    "media_id": "book",
+                    "media_type": MediaTypes.BOOK.value,
+                    "source": Sources.HARDCOVER.value,
+                    "title": "Dune",
+                    "image": "https://example.com/book.jpg",
+                    "first_publish_year": 1965,
+                    "author_name": "Frank Herbert",
+                    "ratings_count": 100_000,
+                },
+            ),
+        ]
+
+        ranked = rank_mixed_results("dune", candidates, limit=24)
+
+        self.assertEqual(
+            [item["media_type"] for item in ranked[:2]],
+            [MediaTypes.BOOK.value, MediaTypes.MOVIE.value],
+        )
+
     def test_mixed_results_are_capped_and_strip_internal_fields(self):
         candidates = [
             (

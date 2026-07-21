@@ -1,31 +1,50 @@
 import Foundation
 
-enum MediaFilterSort: String, Codable, CaseIterable, Identifiable {
-    case popularity
-    case title
-    case releaseDate = "release_date"
-    case yourRating = "your_rating"
-    case averageRating = "average_rating"
-    case letterboxdRating = "letterboxd_rating"
-    case imdbRating = "imdb_rating"
-    case rottenTomatoesRating = "rotten_tomatoes_rating"
-    case consumedAt = "consumed_at"
-    case dateAdded = "date_added"
+struct MediaFilterSort: RawRepresentable, Codable, Hashable, Identifiable {
+    let rawValue: String
+
+    nonisolated init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(from decoder: Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    static let popularity = Self(rawValue: "popularity")
+    static let title = Self(rawValue: "title")
+    static let releaseDate = Self(rawValue: "release_date")
+    static let yourRating = Self(rawValue: "your_rating")
+    static let averageRating = Self(rawValue: "average_rating")
+    static let consumedAt = Self(rawValue: "consumed_at")
+    static let dateAdded = Self(rawValue: "date_added")
 
     var id: String { rawValue }
 
+    var isExternalRating: Bool {
+        rawValue.hasPrefix("rating:")
+            || ["letterboxd_rating", "imdb_rating", "rotten_tomatoes_rating"].contains(rawValue)
+    }
+
+    var defaultDirection: MediaFilterDirection? {
+        isExternalRating ? .desc : nil
+    }
+
     var label: String {
-        switch self {
-        case .popularity: "Popularity"
-        case .title: "Title"
-        case .releaseDate: "Release Date"
-        case .yourRating: "Your Rating"
-        case .averageRating: "Average Rating"
-        case .letterboxdRating: "Letterboxd Rating"
-        case .imdbRating: "IMDb Rating"
-        case .rottenTomatoesRating: "Rotten Tomatoes"
-        case .consumedAt: "Watched Date"
-        case .dateAdded: "Date Added"
+        switch rawValue {
+        case "popularity": "Popularity"
+        case "title": "Title"
+        case "release_date": "Release Date"
+        case "your_rating": "Your Rating"
+        case "average_rating": "Average Rating"
+        case "consumed_at": "Watched Date"
+        case "date_added": "Date Added"
+        default: rawValue
         }
     }
 }
@@ -137,7 +156,7 @@ struct MediaFilterState: Equatable {
         }
         appendTrimmed("q", q, to: &items)
         append("sort", sort?.rawValue, to: &items)
-        append("direction", direction?.rawValue, to: &items)
+        append("direction", (direction ?? sort?.defaultDirection)?.rawValue, to: &items)
         append("status", status, to: &items)
         append("item_id", itemId.map(String.init), to: &items)
         append("year", year.map(String.init), to: &items)
@@ -175,6 +194,13 @@ struct MediaFilterState: Equatable {
             self[keyPath: keyPath].removeAll { $0 == trimmed }
         } else {
             self[keyPath: keyPath].append(trimmed)
+        }
+    }
+
+    mutating func selectSort(rawValue: String?) {
+        sort = rawValue.map(MediaFilterSort.init(rawValue:))
+        if sort != nil, direction == nil {
+            direction = .desc
         }
     }
 
@@ -230,7 +256,7 @@ struct FilterChoice: Decodable, Hashable, Identifiable {
     var id: String { value }
 }
 
-struct MediaFilterOptionsResponse: Decodable, Equatable {
+struct MediaFilterOptionsResponse: Decodable, Equatable, Hashable {
     let sorts: [FilterChoice]
     let genres: [FilterChoice]
     let languages: [FilterChoice]

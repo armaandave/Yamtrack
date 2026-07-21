@@ -111,6 +111,10 @@ enum APIError: LocalizedError {
                 return "\(label): \(message)"
             }
         }
+        for (key, value) in json.sorted(by: { $0.key < $1.key }) {
+            guard let message = firstMessage(in: value) else { continue }
+            return "\(key.replacingOccurrences(of: "_", with: " ").capitalized): \(message)"
+        }
         return nil
     }
 

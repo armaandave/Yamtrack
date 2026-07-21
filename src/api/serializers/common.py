@@ -1,6 +1,8 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.db.models import Count, F, Prefetch, Window, prefetch_related_objects
+from django.db.models.functions import RowNumber
 from django.utils.text import slugify
 from rest_framework import serializers
 
@@ -14,7 +16,7 @@ from app.models import (
     Sources,
     Status,
 )
-from lists.models import CustomList
+from lists.models import CustomList, CustomListItem
 from social.models import ProgressChange
 
 
@@ -252,6 +254,82 @@ def media_summary_from_item(
     }
 
 
+def prime_collection_items(items, user, *, media_by_item=None):
+    """Attach bounded viewer data once for a paginated collection."""
+    items = list(items)
+    if not items or not user or not user.is_authenticated:
+        return
+    from app.models import CustomBackdropPreference, CustomPosterPreference
+
+    prefetch_related_objects(
+        items,
+        Prefetch(
+            "customposterpreference_set",
+            queryset=CustomPosterPreference.objects.filter(user=user),
+            to_attr="viewer_custom_poster_preferences",
+        ),
+        Prefetch(
+            "custombackdroppreference_set",
+            queryset=CustomBackdropPreference.objects.filter(user=user),
+            to_attr="viewer_custom_backdrop_preferences",
+        ),
+    )
+    if media_by_item is None:
+        return
+
+    item_ids = [item.pk for item in items]
+    list_ids = {}
+    for item_id, list_id in CustomListItem.objects.filter(
+        item_id__in=item_ids,
+        custom_list__owner=user,
+    ).values_list("item_id", "custom_list_id"):
+        list_ids.setdefault(item_id, []).append(list_id)
+    latest_diary = {
+        entry.item_id: entry
+        for entry in DiaryEntry.objects.filter(user=user, item_id__in=item_ids)
+        .annotate(
+            viewer_count=Window(Count("id"), partition_by=[F("item_id")]),
+            viewer_row=Window(
+                RowNumber(),
+                partition_by=[F("item_id")],
+                order_by=[F("consumed_at").desc(), F("id").desc()],
+            ),
+        )
+        .filter(viewer_row=1)
+    }
+    liked = set(
+        MediaLike.objects.filter(user=user, item_id__in=item_ids).values_list(
+            "item_id",
+            flat=True,
+        ),
+    )
+    progress_changes = {
+        change.item_id: change
+        for change in ProgressChange.objects.filter(
+            actor=user,
+            item_id__in=item_ids,
+        )
+        .annotate(
+            viewer_row=Window(
+                RowNumber(),
+                partition_by=[F("item_id")],
+                order_by=[F("created_at").desc(), F("id").desc()],
+            ),
+        )
+        .filter(viewer_row=1)
+    }
+    for item in items:
+        media = media_by_item.get(item.pk)
+        if media is not None:
+            media.user = user
+            media.viewer_latest_progress_change = progress_changes.get(item.pk)
+        item.viewer_media = media
+        item.viewer_list_ids = list_ids.get(item.pk, [])
+        item.viewer_latest_diary = latest_diary.get(item.pk)
+        item.viewer_diary_count = getattr(item.viewer_latest_diary, "viewer_count", 0)
+        item.viewer_has_liked = item.pk in liked
+
+
 def resolved_item_backdrop_urls(item, request=None, user=None):
     """Return the same default/custom backdrop pair used by media detail."""
     custom_backdrop_url = custom_backdrop_url_for_user(user, media_ref_from_item(item), request=request) if user else None
@@ -289,18 +367,29 @@ def synopsis_from_payload(payload):
     return None
 
 
-def media_summary_from_provider(payload, media_type, source, request=None, user=None):
+_UNRESOLVED_ITEM = object()
+
+
+def media_summary_from_provider(
+    payload,
+    media_type,
+    source,
+    request=None,
+    user=None,
+    item=_UNRESOLVED_ITEM,
+):
     """Serialize provider search/detail payload into the common summary shape."""
     media_id = str(payload.get("media_id") or payload.get("id") or "")
     season_number = payload.get("season_number")
     episode_number = payload.get("episode_number")
-    item = Item.objects.filter(
-        source=source,
-        media_type=media_type,
-        media_id=media_id,
-        season_number=season_number,
-        episode_number=episode_number,
-    ).first()
+    if item is _UNRESOLVED_ITEM:
+        item = Item.objects.filter(
+            source=source,
+            media_type=media_type,
+            media_id=media_id,
+            season_number=season_number,
+            episode_number=episode_number,
+        ).first()
     return {
         "ref": {
             "item_id": item.id if item else None,
@@ -538,38 +627,47 @@ def user_state_for_item(user, item):
     if not user or not user.is_authenticated or item is None:
         return None
     media_type = item.media_type
-    queryset = BasicMedia.objects.filter_media(
-        user,
-        item.media_id,
-        media_type,
-        item.source,
-        item.season_number,
-        item.episode_number,
-    )
-    media = queryset.first()
-    list_ids = list(
-        CustomList.objects.filter(
-            owner=user,
-            items=item,
-        ).values_list("id", flat=True),
-    )
-    diary_entries = DiaryEntry.objects.filter(user=user, item=item)
-    latest_diary = diary_entries.order_by("-consumed_at", "-id").first()
-    is_single_weight = single_weight.supports(item)
+    if hasattr(item, "viewer_media"):
+        media = item.viewer_media
+        list_ids = item.viewer_list_ids
+        latest_diary = item.viewer_latest_diary
+        diary_count = getattr(latest_diary, "viewer_count", 0)
+        has_liked = item.viewer_has_liked
+    else:
+        media = BasicMedia.objects.filter_media(
+            user,
+            item.media_id,
+            media_type,
+            item.source,
+            item.season_number,
+            item.episode_number,
+        ).first()
+        list_ids = list(
+            CustomList.objects.filter(
+                owner=user,
+                items=item,
+            ).values_list("id", flat=True),
+        )
+        diary_entries = DiaryEntry.objects.filter(user=user, item=item)
+        latest_diary = diary_entries.order_by("-consumed_at", "-id").first()
+        diary_count = diary_entries.count()
+        has_liked = MediaLike.objects.filter(user=user, item=item).exists()
+    uses_half_star = single_weight.uses_half_star_rating(item)
+    has_provenance = uses_half_star
     diary_state = {
         "diary_entry_id": latest_diary.id if latest_diary else None,
-        "diary_count": diary_entries.count(),
+        "diary_count": diary_count,
         "diary_rating": (
             decimal_string(single_weight.rating_to_wire(latest_diary.rating))
-            if is_single_weight and latest_diary and latest_diary.rating is not None
+            if uses_half_star and latest_diary and latest_diary.rating is not None
             else decimal_string(latest_diary.rating) if latest_diary else None
         ),
         "diary_consumed_at": (
             single_weight.calendar_date(latest_diary.consumed_at).isoformat()
-            if is_single_weight and latest_diary
+            if uses_half_star and latest_diary
             else latest_diary.consumed_at if latest_diary else None
         ),
-        "has_liked": MediaLike.objects.filter(user=user, item=item).exists(),
+        "has_liked": has_liked,
     }
     if media is None:
         return {"is_tracked": False, "status": None, "rating": None, "in_lists": list_ids, **diary_state}
@@ -579,21 +677,25 @@ def user_state_for_item(user, item):
         "status": getattr(media, "status", None),
         "rating": (
             decimal_string(single_weight.rating_to_wire(media.score))
-            if is_single_weight and media.score is not None
+            if uses_half_star and media.score is not None
             else decimal_string(getattr(media, "score", None))
         ),
         "in_lists": list_ids,
         **diary_state,
     }
-    if is_single_weight:
+    if has_provenance:
         state.update(
             {
-                "direct_consumption": media.direct_consumption,
-                "rating_source_diary_entry_id": media.rating_source_id,
-                "like_source_diary_entry_id": media.like_source_id,
-                "like_is_independent": media.like_is_independent,
+                "direct_consumption": getattr(media, "direct_consumption", None),
+                "rating_source_diary_entry_id": getattr(media, "rating_source_id", None),
+                "like_source_diary_entry_id": getattr(media, "like_source_id", None),
+                "like_is_independent": getattr(media, "like_is_independent", None),
             },
         )
+    if item.media_type == MediaTypes.BOOK.value:
+        from app import book_tracking
+
+        state["book"] = book_tracking.state_payload(media)
     return state
 
 
@@ -606,7 +708,7 @@ def decimal_string(value):
     return str(value)
 
 
-def progress_for_media(media):
+def progress_for_media(media):  # noqa: PLR0911 - media kinds are intentionally explicit
     """Return typed progress for a media instance."""
     media_type = media.item.media_type
     max_progress = getattr(media, "max_progress", None)
@@ -627,6 +729,15 @@ def progress_for_media(media):
         snapshot = getattr(media, "progress_snapshot", None)
         if snapshot and snapshot.has_percentage and not snapshot.has_pages:
             return {"kind": "percentage", "value": snapshot.percentage, "max": 100, "unit": "percent"}
+        if not snapshot and media.status == Status.COMPLETED.value:
+            if media.item.total_pages:
+                return {
+                    "kind": "pages",
+                    "value": media.item.total_pages,
+                    "max": media.item.total_pages,
+                    "unit": "page",
+                }
+            return {"kind": "percentage", "value": 100, "max": 100, "unit": "percent"}
         return {
             "kind": "pages",
             "value": snapshot.pages if snapshot and snapshot.has_pages else value,
@@ -657,6 +768,8 @@ def progress_change_payload(change):
 
 def latest_progress_change_for(media):
     """Return the newest recorded progress delta for this user and item."""
+    if hasattr(media, "viewer_latest_progress_change"):
+        return media.viewer_latest_progress_change
     return (
         ProgressChange.objects.filter(actor=media.user, item=media.item)
         .order_by("-created_at", "-id")
@@ -666,13 +779,13 @@ def latest_progress_change_for(media):
 
 def tracking_state(media):
     """Serialize any tracked media model into TrackingState."""
-    is_single_weight = single_weight.supports(media.item)
+    uses_half_star = single_weight.uses_half_star_rating(media.item)
     state = {
         "tracking_id": media.id,
         "status": getattr(media, "status", None),
         "rating": (
             decimal_string(single_weight.rating_to_wire(media.score))
-            if is_single_weight and media.score is not None
+            if uses_half_star and media.score is not None
             else decimal_string(getattr(media, "score", None))
         ),
         "progress": progress_for_media(media),
@@ -680,27 +793,40 @@ def tracking_state(media):
         "start_date": getattr(media, "start_date", None),
         "end_date": (
             single_weight.calendar_date(media.end_date).isoformat()
-            if is_single_weight and media.end_date
+            if uses_half_star and media.end_date
             else getattr(media, "end_date", None)
         ),
         "notes": getattr(media, "notes", ""),
         "updated_at": getattr(media, "progressed_at", None) or getattr(media, "created_at", None),
         "latest_progress_change": progress_change_payload(latest_progress_change_for(media)),
     }
-    if is_single_weight:
+    if uses_half_star:
+        primed = hasattr(media.item, "viewer_has_liked")
         state.update(
             {
-                "liked": MediaLike.objects.filter(user=media.user, item=media.item).exists(),
-                "direct_consumption": media.direct_consumption,
-                "rating_source_diary_entry_id": media.rating_source_id,
-                "like_source_diary_entry_id": media.like_source_id,
-                "like_is_independent": media.like_is_independent,
-                "diary_count": DiaryEntry.objects.filter(
-                    user=media.user,
-                    item=media.item,
-                ).count(),
+                "liked": (
+                    media.item.viewer_has_liked
+                    if primed
+                    else MediaLike.objects.filter(user=media.user, item=media.item).exists()
+                ),
+                "direct_consumption": getattr(media, "direct_consumption", None),
+                "rating_source_diary_entry_id": getattr(media, "rating_source_id", None),
+                "like_source_diary_entry_id": getattr(media, "like_source_id", None),
+                "like_is_independent": getattr(media, "like_is_independent", None),
+                "diary_count": (
+                    media.item.viewer_diary_count
+                    if primed
+                    else DiaryEntry.objects.filter(
+                        user=media.user,
+                        item=media.item,
+                    ).count()
+                ),
             },
         )
+    if media.item.media_type == MediaTypes.BOOK.value:
+        from app import book_tracking
+
+        state["book"] = book_tracking.state_payload(media)
     return state
 
 

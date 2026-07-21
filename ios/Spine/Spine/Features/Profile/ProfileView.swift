@@ -597,6 +597,9 @@ struct ProfileView: View {
             .onReceive(NotificationCenter.default.publisher(for: .goodreadsImportDidSucceed)) { _ in
                 Swift.Task<Void, Never> { await viewModel.reload() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+                Swift.Task<Void, Never> { await viewModel.reload() }
+            }
             .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
                 MediaDetailView(
                     ref: ref,
@@ -1945,7 +1948,7 @@ private struct ProfileStarRating: View {
 
     private var value: Double? {
         guard let rating, let raw = Double(rating) else { return nil }
-        return mediaType == "movie" || mediaType == "music" ? raw : raw / 2
+        return ["movie", "music", "book"].contains(mediaType) ? raw : raw / 2
     }
 
     private var symbolNames: [String] {

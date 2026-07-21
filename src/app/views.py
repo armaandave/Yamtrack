@@ -3665,42 +3665,9 @@ def mark_book_read(request, source, media_id):
             item.total_pages = total_pages
             item.save(update_fields=["total_pages"])
         
-        # Get or create the Book instance
-        book_instance, created = Book.objects.get_or_create(
-            item=item,
-            user=request.user,
-            defaults={
-                "status": Status.COMPLETED.value,
-                "end_date": timezone.now(),
-                "completed_manually": True,
-            }
-        )
+        from app import book_tracking
 
-        if not created:
-            # If it already exists, update the status only if it's not already completed
-            book_instance.end_date = timezone.now()
-            book_instance.completed_manually = True
-            book_instance.completion_diary_entry = None
-            
-            # Only update status if it's not already completed
-            if book_instance.status != Status.COMPLETED.value:
-                book_instance.status = Status.COMPLETED.value
-                book_instance.save(update_fields=["status", "end_date", "completed_manually", "completion_diary_entry"])
-            else:
-                book_instance.save(update_fields=["end_date", "completed_manually", "completion_diary_entry"])
-        
-        # Create a completed reading session
-        session, _ = BookSession.objects.get_or_create(
-            related_book=book_instance,
-            status=Status.COMPLETED.value,
-            defaults={
-                "end_date": timezone.now(),
-            }
-        )
-        # Ensure end_date is set if it wasn't already
-        if not session.end_date:
-            session.end_date = timezone.now()
-            session.save(update_fields=['end_date'])
+        book_instance = book_tracking.mark_read(request.user, item)
         
         # Get diary entries for this media
         diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).order_by('-consumed_at')
@@ -3747,31 +3714,9 @@ def start_reading_book(request, source, media_id):
             item.total_pages = total_pages
             item.save(update_fields=["total_pages"])
         
-        # Get or create the Book instance
-        book_instance, created = Book.objects.get_or_create(
-            item=item,
-            user=request.user,
-            defaults={
-                "status": Status.IN_PROGRESS.value,
-                "start_date": timezone.now(),
-            }
-        )
-        
-        if not created:
-            # If it already exists, update the status
-            book_instance.status = Status.IN_PROGRESS.value
-            if not book_instance.start_date:
-                book_instance.start_date = timezone.now()
-            book_instance.save()
-        
-        # Create an in-progress reading session
-        BookSession.objects.get_or_create(
-            related_book=book_instance,
-            status=Status.IN_PROGRESS.value,
-            defaults={
-                "start_date": timezone.now(),
-            }
-        )
+        from app import book_tracking
+
+        book_instance = book_tracking.start_journey(request.user, item)
         
         # Get diary entries for this media
         diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).order_by('-consumed_at')
@@ -3822,40 +3767,14 @@ def log_book_progress(request, source, media_id):
             item.total_pages = total_pages
             item.save(update_fields=["total_pages"])
         
-        # Get or create the Book instance
-        book_instance, created = Book.objects.get_or_create(
-            item=item,
-            user=request.user,
-            defaults={
-                "status": Status.IN_PROGRESS.value,
-                "start_date": timezone.now(),
-                "completed_manually": False,
-            }
-        )
+        from app import book_tracking
 
-        if not created and book_instance.status != Status.IN_PROGRESS.value:
-            book_instance.status = Status.IN_PROGRESS.value
-            if not book_instance.start_date:
-                book_instance.start_date = timezone.now()
-            book_instance.completed_manually = False
-            book_instance.save(update_fields=["status", "start_date", "completed_manually"])
-        
-        # Log the reading session
-        session = book_instance.log_reading_session(
+        book_instance = book_tracking.update_progress(
+            request.user,
+            item,
             progress_type=form.cleaned_data['progress_type'],
-            progress_value=form.cleaned_data['progress_value']
+            value=form.cleaned_data['progress_value'],
         )
-        
-        # Check if book is completed
-        if form.cleaned_data['progress_type'] == 'percentage' and form.cleaned_data['progress_value'] >= 100:
-            book_instance.status = Status.COMPLETED.value
-            book_instance.end_date = timezone.now()
-            book_instance.completed_manually = True
-            book_instance.completion_diary_entry = None
-            book_instance.save(update_fields=["status", "end_date", "completed_manually", "completion_diary_entry"])
-            session.status = Status.COMPLETED.value
-            session.end_date = timezone.now()
-            session.save()
         
         # Get diary entries for this media
         diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).order_by('-consumed_at')
@@ -3906,39 +3825,17 @@ def log_book_completed(request, source, media_id):
             item.total_pages = total_pages
             item.save(update_fields=["total_pages"])
         
-        # Get or create the Book instance
-        book_instance, created = Book.objects.get_or_create(
-            item=item,
-            user=request.user,
-            defaults={
-                "status": Status.COMPLETED.value,
-                "end_date": form.cleaned_data.get('end_date') or timezone.now(),
-                "completed_manually": True,
-            }
-        )
+        from uuid import uuid4
 
-        if not created:
-            book_instance.status = Status.COMPLETED.value
-            book_instance.end_date = form.cleaned_data.get('end_date') or timezone.now()
-            book_instance.completed_manually = True
-            book_instance.completion_diary_entry = None
-            book_instance.save(update_fields=["status", "end_date", "completed_manually", "completion_diary_entry"])
-        
-        # Update score and notes if provided
-        if form.cleaned_data.get('score'):
-            book_instance.score = form.cleaned_data['score']
-        if form.cleaned_data.get('notes'):
-            book_instance.notes = form.cleaned_data['notes']
-        book_instance.save()
-        
-        # Create a completed reading session
-        BookSession.objects.get_or_create(
-            related_book=book_instance,
-            status=Status.COMPLETED.value,
-            defaults={
-                "end_date": form.cleaned_data.get('end_date') or timezone.now(),
-                "notes": form.cleaned_data.get('notes', ''),
-            }
+        from app import book_tracking
+
+        book_instance, _ = book_tracking.complete(
+            request.user,
+            item,
+            completion_date=form.cleaned_data.get('end_date') or timezone.localdate(),
+            rating=form.cleaned_data.get('score'),
+            review=form.cleaned_data.get('notes', ''),
+            mutation_id=uuid4(),
         )
         
         # Get diary entries for this media
@@ -4089,9 +3986,12 @@ def pause_media(request, source, media_type, media_id):
                 # Can't pause media that hasn't been started
                 return JsonResponse({"error": "Cannot pause media that hasn't been started"}, status=400)
         
-        # Update status to PAUSED
-        # Only pause if currently in progress
-        if media_instance.status == Status.IN_PROGRESS.value:
+        # Update status to PAUSED through the canonical book journey service.
+        if media_type == MediaTypes.BOOK.value:
+            from app import book_tracking
+
+            media_instance = book_tracking.pause_journey(request.user, item)
+        elif media_instance.status == Status.IN_PROGRESS.value:
             media_instance.status = Status.PAUSED.value
             # Preserve start_date and progress
             media_instance.save()
@@ -4101,12 +4001,6 @@ def pause_media(request, source, media_type, media_id):
         else:
             # Can't pause from other statuses
             return JsonResponse({"error": f"Cannot pause media with status {media_instance.status}"}, status=400)
-        
-        # Handle book-specific logic
-        if media_type == MediaTypes.BOOK.value:
-            # Keep reading session in IN_PROGRESS (or we could mark it as paused if BookSession supports it)
-            # For now, just keep the session as-is
-            pass
         
         # Get diary entries
         diary_entries = DiaryEntry.objects.filter(user=request.user, item=item).order_by('-consumed_at')
@@ -4191,8 +4085,18 @@ def resume_media(request, source, media_type, media_id):
                 user=request.user
             )
         
-        # Update status to IN_PROGRESS
-        if media_instance.status in [Status.PAUSED.value, Status.DROPPED.value]:
+        # Resume books through the canonical journey service so Paused resumes
+        # in place while a DNF begins a fresh zero-progress journey.
+        if media_type == MediaTypes.BOOK.value:
+            from app import book_tracking
+
+            if media_instance.status == Status.PAUSED.value:
+                media_instance = book_tracking.resume_journey(request.user, item)
+            elif media_instance.status == Status.DROPPED.value:
+                media_instance = book_tracking.start_journey(request.user, item)
+            else:
+                return JsonResponse({"error": f"Cannot resume media with status {media_instance.status}"}, status=400)
+        elif media_instance.status in [Status.PAUSED.value, Status.DROPPED.value]:
             media_instance.status = Status.IN_PROGRESS.value
             # Ensure start_date is set if missing
             if not media_instance.start_date:
@@ -4200,17 +4104,6 @@ def resume_media(request, source, media_type, media_id):
             media_instance.save()
         else:
             return JsonResponse({"error": f"Cannot resume media with status {media_instance.status}"}, status=400)
-        
-        # Handle book-specific logic
-        if media_type == MediaTypes.BOOK.value:
-            # Ensure an IN_PROGRESS reading session exists
-            BookSession.objects.get_or_create(
-                related_book=media_instance,
-                status=Status.IN_PROGRESS.value,
-                defaults={
-                    "start_date": timezone.now(),
-                }
-            )
         
         # Handle game-specific logic
         if media_type == MediaTypes.GAME.value:
@@ -4329,8 +4222,12 @@ def drop_media(request, source, media_type, media_id):
                 user=request.user
             )
         
-        # Update status to DROPPED
-        if media_instance.status in [Status.IN_PROGRESS.value, Status.PAUSED.value]:
+        # Drop books through the canonical journey service to retain progress.
+        if media_type == MediaTypes.BOOK.value:
+            from app import book_tracking
+
+            media_instance = book_tracking.drop_journey(request.user, item)
+        elif media_instance.status in [Status.IN_PROGRESS.value, Status.PAUSED.value]:
             media_instance.status = Status.DROPPED.value
             media_instance.save()
         elif media_instance.status == Status.DROPPED.value:
@@ -4338,13 +4235,6 @@ def drop_media(request, source, media_type, media_id):
             pass
         else:
             return JsonResponse({"error": f"Cannot drop media with status {media_instance.status}"}, status=400)
-        
-        # Handle book-specific logic
-        if media_type == MediaTypes.BOOK.value:
-            # Mark in-progress reading sessions as dropped
-            media_instance.reading_sessions.filter(status=Status.IN_PROGRESS.value).update(
-                status=Status.DROPPED.value
-            )
         
         # Handle game-specific logic (already handled in Game.save() but ensure end_date is cleared)
         if media_type == MediaTypes.GAME.value:

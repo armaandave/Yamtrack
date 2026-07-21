@@ -12,6 +12,7 @@ from api.serializers.common import (
     get_or_create_item_from_metadata,
     image_url,
     media_summary_from_item,
+    prime_collection_items,
     user_summary,
 )
 from api.serializers.lists import (
@@ -257,6 +258,7 @@ class ListItemsView(APIView):
             custom_list=custom_list,
             item__media_type__in=exposure.media_types(),
         ).select_related("item")
+        rating_scope_queryset = list_items
         filter_service.ensure_filter_metadata(list_items, request.query_params)
         list_items = filter_service.apply_item_filters(list_items, request.query_params)
         list_items = filter_service.apply_user_status_filter(
@@ -280,10 +282,12 @@ class ListItemsView(APIView):
                     "date_added": "date_added",
                     "position": "position",
                 },
+                rating_scope_queryset=rating_scope_queryset,
             )
 
         paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(list_items, request, view=self)
+        page = list(paginator.paginate_queryset(list_items, request, view=self))
+        prime_collection_items([list_item.item for list_item in page], request.user)
         return paginator.get_paginated_response(
             [
                 {

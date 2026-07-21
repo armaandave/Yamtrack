@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from aiohttp import ClientError
@@ -13,8 +14,14 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
-from django.db.models import Count
+from django.db import transaction
+from django.db.models import Count, Prefetch, Q
 from django.http import Http404
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+from django_redis.exceptions import ConnectionInterrupted
+from kombu.exceptions import OperationalError as KombuOperationalError
+from redis.exceptions import RedisError
 
 from api.serializers.common import (
     absolute_url,
@@ -32,12 +39,14 @@ from api.serializers.common import (
 )
 from api.services.filters import (
     apply_person_credit_filters,
+    person_rating_source,
     update_item_filter_metadata,
 )
 from app import config, single_weight
 from app.external_ratings import (
     RATING_SOURCES,
     max_rating_value,
+    rating_source_is_exposed,
     rating_sources_needing_refresh,
     refresh_external_ratings,
     source_label,
@@ -55,6 +64,7 @@ from app.models import (
     CustomBackdropPreference,
     CustomLogoPreference,
     CustomPosterPreference,
+    ExternalRating,
     Item,
     MediaTypes,
     Sources,
@@ -66,13 +76,19 @@ from app.utils.color import build_accent_palette, compute_and_store_poster_accen
 
 SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
-MUSIC_SEARCH_CACHE_VERSION = "v4"
+MUSIC_SEARCH_CACHE_VERSION = "v5"
 ALL_MEDIA_SEARCH_TIMEOUT = 8
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
+PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
+PERSON_SORT_OPTIONS = [
+    {"value": "title", "label": "Title"},
+    {"value": "release_date", "label": "Release Date"},
+    {"value": "average_rating", "label": "Average Rating"},
+]
 COMPANY_SORTS = {"popularity", "release_date", "title", "average_rating"}
 COMPANY_GAME_SORT_OPTIONS = [
     {"value": "popularity", "label": "Popularity"},
@@ -170,12 +186,25 @@ def search_all_media(*, media_types, query, request=None, user=None):
         if future not in done:
             unavailable.append(media_type)
             future.cancel()
+            logger.warning(
+                "All-media search provider unavailable query=%s media_type=%s "
+                "reason=timeout deadline_seconds=%s",
+                query_hash,
+                media_type,
+                ALL_MEDIA_SEARCH_TIMEOUT,
+            )
             continue
         try:
             source, data = future.result()
         except Exception:  # noqa: BLE001 - one provider must not discard other results
             unavailable.append(media_type)
-            logger.warning("All-media search provider failed: %s", media_type, exc_info=True)
+            logger.warning(
+                "All-media search provider unavailable query=%s media_type=%s "
+                "reason=exception",
+                query_hash,
+                media_type,
+                exc_info=True,
+            )
             continue
 
         completed.append(media_type)
@@ -493,6 +522,282 @@ def music_recording_detail(*, release_group_mbid, recording_mbid, request=None, 
     }
 
 
+def _person_credit_identity(credit):
+    media_id = str(credit.get("media_id") or "").strip()
+    source = credit.get("source")
+    media_type = credit.get("media_type")
+    season_number = credit.get("season_number")
+    episode_number = credit.get("episode_number")
+    if (
+        not media_id
+        or len(media_id) > Item._meta.get_field("media_id").max_length
+        or source not in Sources.values
+        or media_type not in MediaTypes.values
+    ):
+        return None
+    if media_type == MediaTypes.SEASON.value:
+        if season_number is None or episode_number is not None:
+            return None
+    elif media_type == MediaTypes.EPISODE.value:
+        if season_number is None or episode_number is None:
+            return None
+    elif season_number is not None or episode_number is not None:
+        return None
+    return source, media_type, media_id, season_number, episode_number
+
+
+def _person_item_query(identities):
+    query = Q(pk__isnull=True)
+    grouped = {}
+    for source, media_type, media_id, season_number, episode_number in identities:
+        grouped.setdefault(
+            (source, media_type, season_number, episode_number),
+            set(),
+        ).add(media_id)
+    for (source, media_type, season_number, episode_number), media_ids in grouped.items():
+        query |= Q(
+            source=source,
+            media_type=media_type,
+            media_id__in=media_ids,
+            season_number=season_number,
+            episode_number=episode_number,
+        )
+    return query
+
+
+def _person_release_fields(credit):
+    raw_date = (
+        credit.get("release_date")
+        or credit.get("first_air_date")
+        or credit.get("publish_date")
+    )
+    try:
+        release_date = parse_date(str(raw_date)) if raw_date else None
+    except ValueError:
+        release_date = None
+    raw_year = credit.get("year") or (str(raw_date)[:4] if raw_date else None)
+    try:
+        release_year = int(raw_year) if raw_year and int(raw_year) > 0 else None
+    except (TypeError, ValueError):
+        release_year = None
+    raw_runtime = credit.get("runtime_minutes")
+    try:
+        runtime = int(raw_runtime) if raw_runtime and int(raw_runtime) > 0 else None
+    except (TypeError, ValueError):
+        runtime = None
+    return release_date, release_year, runtime
+
+
+def _materialize_person_credits(person_credits, rating_source=None):
+    identities = {
+        identity
+        for credit in person_credits
+        if (identity := _person_credit_identity(credit)) is not None
+    }
+    if not identities:
+        return {}
+
+    query = _person_item_query(identities)
+    with transaction.atomic():
+        existing = {
+            (item.source, item.media_type, item.media_id, item.season_number, item.episode_number)
+            for item in Item.objects.filter(query)
+        }
+        new_items = []
+        for credit in person_credits:
+            identity = _person_credit_identity(credit)
+            if identity is None or identity in existing:
+                continue
+            release_date, release_year, runtime = _person_release_fields(credit)
+            new_items.append(
+                Item(
+                    source=identity[0],
+                    media_type=identity[1],
+                    media_id=identity[2],
+                    season_number=identity[3],
+                    episode_number=identity[4],
+                    title=credit.get("title") or credit.get("name") or "",
+                    image=credit.get("image") or settings.IMG_NONE,
+                    release_date=release_date,
+                    release_year=release_year,
+                    runtime_minutes=runtime,
+                ),
+            )
+            existing.add(identity)
+        if new_items:
+            Item.objects.bulk_create(new_items, ignore_conflicts=True)
+
+        items = Item.objects.filter(query)
+        if rating_source:
+            items = items.prefetch_related(
+                Prefetch(
+                    "external_ratings",
+                    queryset=ExternalRating.objects.filter(
+                        rating_source=rating_source,
+                    ),
+                ),
+            )
+        return {
+            (item.source, item.media_type, item.media_id, item.season_number, item.episode_number): item
+            for item in items
+        }
+
+
+def _person_filter_options(person_credits):
+    identities = {
+        (credit.get("source"), credit.get("media_type"))
+        for credit in person_credits
+        if credit.get("source") and credit.get("media_type")
+    }
+    rating_sorts = [
+        {
+            "value": f"rating:{source}",
+            "label": f"{definition['label']} Rating",
+        }
+        for source, definition in RATING_SOURCES.items()
+        if settings.EXTERNAL_RATING_PERSON_PREPARATION_ENABLED
+        and rating_source_is_exposed(source)
+        and any(
+            item_source in definition["item_sources"]
+            and media_type in definition["media_types"]
+            for item_source, media_type in identities
+        )
+    ]
+    genres = sorted({genre for credit in person_credits for genre in credit.get("genres") or []})
+    languages = sorted({language for credit in person_credits for language in credit.get("languages") or []})
+    years = set()
+    for credit in person_credits:
+        _release_date, year, _runtime = _person_release_fields(credit)
+        if year is not None:
+            years.add(year)
+    return {
+        "sorts": [*PERSON_SORT_OPTIONS, *rating_sorts],
+        "genres": [{"value": value, "label": value} for value in genres],
+        "languages": [{"value": value, "label": value} for value in languages],
+        "platforms": [],
+        "years": sorted(years, reverse=True),
+    }
+
+
+def _person_preparation_key(source, person_id, rating_source, params):
+    scope = []
+    for key in sorted(params):
+        if key in {"sort", "ordering", "direction"}:
+            continue
+        raw_values = params.getlist(key) if hasattr(params, "getlist") else [params.get(key)]
+        scope.append((key, sorted(str(value) for value in raw_values if value not in (None, ""))))
+    digest = hashlib.sha256(repr(scope).encode()).hexdigest()[:16]
+    return f"external-ratings:person:{source}:{person_id}:{rating_source}:{digest}"
+
+
+def _fresh_person_rating_status(row, now, definition):
+    if row is None or row.last_attempted_at < now - definition["fresh_for"]:
+        return None
+    if row.status == ExternalRating.Status.AVAILABLE:
+        return ExternalRating.Status.AVAILABLE
+    if row.status == ExternalRating.Status.UNAVAILABLE:
+        return ExternalRating.Status.UNAVAILABLE
+    return None
+
+
+def _person_rating_counts(eligible, rating_source, now, definition):
+    ready = unavailable = failed = 0
+    pending_ids = []
+    seen_items = set()
+    for credit in eligible:
+        item = credit.get("_catalog_item")
+        if item is None:
+            failed += 1
+            continue
+        if item.pk in seen_items:
+            continue
+        seen_items.add(item.pk)
+        rows = list(item.external_ratings.all())
+        row = rows[0] if rows else None
+        fresh_status = _fresh_person_rating_status(row, now, definition)
+        if row is not None and row.status == ExternalRating.Status.FAILED:
+            failed += 1
+        elif fresh_status == ExternalRating.Status.AVAILABLE:
+            ready += 1
+        elif fresh_status == ExternalRating.Status.UNAVAILABLE:
+            unavailable += 1
+
+        if rating_sources_needing_refresh(item, [rating_source], now=now):
+            pending_ids.append(item.pk)
+    invalid = sum(credit.get("_catalog_item") is None for credit in eligible)
+    return len(seen_items) + invalid, ready, unavailable, failed, pending_ids
+
+
+def _person_rating_preparation(
+    person_credits,
+    *,
+    person_source,
+    person_id,
+    rating_source,
+    params,
+):
+    definition = RATING_SOURCES[rating_source]
+    eligible = [
+        credit
+        for credit in person_credits
+        if credit.get("source") in definition["item_sources"]
+        and credit.get("media_type") in definition["media_types"]
+    ]
+    now = timezone.now()
+    total, ready, unavailable, failed, pending_ids = _person_rating_counts(
+        eligible,
+        rating_source,
+        now,
+        definition,
+    )
+    if failed:
+        state = "degraded"
+    elif ready + unavailable == total:
+        state = "ready"
+    else:
+        state = "pending"
+
+    if pending_ids:
+        lock_key = _person_preparation_key(
+            person_source,
+            person_id,
+            rating_source,
+            params,
+        )
+        try:
+            acquired = cache.add(
+                lock_key,
+                1,
+                timeout=PERSON_PREPARATION_LOCK_TIMEOUT,
+            )
+        except (ConnectionInterrupted, RedisError, ConnectionError, OSError) as error:
+            acquired = False
+            logger.warning(
+                "External rating person lock unavailable type=%s",
+                type(error).__name__,
+            )
+        if acquired:
+            from app.tasks import enqueue_external_rating_batches
+
+            transaction.on_commit(
+                partial(
+                    enqueue_external_rating_batches,
+                    sorted(set(pending_ids)),
+                    [rating_source],
+                ),
+                robust=True,
+            )
+
+    return {
+        "rating_source": rating_source,
+        "state": state,
+        "total": total,
+        "ready": ready,
+        "unavailable": unavailable,
+        "failed": failed,
+    }
+
+
 def person_detail(*, source, person_id, request=None, user=None, params=None):
     """Return a provider person profile plus iOS-ready media summaries."""
     if source not in {
@@ -504,8 +809,40 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         msg = "People pages are only supported for TMDB, Hardcover, OpenLibrary, and MusicBrainz in v1."
         raise NotImplementedError(msg)
 
+    params = params or {}
     person = provider_services.get_person_page(source, person_id)
-    person_credits = apply_person_credit_filters(person.get("credits") or [], params or {})
+    raw_credits = [
+        {**credit, "source": credit.get("source") or source}
+        for credit in person.get("credits") or []
+    ]
+    rating_source = person_rating_source(raw_credits, params)
+    items = _materialize_person_credits(raw_credits, rating_source)
+    enriched_credits = []
+    for credit in raw_credits:
+        item = items.get(_person_credit_identity(credit))
+        ratings = list(item.external_ratings.all()) if item is not None and rating_source else []
+        enriched_credits.append({
+            **credit,
+            "_catalog_item": item,
+            "_catalog_item_id": item.pk if item else None,
+            "_external_rating": ratings[0] if ratings else None,
+        })
+    person_credits = apply_person_credit_filters(
+        enriched_credits,
+        params,
+        rating_source=rating_source,
+    )
+    rating_preparation = (
+        _person_rating_preparation(
+            person_credits,
+            person_source=source,
+            person_id=person_id,
+            rating_source=rating_source,
+            params=params,
+        )
+        if rating_source
+        else None
+    )
     return {
         "id": str(person.get("person_id") or person_id),
         "source": source,
@@ -517,6 +854,8 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         "death_date": person.get("death_date"),
         "place_of_birth": person.get("place_of_birth"),
         "popularity": person.get("popularity"),
+        "filter_options": _person_filter_options(raw_credits),
+        "rating_preparation": rating_preparation,
         "credits": {
             "cast": [
                 media_summary_from_provider(
@@ -525,6 +864,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
                     source=credit.get("source", source),
                     request=request,
                     user=user,
+                    item=credit.get("_catalog_item"),
                 )
                 for credit in person_credits
                 if credit.get("media_type")
@@ -1774,7 +2114,7 @@ def _compact_decimal(value):
 
 def _stored_external_ratings(item, metadata):
     ratings = {}
-    if metadata.get("score") is not None:
+    if metadata.get("score") is not None and rating_source_is_exposed(item.source):
         ratings[item.source] = {
             "source": source_label(item.source),
             "value": str(metadata["score"]),
@@ -1791,6 +2131,8 @@ def _stored_external_ratings(item, metadata):
         }
 
     for rating_source, rating in (metadata.get("external_ratings") or {}).items():
+        if not rating_source_is_exposed(rating_source):
+            continue
         normalized = _normalized_external_rating(
             metadata=metadata,
             rating_source=rating_source,
@@ -1810,6 +2152,8 @@ def _stored_external_ratings(item, metadata):
         ),
     )
     for rating in stored:
+        if not rating_source_is_exposed(rating.rating_source):
+            continue
         if rating.rating_source == item.source and metadata.get("score") is not None:
             continue
         value = _compact_decimal(rating.value)
@@ -1849,7 +2193,14 @@ def _tracked_external_ratings(item, metadata):
     if pending:
         from app.tasks import enrich_external_ratings
 
-        enrich_external_ratings.delay(item.pk, pending)
+        try:
+            enrich_external_ratings.delay(item.pk, pending)
+        except (KombuOperationalError, RedisError, ConnectionError, OSError) as error:
+            logger.warning(
+                "External rating detail enqueue failed item=%s type=%s",
+                item.pk,
+                type(error).__name__,
+            )
     return _stored_external_ratings(item, metadata)
 
 
@@ -2012,14 +2363,14 @@ def community_stats(
     else:
         entries = entries.exclude(visibility="private")
     rating_values = [entry.rating for entry in entries if entry.rating is not None]
-    if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+    if single_weight.uses_half_star_rating(media_type):
         rating_values = [single_weight.rating_to_wire(value) for value in rating_values]
     average = round(sum(rating_values) / len(rating_values), 2) if rating_values else None
     distribution = [
         {
             "rating": str(
                 bucket["rating"] / 2
-                if media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
+                if single_weight.uses_half_star_rating(media_type)
                 else bucket["rating"]
             ),
             "count": bucket["count"],

@@ -17,25 +17,35 @@ final class PersonDetailViewModel {
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .empty
     var isLoading = true
+    var isPreparationPolling = false
+    var preparationTimedOut = false
     var errorMessage: String?
 
     private let ref: PersonRef
     private let peopleRepository: PeopleRepository
     private let onUnauthorized: () -> Void
+    private let pollInterval: Duration
+    private let maxPollAttempts: Int
     private var requestGeneration = 0
     private var presentedFilter: MediaFilterState?
+    private var pollingTask: Task<Void, Never>?
 
     init(
         ref: PersonRef,
         peopleRepository: PeopleRepository,
-        onUnauthorized: @escaping () -> Void
+        onUnauthorized: @escaping () -> Void,
+        pollInterval: Duration = .seconds(5),
+        maxPollAttempts: Int = 12
     ) {
         self.ref = ref
         self.peopleRepository = peopleRepository
         self.onUnauthorized = onUnauthorized
+        self.pollInterval = pollInterval
+        self.maxPollAttempts = maxPollAttempts
     }
 
     func load() async {
+        stopPreparationPolling()
         requestGeneration += 1
         let generation = requestGeneration
         let requestFilter = filter
@@ -55,12 +65,8 @@ final class PersonDetailViewModel {
         do {
             let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
             guard generation == requestGeneration, requestFilter == filter else { return }
-            let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
-            detail = loaded
-            filmography = loadedFilmography
-            if !filter.isActive || filterOptions == .empty {
-                filterOptions = Self.options(from: loadedFilmography)
-            }
+            apply(loaded, requestFilter: requestFilter)
+            startPreparationPollingIfNeeded(requestFilter: requestFilter, generation: generation)
         } catch is CancellationError {
             return
         } catch {
@@ -70,6 +76,74 @@ final class PersonDetailViewModel {
                 onUnauthorized()
             }
         }
+    }
+
+    func cancelPreparation() {
+        requestGeneration += 1
+        stopPreparationPolling()
+    }
+
+    private func apply(_ loaded: PersonDetail, requestFilter: MediaFilterState) {
+        let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
+        detail = loaded
+        filmography = loadedFilmography
+        if let options = loaded.filterOptions {
+            filterOptions = options
+        } else if !requestFilter.isActive || filterOptions == .empty {
+            filterOptions = Self.options(from: loadedFilmography)
+        }
+    }
+
+    private func startPreparationPollingIfNeeded(
+        requestFilter: MediaFilterState,
+        generation: Int
+    ) {
+        guard requestFilter.sort?.isExternalRating == true,
+              detail?.ratingPreparation?.state == .pending else { return }
+        preparationTimedOut = false
+        isPreparationPolling = true
+        pollingTask = Task { [weak self] in
+            await self?.pollPreparation(requestFilter: requestFilter, generation: generation)
+        }
+    }
+
+    private func pollPreparation(requestFilter: MediaFilterState, generation: Int) async {
+        for _ in 0..<maxPollAttempts {
+            do {
+                try await Task.sleep(for: pollInterval)
+                guard !Task.isCancelled,
+                      generation == requestGeneration,
+                      requestFilter == filter else { return }
+                let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+                guard generation == requestGeneration, requestFilter == filter else { return }
+                apply(loaded, requestFilter: requestFilter)
+                if loaded.ratingPreparation?.state != .pending {
+                    stopPreparationPolling()
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == requestGeneration, requestFilter == filter else { return }
+                stopPreparationPolling()
+                if case APIError.unauthorized = error {
+                    onUnauthorized()
+                } else {
+                    preparationTimedOut = true
+                }
+                return
+            }
+        }
+        guard generation == requestGeneration, requestFilter == filter else { return }
+        isPreparationPolling = false
+        preparationTimedOut = true
+        pollingTask = nil
+    }
+
+    private func stopPreparationPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
+        isPreparationPolling = false
     }
 
     static func uniqueFilmography(from media: [MediaSummary]) -> [MediaSummary] {
@@ -189,6 +263,9 @@ struct PersonDetailView: View {
                 syncSelectedFilmographyType()
                 expandPrimaryCreditRole()
             }
+        }
+        .onDisappear {
+            viewModel.cancelPreparation()
         }
         .onChange(of: selectedFilmographyType) { _, _ in
             expandPrimaryCreditRole()
@@ -365,6 +442,8 @@ struct PersonDetailView: View {
                 }
             }
 
+            ratingPreparationStatus
+
             Group {
                 if filmography.isEmpty {
                     ContentUnavailableView(
@@ -384,6 +463,38 @@ struct PersonDetailView: View {
             }
             .spineContentTransition(value: selectedType)
         }
+    }
+
+    @ViewBuilder
+    private var ratingPreparationStatus: some View {
+        if viewModel.filter.sort?.isExternalRating == true,
+           let preparation = viewModel.detail?.ratingPreparation,
+           preparation.state != .ready {
+            HStack(spacing: 8) {
+                if preparation.state == .pending, viewModel.isPreparationPolling {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white.opacity(0.72))
+                }
+                Text(preparationText(preparation))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func preparationText(_ preparation: PersonRatingPreparation) -> String {
+        if preparation.state == .degraded {
+            return "Some ratings could not be prepared"
+        }
+        if viewModel.preparationTimedOut {
+            return "Ratings are still preparing. Pull to refresh."
+        }
+        let label = viewModel.filterOptions.sorts.first {
+            $0.value == viewModel.filter.sort?.rawValue
+        }?.label ?? "ratings"
+        return "Preparing \(label.lowercased()) · \(preparation.processed) of \(preparation.total)"
     }
 
     private func roleDisclosureRow(_ group: FilmographyCreditGroup, type: FilmographyType) -> some View {

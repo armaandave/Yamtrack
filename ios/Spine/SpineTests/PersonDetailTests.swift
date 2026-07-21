@@ -148,6 +148,39 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(MediaTypeTheme.theme(for: "music").artworkOrientation, .square)
     }
 
+    func testPersonDetailDecodesDynamicSortOptionsAndPreparation() throws {
+        let json = """
+        {
+          "id": "author-1",
+          "source": "hardcover",
+          "name": "Author",
+          "filter_options": {
+            "sorts": [{"value": "rating:futurebooks", "label": "Future Books Rating"}],
+            "genres": [],
+            "languages": [],
+            "platforms": [],
+            "years": []
+          },
+          "rating_preparation": {
+            "rating_source": "futurebooks",
+            "state": "pending",
+            "total": 10,
+            "ready": 4,
+            "unavailable": 2,
+            "failed": 0
+          },
+          "credits": {"cast": []}
+        }
+        """
+
+        let detail = try JSONDecoder.api.decode(PersonDetail.self, from: Data(json.utf8))
+
+        XCTAssertEqual(detail.filterOptions?.sorts.first?.value, "rating:futurebooks")
+        XCTAssertEqual(detail.filterOptions?.sorts.first?.label, "Future Books Rating")
+        XCTAssertEqual(detail.ratingPreparation?.state, .pending)
+        XCTAssertEqual(detail.ratingPreparation?.processed, 6)
+    }
+
     func testMusicFilmographyUsesDiscographyCopyAndReleaseSections() {
         let releases = [
             mediaSummary(id: "single", title: "Single", source: "musicbrainz", mediaType: "music", creditRoles: ["Singles"]),
@@ -289,7 +322,121 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertNil(viewModel.detail)
     }
 
-    private func personDetail(filmography: [MediaSummary]) -> PersonDetail {
+    @MainActor
+    func testPersonDetailViewModelPollsPendingPreparationUntilReady() async throws {
+        let filterOptions = MediaFilterOptionsResponse(
+            sorts: [FilterChoice(value: "rating:imdb", label: "IMDb Rating")],
+            genres: [],
+            languages: [],
+            years: []
+        )
+        let pending = PersonRatingPreparation(
+            ratingSource: "imdb",
+            state: .pending,
+            total: 2,
+            ready: 1,
+            unavailable: 0,
+            failed: 0
+        )
+        let ready = PersonRatingPreparation(
+            ratingSource: "imdb",
+            state: .ready,
+            total: 2,
+            ready: 2,
+            unavailable: 0,
+            failed: 0
+        )
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(
+                filmography: [mediaSummary(id: "1", title: "Partial")],
+                filterOptions: filterOptions,
+                ratingPreparation: pending
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "2", title: "Highest"),
+                    mediaSummary(id: "1", title: "Partial"),
+                ],
+                filterOptions: filterOptions,
+                ratingPreparation: ready
+            )),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "tmdb", id: "819"),
+            peopleRepository: repository,
+            onUnauthorized: {},
+            pollInterval: .milliseconds(1),
+            maxPollAttempts: 2
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:imdb")
+
+        await viewModel.load()
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(viewModel.detail?.ratingPreparation?.state, .ready)
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["Highest", "Partial"])
+        XCTAssertEqual(repository.filters.map { $0.sort?.rawValue }, ["rating:imdb", "rating:imdb"])
+        XCTAssertFalse(viewModel.isPreparationPolling)
+    }
+
+    @MainActor
+    func testPersonDetailViewModelCancelsPreparationPolling() async throws {
+        let pending = PersonRatingPreparation(
+            ratingSource: "imdb",
+            state: .pending,
+            total: 1,
+            ready: 0,
+            unavailable: 0,
+            failed: 0
+        )
+        let repository = ScriptedPeopleRepository(result: .success(personDetail(
+            filmography: [mediaSummary(id: "1", title: "Movie")],
+            ratingPreparation: pending
+        )))
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "tmdb", id: "819"),
+            peopleRepository: repository,
+            onUnauthorized: {},
+            pollInterval: .milliseconds(20),
+            maxPollAttempts: 10
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:imdb")
+
+        await viewModel.load()
+        viewModel.cancelPreparation()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(repository.requests.count, 1)
+        XCTAssertFalse(viewModel.isPreparationPolling)
+    }
+
+    @MainActor
+    func testPersonDetailViewModelRejectsStaleSortResponse() async throws {
+        let repository = DelayedPersonRepository(
+            slow: personDetail(filmography: [mediaSummary(id: "old", title: "Old")]),
+            fast: personDetail(filmography: [mediaSummary(id: "new", title: "New")])
+        )
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "tmdb", id: "819"),
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:imdb")
+        let staleLoad = Task { await viewModel.load() }
+        try await Task.sleep(for: .milliseconds(5))
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:tmdb")
+
+        await viewModel.load()
+        await staleLoad.value
+
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["New"])
+    }
+
+    private func personDetail(
+        filmography: [MediaSummary],
+        filterOptions: MediaFilterOptionsResponse? = nil,
+        ratingPreparation: PersonRatingPreparation? = nil
+    ) -> PersonDetail {
         PersonDetail(
             id: "819",
             source: "tmdb",
@@ -301,6 +448,8 @@ final class PersonDetailTests: XCTestCase {
             deathDate: nil,
             placeOfBirth: "Boston",
             popularity: 42.7,
+            filterOptions: filterOptions,
+            ratingPreparation: ratingPreparation,
             credits: PersonCredits(cast: filmography)
         )
     }
@@ -334,6 +483,7 @@ final class PersonDetailTests: XCTestCase {
 private final class ScriptedPeopleRepository: PeopleRepository {
     let results: [Result<PersonDetail, Error>]
     var requests: [PersonRef] = []
+    var filters: [MediaFilterState] = []
 
     init(result: Result<PersonDetail, Error>) {
         self.results = [result]
@@ -346,5 +496,33 @@ private final class ScriptedPeopleRepository: PeopleRepository {
     func detail(ref: PersonRef) async throws -> PersonDetail {
         requests.append(ref)
         return try results[min(requests.count - 1, results.count - 1)].get()
+    }
+
+    func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
+        filters.append(filter)
+        return try await detail(ref: ref)
+    }
+}
+
+private final class DelayedPersonRepository: PeopleRepository {
+    let slow: PersonDetail
+    let fast: PersonDetail
+
+    init(slow: PersonDetail, fast: PersonDetail) {
+        self.slow = slow
+        self.fast = fast
+    }
+
+    func detail(ref: PersonRef) async throws -> PersonDetail {
+        fast
+    }
+
+    func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
+        if filter.sort?.rawValue == "rating:imdb" {
+            try await Task.sleep(for: .milliseconds(40))
+            return slow
+        }
+        try await Task.sleep(for: .milliseconds(1))
+        return fast
     }
 }

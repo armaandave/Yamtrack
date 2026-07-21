@@ -378,6 +378,16 @@ ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 TRACK_TIME = config("TRACK_TIME", default=True, cast=bool)
 
 MUSIC_ENABLED = config("MUSIC_ENABLED", default=DEBUG, cast=bool)
+EXTERNAL_RATING_PERSON_PREPARATION_ENABLED = config(
+    "EXTERNAL_RATING_PERSON_PREPARATION_ENABLED",
+    default=False,
+    cast=bool,
+)
+MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED = config(
+    "MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED",
+    default=False,
+    cast=bool,
+)
 
 TZ = zoneinfo.ZoneInfo(TIME_ZONE)
 

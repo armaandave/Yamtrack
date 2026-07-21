@@ -206,12 +206,15 @@ class AllMediaSearchTests(TestCase):
 
         provider_search.side_effect = search
         try:
-            payload = media_service.search_all_media(
-                media_types=[MediaTypes.MOVIE.value, MediaTypes.BOOK.value],
-                query="dune",
-            )
+            with self.assertLogs(media_service.logger, level="WARNING") as logs:
+                payload = media_service.search_all_media(
+                    media_types=[MediaTypes.MOVIE.value, MediaTypes.BOOK.value],
+                    query="dune",
+                )
         finally:
             release.set()
 
         self.assertEqual(payload["completed_media_types"], [MediaTypes.MOVIE.value])
         self.assertEqual(payload["unavailable_media_types"], [MediaTypes.BOOK.value])
+        self.assertIn("media_type=book reason=timeout", logs.output[0])
+        self.assertNotIn("dune", logs.output[0])

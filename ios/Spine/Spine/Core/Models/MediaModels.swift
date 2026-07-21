@@ -31,6 +31,14 @@ struct MediaRef: Codable, Hashable, Identifiable {
         mediaType == "movie" || mediaType == "music"
     }
 
+    var usesFiveStarRatingScale: Bool {
+        isSingleWeight || mediaType == "book"
+    }
+
+    var usesCalendarConsumptionDate: Bool {
+        isSingleWeight || mediaType == "book"
+    }
+
     var episodeCode: String? {
         guard isEpisode, let seasonNumber, let episodeNumber else { return nil }
         return String(format: "S%02dE%02d", seasonNumber, episodeNumber)
@@ -82,6 +90,15 @@ struct MediaRef: Codable, Hashable, Identifiable {
     }
 
     func trackingStatusLabel(_ status: String) -> String {
+        if mediaType == "book" {
+            switch status {
+            case "Planning": return "To Read"
+            case "In progress": return "Currently Reading"
+            case "Dropped": return "Did Not Finish"
+            case "Completed": return "Read"
+            default: return status
+            }
+        }
         guard mediaType == "music" else { return status }
         switch status {
         case "In progress":
@@ -1341,6 +1358,7 @@ struct UserMediaState: Codable, Hashable {
     let ratingSourceDiaryEntryId: Int?
     let likeSourceDiaryEntryId: Int?
     let likeIsIndependent: Bool?
+    let book: BookTrackingState?
 
     enum CodingKeys: String, CodingKey {
         case isTracked
@@ -1358,6 +1376,7 @@ struct UserMediaState: Codable, Hashable {
         case ratingSourceDiaryEntryId
         case likeSourceDiaryEntryId
         case likeIsIndependent
+        case book
     }
 
     init(
@@ -1375,7 +1394,8 @@ struct UserMediaState: Codable, Hashable {
         directConsumption: Bool? = nil,
         ratingSourceDiaryEntryId: Int? = nil,
         likeSourceDiaryEntryId: Int? = nil,
-        likeIsIndependent: Bool? = nil
+        likeIsIndependent: Bool? = nil,
+        book: BookTrackingState? = nil
     ) {
         self.isTracked = isTracked
         self.trackingId = trackingId
@@ -1392,6 +1412,7 @@ struct UserMediaState: Codable, Hashable {
         self.ratingSourceDiaryEntryId = ratingSourceDiaryEntryId
         self.likeSourceDiaryEntryId = likeSourceDiaryEntryId
         self.likeIsIndependent = likeIsIndependent
+        self.book = book
     }
 
     init(from decoder: Decoder) throws {
@@ -1411,6 +1432,7 @@ struct UserMediaState: Codable, Hashable {
         ratingSourceDiaryEntryId = try container.decodeIfPresent(Int.self, forKey: .ratingSourceDiaryEntryId)
         likeSourceDiaryEntryId = try container.decodeIfPresent(Int.self, forKey: .likeSourceDiaryEntryId)
         likeIsIndependent = try container.decodeIfPresent(Bool.self, forKey: .likeIsIndependent)
+        book = try container.decodeIfPresent(BookTrackingState.self, forKey: .book)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1430,6 +1452,7 @@ struct UserMediaState: Codable, Hashable {
         try container.encodeIfPresent(ratingSourceDiaryEntryId, forKey: .ratingSourceDiaryEntryId)
         try container.encodeIfPresent(likeSourceDiaryEntryId, forKey: .likeSourceDiaryEntryId)
         try container.encodeIfPresent(likeIsIndependent, forKey: .likeIsIndependent)
+        try container.encodeIfPresent(book, forKey: .book)
     }
 
     func replacingHasLiked(_ liked: Bool) -> UserMediaState {
@@ -1448,7 +1471,8 @@ struct UserMediaState: Codable, Hashable {
             directConsumption: directConsumption,
             ratingSourceDiaryEntryId: ratingSourceDiaryEntryId,
             likeSourceDiaryEntryId: likeSourceDiaryEntryId,
-            likeIsIndependent: likeIsIndependent
+            likeIsIndependent: likeIsIndependent,
+            book: book
         )
     }
 
@@ -1468,7 +1492,8 @@ struct UserMediaState: Codable, Hashable {
             directConsumption: directConsumption,
             ratingSourceDiaryEntryId: ratingSourceDiaryEntryId,
             likeSourceDiaryEntryId: likeSourceDiaryEntryId,
-            likeIsIndependent: likeIsIndependent
+            likeIsIndependent: likeIsIndependent,
+            book: book
         )
     }
 }

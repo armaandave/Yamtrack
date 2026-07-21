@@ -1,4 +1,5 @@
 """Celery tasks for app."""
+import json
 import logging
 from collections import Counter
 from datetime import timedelta
@@ -9,6 +10,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Min, Q
 from django.utils import timezone
+from django_redis.exceptions import ConnectionInterrupted
+from redis.exceptions import RedisError
 
 from config.celery import app
 from app import statistics
@@ -26,6 +29,14 @@ EXTERNAL_RATING_BATCH_SIZE = 100
 EXTERNAL_RATING_STALE_LIMIT = 500
 EXTERNAL_RATING_LOCK_TIMEOUT = 60 * 15
 EXTERNAL_RATING_RETRY_DELAYS = (60, 120, 240)
+OUTCOME_SUMMARY_KEYS = (
+    "attempted",
+    "available",
+    "unavailable",
+    "failed",
+    "skipped_fresh",
+    "preserved_stale",
+)
 
 
 def _normalize_rating_sources(rating_sources):
@@ -41,15 +52,24 @@ def _normalize_rating_sources(rating_sources):
     return rating_sources
 
 
-def _item_result(item_id, status, outcomes=None, fresh=0):
+def _item_result(
+    item_id,
+    status,
+    outcomes=None,
+    fresh=0,
+    preserved_stale=0,
+):
     counts = Counter((outcomes or {}).values())
     return {
         "item_id": item_id,
         "status": status,
+        "attempted": len(outcomes or {}),
         "available": counts[ExternalRating.Status.AVAILABLE],
         "unavailable": counts[ExternalRating.Status.UNAVAILABLE],
         "failed": counts[ExternalRating.Status.FAILED],
         "fresh": fresh,
+        "skipped_fresh": fresh,
+        "preserved_stale": preserved_stale,
     }
 
 
@@ -71,7 +91,17 @@ def _enrich_external_ratings(item_id, rating_sources=None, force=False):
         return _item_result(item_id, "fresh", fresh=len(sources))
 
     lock_key = f"external-ratings:refresh:{item.pk}"
-    if not cache.add(lock_key, 1, timeout=EXTERNAL_RATING_LOCK_TIMEOUT):
+    try:
+        acquired = cache.add(lock_key, 1, timeout=EXTERNAL_RATING_LOCK_TIMEOUT)
+    except (ConnectionInterrupted, RedisError, ConnectionError, OSError) as error:
+        transient = TransientExternalRatingError(pending)
+        transient.summary = _item_result(
+            item_id,
+            "retrying",
+            fresh=len(set(sources) - set(pending)),
+        )
+        raise transient from error
+    if not acquired:
         return _item_result(item_id, "deduplicated")
     try:
         pending = rating_sources_needing_refresh(
@@ -81,13 +111,42 @@ def _enrich_external_ratings(item_id, rating_sources=None, force=False):
         )
         if not pending:
             return _item_result(item_id, "fresh", fresh=len(sources))
-        outcomes = refresh_external_ratings(
-            item,
-            pending,
-            raise_transient=True,
+        successful_sources = set(
+            item.external_ratings.exclude(value=None).values_list(
+                "rating_source",
+                flat=True,
+            ),
         )
+        try:
+            outcomes = refresh_external_ratings(
+                item,
+                pending,
+                raise_transient=True,
+            )
+        except TransientExternalRatingError as error:
+            outcomes = getattr(error, "outcomes", {})
+            preserved_stale = sum(
+                status == ExternalRating.Status.FAILED
+                and source in successful_sources
+                for source, status in outcomes.items()
+            )
+            error.summary = _item_result(
+                item_id,
+                "retrying",
+                outcomes,
+                len(set(sources) - set(outcomes)),
+                preserved_stale,
+            )
+            raise
     finally:
-        cache.delete(lock_key)
+        try:
+            cache.delete(lock_key)
+        except (ConnectionInterrupted, RedisError, ConnectionError, OSError) as error:
+            logger.warning(
+                "External rating lock release failed item=%s type=%s",
+                item_id,
+                type(error).__name__,
+            )
 
     counts = Counter(outcomes.values())
     terminal = counts[ExternalRating.Status.AVAILABLE] + counts[
@@ -98,7 +157,11 @@ def _enrich_external_ratings(item_id, rating_sources=None, force=False):
     else:
         status = "refreshed"
     fresh = len(set(sources) - set(outcomes))
-    return _item_result(item_id, status, outcomes, fresh)
+    preserved_stale = sum(
+        outcome == ExternalRating.Status.FAILED and source in successful_sources
+        for source, outcome in outcomes.items()
+    )
+    return _item_result(item_id, status, outcomes, fresh, preserved_stale)
 
 
 @shared_task(bind=True, name="Enrich external ratings", max_retries=3)
@@ -113,10 +176,10 @@ def enrich_external_ratings(
         result = _enrich_external_ratings(item_id, rating_sources, force)
     except TransientExternalRatingError as error:
         retry_number = min(self.request.retries, len(EXTERNAL_RATING_RETRY_DELAYS) - 1)
+        summary = getattr(error, "summary", _item_result(item_id, "retrying"))
         logger.warning(
-            "Retrying external ratings for item %s sources=%s",
-            item_id,
-            ",".join(error.sources),
+            "external_rating_item_summary %s",
+            json.dumps(summary, sort_keys=True),
         )
         raise self.retry(
             args=(),
@@ -128,15 +191,7 @@ def enrich_external_ratings(
             countdown=EXTERNAL_RATING_RETRY_DELAYS[retry_number],
         ) from error
 
-    logger.info(
-        "External ratings item=%s status=%s available=%s unavailable=%s failed=%s fresh=%s",
-        item_id,
-        result["status"],
-        result["available"],
-        result["unavailable"],
-        result["failed"],
-        result["fresh"],
-    )
+    logger.info("external_rating_item_summary %s", json.dumps(result, sort_keys=True))
     return result
 
 
@@ -150,25 +205,45 @@ def enrich_external_ratings_batch(item_ids, rating_sources=None, force=False):
     rating_sources = _normalize_rating_sources(rating_sources)
     item_ids = list(dict.fromkeys(item_ids))
     counts = Counter()
+    outcomes = Counter()
 
     for item_id in item_ids:
         try:
             result = _enrich_external_ratings(item_id, rating_sources, force)
-        except TransientExternalRatingError:
-            enrich_external_ratings.apply_async(
-                kwargs={
-                    "item_id": item_id,
-                    "rating_sources": rating_sources,
-                    "force": False,
-                },
-                countdown=EXTERNAL_RATING_RETRY_DELAYS[0],
+        except TransientExternalRatingError as error:
+            summary = getattr(error, "summary", {})
+            outcomes.update({key: summary.get(key, 0) for key in OUTCOME_SUMMARY_KEYS})
+            try:
+                enrich_external_ratings.apply_async(
+                    kwargs={
+                        "item_id": item_id,
+                        "rating_sources": rating_sources,
+                        "force": False,
+                    },
+                    countdown=EXTERNAL_RATING_RETRY_DELAYS[0],
+                )
+            except Exception as enqueue_error:
+                logger.error(
+                    "External rating retry enqueue failed item=%s type=%s",
+                    item_id,
+                    type(enqueue_error).__name__,
+                )
+                counts["failed"] += 1
+            else:
+                counts["retrying"] += 1
+        except Exception as error:
+            logger.error(
+                "External rating batch failed item=%s type=%s",
+                item_id,
+                type(error).__name__,
             )
-            counts["retrying"] += 1
-        except Exception:
-            logger.error("External rating batch failed for item %s", item_id)
             counts["failed"] += 1
         else:
             counts[result["status"]] += 1
+            outcomes.update({
+                key: result.get(key, 0)
+                for key in OUTCOME_SUMMARY_KEYS
+            })
 
     result = {
         "requested": len(item_ids),
@@ -184,16 +259,25 @@ def enrich_external_ratings_batch(item_ids, rating_sources=None, force=False):
                 "retrying",
             )
         },
+        "outcomes": {key: outcomes[key] for key in OUTCOME_SUMMARY_KEYS},
     }
-    logger.info("External rating batch counts=%s", result)
+    logger.info("external_rating_batch_summary %s", json.dumps(result, sort_keys=True))
     return result
 
 
-def enqueue_external_rating_batches(item_ids, rating_sources=None, force=False):
+def enqueue_external_rating_batches(
+    item_ids,
+    rating_sources=None,
+    force=False,
+    batch_size=EXTERNAL_RATING_BATCH_SIZE,
+):
     """Queue deterministic Phase 4 batches for explicit Item IDs."""
+    if not 1 <= batch_size <= EXTERNAL_RATING_BATCH_SIZE:
+        msg = f"External rating batch size must be between 1 and {EXTERNAL_RATING_BATCH_SIZE}"
+        raise ValueError(msg)
     item_ids = list(dict.fromkeys(item_ids))
     batches = 0
-    for item_batch in batched(item_ids, EXTERNAL_RATING_BATCH_SIZE):
+    for item_batch in batched(item_ids, batch_size):
         enrich_external_ratings_batch.delay(
             list(item_batch),
             rating_sources=rating_sources,

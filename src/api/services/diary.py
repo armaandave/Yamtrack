@@ -19,20 +19,24 @@ from social.models import Activity, ContentLike
 
 def diary_payload(entry, request=None, viewer=None):
     """Serialize a diary entry for the API."""
-    like_count = ContentLike.objects.filter(
-        target_type=ContentLike.DIARY_ENTRY,
-        target_id=entry.id,
-    ).count()
-    viewer_has_liked = (
-        viewer
-        and viewer.is_authenticated
-        and ContentLike.objects.filter(
-            user=viewer,
+    like_count = getattr(entry, "viewer_like_count", None)
+    if like_count is None:
+        like_count = ContentLike.objects.filter(
             target_type=ContentLike.DIARY_ENTRY,
             target_id=entry.id,
-        ).exists()
-    )
-    is_single_weight = single_weight.supports(entry.item)
+        ).count()
+    viewer_has_liked = getattr(entry, "viewer_has_liked", None)
+    if viewer_has_liked is None:
+        viewer_has_liked = (
+            viewer
+            and viewer.is_authenticated
+            and ContentLike.objects.filter(
+                user=viewer,
+                target_type=ContentLike.DIARY_ENTRY,
+                target_id=entry.id,
+            ).exists()
+        )
+    is_single_weight = single_weight.uses_half_star_rating(entry.item)
     return {
         "id": entry.id,
         "user": user_summary(entry.user, request=request),
@@ -66,6 +70,33 @@ def diary_payload(entry, request=None, viewer=None):
     }
 
 
+def prime_diary_likes(entries, viewer):
+    """Attach like counts for a bounded diary page."""
+    entries = list(entries)
+    entry_ids = [entry.pk for entry in entries]
+    counts = dict(
+        ContentLike.objects.filter(
+            target_type=ContentLike.DIARY_ENTRY,
+            target_id__in=entry_ids,
+        )
+        .values("target_id")
+        .annotate(count=Count("id"))
+        .values_list("target_id", "count"),
+    )
+    liked = set()
+    if viewer and viewer.is_authenticated:
+        liked = set(
+            ContentLike.objects.filter(
+                user=viewer,
+                target_type=ContentLike.DIARY_ENTRY,
+                target_id__in=entry_ids,
+            ).values_list("target_id", flat=True),
+        )
+    for entry in entries:
+        entry.viewer_like_count = counts.get(entry.pk, 0)
+        entry.viewer_has_liked = entry.pk in liked
+
+
 def create_entry(user, data):
     """Create a diary entry from API payload."""
     ref = data["ref"]
@@ -76,7 +107,7 @@ def create_entry(user, data):
         [ref.get("season_number")] if ref.get("season_number") is not None else None,
         ref.get("episode_number"),
     )
-    is_single_weight = single_weight.supports(ref["media_type"])
+    is_single_weight = single_weight.uses_half_star_rating(ref["media_type"])
     consumed_at = data.get("consumed_at")
     if is_single_weight and consumed_at is None:
         raise serializers.ValidationError({"consumed_at": "A consumption date is required."})
@@ -146,7 +177,7 @@ def update_entry(entry, data):
     """Update a diary entry from API payload."""
     data = dict(data)
     tags = data.pop("tags", None)
-    if single_weight.supports(entry.item):
+    if single_weight.uses_half_star_rating(entry.item):
         try:
             if "rating" in data:
                 data["rating"] = single_weight.rating_from_wire(data["rating"])

@@ -118,21 +118,27 @@ class FilterOptionsView(APIView):
             if str(status_filter).lower() == "tracked":
                 queryset = queryset.exclude(status=Status.PLANNING.value)
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            return Response(filter_service.filter_options_for_items(queryset))
+            return Response(filter_service.filter_options_for_items(queryset, request.query_params))
 
         if scope == "diary":
-            queryset = DiaryEntry.objects.filter(user=request.user).select_related("item")
+            queryset = DiaryEntry.objects.filter(
+                user=request.user,
+                item__media_type__in=exposure.media_types(),
+            ).select_related("item")
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            return Response(filter_service.filter_options_for_items(queryset))
+            return Response(filter_service.filter_options_for_items(queryset, request.query_params))
 
         if scope == "list":
             list_id = request.query_params.get("list_id")
             custom_list = get_object_or_404(CustomList, id=list_id)
             if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
                 return Response(status=status.HTTP_404_NOT_FOUND)
-            queryset = CustomListItem.objects.filter(custom_list=custom_list).select_related("item")
+            queryset = CustomListItem.objects.filter(
+                custom_list=custom_list,
+                item__media_type__in=exposure.media_types(),
+            ).select_related("item")
             filter_service.ensure_filter_metadata(queryset, request.query_params)
-            return Response(filter_service.filter_options_for_items(queryset))
+            return Response(filter_service.filter_options_for_items(queryset, request.query_params))
 
         return Response({"scope": ["Use tracking, diary, or list."]}, status=status.HTTP_400_BAD_REQUEST)
 

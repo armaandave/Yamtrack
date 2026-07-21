@@ -294,6 +294,9 @@ struct MediaDiaryView: View {
             .onReceive(NotificationCenter.default.publisher(for: .diaryEntriesDidChange)) { _ in
                 Task { await viewModel.load() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+                Task { await viewModel.load() }
+            }
         }
     }
 
@@ -492,6 +495,9 @@ struct DiaryView: View {
                 Task { await viewModel.load() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .diaryEntriesDidChange)) { _ in
+                Task { await viewModel.load() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
                 Task { await viewModel.load() }
             }
         }

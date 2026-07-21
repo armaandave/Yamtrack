@@ -25,7 +25,10 @@ def handle_item_created(sender, instance, created, **kwargs):  # noqa: ARG001
         return
     if collect_external_rating_item_id(instance.pk):
         return
-    transaction.on_commit(partial(enrich_external_ratings.delay, instance.pk))
+    transaction.on_commit(
+        partial(enrich_external_ratings.delay, instance.pk),
+        robust=True,
+    )
 
 
 @receiver(connection_created)

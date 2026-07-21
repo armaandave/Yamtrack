@@ -189,6 +189,31 @@ class ExternalRatingTaskTests(TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failed"], 1)
 
+    @patch("app.tasks.refresh_external_ratings", return_value={"mal": "failed"})
+    def test_failed_attempt_reports_preserved_stale_value(self, _refresh_mock):
+        self._rating(ExternalRating.Status.AVAILABLE)
+
+        result = enrich_external_ratings(self.item.pk, ["mal"], force=True)
+
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["preserved_stale"], 1)
+        self.assertEqual(result["skipped_fresh"], 0)
+
+    @patch("app.tasks.enrich_external_ratings.retry", side_effect=Retry())
+    @patch("app.tasks.cache.add", side_effect=ConnectionError)
+    @patch("app.tasks.refresh_external_ratings")
+    def test_cache_outage_retries_without_provider_work(
+        self,
+        refresh_mock,
+        _cache_add,
+        retry_mock,
+    ):
+        with self.assertRaises(Retry):
+            enrich_external_ratings(self.item.pk, ["mal"])
+
+        refresh_mock.assert_not_called()
+        self.assertEqual(retry_mock.call_args.kwargs["countdown"], 60)
+
     @patch("app.tasks.enrich_external_ratings.apply_async")
     @patch("app.tasks._enrich_external_ratings")
     def test_mixed_batch_continues_and_delegates_transient_retry(
@@ -272,6 +297,21 @@ class ExternalRatingTaskTests(TestCase):
             [call.args[0] for call in delay_mock.call_args_list],
             [list(range(1, 101)), list(range(101, 201)), list(range(201, 206))],
         )
+
+    @patch("app.tasks.enrich_external_ratings_batch.delay")
+    def test_enqueue_helper_accepts_smaller_valid_batches(self, delay_mock):
+        result = enqueue_external_rating_batches([3, 1, 2], batch_size=2)
+
+        self.assertEqual(result, {"items": 3, "batches": 2})
+        self.assertEqual(
+            [call.args[0] for call in delay_mock.call_args_list],
+            [[3, 1], [2]],
+        )
+
+    def test_enqueue_helper_rejects_invalid_batch_sizes(self):
+        for batch_size in (0, EXTERNAL_RATING_BATCH_SIZE + 1):
+            with self.subTest(batch_size=batch_size), self.assertRaises(ValueError):
+                enqueue_external_rating_batches([], batch_size=batch_size)
 
     def test_stale_selector_includes_failed_and_oldest_stale_only(self):
         now = timezone.now()

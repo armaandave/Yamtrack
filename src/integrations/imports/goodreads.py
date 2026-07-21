@@ -277,12 +277,21 @@ class GoodReadsImporter:
             created = True
             self.counts[MediaTypes.BOOK.value] += 1
 
-        latest_entry, diary_created = self._import_diary_entry(item, row)
+        latest_entry, diary_created = self._import_diary_entry(
+            item,
+            row,
+            update_current=created,
+        )
         if row.rating is not None and (created or diary_created):
             self.counts["ratings"] += 1
         if row.review and (created or diary_created):
             self.counts["reviews"] += 1
-        if latest_entry and (created or book.completion_diary_entry_id is None):
+        book.refresh_from_db()
+        if (
+            latest_entry
+            and (created or book.completion_diary_entry_id is None)
+            and book.completion_diary_entry_id != latest_entry.id
+        ):
             book.completion_diary_entry = latest_entry
             book.save(update_fields=["completion_diary_entry"])
 
@@ -343,7 +352,7 @@ class GoodReadsImporter:
             book.save(update_fields=["end_date"])
         return book
 
-    def _import_diary_entry(self, item, row):
+    def _import_diary_entry(self, item, row, *, update_current):
         if not row.can_create_diary:
             if row.review:
                 self.warnings.append(
@@ -367,6 +376,7 @@ class GoodReadsImporter:
             review=row.review,
             is_rewatch=row.read_count > 1,
             tags=row.bookshelves,
+            update_current=update_current,
         )
         if row.contains_spoilers:
             entry.contains_spoilers = True

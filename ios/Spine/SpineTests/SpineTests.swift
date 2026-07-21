@@ -443,6 +443,208 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testDynamicExternalRatingSortDecodesAndKeepsBackendLabel() throws {
+        let sort = try JSONDecoder.api.decode(
+            MediaFilterSort.self,
+            from: Data(#""rating:goodreads""#.utf8)
+        )
+        let options = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(
+                """
+                {
+                  "sorts": [{"value": "rating:goodreads", "label": "Goodreads Rating"}],
+                  "genres": [],
+                  "languages": [],
+                  "years": []
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(sort.rawValue, "rating:goodreads")
+        XCTAssertTrue(sort.isExternalRating)
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: options, scope: .tracking(mediaType: "book")),
+            [FilterChoice(value: "rating:goodreads", label: "Goodreads Rating")]
+        )
+    }
+
+    @MainActor
+    func testDynamicExternalRatingSortDefaultsDescendingAndFallbacksStayStructural() {
+        var filter = MediaFilterState()
+        filter.selectSort(rawValue: "rating:goodreads")
+
+        XCTAssertEqual(filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(filter.direction, .desc)
+        XCTAssertEqual(filter.queryItems().first { $0.name == "direction" }?.value, "desc")
+
+        filter.direction = .asc
+        XCTAssertEqual(filter.queryItems().first { $0.name == "direction" }?.value, "asc")
+        XCTAssertTrue(MediaFilterSort(rawValue: "letterboxd_rating").isExternalRating)
+        XCTAssertTrue(MediaFilterSort(rawValue: "imdb_rating").isExternalRating)
+        XCTAssertTrue(MediaFilterSort(rawValue: "rotten_tomatoes_rating").isExternalRating)
+
+        let trackingFallback = MediaFilterSheet.availableSortChoices(
+            options: .empty,
+            scope: .tracking(mediaType: "book")
+        )
+        XCTAssertEqual(
+            trackingFallback.map(\.value),
+            ["title", "release_date", "your_rating", "average_rating"]
+        )
+        XCTAssertFalse(trackingFallback.contains { MediaFilterSort(rawValue: $0.value).isExternalRating })
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: .empty, scope: .diary).map(\.value),
+            ["title", "release_date", "your_rating", "average_rating", "consumed_at"]
+        )
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: .empty, scope: .list(id: 7)).map(\.value),
+            ["title", "release_date", "your_rating", "average_rating", "date_added"]
+        )
+    }
+
+    @MainActor
+    func testMovieBookAndGameRatingTokensRemainOpaque() {
+        let choices = [
+            FilterChoice(value: "rating:imdb", label: "IMDb Rating"),
+            FilterChoice(value: "rating:hardcover", label: "Hardcover Rating"),
+            FilterChoice(value: "rating:metacritic", label: "Metacritic Rating"),
+        ]
+
+        for choice in choices {
+            var filter = MediaFilterState()
+            filter.selectSort(rawValue: choice.value)
+            XCTAssertEqual(filter.sort?.rawValue, choice.value)
+            XCTAssertEqual(filter.direction, .desc)
+            XCTAssertEqual(filter.queryItems().first { $0.name == "sort" }?.value, choice.value)
+        }
+        XCTAssertEqual(choices.map(\.label), ["IMDb Rating", "Hardcover Rating", "Metacritic Rating"])
+    }
+
+    @MainActor
+    func testTrackingRepositoryPreservesOpaqueSortAcrossPages() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APITrackingRepository(client: client)
+        var requests: [URLRequest] = []
+        RequestCaptureURLProtocol.handler = { request in
+            requests.append(request)
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"count":0,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        var filter = MediaFilterState()
+        filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        _ = try await repository.list(mediaType: "book", page: nil, filter: filter)
+        _ = try await repository.list(mediaType: "book", page: "2", filter: filter)
+
+        XCTAssertEqual(requests.count, 2)
+        for request in requests {
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "media_type" }?.value, "book")
+            XCTAssertEqual(query.first { $0.name == "sort" }?.value, "rating:goodreads")
+            XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+        }
+        let secondQuery = URLComponents(url: requests[1].url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertNil(URLComponents(url: requests[0].url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" })
+        XCTAssertEqual(secondQuery.first { $0.name == "page" }?.value, "2")
+    }
+
+    @MainActor
+    func testLibraryDynamicSortKeepsServerOrderAndRejectsPreviousSortPage() async {
+        let repository = DynamicSortLibraryTrackingRepository()
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = .title
+        await viewModel.reload()
+
+        let stalePage = Task { await viewModel.loadNextPage() }
+        try? await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .desc
+        await viewModel.reload()
+        await stalePage.value
+
+        XCTAssertEqual(viewModel.items.map(\.media.title), ["Zulu From Server", "Alpha From Server"])
+        XCTAssertEqual(repository.requests.map(\.sort), ["title", "title", "rating:goodreads"])
+        XCTAssertEqual(repository.requests.map(\.page), [nil, "2", nil])
+        XCTAssertEqual(repository.requests.last?.direction, .desc)
+    }
+
+    @MainActor
+    func testLibraryMediaTypeChangeReconcilesDynamicSortWithAdvertisedOptions() async {
+        let filterOptions = ScriptedFilterOptionsRepository { scope in
+            switch scope {
+            case .tracking(mediaType: "book"):
+                MediaFilterOptionsResponse(
+                    sorts: [FilterChoice(value: "rating:goodreads", label: "Goodreads Rating")],
+                    genres: [],
+                    languages: [],
+                    years: []
+                )
+            default:
+                MediaFilterOptionsResponse(
+                    sorts: [FilterChoice(value: "title", label: "Title")],
+                    genres: [],
+                    languages: [],
+                    years: []
+                )
+            }
+        }
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: DynamicSortLibraryTrackingRepository(),
+            filterOptionsRepository: filterOptions,
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .asc
+
+        await viewModel.selectMediaType("book")
+        XCTAssertEqual(viewModel.filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(viewModel.filter.direction, .asc)
+        XCTAssertEqual(viewModel.filterOptions.sorts.first?.label, "Goodreads Rating")
+
+        await viewModel.selectMediaType("game")
+        XCTAssertNil(viewModel.filter.sort)
+        XCTAssertNil(viewModel.filter.direction)
+    }
+
+    @MainActor
+    func testLibraryOptionFailurePreservesSameScopeSortButClearsItAfterScopeChange() async {
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: DynamicSortLibraryTrackingRepository(),
+            filterOptionsRepository: ScriptedFilterOptionsRepository { _ in throw DynamicSortTestError.optionsUnavailable },
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .asc
+
+        await viewModel.loadFilterOptions()
+        XCTAssertEqual(viewModel.filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(viewModel.filter.direction, .asc)
+        XCTAssertTrue(viewModel.filterOptions.sorts.isEmpty)
+
+        await viewModel.selectMediaType("book")
+        XCTAssertNil(viewModel.filter.sort)
+        XCTAssertNil(viewModel.filter.direction)
+    }
+
+    @MainActor
     func testCompanyViewModelAppliesOneFilterToExpandedRolesAndRejectsStaleResponses() async throws {
         let repository = ScriptedCompanyRepository()
         let viewModel = CompanyDetailViewModel(
@@ -5177,7 +5379,7 @@ final class SpineTests: XCTestCase {
         XCTAssertNil(MediaLogViewModel.ratingDecimal(for: 0, mediaType: "movie"))
         XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 1, mediaType: "movie"), Decimal(string: "0.5"))
         XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "music"), Decimal(5))
-        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "book"), Decimal(10))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "book"), Decimal(5))
 
         let viewModel = MediaLogViewModel(
             detail: TestFixtures.movieDetail,
@@ -5879,6 +6081,93 @@ private struct LibraryTrackingRequest: Equatable {
         self.status = status
         self.query = query
     }
+}
+
+private struct DynamicSortLibraryRequest: Equatable {
+    let page: String?
+    let sort: String?
+    let direction: MediaFilterDirection?
+}
+
+private enum DynamicSortTestError: Error {
+    case optionsUnavailable
+}
+
+private struct ScriptedFilterOptionsRepository: FilterOptionsRepository {
+    let response: (MediaFilterScope) throws -> MediaFilterOptionsResponse
+
+    init(response: @escaping (MediaFilterScope) throws -> MediaFilterOptionsResponse) {
+        self.response = response
+    }
+
+    func options(scope: MediaFilterScope, filter _: MediaFilterState) async throws -> MediaFilterOptionsResponse {
+        try response(scope)
+    }
+}
+
+@MainActor
+private final class DynamicSortLibraryTrackingRepository: TrackingRepository {
+    var requests: [DynamicSortLibraryRequest] = []
+
+    func list(
+        mediaType: String,
+        page: String?,
+        status: String?,
+        query: String?
+    ) async throws -> PagedResponse<Spine.LibraryItem> {
+        var filter = MediaFilterState(q: query ?? "")
+        filter.status = status
+        return try await list(mediaType: mediaType, page: page, filter: filter)
+    }
+
+    func list(
+        mediaType _: String,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<Spine.LibraryItem> {
+        requests.append(DynamicSortLibraryRequest(
+            page: page,
+            sort: filter.sort?.rawValue,
+            direction: filter.direction
+        ))
+        if filter.sort == .title, page == "2" {
+            try await Task.sleep(for: .milliseconds(80))
+            return PagedResponse(
+                count: 3,
+                next: nil,
+                previous: "https://spine.test/api/v1/tracking/",
+                results: [libraryItem(id: "3", title: "Stale Previous Sort Page")]
+            )
+        }
+        if filter.sort?.rawValue == "rating:goodreads" {
+            try await Task.sleep(for: .milliseconds(1))
+            return PagedResponse(
+                count: 2,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(id: "10", title: "Zulu From Server"),
+                    libraryItem(id: "11", title: "Alpha From Server"),
+                ]
+            )
+        }
+        return PagedResponse(
+            count: 3,
+            next: "https://spine.test/api/v1/tracking/?page=2",
+            previous: nil,
+            results: [
+                libraryItem(id: "1", title: "Old First"),
+                libraryItem(id: "2", title: "Old Second"),
+            ]
+        )
+    }
+
+    func detail(ref: MediaRef) async throws -> TrackingState { fatalError("Not used") }
+    func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState { fatalError("Not used") }
+    func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState { fatalError("Not used") }
+    func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState { fatalError("Not used") }
+    func updateBookProgress(source: String, mediaId: String, progressType: String, value: Decimal, notes: String) async throws -> TrackingState { fatalError("Not used") }
+    func completeBook(source: String, mediaId: String, completedAt: Date?) async throws -> TrackingState { fatalError("Not used") }
 }
 
 private struct ActivityRequest: Equatable {
