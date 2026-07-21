@@ -838,6 +838,7 @@ struct MediaDetail: Decodable, Identifiable {
     let providers: JSONValue?
     let community: CommunityStats?
     let externalRatings: [ExternalRating]?
+    let externalRatingsPreparation: MediaExternalRatingsPreparation?
     let reviews: [MediaReview]?
     let cast: [CreditPerson]?
     let crew: [CreditPerson]?
@@ -898,6 +899,7 @@ struct MediaDetail: Decodable, Identifiable {
         case providers
         case community
         case externalRatings
+        case externalRatingsPreparation
         case reviews
         case cast
         case crew
@@ -936,6 +938,7 @@ struct MediaDetail: Decodable, Identifiable {
         providers: JSONValue? = nil,
         community: CommunityStats? = nil,
         externalRatings: [ExternalRating]? = nil,
+        externalRatingsPreparation: MediaExternalRatingsPreparation? = nil,
         reviews: [MediaReview]? = nil,
         cast: [CreditPerson]? = nil,
         crew: [CreditPerson]? = nil,
@@ -972,6 +975,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.providers = providers
         self.community = community
         self.externalRatings = externalRatings
+        self.externalRatingsPreparation = externalRatingsPreparation
         self.reviews = reviews
         self.cast = cast
         self.crew = crew
@@ -1013,6 +1017,10 @@ struct MediaDetail: Decodable, Identifiable {
             providers: try container.decodeIfPresent(JSONValue.self, forKey: .providers),
             community: try container.decodeIfPresent(CommunityStats.self, forKey: .community),
             externalRatings: try container.decodeIfPresent([ExternalRating].self, forKey: .externalRatings),
+            externalRatingsPreparation: try container.decodeIfPresent(
+                MediaExternalRatingsPreparation.self,
+                forKey: .externalRatingsPreparation
+            ),
             reviews: try container.decodeIfPresent([MediaReview].self, forKey: .reviews),
             cast: try container.decodeIfPresent([CreditPerson].self, forKey: .cast),
             crew: try container.decodeIfPresent([CreditPerson].self, forKey: .crew),
@@ -1053,6 +1061,7 @@ struct MediaDetail: Decodable, Identifiable {
             providers: providers,
             community: community,
             externalRatings: externalRatings,
+            externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
             crew: crew,
@@ -1093,6 +1102,7 @@ struct MediaDetail: Decodable, Identifiable {
             providers: providers,
             community: community,
             externalRatings: externalRatings,
+            externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
             crew: crew,
@@ -1133,6 +1143,7 @@ struct MediaDetail: Decodable, Identifiable {
             providers: providers,
             community: community,
             externalRatings: externalRatings,
+            externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
             crew: crew,
@@ -1173,6 +1184,7 @@ struct MediaDetail: Decodable, Identifiable {
             providers: providers,
             community: community,
             externalRatings: externalRatings,
+            externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
             crew: crew,
@@ -1213,6 +1225,48 @@ struct MediaDetail: Decodable, Identifiable {
             providers: providers,
             community: community,
             externalRatings: externalRatings,
+            externalRatingsPreparation: externalRatingsPreparation,
+            reviews: reviews,
+            cast: cast,
+            crew: crew,
+            relatedSections: relatedSections,
+            episodes: episodes,
+            seasons: seasons,
+            customPosterUrl: customPosterUrl,
+            customBackdropUrl: customBackdropUrl,
+            customLogoUrl: customLogoUrl
+        )
+    }
+
+    func replacingExternalRatings(with response: MediaExternalRatingsResponse) -> MediaDetail {
+        MediaDetail(
+            ref: ref,
+            title: title,
+            subtitle: subtitle,
+            overview: overview,
+            synopsis: synopsis,
+            imageUrl: imageUrl,
+            posterUrl: posterUrl,
+            posterOrientation: posterOrientation,
+            posterAspectRatio: posterAspectRatio,
+            posterWidth: posterWidth,
+            posterHeight: posterHeight,
+            posterAccentColor: posterAccentColor,
+            logoUrl: logoUrl,
+            logoWidth: logoWidth,
+            logoHeight: logoHeight,
+            logoAspectRatio: logoAspectRatio,
+            releaseDate: releaseDate,
+            defaultSource: defaultSource,
+            userState: userState,
+            backdropUrl: backdropUrl,
+            details: details,
+            music: music,
+            related: related,
+            providers: providers,
+            community: community,
+            externalRatings: response.externalRatings,
+            externalRatingsPreparation: response.externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
             crew: crew,
@@ -1573,6 +1627,27 @@ struct ExternalRating: Codable, Identifiable, Hashable {
         }
         return destination
     }
+}
+
+enum MediaExternalRatingsPreparationState: String, Codable, Hashable {
+    case ready
+    case pending
+    case degraded
+}
+
+struct MediaExternalRatingsPreparation: Codable, Hashable {
+    let state: MediaExternalRatingsPreparationState
+    let retryAfterSeconds: Int
+
+    static let ready = MediaExternalRatingsPreparation(
+        state: .ready,
+        retryAfterSeconds: 2
+    )
+}
+
+struct MediaExternalRatingsResponse: Codable, Hashable {
+    let externalRatings: [ExternalRating]
+    let externalRatingsPreparation: MediaExternalRatingsPreparation
 }
 
 struct MediaReview: Codable, Identifiable, Hashable {

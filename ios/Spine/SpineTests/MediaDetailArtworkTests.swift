@@ -119,17 +119,91 @@ final class MediaDetailArtworkTests: XCTestCase {
         XCTAssertNil(viewModel.tracking)
     }
 
-    private func makeViewModel(mediaRepository: MediaRepository) -> MediaDetailViewModel {
+    func testPendingExternalRatingsPollUntilReadyWithoutReloadingDetail() async throws {
+        let ready = MediaExternalRatingsResponse(
+            externalRatings: [
+                ExternalRating(
+                    source: "Letterboxd",
+                    value: "4.3",
+                    voteCount: 500_000,
+                    maxValue: "5",
+                    url: "https://letterboxd.com/tmdb/550"
+                ),
+            ],
+            externalRatingsPreparation: .ready
+        )
+        let repository = ArtworkScriptedMediaRepository(
+            results: [],
+            ratingResults: [.success(ready)]
+        )
+        let viewModel = makeViewModel(
+            mediaRepository: repository,
+            pollInterval: .zero,
+            maxPollAttempts: 2
+        )
+        viewModel.detail = makeDetail(
+            preparation: MediaExternalRatingsPreparation(
+                state: .pending,
+                retryAfterSeconds: 2
+            )
+        )
+
+        await viewModel.pollExternalRatingsIfNeeded()
+
+        XCTAssertEqual(viewModel.detail?.externalRatings?.first?.source, "Letterboxd")
+        XCTAssertEqual(viewModel.detail?.externalRatingsPreparation?.state, .ready)
+        XCTAssertFalse(viewModel.isExternalRatingsPolling)
+        XCTAssertFalse(viewModel.externalRatingsTimedOut)
+        let readyRequestCount = await repository.ratingRequestCount
+        XCTAssertEqual(readyRequestCount, 1)
+    }
+
+    func testExternalRatingPollingStopsAfterBoundedPendingResponses() async {
+        let pending = MediaExternalRatingsResponse(
+            externalRatings: [],
+            externalRatingsPreparation: MediaExternalRatingsPreparation(
+                state: .pending,
+                retryAfterSeconds: 2
+            )
+        )
+        let repository = ArtworkScriptedMediaRepository(
+            results: [],
+            ratingResults: [.success(pending)]
+        )
+        let viewModel = makeViewModel(
+            mediaRepository: repository,
+            pollInterval: .zero,
+            maxPollAttempts: 1
+        )
+        viewModel.detail = makeDetail(preparation: pending.externalRatingsPreparation)
+
+        await viewModel.pollExternalRatingsIfNeeded()
+
+        XCTAssertTrue(viewModel.externalRatingsTimedOut)
+        XCTAssertFalse(viewModel.isExternalRatingsPolling)
+        let pendingRequestCount = await repository.ratingRequestCount
+        XCTAssertEqual(pendingRequestCount, 1)
+    }
+
+    private func makeViewModel(
+        mediaRepository: MediaRepository,
+        pollInterval: Duration? = nil,
+        maxPollAttempts: Int = 30
+    ) -> MediaDetailViewModel {
         MediaDetailViewModel(
             ref: makeDetail().ref,
             mediaRepository: mediaRepository,
             trackingRepository: ArtworkUnusedTrackingRepository(),
             diaryRepository: ArtworkUnusedDiaryRepository(),
-            onUnauthorized: {}
+            onUnauthorized: {},
+            externalRatingPollInterval: pollInterval,
+            externalRatingMaxPollAttempts: maxPollAttempts
         )
     }
 
-    private func makeDetail() -> MediaDetail {
+    private func makeDetail(
+        preparation: MediaExternalRatingsPreparation? = nil
+    ) -> MediaDetail {
         MediaDetail(
             ref: MediaRef(
                 itemId: 101,
@@ -159,6 +233,7 @@ final class MediaDetailArtworkTests: XCTestCase {
             userState: UserMediaState(isTracked: false, inLists: [4], hasLiked: true),
             backdropUrl: "https://example.com/default-backdrop.jpg",
             details: ["genre": .string("Drama")],
+            externalRatingsPreparation: preparation,
             customPosterUrl: "https://example.com/old-custom-poster.jpg",
             customBackdropUrl: "https://example.com/old-custom-backdrop.jpg",
             customLogoUrl: "https://example.com/old-custom-logo.png"
@@ -174,9 +249,15 @@ private enum ArtworkRefreshError: LocalizedError {
 
 private actor ArtworkScriptedMediaRepository: MediaRepository {
     private var results: [Result<MediaDetail, Error>]
+    private var ratingResults: [Result<MediaExternalRatingsResponse, Error>]
+    private(set) var ratingRequestCount = 0
 
-    init(results: [Result<MediaDetail, Error>]) {
+    init(
+        results: [Result<MediaDetail, Error>],
+        ratingResults: [Result<MediaExternalRatingsResponse, Error>] = []
+    ) {
         self.results = results
+        self.ratingResults = ratingResults
     }
 
     func meta() async throws -> MetaResponse { fatalError("Not used") }
@@ -186,6 +267,12 @@ private actor ArtworkScriptedMediaRepository: MediaRepository {
     func detail(ref: MediaRef) async throws -> MediaDetail {
         guard !results.isEmpty else { fatalError("Unexpected detail request") }
         return try results.removeFirst().get()
+    }
+
+    func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse {
+        ratingRequestCount += 1
+        guard !ratingResults.isEmpty else { fatalError("Unexpected external rating request") }
+        return try ratingResults.removeFirst().get()
     }
 
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse { fatalError("Not used") }

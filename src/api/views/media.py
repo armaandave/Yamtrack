@@ -265,6 +265,27 @@ class MediaDetailView(MediaExposureMixin, APIView):
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class MediaExternalRatingsView(MediaExposureMixin, APIView):
+    """Cached external-rating state for a materialized media identity."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, media_type, media_id):
+        try:
+            return Response(
+                media_service.media_external_rating_payload(
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    season_number=request.query_params.get("season_number"),
+                    episode_number=request.query_params.get("episode_number"),
+                ),
+            )
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class MusicRecordingDetailView(APIView):
     """Read-only MusicBrainz recording detail within an album context."""
 

@@ -14,6 +14,7 @@ protocol MediaRepository {
     func searchAll(query: String) async throws -> MediaSearchResponse
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary>
     func detail(ref: MediaRef) async throws -> MediaDetail
+    func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
     func reviews(ref: MediaRef) async throws -> [MediaReview]
     func posters(ref: MediaRef) async throws -> [PosterOption]
@@ -63,6 +64,14 @@ extension MediaRepository {
 
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary> {
         fatalError("Not implemented")
+    }
+
+    func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse {
+        let detail = try await detail(ref: ref)
+        return MediaExternalRatingsResponse(
+            externalRatings: detail.externalRatings ?? [],
+            externalRatingsPreparation: detail.externalRatingsPreparation ?? .ready
+        )
     }
 
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse {
@@ -463,6 +472,21 @@ struct APIMediaRepository: MediaRepository {
         }
         return try await client.get(
             path,
+            query: query,
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+
+    func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse {
+        var query: [URLQueryItem] = []
+        if let seasonNumber = ref.seasonNumber {
+            query.append(URLQueryItem(name: "season_number", value: String(seasonNumber)))
+        }
+        if let episodeNumber = ref.episodeNumber {
+            query.append(URLQueryItem(name: "episode_number", value: String(episodeNumber)))
+        }
+        return try await client.get(
+            "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/external-ratings/",
             query: query,
             authenticated: client.tokenProvider.accessToken != nil
         )

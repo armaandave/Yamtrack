@@ -39,6 +39,7 @@ from api.views.media import (
     MediaBackdropsView,
     MediaDetailView,
     MediaDiscoverView,
+    MediaExternalRatingsView,
     MediaLogoPreferenceView,
     MediaLogosView,
     MediaPosterPreferenceView,
@@ -122,6 +123,11 @@ urlpatterns = [
     path("media/<str:source>/<str:media_type>/<str:media_id>/logo/", MediaLogoPreferenceView.as_view(), name="api-media-logo"),
     path("media/<str:source>/<str:media_type>/<str:media_id>/community/", CommunityStatsView.as_view(), name="api-media-community"),
     path("media/<str:source>/<str:media_type>/<str:media_id>/reviews/", MediaReviewsView.as_view(), name="api-media-reviews"),
+    path(
+        "media/<str:source>/<str:media_type>/<str:media_id>/external-ratings/",
+        MediaExternalRatingsView.as_view(),
+        name="api-media-external-ratings",
+    ),
     path(
         "media/musicbrainz/music/<uuid:release_group_mbid>/recordings/<uuid:recording_mbid>/",
         MusicRecordingDetailView.as_view(),

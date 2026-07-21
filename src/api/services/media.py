@@ -3,6 +3,7 @@ import hashlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
@@ -45,6 +46,7 @@ from api.services.filters import (
 from app import config, single_weight
 from app.external_ratings import (
     RATING_SOURCES,
+    eligible_rating_sources,
     max_rating_value,
     rating_source_is_exposed,
     rating_sources_needing_refresh,
@@ -84,6 +86,7 @@ DETAIL_CACHE_VERSION = "v9"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
+DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
 PERSON_SORT_OPTIONS = [
     {"value": "title", "label": "Title"},
     {"value": "release_date", "label": "Release Date"},
@@ -376,6 +379,15 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         request=request,
         user=user,
     )
+    rating_payload = external_rating_payload(
+        metadata=metadata,
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+        item=item,
+    )
     return {
         **summary,
         "overview": synopsis,
@@ -414,15 +426,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             season_number=season_number,
             episode_number=episode_number,
         ),
-        "external_ratings": external_ratings(
-            metadata=metadata,
-            source=source,
-            media_type=media_type,
-            media_id=media_id,
-            season_number=season_number,
-            episode_number=episode_number,
-            item=item,
-        ),
+        **rating_payload,
     }
 
 
@@ -2181,27 +2185,140 @@ def _stored_external_ratings(item, metadata):
     ]
 
 
-def _tracked_external_ratings(item, metadata):
+def _external_rating_preparation(item, pending, *, enqueue_failed=False):
+    eligible = set(eligible_rating_sources(item))
+    failed = item.external_ratings.filter(
+        rating_source__in=eligible,
+        status=ExternalRating.Status.FAILED,
+    ).exists()
+    if enqueue_failed or failed:
+        state = "degraded"
+    elif pending:
+        state = "pending"
+    else:
+        state = "ready"
+    return {
+        "state": state,
+        "retry_after_seconds": 2,
+    }
+
+
+def _enqueue_detail_external_ratings(item, pending):
+    if not pending:
+        return False
+    lock_key = f"external-ratings:detail:{item.pk}"
+    try:
+        acquired = cache.add(
+            lock_key,
+            1,
+            timeout=DETAIL_RATING_PREPARATION_LOCK_TIMEOUT,
+        )
+    except (ConnectionInterrupted, RedisError, ConnectionError, OSError):
+        acquired = True
+    if not acquired:
+        return False
+
+    from app.tasks import enrich_external_ratings
+
+    try:
+        enrich_external_ratings.delay(item.pk, pending)
+    except (KombuOperationalError, RedisError, ConnectionError, OSError) as error:
+        with suppress(ConnectionInterrupted, RedisError, ConnectionError, OSError):
+            cache.delete(lock_key)
+        logger.warning(
+            "External rating detail enqueue failed item=%s type=%s",
+            item.pk,
+            type(error).__name__,
+        )
+        return True
+    return False
+
+
+def _cached_external_rating_payload(item, metadata=None):
+    metadata = metadata or {}
+    pending = rating_sources_needing_refresh(item)
+    enqueue_failed = _enqueue_detail_external_ratings(item, pending)
+    return {
+        "external_ratings": _stored_external_ratings(item, metadata),
+        "external_ratings_preparation": _external_rating_preparation(
+            item,
+            pending,
+            enqueue_failed=enqueue_failed,
+        ),
+    }
+
+
+def _tracked_external_rating_payload(item, metadata):
     """Persist native metadata, queue optional work, and return cached ratings."""
     if item.source in RATING_SOURCES:
         refresh_external_ratings(item, [item.source], metadata=metadata)
-    pending = [
-        rating_source
-        for rating_source in rating_sources_needing_refresh(item)
-        if rating_source != item.source
-    ]
-    if pending:
-        from app.tasks import enrich_external_ratings
+    return _cached_external_rating_payload(item, metadata)
 
-        try:
-            enrich_external_ratings.delay(item.pk, pending)
-        except (KombuOperationalError, RedisError, ConnectionError, OSError) as error:
-            logger.warning(
-                "External rating detail enqueue failed item=%s type=%s",
-                item.pk,
-                type(error).__name__,
-            )
-    return _stored_external_ratings(item, metadata)
+
+def _tracked_external_ratings(item, metadata):
+    return _tracked_external_rating_payload(item, metadata)["external_ratings"]
+
+
+def external_rating_payload(
+    *,
+    metadata,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+    item=None,
+):
+    """Return detail ratings with their asynchronous preparation state."""
+    if item is not None:
+        return _tracked_external_rating_payload(item, metadata)
+    return {
+        "external_ratings": external_ratings(
+            metadata=metadata,
+            source=source,
+            media_type=media_type,
+            media_id=media_id,
+            season_number=season_number,
+            episode_number=episode_number,
+        ),
+        "external_ratings_preparation": {
+            "state": "ready",
+            "retry_after_seconds": 2,
+        },
+    }
+
+
+def media_external_rating_payload(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number=None,
+    episode_number=None,
+):
+    """Return cached ratings and preparation state for one exact identity."""
+    if media_type == MediaTypes.EPISODE.value and (
+        season_number in (None, "") or episode_number in (None, "")
+    ):
+        raise ValueError("season_number and episode_number are required for episodes.")
+    season_number = int(season_number) if season_number not in (None, "") else None
+    episode_number = int(episode_number) if episode_number not in (None, "") else None
+    item = Item.objects.filter(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+    ).first()
+    if item is None:
+        return {
+            "external_ratings": [],
+            "external_ratings_preparation": {
+                "state": "ready",
+                "retry_after_seconds": 2,
+            },
+        }
+    return _cached_external_rating_payload(item)
 
 
 def external_ratings(
