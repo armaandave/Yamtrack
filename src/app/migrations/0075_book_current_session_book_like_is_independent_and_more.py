@@ -116,6 +116,8 @@ def normalize_legacy_book_tracking(apps, schema_editor):
 
 class Migration(migrations.Migration):
 
+    atomic = False
+
     dependencies = [
         ('app', '0074_migrate_legacy_external_ratings'),
     ]
