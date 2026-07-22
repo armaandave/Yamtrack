@@ -42,6 +42,12 @@ jobs:
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           "${compose[@]}" exec -T redis redis-cli ping
+          for _ in {1..12}; do
+            if "${compose[@]}" exec -T app celery -A config inspect ping; then
+              break
+            fi
+            sleep 5
+          done
           "${compose[@]}" exec -T app celery -A config inspect ping
           "${compose[@]}" exec -T app python manage.py backfill_external_ratings \
             --rating-source imdb \
