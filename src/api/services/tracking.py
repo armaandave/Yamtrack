@@ -74,7 +74,6 @@ def create_or_update_tracking(user, *, source, media_type, media_id, data, parti
     if media_type == MediaTypes.BOOK.value:
         return _write_book_tracking(
             user,
-            media if existing_media else None,
             media.item,
             data,
         )
@@ -394,43 +393,22 @@ def _materialize_book_item(source, media_id):
     )
 
 
-def _write_book_tracking(user, media, item, data):
+def _write_book_tracking(user, item, data):
     """Route generic tracking writes through canonical book transitions."""
-    book = media
     try:
-        if "status" in data:
-            desired_status = data["status"]
-            if desired_status == Status.IN_PROGRESS.value:
-                book = _call_book(
-                    book_tracking.start_journey,
-                    user,
-                    item,
-                    start_date=data.get("start_date"),
-                    mutation_id=data.get("mutation_id"),
-                )
-            elif desired_status == Status.COMPLETED.value:
-                book = _call_book(book_tracking.mark_read, user, item)
-            else:
-                book = _call_book(
-                    book_tracking.assign_status,
-                    user,
-                    item,
-                    desired_status,
-                )
-        if book is None:
-            book = _call_book(
-                book_tracking.assign_status,
-                user,
-                item,
-                Status.PLANNING.value,
-            )
+        rating = book_tracking.UNSET
         if "rating" in data:
-            book = _call_book(
-                book_tracking.set_rating,
-                user,
-                item,
-                single_weight.rating_from_wire(data["rating"]),
-            )
+            rating = single_weight.rating_from_wire(data["rating"])
+        book = _call_book(
+            book_tracking.apply_tracking_state,
+            user,
+            item,
+            status=data.get("status", book_tracking.UNSET),
+            rating=rating,
+            start_date=data.get("start_date", book_tracking.UNSET),
+            notes=data.get("notes", book_tracking.UNSET),
+            mutation_id=data.get("mutation_id"),
+        )
         if "progress" in data:
             book = _call_book(
                 book_tracking.update_progress,
@@ -439,9 +417,6 @@ def _write_book_tracking(user, media, item, data):
                 progress_type="pages",
                 value=data["progress"],
             )
-        if "notes" in data and book.notes != data["notes"]:
-            book.notes = data["notes"]
-            book.save(update_fields=["notes"])
     except DjangoValidationError as error:
         raise serializers.ValidationError({"detail": error.messages[0]}) from error
     return book

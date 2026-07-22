@@ -248,13 +248,17 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
                 headers=headers,
                 timeout=timeout,
             )
-            count_response = services.api_request(
-                Sources.IGDB.value,
-                "POST",
-                count_url,
-                data=count_body,
-                headers=headers,
-                timeout=timeout,
+            count_response = (
+                {"count": len(search_results)}
+                if preserve_ranking_fields
+                else services.api_request(
+                    Sources.IGDB.value,
+                    "POST",
+                    count_url,
+                    data=count_body,
+                    headers=headers,
+                    timeout=timeout,
+                )
             )
 
         except requests.exceptions.HTTPError as error:
@@ -270,13 +274,17 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
                     headers=headers,
                     timeout=timeout,
                 )
-                count_response = services.api_request(
-                    Sources.IGDB.value,
-                    "POST",
-                    count_url,
-                    data=count_body,
-                    headers=headers,
-                    timeout=timeout,
+                count_response = (
+                    {"count": len(search_results)}
+                    if preserve_ranking_fields
+                    else services.api_request(
+                        Sources.IGDB.value,
+                        "POST",
+                        count_url,
+                        data=count_body,
+                        headers=headers,
+                        timeout=timeout,
+                    )
                 )
 
         total_results = count_response.get("count", 0)

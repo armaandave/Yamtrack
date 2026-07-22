@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
 from django.core.cache import cache
 from django.test import TestCase
 
@@ -479,6 +480,58 @@ class Search(TestCase):
         self.assertIn("total_rating_count", search_request.kwargs["data"])
         self.assertIn("game_type", search_request.kwargs["data"])
         self.assertNotIn("name ~", search_request.kwargs["data"])
+
+    @patch("app.providers.igdb.cache")
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb.services.api_request")
+    def test_igdb_preserved_search_skips_count_request(
+        self,
+        mock_api_request,
+        _mock_get_access_token,
+        mock_cache,
+    ):
+        mock_cache.get.return_value = None
+        mock_api_request.return_value = [
+            {
+                "id": 1,
+                "name": "Dune",
+                "total_rating_count": 500,
+                "total_rating": 80,
+                "game_type": 0,
+            },
+        ]
+
+        response = igdb.search("dune", 1, preserve_ranking_fields=True)
+
+        self.assertEqual(mock_api_request.call_count, 1)
+        self.assertTrue(mock_api_request.call_args.args[2].endswith("/games"))
+        self.assertEqual(response["total_results"], 1)
+        self.assertEqual(response["results"][0]["total_rating_count"], 500)
+
+    @patch("app.providers.igdb.cache")
+    @patch("app.providers.igdb.handle_error", return_value={"retry": True})
+    @patch("app.providers.igdb.get_access_token", side_effect=["old", "new"])
+    @patch("app.providers.igdb.services.api_request")
+    def test_igdb_preserved_auth_retry_still_skips_count_request(
+        self,
+        mock_api_request,
+        _mock_get_access_token,
+        _mock_handle_error,
+        mock_cache,
+    ):
+        mock_cache.get.return_value = None
+        mock_api_request.side_effect = [
+            requests.exceptions.HTTPError("unauthorized"),
+            [{"id": 1, "name": "Dune", "game_type": 0}],
+        ]
+
+        response = igdb.search("dune", 1, preserve_ranking_fields=True)
+
+        self.assertEqual(mock_api_request.call_count, 2)
+        self.assertTrue(
+            all(call.args[2].endswith("/games") for call in mock_api_request.call_args_list),
+        )
+        self.assertEqual(response["total_results"], 1)
 
     @patch("app.providers.openlibrary.cache")
     @patch("app.providers.openlibrary.services.api_request")

@@ -39,6 +39,19 @@ OUTCOME_SUMMARY_KEYS = (
 )
 
 
+@shared_task(name="Refresh all-media search candidate", ignore_result=True)
+def refresh_all_media_search_candidate(media_type, query, page, source):
+    """Refresh one stale All-search provider candidate set."""
+    from api.services.media import refresh_all_media_candidate
+
+    return refresh_all_media_candidate(
+        media_type=media_type,
+        query=query,
+        page=page,
+        source=source,
+    )
+
+
 def _normalize_rating_sources(rating_sources):
     if rating_sources is None:
         return None

@@ -210,6 +210,60 @@ class BookTrackingContractTests(TestCase):
         self.assertTrue(DiaryEntry.objects.filter(pk=completion_id).exists())
         self.assertEqual(restored.data["book"]["completed_journey_count"], 1)
 
+    # BK-102, BK-103, SW-008.
+    def test_untracked_eye_and_rating_can_be_repeatedly_undone_without_planning_fallback(self):
+        eye_item = self.make_item("repeat-eye-toggle")
+        for _ in range(3):
+            marked = self.action(eye_item, "mark_read")
+            self.assertEqual(marked.data["status"], Status.COMPLETED.value)
+            self.assertTrue(Book.objects.get(user=self.user, item=eye_item).completed_manually)
+
+            undone = self.action(
+                eye_item,
+                "undo_read",
+                expected=status.HTTP_204_NO_CONTENT,
+            )
+            self.assertIsNone(undone.data)
+            self.assertFalse(Book.objects.filter(user=self.user, item=eye_item).exists())
+
+        rated_item = self.make_item("rated-eye-toggle")
+        rated = self.client.patch(
+            self.detail_url(rated_item),
+            {"rating": "4.5"},
+            format="json",
+        )
+        self.assert_status(rated, status.HTTP_200_OK)
+        self.assertEqual(rated.data["status"], Status.COMPLETED.value)
+        book = Book.objects.get(user=self.user, item=rated_item)
+        self.assertFalse(book.undated_read_previous_tracked)
+
+        undone = self.action(
+            rated_item,
+            "undo_read",
+            expected=status.HTTP_204_NO_CONTENT,
+        )
+        self.assertIsNone(undone.data)
+        self.assertFalse(Book.objects.filter(user=self.user, item=rated_item).exists())
+
+        marked_then_rated_item = self.make_item("marked-then-rated-eye-toggle")
+        self.action(marked_then_rated_item, "mark_read")
+        rated = self.client.patch(
+            self.detail_url(marked_then_rated_item),
+            {"rating": "4.5"},
+            format="json",
+        )
+        self.assert_status(rated, status.HTTP_200_OK)
+
+        undone = self.action(
+            marked_then_rated_item,
+            "undo_read",
+            expected=status.HTTP_204_NO_CONTENT,
+        )
+        self.assertIsNone(undone.data)
+        self.assertFalse(
+            Book.objects.filter(user=self.user, item=marked_then_rated_item).exists(),
+        )
+
     # BK-104, BK-300, BK-301, BK-303, BK-304, BK-305, BK-307,
     # BK-308, BK-309.
     def test_live_journey_pause_drop_restart_delete_and_removal_conflict(self):

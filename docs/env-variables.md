@@ -66,7 +66,9 @@ bucket rather than independent per-process limits.
 | `PUID`                          | User ID for the app. Default to `1000`.                                                                                                                               |
 | `PGID`                          | Group ID for the app. Default to `1000`.                                                                                                                              |
 | `TZ`                            | Timezone (e.g., `Europe/Berlin`). Default to `UTC`.                                                                                                                   |
-| `WEB_CONCURRENCY`               | Number of web server processes. Default to `1`.                                                                                                                       |
+| `GUNICORN_WORKERS`              | Number of Gunicorn worker processes. Defaults to `2`.                                                                                                                 |
+| `GUNICORN_THREADS`              | Threads per Gunicorn worker. Defaults to `4`; the default configuration therefore accepts eight concurrent HTTP requests.                                             |
+| `WEB_CONCURRENCY`               | Legacy fallback for `GUNICORN_WORKERS`; ignored when `GUNICORN_WORKERS` is set.                                                                                        |
 | `SOCIAL_PROVIDERS`              | Comma-separated list of social authentication providers to enable (e.g., `allauth.socialaccount.providers.openid_connect,allauth.socialaccount.providers.github`).    |
 | `SOCIALACCOUNT_PROVIDERS`       | JSON configuration for social providers. See the [Docs](social-auth.md) for an OIDC configuration example.                                                            |
 | `ACCOUNT_DEFAULT_HTTP_PROTOCOL` | Protocol for social providers. If your `redirect_uri` in OIDC config is `https`, set this to `https`. Default is determined based on your `CSRF` settings.            |

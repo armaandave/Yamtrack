@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import json
 import logging
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import suppress
 from copy import deepcopy
@@ -9,6 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from urllib.parse import urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 from aiohttp import ClientError
 from django.conf import settings
@@ -22,7 +25,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django_redis.exceptions import ConnectionInterrupted
 from kombu.exceptions import OperationalError as KombuOperationalError
-from redis.exceptions import RedisError
+from redis.exceptions import LockError, RedisError
 
 from api.serializers.common import (
     absolute_url,
@@ -80,6 +83,8 @@ SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
 MUSIC_SEARCH_CACHE_VERSION = "v5"
 ALL_MEDIA_SEARCH_TIMEOUT = 8
+ALL_MEDIA_CANDIDATE_STALE_TTL = 60 * 60 * 24 * 7
+ALL_MEDIA_REFRESH_SCHEDULE_TTL = 60
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
@@ -115,8 +120,7 @@ def default_source_for(media_type):
     return config.get_default_source_name(media_type).value
 
 
-def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fields=False, timeout=None):
-    source = source or default_source_for(media_type)
+def _search_cache_key(*, media_type, source, query, page, preserve_ranking_fields):
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
     cache_version = (
         MUSIC_SEARCH_CACHE_VERSION
@@ -124,9 +128,20 @@ def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fie
         else SEARCH_CACHE_VERSION
     )
     rank_suffix = ":rank" if preserve_ranking_fields else ""
-    cache_key = (
+    return (
         f"api:{cache_version}:search:{media_type}:{source}:{query_hash}:"
         f"p{page}:u{getattr(settings, 'TMDB_LANG', 'en')}:nsfw{settings.TMDB_NSFW}{rank_suffix}"
+    )
+
+
+def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fields=False, timeout=None):
+    source = source or default_source_for(media_type)
+    cache_key = _search_cache_key(
+        media_type=media_type,
+        source=source,
+        query=query,
+        page=page,
+        preserve_ranking_fields=preserve_ranking_fields,
     )
     data = cache.get(cache_key)
     if data is None:
@@ -140,6 +155,269 @@ def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fie
         )
         cache.set(cache_key, data, SEARCH_TTL)
     return source, data
+
+
+def _candidate_is_fresh(cache_key):
+    validation = cache.get(f"{cache_key}:validation")
+    try:
+        return time.time() - float(validation["validated_at"]) <= SEARCH_TTL
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _cache_candidate(cache_key, data):
+    cache.set(cache_key, data, ALL_MEDIA_CANDIDATE_STALE_TTL)
+    cache.set(
+        f"{cache_key}:validation",
+        {"validated_at": time.time()},
+        ALL_MEDIA_CANDIDATE_STALE_TTL,
+    )
+
+
+def _fetch_candidate(
+    *,
+    media_type,
+    query,
+    page,
+    source,
+    timeout,
+    cache_key,
+    search_metrics=None,
+):
+    started_at = time.monotonic()
+    try:
+        data = provider_services.search(
+            media_type,
+            query,
+            page,
+            source,
+            preserve_ranking_fields=True,
+            timeout=timeout,
+        )
+    finally:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        if search_metrics is not None:
+            search_metrics["provider_elapsed_ms"] = elapsed_ms
+    _cache_candidate(cache_key, data)
+    return data, elapsed_ms
+
+
+def _candidate_lock(cache_key, timeout):
+    lock_factory = getattr(cache, "lock", None)
+    if lock_factory is None:
+        return None
+    return lock_factory(
+        f"{cache_key}:flight",
+        timeout=timeout + 2,
+        sleep=0.05,
+    )
+
+
+def _schedule_candidate_refresh(*, media_type, query, page, source, cache_key):
+    schedule_key = f"{cache_key}:refresh-scheduled"
+    try:
+        if not cache.add(schedule_key, 1, timeout=ALL_MEDIA_REFRESH_SCHEDULE_TTL):
+            return False
+
+        from app.tasks import refresh_all_media_search_candidate
+
+        refresh_all_media_search_candidate.delay(media_type, query, page, source)
+    except (
+        KombuOperationalError,
+        ConnectionInterrupted,
+        RedisError,
+        ConnectionError,
+        OSError,
+    ) as error:
+        with suppress(ConnectionInterrupted, RedisError, ConnectionError, OSError):
+            cache.delete(schedule_key)
+        logger.warning(
+            "All-media candidate refresh enqueue failed query=%s media_type=%s type=%s",
+            hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24],
+            media_type,
+            type(error).__name__,
+        )
+        return False
+    return True
+
+
+def _candidate_data(*, media_type, query, page, source, timeout, search_metrics=None):
+    cache_key = _search_cache_key(
+        media_type=media_type,
+        source=source,
+        query=query,
+        page=page,
+        preserve_ranking_fields=True,
+    )
+    data = cache.get(cache_key)
+    if data is not None:
+        if _candidate_is_fresh(cache_key):
+            return data, "fresh", None, False
+        scheduled = _schedule_candidate_refresh(
+            media_type=media_type,
+            query=query,
+            page=page,
+            source=source,
+            cache_key=cache_key,
+        )
+        return data, "stale", None, scheduled
+
+    lock = _candidate_lock(cache_key, timeout)
+    if lock is None:
+        if search_metrics is not None:
+            search_metrics["cache_status"] = "bypass"
+        data, provider_elapsed_ms = _fetch_candidate(
+            media_type=media_type,
+            query=query,
+            page=page,
+            source=source,
+            timeout=timeout,
+            cache_key=cache_key,
+            search_metrics=search_metrics,
+        )
+        return data, "bypass", provider_elapsed_ms, False
+
+    acquired = lock.acquire(blocking=True, blocking_timeout=timeout)
+    if not acquired:
+        raise TimeoutError("candidate single-flight deadline exceeded")
+    try:
+        data = cache.get(cache_key)
+        if data is not None:
+            return data, "coalesced", None, False
+        data, provider_elapsed_ms = _fetch_candidate(
+            media_type=media_type,
+            query=query,
+            page=page,
+            source=source,
+            timeout=timeout,
+            cache_key=cache_key,
+            search_metrics=search_metrics,
+        )
+        return data, "miss", provider_elapsed_ms, False
+    finally:
+        with suppress(LockError, RedisError, ConnectionError, OSError):
+            lock.release()
+
+
+def _candidate_worker(*, media_type, query, source, search_metrics):
+    started_at = time.monotonic()
+    data = None
+    try:
+        data, cache_status, provider_elapsed_ms, refresh_scheduled = _candidate_data(
+            media_type=media_type,
+            query=query,
+            page=1,
+            source=source,
+            timeout=ALL_MEDIA_SEARCH_TIMEOUT,
+            search_metrics=search_metrics,
+        )
+        search_metrics.update(
+            cache_status=cache_status,
+            cache_hit=cache_status in {"fresh", "stale", "coalesced"},
+            outcome="success",
+            provider_elapsed_ms=provider_elapsed_ms,
+            refresh_scheduled=refresh_scheduled,
+            result_count=len(data.get("results") or data.get("items") or []),
+        )
+    except TimeoutError:
+        search_metrics.update(
+            outcome="single_flight_timeout",
+            exception_type="TimeoutError",
+        )
+    except Exception as error:  # noqa: BLE001 - one provider must not discard other results
+        search_metrics.update(
+            outcome="provider_exception",
+            exception_type=type(error).__name__,
+        )
+    finally:
+        search_metrics["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+    return source, data
+
+
+def refresh_all_media_candidate(*, media_type, query, page, source):
+    """Refresh one stale rank-preserving candidate set in a Celery worker."""
+    started_at = time.monotonic()
+    query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
+    cache_key = _search_cache_key(
+        media_type=media_type,
+        source=source,
+        query=query,
+        page=page,
+        preserve_ranking_fields=True,
+    )
+    summary = {
+        "candidate_key_hash": hashlib.sha256(cache_key.encode()).hexdigest()[:24],
+        "query_hash": query_hash,
+        "media_type": media_type,
+        "source": source,
+        "outcome": "pending",
+        "elapsed_ms": 0,
+        "provider_elapsed_ms": None,
+        "result_count": 0,
+    }
+    lock = None
+    acquired = False
+    try:
+        data = cache.get(cache_key)
+        if data is not None and _candidate_is_fresh(cache_key):
+            summary.update(
+                outcome="skipped_fresh",
+                result_count=len(data.get("results") or data.get("items") or []),
+            )
+            cache.delete(f"{cache_key}:refresh-scheduled")
+            return summary
+
+        lock = _candidate_lock(cache_key, ALL_MEDIA_SEARCH_TIMEOUT)
+        if lock is not None:
+            acquired = lock.acquire(blocking=False)
+            if not acquired:
+                summary["outcome"] = "deduplicated"
+                return summary
+
+            data = cache.get(cache_key)
+            if data is not None and _candidate_is_fresh(cache_key):
+                summary.update(
+                    outcome="skipped_fresh",
+                    result_count=len(data.get("results") or data.get("items") or []),
+                )
+                cache.delete(f"{cache_key}:refresh-scheduled")
+                return summary
+
+        data, provider_elapsed_ms = _fetch_candidate(
+            media_type=media_type,
+            query=query,
+            page=page,
+            source=source,
+            timeout=ALL_MEDIA_SEARCH_TIMEOUT,
+            cache_key=cache_key,
+            search_metrics=summary,
+        )
+        summary.update(
+            outcome="refreshed",
+            provider_elapsed_ms=provider_elapsed_ms,
+            result_count=len(data.get("results") or data.get("items") or []),
+        )
+        cache.delete(f"{cache_key}:refresh-scheduled")
+    except Exception as error:  # noqa: BLE001 - stale candidates must survive refresh failures
+        summary.update(
+            outcome="failed",
+            exception_type=type(error).__name__,
+        )
+    finally:
+        if acquired:
+            with suppress(LockError, RedisError, ConnectionError, OSError):
+                lock.release()
+        summary["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        log = (
+            logger.info
+            if summary["outcome"] in {"refreshed", "skipped_fresh", "deduplicated"}
+            else logger.warning
+        )
+        log(
+            "all_media_candidate_refresh_summary %s",
+            json.dumps(summary, sort_keys=True),
+        )
+    return summary
 
 
 def search_media(*, media_type, query, page=1, source=None, request=None, user=None):
@@ -168,14 +446,31 @@ def search_all_media(*, media_types, query, request=None, user=None):
     """Search enabled providers concurrently and return one ranked result list."""
     started_at = time.monotonic()
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:24]
+    search_id = uuid4().hex[:12]
+    provider_metrics = {
+        media_type: {
+            "search_id": search_id,
+            "query_hash": query_hash,
+            "media_type": media_type,
+            "source": default_source_for(media_type),
+            "cache_status": "miss",
+            "cache_hit": False,
+            "outcome": "pending",
+            "elapsed_ms": 0,
+            "provider_elapsed_ms": None,
+            "result_count": 0,
+            "refresh_scheduled": False,
+        }
+        for media_type in media_types
+    }
     executor = ThreadPoolExecutor(max_workers=len(media_types))
     futures = {
         media_type: executor.submit(
-            _search_data,
+            _candidate_worker,
             media_type=media_type,
             query=query,
-            preserve_ranking_fields=True,
-            timeout=ALL_MEDIA_SEARCH_TIMEOUT,
+            source=provider_metrics[media_type]["source"],
+            search_metrics=provider_metrics[media_type],
         )
         for media_type in media_types
     }
@@ -183,32 +478,57 @@ def search_all_media(*, media_types, query, request=None, user=None):
     completed = []
     unavailable = []
     candidates = []
+    reported_metrics = []
 
     for media_type in media_types:
         future = futures[media_type]
         if future not in done:
             unavailable.append(media_type)
             future.cancel()
+            metrics = provider_metrics[media_type]
+            metrics.update(
+                outcome="aggregate_deadline_timeout",
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+            )
             logger.warning(
-                "All-media search provider unavailable query=%s media_type=%s "
+                "All-media search provider unavailable search_id=%s query=%s media_type=%s "
                 "reason=timeout deadline_seconds=%s",
+                search_id,
                 query_hash,
                 media_type,
                 ALL_MEDIA_SEARCH_TIMEOUT,
             )
+            logger.warning(
+                "all_media_search_provider_summary %s",
+                json.dumps(metrics, sort_keys=True),
+            )
+            reported_metrics.append(dict(metrics))
             continue
-        try:
-            source, data = future.result()
-        except Exception:  # noqa: BLE001 - one provider must not discard other results
+        source, data = future.result()
+        metrics = provider_metrics[media_type]
+        if data is None:
             unavailable.append(media_type)
             logger.warning(
-                "All-media search provider unavailable query=%s media_type=%s "
-                "reason=exception",
+                "All-media search provider unavailable search_id=%s query=%s media_type=%s "
+                "reason=%s exception_type=%s",
+                search_id,
                 query_hash,
                 media_type,
-                exc_info=True,
+                metrics["outcome"],
+                metrics.get("exception_type"),
             )
+            logger.warning(
+                "all_media_search_provider_summary %s",
+                json.dumps(metrics, sort_keys=True),
+            )
+            reported_metrics.append(dict(metrics))
             continue
+
+        logger.info(
+            "all_media_search_provider_summary %s",
+            json.dumps(metrics, sort_keys=True),
+        )
+        reported_metrics.append(dict(metrics))
 
         completed.append(media_type)
         raw_results = data.get("results") or data.get("items") or []
@@ -233,12 +553,20 @@ def search_all_media(*, media_types, query, request=None, user=None):
         )
         for item in ranked
     ]
+    cache_status_counts = Counter(metrics["cache_status"] for metrics in reported_metrics)
     logger.info(
-        "All-media search query=%s elapsed_ms=%d completed=%s unavailable=%s",
-        query_hash,
-        int((time.monotonic() - started_at) * 1000),
-        completed,
-        unavailable,
+        "all_media_search_summary %s",
+        json.dumps(
+            {
+                "search_id": search_id,
+                "query_hash": query_hash,
+                "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                "cache_status_counts": dict(cache_status_counts),
+                "completed_media_types": completed,
+                "unavailable_media_types": unavailable,
+            },
+            sort_keys=True,
+        ),
     )
     return {
         "results": results,

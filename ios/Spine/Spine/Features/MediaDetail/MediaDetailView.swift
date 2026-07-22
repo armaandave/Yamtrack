@@ -550,7 +550,7 @@ struct MediaRatingPickerState: Equatable {
         hasLocallyWatched = false
     }
 
-    mutating func reset() {
+    mutating func resetAfterUnwatch() {
         self = MediaRatingPickerState()
     }
 }
@@ -1698,7 +1698,7 @@ private struct MediaDetailPageView: View {
                 if isEyeCompleted(detail) {
                     succeeded = await viewModel.removeTracking(for: detail)
                     if succeeded {
-                        ratingPicker.reset()
+                        ratingPicker.resetAfterUnwatch()
                         await viewModel.load()
                     }
                 } else {
@@ -1717,7 +1717,9 @@ private struct MediaDetailPageView: View {
             } else if isEyeCompleted(detail) {
                 if bookState(detail)?.supports("undo_read") == true {
                     Task {
-                        if !(await viewModel.performBookAction("undo_read", for: detail)) {
+                        if await viewModel.performBookAction("undo_read", for: detail) {
+                            ratingPicker.resetAfterUnwatch()
+                        } else {
                             isQuickActionAlertPresented = true
                         }
                     }
