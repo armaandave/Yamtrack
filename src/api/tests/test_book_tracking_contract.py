@@ -2,12 +2,15 @@ from datetime import timedelta
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.db import connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from api.services import media as media_service
+from app import book_tracking
 from app.models import Book, BookSession, DiaryEntry, Item, MediaLike, Sources, Status
 
 
@@ -86,6 +89,16 @@ class BookTrackingContractTests(TestCase):
             **extra,
         }
         return self.client.post(self.complete_url(item), payload, format="json")
+
+    def test_book_row_lock_does_not_join_nullable_current_session(self):
+        item = self.make_item("postgres-lock")
+        Book.objects.create(user=self.user, item=item, status=Status.PLANNING.value)
+
+        with transaction.atomic(), CaptureQueriesContext(connection) as queries:
+            locked = book_tracking._locked_book(self.user, item)
+
+        self.assertIsNotNone(locked)
+        self.assertNotIn("app_booksession", queries[0]["sql"])
 
     # BK-001, BK-002, BK-100, BK-101.
     def test_five_statuses_have_one_library_placement_without_synthetic_history(self):

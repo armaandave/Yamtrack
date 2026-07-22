@@ -12,8 +12,6 @@ final class MediaDetailViewModel {
     var isSavingQuickAction = false
     var isSavingProgress = false
     var isSavingLike = false
-    var isExternalRatingsPolling = false
-    var externalRatingsTimedOut = false
     var errorMessage: String?
     var reviewsErrorMessage: String?
     var quickActionErrorMessage: String?
@@ -54,7 +52,6 @@ final class MediaDetailViewModel {
         do {
             let loaded = try await mediaRepository.detail(ref: ref)
             detail = loaded
-            externalRatingsTimedOut = false
             reviews = loaded.reviews ?? []
             await loadTrackingIfNeeded(for: loaded)
             await loadReviews()
@@ -76,9 +73,6 @@ final class MediaDetailViewModel {
     func pollExternalRatingsIfNeeded() async {
         guard detail?.externalRatingsPreparation?.state == .pending else { return }
         let expectedID = detail?.id
-        isExternalRatingsPolling = true
-        externalRatingsTimedOut = false
-        defer { isExternalRatingsPolling = false }
 
         for _ in 0..<externalRatingMaxPollAttempts {
             do {
@@ -94,15 +88,12 @@ final class MediaDetailViewModel {
             } catch is CancellationError {
                 return
             } catch {
-                externalRatingsTimedOut = true
                 if case APIError.unauthorized = error {
                     onUnauthorized()
                 }
                 return
             }
         }
-        guard detail?.id == expectedID else { return }
-        externalRatingsTimedOut = true
     }
 
     private func loadTrackingIfNeeded(for detail: MediaDetail) async {
@@ -1946,7 +1937,6 @@ private struct MediaDetailPageView: View {
 
                     musicHeroChips(detail)
                     RatingChipRow(chips: ratingChips(detail), stacked: false)
-                    externalRatingsStatus(detail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -2157,7 +2147,6 @@ private struct MediaDetailPageView: View {
             if !hasIMDbRating, let destination = episodeIMDbURL(detail) {
                 IMDbExternalLinkPill(destination: destination)
             }
-            externalRatingsStatus(detail)
         }
     }
 
@@ -2245,7 +2234,6 @@ private struct MediaDetailPageView: View {
 
                     genreChips(detail, wrapsAfterThird: true)
                     RatingChipRow(chips: ratingChips(detail), stacked: true)
-                    externalRatingsStatus(detail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 10)
@@ -2280,7 +2268,6 @@ private struct MediaDetailPageView: View {
 
                     genreChips(detail, wrapsAfterThird: false)
                     RatingChipRow(chips: ratingChips(detail), stacked: false)
-                    externalRatingsStatus(detail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -2848,38 +2835,6 @@ private struct MediaDetailPageView: View {
             ))
         }
         return chips
-    }
-
-    @ViewBuilder
-    private func externalRatingsStatus(_ detail: MediaDetail) -> some View {
-        if let preparation = detail.externalRatingsPreparation,
-           preparation.state != .ready {
-            HStack(spacing: 7) {
-                if preparation.state == .pending,
-                   viewModel.isExternalRatingsPolling,
-                   !viewModel.externalRatingsTimedOut {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white.opacity(0.72))
-                }
-                Text(externalRatingsStatusText(preparation))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.68))
-            }
-            .accessibilityElement(children: .combine)
-        }
-    }
-
-    private func externalRatingsStatusText(
-        _ preparation: MediaExternalRatingsPreparation
-    ) -> String {
-        if preparation.state == .degraded {
-            return "Some external ratings are unavailable"
-        }
-        if viewModel.externalRatingsTimedOut {
-            return "External ratings are still loading"
-        }
-        return "Loading external ratings…"
     }
 
     private func sortedExternalRatings(_ ratings: [ExternalRating]) -> [ExternalRating] {

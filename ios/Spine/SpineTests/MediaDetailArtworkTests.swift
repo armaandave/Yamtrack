@@ -152,8 +152,6 @@ final class MediaDetailArtworkTests: XCTestCase {
 
         XCTAssertEqual(viewModel.detail?.externalRatings?.first?.source, "Letterboxd")
         XCTAssertEqual(viewModel.detail?.externalRatingsPreparation?.state, .ready)
-        XCTAssertFalse(viewModel.isExternalRatingsPolling)
-        XCTAssertFalse(viewModel.externalRatingsTimedOut)
         let readyRequestCount = await repository.ratingRequestCount
         XCTAssertEqual(readyRequestCount, 1)
     }
@@ -179,8 +177,6 @@ final class MediaDetailArtworkTests: XCTestCase {
 
         await viewModel.pollExternalRatingsIfNeeded()
 
-        XCTAssertTrue(viewModel.externalRatingsTimedOut)
-        XCTAssertFalse(viewModel.isExternalRatingsPolling)
         let pendingRequestCount = await repository.ratingRequestCount
         XCTAssertEqual(pendingRequestCount, 1)
     }

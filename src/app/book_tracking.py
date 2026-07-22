@@ -92,7 +92,7 @@ def _date_string(value):
 def _locked_book(user, item):
     return (
         Book.objects.select_for_update()
-        .select_related("item", "current_session")
+        .select_related("item")
         .filter(user=user, item=item)
         .first()
     )
@@ -109,7 +109,7 @@ def _ensure_book(user, item):
     )
     return (
         Book.objects.select_for_update()
-        .select_related("item", "current_session")
+        .select_related("item")
         .get(id=book.id),
         created,
     )
