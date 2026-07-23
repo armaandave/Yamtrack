@@ -31,3 +31,5 @@ jobs:
           requested_branch="${{ inputs.branch }}"
           branch="${requested_branch:-$GITHUB_REF_NAME}"
           ./scripts/codex-mobile-deploy-backend.sh "$branch"
+
+  mkdir -p "$(dirname "$repo_dir")"
