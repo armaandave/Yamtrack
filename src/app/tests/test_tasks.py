@@ -1,4 +1,5 @@
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from celery.exceptions import Retry
@@ -289,10 +290,22 @@ class ExternalRatingTaskTests(TestCase):
     @patch("app.tasks.enrich_external_ratings_batch.delay")
     def test_enqueue_helper_deduplicates_and_chunks_in_order(self, delay_mock):
         item_ids = [*range(1, 206), 1, 2]
+        delay_mock.side_effect = [
+            SimpleNamespace(id="task-1"),
+            SimpleNamespace(id="task-2"),
+            SimpleNamespace(id="task-3"),
+        ]
 
         result = enqueue_external_rating_batches(item_ids)
 
-        self.assertEqual(result, {"items": 205, "batches": 3})
+        self.assertEqual(
+            result,
+            {
+                "items": 205,
+                "batches": 3,
+                "task_ids": ["task-1", "task-2", "task-3"],
+            },
+        )
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],
             [list(range(1, 101)), list(range(101, 201)), list(range(201, 206))],
@@ -300,9 +313,21 @@ class ExternalRatingTaskTests(TestCase):
 
     @patch("app.tasks.enrich_external_ratings_batch.delay")
     def test_enqueue_helper_accepts_smaller_valid_batches(self, delay_mock):
+        delay_mock.side_effect = [
+            SimpleNamespace(id="task-1"),
+            SimpleNamespace(id="task-2"),
+        ]
+
         result = enqueue_external_rating_batches([3, 1, 2], batch_size=2)
 
-        self.assertEqual(result, {"items": 3, "batches": 2})
+        self.assertEqual(
+            result,
+            {
+                "items": 3,
+                "batches": 2,
+                "task_ids": ["task-1", "task-2"],
+            },
+        )
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],
             [[3, 1], [2]],

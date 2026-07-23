@@ -63,6 +63,8 @@ git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
 git checkout -B "$branch" "origin/$branch"
 git reset --hard "origin/$branch"
 echo "Deploying $branch at $(git rev-parse --short HEAD) from $repo_dir"
+export SPINE_COMMIT_SHA
+SPINE_COMMIT_SHA="$(git rev-parse HEAD)"
 
 if [[ ! -e .env.production && ! -L .env.production ]]; then
   ln -s "$env_file" .env.production

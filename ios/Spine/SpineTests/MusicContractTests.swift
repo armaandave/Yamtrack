@@ -592,7 +592,7 @@ final class MusicContractTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: MediaLensStore.persistenceKey), "movie")
     }
 
-    func testAllMediaThemeUsesNeutralGridWithoutBecomingAStoredMediaType() {
+    func testAllMediaThemeUsesGlobeWithoutBecomingAStoredMediaType() {
         let defaults = UserDefaults(suiteName: "AllMediaLensTests")!
         defer { defaults.removePersistentDomain(forName: "AllMediaLensTests") }
         defaults.removePersistentDomain(forName: "AllMediaLensTests")
@@ -602,7 +602,7 @@ final class MusicContractTests: XCTestCase {
         _ = store.theme(for: APIConstants.allMedia)
 
         XCTAssertEqual(theme.displayName, "All Media")
-        XCTAssertEqual(theme.symbolName, "square.grid.2x2")
+        XCTAssertEqual(theme.symbolName, "globe")
         XCTAssertEqual(store.selectedMediaType, "movie")
         XCTAssertNil(defaults.string(forKey: MediaLensStore.persistenceKey))
 

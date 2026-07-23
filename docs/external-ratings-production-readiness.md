@@ -1,8 +1,9 @@
 # External-Rating Production Readiness
 
-Phase 10 adds no migration and performs no deployment or production backfill.
-Migrations `0073_externalrating` and `0074_migrate_legacy_external_ratings` stay
-additive; the three legacy `Item` rating columns and aliases remain supported.
+The production backfill controls add no migration and do not automatically
+deploy or start a backfill. Migrations `0073_externalrating` and
+`0074_migrate_legacy_external_ratings` stay additive; the three legacy `Item`
+rating columns and aliases remain supported.
 
 ## Provider coverage
 
@@ -50,49 +51,39 @@ sequentially and is recycled after every task.
 
 ## Owner-controlled rollout
 
-Set the Compose arguments once in the owner shell, then run each gate manually:
+Use the manually dispatched **External Ratings Production Backfill** workflow:
 
-```bash
-mkdir -p backups
-docker compose --project-name spine --env-file .env.production -f docker-compose.production.yml exec -T db pg_dump -U spine -d spine -Fc > backups/spine-before-external-ratings.dump
-pg_restore --list backups/spine-before-external-ratings.dump >/dev/null
-docker compose --project-name spine --env-file .env.production -f docker-compose.production.yml exec -T redis redis-cli ping
-docker compose --project-name spine --env-file .env.production -f docker-compose.production.yml exec -T app celery -A config inspect ping
-curl --fail --silent --show-error http://127.0.0.1:8000/health/
-```
+1. Deploy the approved commit; deployment and backfill cannot overlap.
+2. Run `inventory/all` and review every eligible, covered, missing, unavailable,
+   and failed count in the job summary.
+3. Run `backup/all` with the provider-rights confirmation. The workflow checks
+   disk space, creates a custom-format dump, verifies its restore listing,
+   records its checksum, and writes a commit-bound campaign marker.
+4. Run `canary/mdblist_movie` with the production-write confirmation. A passing
+   canary must finish exactly 10 missing/failed Items without a failed, partial,
+   retrying, timed-out, malformed, or non-progressing batch.
+5. Run `backfill/mdblist_movie`; rerun if the four-hour limit reports a clean
+   resumable pause.
+6. Require scoped coverage inventory to reach zero, API health to remain green,
+   and IMDb/Letterboxd/Rotten Tomatoes sorting to pass in Simulator.
+7. Repeat canary then backfill for one scope at a time in this order: TMDB
+   movies; TV, seasons, and episodes; MAL/MangaUpdates; IGDB/Metacritic;
+   OpenLibrary/Hardcover; and finally approved MusicBrainz. IMDb episodes require
+   licensed runtime configuration.
+8. Run final all-scope inventory and Simulator smoke tests. Enable person
+   filmography preparation only in a later deployment after monitoring remains
+   healthy.
 
-1. Confirm the backup, Redis/Celery health, credentials, account quotas,
-   attribution, and provider terms. MusicBrainz ratings remain disabled until
-   written approval is recorded.
-2. Deploy the approved Git branch through the owner-controlled workflow or
-   `scripts/codex-mobile-deploy-backend.sh`. The entrypoint applies additive
-   migrations before Supervisor starts services.
-3. Verify/restart the shared-container worker and beat:
-
-   ```bash
-   docker compose --project-name spine --env-file .env.production -f docker-compose.production.yml exec app supervisorctl restart celery celery-beat
-   docker compose --project-name spine --env-file .env.production -f docker-compose.production.yml exec app celery -A config inspect registered
-   ```
-
-4. Run `external_rating_status` and the scoped dry run above. Review pair, Item,
-   unavailable, failed, and batch counts.
-5. Remove `--dry-run` only for a small approved scope. Monitor active/reserved
-   work, queue drain, task results, structured summaries, provider dashboards,
-   and status counts. Rerun the identical command to resume; fresh terminal rows
-   are skipped.
-6. Repeat one provider/media type at a time. Validate representative canonical
-   and legacy-alias API requests before shipping iOS.
-7. Ship dynamic Library sorts. After latency/error monitoring is clean, set
-   `EXTERNAL_RATING_PERSON_PREPARATION_ENABLED=True` in every web/worker process
-   and redeploy. Enable `MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED=True` only after
-   its separate approval gate.
-8. Keep compatibility columns and aliases until a separately approved cleanup.
+The workflow defaults to 500-Item selection waves and one outstanding 25-Item
+Celery task. It stops immediately after any failure or retry. Stale successful
+terminal rows remain sortable and are refreshed by daily maintenance rather
+than blocking coverage completion.
 
 ## Pause and rollback
 
-Stop issuing backfill commands to pause enqueueing. Gracefully stop the worker
-to pause consumption; do not purge the queue. Restart it and rerun the same
-scoped command to resume.
+Canceling the workflow stops future batch submission; its already-running Celery
+batch finishes normally. Do not purge Redis. Rerun the same scope to resume from
+missing/failed coverage.
 
 For rollback, set both Phase 10 flags false, stop further enqueueing, and
 redeploy the previous backend/iOS version. Older code ignores additive

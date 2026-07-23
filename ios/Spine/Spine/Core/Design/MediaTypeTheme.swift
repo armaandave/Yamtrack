@@ -41,7 +41,7 @@ struct MediaTypeTheme: Equatable {
             return MediaTypeTheme(
                 slug: normalized,
                 displayName: "All Media",
-                symbolName: "square.grid.2x2"
+                symbolName: "globe"
             )
         case "movie":
             return MediaTypeTheme(

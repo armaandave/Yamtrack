@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
@@ -70,6 +71,31 @@ class BackfillExternalRatingsCommandTests(TestCase):
             last_attempted_at=attempted_at,
             last_success_at=attempted_at if value is not None else None,
         )
+
+    @staticmethod
+    def _batch_result(requested, *, item_status="refreshed", outcome="available"):
+        result = {
+            "requested": requested,
+            "refreshed": 0,
+            "fresh": 0,
+            "skipped": 0,
+            "deduplicated": 0,
+            "partial": 0,
+            "failed": 0,
+            "retrying": 0,
+            "outcomes": {
+                "attempted": requested,
+                "available": 0,
+                "unavailable": 0,
+                "failed": 0,
+                "skipped_fresh": 0,
+                "preserved_stale": 0,
+            },
+        }
+        result[item_status] = requested
+        if outcome:
+            result["outcomes"][outcome] = requested
+        return result
 
     @patch("app.external_ratings.refresh_external_ratings")
     @patch("app.providers.services.get_media_metadata")
@@ -224,6 +250,57 @@ class BackfillExternalRatingsCommandTests(TestCase):
             ({"batch_size": 0}, "batch-size must be between 1 and 100"),
             ({"batch_size": 101}, "batch-size must be between 1 and 100"),
             ({"limit": 0}, "limit must be a positive integer"),
+            ({"max_runtime_seconds": 0}, "max-runtime-seconds must be a positive integer"),
+            ({"wait_timeout_seconds": 0}, "wait-timeout-seconds must be a positive integer"),
+            ({"max_items": 0}, "max-items must be a positive integer"),
+            (
+                {"drain": True, "coverage_only": True, "limit": 1},
+                "drain requires explicit",
+            ),
+            (
+                {
+                    "drain": True,
+                    "rating_sources": ["tmdb"],
+                    "media_types": ["movie"],
+                    "item_sources": ["tmdb"],
+                    "limit": 1,
+                },
+                "drain requires coverage-only",
+            ),
+            (
+                {
+                    "drain": True,
+                    "coverage_only": True,
+                    "rating_sources": ["tmdb"],
+                    "media_types": ["movie"],
+                    "item_sources": ["tmdb"],
+                },
+                "drain requires a positive limit",
+            ),
+            (
+                {
+                    "drain": True,
+                    "coverage_only": True,
+                    "rating_sources": ["tmdb"],
+                    "media_types": ["movie"],
+                    "item_sources": ["tmdb"],
+                    "limit": 1,
+                    "force": True,
+                },
+                "drain cannot be combined with force",
+            ),
+            (
+                {
+                    "drain": True,
+                    "coverage_only": True,
+                    "rating_sources": ["tmdb"],
+                    "media_types": ["movie"],
+                    "item_sources": ["tmdb"],
+                    "limit": 1,
+                    "dry_run": True,
+                },
+                "drain cannot be combined with dry-run",
+            ),
         )
         for options, message in cases:
             with self.subTest(options=options), self.assertRaisesMessage(CommandError, message):
@@ -243,3 +320,247 @@ class BackfillExternalRatingsCommandTests(TestCase):
         self.assertIn("Selected Items: 0", stdout.getvalue())
         self.assertIn("No external-rating work to queue", stdout.getvalue())
         enqueue_mock.assert_not_called()
+
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_coverage_only_accepts_stale_terminal_rows(self, enqueue_mock):
+        stdout = StringIO()
+
+        call_command(
+            "backfill_external_ratings",
+            rating_sources=["igdb"],
+            media_types=["game"],
+            item_sources=["igdb"],
+            coverage_only=True,
+            dry_run=True,
+            stdout=stdout,
+        )
+
+        self.assertIn("Pending/missing pairs: 0", stdout.getvalue())
+        self.assertIn("Selected Items: 0", stdout.getvalue())
+        enqueue_mock.assert_not_called()
+
+    @patch("app.management.commands.backfill_external_ratings.Command._wait_for_batch")
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_drain_runs_exact_sequential_batches_and_completes(
+        self,
+        enqueue_mock,
+        wait_mock,
+    ):
+        pending = [
+            Item.objects.create(
+                media_id=str(media_id),
+                source=Sources.MAL.value,
+                media_type=MediaTypes.ANIME.value,
+                title=f"Anime {media_id}",
+            )
+            for media_id in range(10, 13)
+        ]
+        queued_batches = []
+
+        def enqueue(item_ids, **_kwargs):
+            queued_batches.append(list(item_ids))
+            return {
+                "items": len(item_ids),
+                "batches": 1,
+                "task_ids": [f"task-{len(queued_batches)}"],
+            }
+
+        def wait(_task_id, *, timeout):  # noqa: ARG001
+            batch_index = len(wait_mock.mock_calls) - 1
+            item_ids = queued_batches[batch_index]
+            outcome = (
+                ExternalRating.Status.UNAVAILABLE
+                if batch_index == 0
+                else ExternalRating.Status.AVAILABLE
+            )
+            for item_id in item_ids:
+                self._rating(
+                    Item.objects.get(pk=item_id),
+                    "mal",
+                    outcome,
+                    value="8.5" if outcome == ExternalRating.Status.AVAILABLE else None,
+                    maximum=10,
+                )
+            return self._batch_result(len(item_ids), outcome=outcome)
+
+        enqueue_mock.side_effect = enqueue
+        wait_mock.side_effect = wait
+        stdout = StringIO()
+
+        call_command(
+            "backfill_external_ratings",
+            rating_sources=["mal"],
+            media_types=["anime"],
+            item_sources=["mal"],
+            coverage_only=True,
+            drain=True,
+            limit=3,
+            batch_size=2,
+            json_output=True,
+            stdout=stdout,
+        )
+
+        self.assertEqual(
+            queued_batches,
+            [[pending[0].pk, pending[1].pk], [pending[2].pk]],
+        )
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(events[-1]["event"], "complete")
+        self.assertEqual(events[-1]["ending_pending_pairs"], 0)
+        self.assertEqual(events[-1]["ending_covered_pairs"], 4)
+        self.assertEqual(events[-1]["batches_completed"], 2)
+        self.assertEqual(events[-1]["unavailable"], 2)
+
+    @patch("app.management.commands.backfill_external_ratings.Command._wait_for_batch")
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_drain_stops_on_failed_or_retrying_batch(self, enqueue_mock, wait_mock):
+        enqueue_mock.return_value = {
+            "items": 1,
+            "batches": 1,
+            "task_ids": ["task-1"],
+        }
+        cases = (
+            self._batch_result(1, item_status="failed", outcome="failed"),
+            self._batch_result(1, item_status="partial", outcome="failed"),
+            self._batch_result(1, item_status="retrying", outcome="failed"),
+            self._batch_result(2),
+            {},
+        )
+        for result in cases:
+            with self.subTest(result=result):
+                enqueue_mock.reset_mock()
+                wait_mock.return_value = result
+                stdout = StringIO()
+                with self.assertRaises(CommandError):
+                    call_command(
+                        "backfill_external_ratings",
+                        rating_sources=["tmdb"],
+                        media_types=["movie"],
+                        item_sources=["tmdb"],
+                        coverage_only=True,
+                        drain=True,
+                        limit=1,
+                        batch_size=1,
+                        json_output=True,
+                        stdout=stdout,
+                    )
+                events = [
+                    json.loads(line)
+                    for line in stdout.getvalue().splitlines()
+                ]
+                self.assertEqual(events[-1]["event"], "failed")
+                self.assertEqual(enqueue_mock.call_count, 1)
+
+    @patch("app.management.commands.backfill_external_ratings.Command._wait_for_batch")
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_drain_stops_when_batch_makes_no_progress(self, enqueue_mock, wait_mock):
+        enqueue_mock.return_value = {
+            "items": 1,
+            "batches": 1,
+            "task_ids": ["task-1"],
+        }
+        wait_mock.return_value = self._batch_result(
+            1,
+            item_status="deduplicated",
+            outcome=None,
+        )
+
+        with self.assertRaisesMessage(CommandError, "made no coverage progress"):
+            call_command(
+                "backfill_external_ratings",
+                rating_sources=["tmdb"],
+                media_types=["movie"],
+                item_sources=["tmdb"],
+                coverage_only=True,
+                drain=True,
+                limit=1,
+                batch_size=1,
+                stdout=StringIO(),
+            )
+
+    @patch("app.management.commands.backfill_external_ratings.Command._wait_for_batch")
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_drain_reports_wait_timeout_as_failure(self, enqueue_mock, wait_mock):
+        enqueue_mock.return_value = {
+            "items": 1,
+            "batches": 1,
+            "task_ids": ["task-1"],
+        }
+        wait_mock.side_effect = CommandError(
+            "Timed out waiting for external-rating batch task-1",
+        )
+        stdout = StringIO()
+
+        with self.assertRaisesMessage(CommandError, "Timed out waiting"):
+            call_command(
+                "backfill_external_ratings",
+                rating_sources=["tmdb"],
+                media_types=["movie"],
+                item_sources=["tmdb"],
+                coverage_only=True,
+                drain=True,
+                limit=1,
+                batch_size=1,
+                json_output=True,
+                stdout=stdout,
+            )
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(events[-1]["event"], "failed")
+        self.assertEqual(events[-1]["batches_completed"], 0)
+
+    @patch("app.management.commands.backfill_external_ratings.time.monotonic")
+    @patch("app.management.commands.backfill_external_ratings.Command._wait_for_batch")
+    @patch("app.management.commands.backfill_external_ratings.enqueue_external_rating_batches")
+    def test_drain_pauses_cleanly_after_runtime_limit(
+        self,
+        enqueue_mock,
+        wait_mock,
+        monotonic_mock,
+    ):
+        second = Item.objects.create(
+            media_id="runtime-2",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Runtime 2",
+        )
+        queued_batches = []
+        enqueue_mock.side_effect = lambda item_ids, **_kwargs: (
+            queued_batches.append(list(item_ids))
+            or {"items": len(item_ids), "batches": 1, "task_ids": ["task-1"]}
+        )
+
+        def wait(_task_id, *, timeout):  # noqa: ARG001
+            item_id = queued_batches[-1][0]
+            self._rating(
+                Item.objects.get(pk=item_id),
+                "tmdb",
+                ExternalRating.Status.AVAILABLE,
+                value="8",
+                maximum=10,
+            )
+            return self._batch_result(1)
+
+        wait_mock.side_effect = wait
+        monotonic_mock.side_effect = [0, 0, 2, 2, 2]
+        stdout = StringIO()
+
+        call_command(
+            "backfill_external_ratings",
+            rating_sources=["tmdb"],
+            media_types=["movie"],
+            item_sources=["tmdb"],
+            coverage_only=True,
+            drain=True,
+            limit=1,
+            batch_size=1,
+            max_runtime_seconds=1,
+            json_output=True,
+            stdout=stdout,
+        )
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(events[-1]["event"], "paused")
+        self.assertEqual(events[-1]["reason"], "max_runtime")
+        self.assertGreater(events[-1]["ending_pending_pairs"], 0)
+        self.assertTrue(Item.objects.filter(pk=second.pk).exists())

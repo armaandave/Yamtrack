@@ -6,7 +6,10 @@
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        SPINE_COMMIT_SHA: ${SPINE_COMMIT_SHA:-unknown}
     container_name: spine
     restart: unless-stopped
     depends_on:

@@ -4274,7 +4274,7 @@ private struct ActionRail: View {
                 .glassEffectID("media-rating-confirm", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
                 .glassEffectTransition(.materialize)
-                .transition(confirmTransition)
+                .transition(.offset(x: 23.75).combined(with: .opacity))
                 .accessibilityLabel("Confirm rating")
                 .accessibilityIdentifier("media-detail.rating-confirm")
             }
@@ -4285,13 +4285,6 @@ private struct ActionRail: View {
             value: ratingPicker.showsConfirm
         )
         .accessibilityIdentifier("media-detail.rating-picker")
-    }
-
-    private var confirmTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        return .offset(x: -23.75)
-            .combined(with: .opacity)
-            .animation(.easeInOut(duration: 0.32))
     }
 
     private func handleTrack() {

@@ -8,11 +8,10 @@ on:
         required: false
         default: ""
         type: string
-      external_ratings_canary:
-        description: "Queue and verify 10 TMDB movies for IMDb and Letterboxd."
-        required: false
-        default: false
-        type: boolean
+
+concurrency:
+  group: spine-production-mutation
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -32,48 +31,3 @@ jobs:
           requested_branch="${{ inputs.branch }}"
           branch="${requested_branch:-$GITHUB_REF_NAME}"
           ./scripts/codex-mobile-deploy-backend.sh "$branch"
-
-      - name: Run bounded external-ratings canary
-        if: ${{ inputs.external_ratings_canary }}
-        run: |
-          repo_dir="${SPINE_DEPLOY_DIR:-$HOME/projects/spine-deploy}"
-          env_file="${SPINE_DEPLOY_ENV_FILE:-$HOME/projects/spine/.env.production}"
-          compose=(docker compose --project-name spine --env-file "$env_file" -f "$repo_dir/docker-compose.production.yml")
-          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-          "${compose[@]}" exec -T redis redis-cli ping
-          for _ in {1..12}; do
-            if "${compose[@]}" exec -T app celery -A config inspect ping; then
-              break
-            fi
-            sleep 5
-          done
-          "${compose[@]}" exec -T app celery -A config inspect ping
-          "${compose[@]}" exec -T app python manage.py backfill_external_ratings \
-            --rating-source imdb \
-            --rating-source letterboxd \
-            --media-type movie \
-            --item-source tmdb \
-            --batch-size 10 \
-            --limit 10 \
-            --dry-run
-          "${compose[@]}" exec -T app python manage.py backfill_external_ratings \
-            --rating-source imdb \
-            --rating-source letterboxd \
-            --media-type movie \
-            --item-source tmdb \
-            --batch-size 10 \
-            --limit 10
-
-          for _ in {1..30}; do
-            summary="$("${compose[@]}" logs --since "$started_at" app | grep 'external_rating_batch_summary' | tail -1 || true)"
-            if [[ -n "$summary" ]]; then
-              echo "$summary"
-              "${compose[@]}" exec -T app python manage.py external_rating_status --rating-source imdb --rating-source letterboxd --media-type movie --item-source tmdb
-              exit 0
-            fi
-            sleep 10
-          done
-
-          echo "Timed out waiting for external-rating canary summary" >&2
-          exit 1

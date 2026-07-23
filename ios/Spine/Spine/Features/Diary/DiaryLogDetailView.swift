@@ -38,8 +38,8 @@ final class DiaryLogDetailViewModel {
 
         do {
             let loadedEntry = try await diaryRepository.detail(id: entryId)
-            entry = loadedEntry
             await loadMediaDetail(for: loadedEntry.media.ref)
+            entry = loadedEntry
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {

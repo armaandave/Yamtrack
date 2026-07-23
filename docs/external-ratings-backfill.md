@@ -4,6 +4,38 @@ The backfill command queues ratings only for media already represented by an
 `Item`. It never searches an upstream catalog or calls a rating provider in the
 management-command process.
 
+## Production Workflow
+
+Use the manually dispatched **External Ratings Production Backfill** GitHub
+Actions workflow for production. It shares a non-canceling concurrency group
+with backend deployment, verifies that the checked-out, deployed-repository,
+and running-container commits match, and accepts no arbitrary command input.
+
+Run the campaign in this order:
+
+1. Deploy the workflow implementation.
+2. Run `inventory` with scope `all`.
+3. Run `backup` with scope `all` and confirm provider rights.
+4. Run `canary` for one explicit scope and confirm the production write.
+5. Run `backfill` for that same scope and confirm the production write.
+6. Rerun the identical backfill if it pauses after four hours.
+7. Run the scoped inventory again; completion requires zero missing/failed
+   pairs and no failed or retrying batch outcome.
+
+The backup marker and every scope-canary marker are tied to the exact deployed
+commit. A canary processes exactly 10 missing/failed Items in one batch. The
+backfill selects 500-Item waves by default but queues and waits for only one
+25-Item Celery task at a time. Canceling the workflow prevents future batches;
+the already-running Celery task finishes normally, and a later run resumes from
+remaining coverage. The workflow never exposes `--force` and never deploys.
+
+Recommended scope order is `mdblist_movie`, `tmdb_movie`, TV/seasons/episodes,
+MAL and MangaUpdates, IGDB and Metacritic, OpenLibrary and Hardcover, then
+MusicBrainz only after its runtime approval flag is enabled. IMDb episodes are
+available only when the licensed configuration gate passes. Enable person
+filmography preparation in a separate deployment after library sorting remains
+healthy.
+
 ## Prerequisites
 
 1. Apply migrations through `0074_migrate_legacy_external_ratings`.
@@ -13,6 +45,9 @@ management-command process.
 3. Confirm the worker discovers `Enrich external ratings` and
    `Enrich external ratings batch`.
 4. Run the intended scope with `--dry-run` before queueing it.
+
+These direct commands are for local inspection and development. Production
+mutations must use the guarded workflow above.
 
 From `src/`, inspect the whole known catalog:
 
@@ -48,6 +83,11 @@ python manage.py backfill_external_ratings \
 
 Remove `--dry-run` only after reviewing the counts. `--force` refreshes fresh
 terminal rows too and should be reserved for deliberate provider-wide repairs.
+
+Use `--coverage-only` when checking backfill completion. In that mode, missing
+and failed pairs are pending while both fresh and stale `available` or
+`unavailable` rows count as covered. Daily Celery maintenance continues to
+refresh stale terminal rows after coverage is complete.
 
 ## Reading the Report
 
@@ -114,9 +154,10 @@ the Celery worker to pause consumption; already queued messages remain in Redis.
 Restart the worker and rerun the same command to resume. Letting the existing
 queue drain before rerunning avoids redundant messages.
 
-After completion, rerun the same scope with `--dry-run`. Selected Items should
-reach zero unless rows failed or became stale. Review failed rows and spot-check
-media-detail output before expanding to another provider or media type.
+After completion, rerun the same scope with `--coverage-only --dry-run`.
+Selected Items should be zero unless rows are missing or failed. Review failures
+and spot-check sorting and media-detail output before expanding to another
+scope.
 
 ## Adding a Future Provider
 

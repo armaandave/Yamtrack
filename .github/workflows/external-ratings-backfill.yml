@@ -1,0 +1,98 @@
+name: External Ratings Production Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Read inventory, create the campaign backup, run a canary, or drain one scope."
+        required: true
+        default: inventory
+        type: choice
+        options:
+          - inventory
+          - backup
+          - canary
+          - backfill
+      scope:
+        description: "Use all only for inventory or backup."
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - tmdb_movie
+          - mdblist_movie
+          - tmdb_tv
+          - mdblist_tv
+          - tmdb_season
+          - mdblist_season
+          - tmdb_episode
+          - imdb_episode
+          - mal_anime
+          - mal_manga
+          - mangaupdates_manga
+          - igdb_game
+          - metacritic_game
+          - openlibrary_book
+          - hardcover_book
+          - musicbrainz_music
+      wave_size:
+        description: "Maximum Items selected per coverage wave; canaries always use 10."
+        required: true
+        default: "500"
+        type: choice
+        options:
+          - "100"
+          - "250"
+          - "500"
+          - "1000"
+      batch_size:
+        description: "Items per sequential Celery task; canaries always use 10."
+        required: true
+        default: "25"
+        type: choice
+        options:
+          - "10"
+          - "25"
+          - "50"
+          - "100"
+      confirm_production_write:
+        description: "Required for canary and backfill operations."
+        required: true
+        default: false
+        type: boolean
+      confirm_provider_rights:
+        description: "Required when creating the campaign backup."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spine-production-mutation
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    name: ${{ inputs.operation }} ${{ inputs.scope }}
+    runs-on: [self-hosted, spine-backend]
+    timeout-minutes: 270
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run guarded production operation
+        env:
+          SPINE_EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          ./scripts/external-ratings-production.sh \
+            "${{ inputs.operation }}" \
+            "${{ inputs.scope }}" \
+            "${{ inputs.wave_size }}" \
+            "${{ inputs.batch_size }}" \
+            "${{ inputs.confirm_production_write }}" \
+            "${{ inputs.confirm_provider_rights }}"

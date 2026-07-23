@@ -36,8 +36,10 @@ struct AppShellView: View {
                 onSelectTab: { selectedTab = $0 },
                 onUnauthorized: unauthorized
             )
+            .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Label("Home", systemImage: "house")
+                Image(systemName: "house")
+                    .accessibilityLabel("Home")
             }
             .tag(AppTab.home)
 
@@ -55,8 +57,10 @@ struct AppShellView: View {
                     onUnauthorized: unauthorized
                 )
             }
+            .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Label("Search", systemImage: "magnifyingglass")
+                Image(systemName: "magnifyingglass")
+                    .accessibilityLabel("Search")
             }
             .tag(AppTab.search)
 
@@ -74,8 +78,10 @@ struct AppShellView: View {
                     onUnauthorized: unauthorized
                 )
             }
+            .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Label("Library", systemImage: "books.vertical")
+                Image(systemName: "books.vertical")
+                    .accessibilityLabel("Library")
             }
             .tag(AppTab.library)
 
@@ -90,8 +96,10 @@ struct AppShellView: View {
                     onUnauthorized: unauthorized
                 )
             }
+            .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Label("Diary", systemImage: "calendar")
+                Image(systemName: "calendar")
+                    .accessibilityLabel("Diary")
             }
             .tag(AppTab.diary)
 
@@ -122,11 +130,16 @@ struct AppShellView: View {
                     onUnauthorized: unauthorized
                 )
             }
+            .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Label("Profile", systemImage: "person.crop.circle")
+                Image(systemName: "person.crop.circle")
+                    .accessibilityLabel("Profile")
             }
             .tag(AppTab.profile)
         }
+        .tint(.white)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .tabBarMinimizeBehavior(.never)
         .background {
             TabBarSelectionObserver { index in
                 guard AppTab(tabBarIndex: index) == .search,

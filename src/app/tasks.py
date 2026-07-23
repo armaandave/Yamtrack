@@ -290,14 +290,20 @@ def enqueue_external_rating_batches(
         raise ValueError(msg)
     item_ids = list(dict.fromkeys(item_ids))
     batches = 0
+    task_ids = []
     for item_batch in batched(item_ids, batch_size):
-        enrich_external_ratings_batch.delay(
+        result = enrich_external_ratings_batch.delay(
             list(item_batch),
             rating_sources=rating_sources,
             force=force,
         )
+        task_ids.append(result.id)
         batches += 1
-    return {"items": len(item_ids), "batches": batches}
+    return {
+        "items": len(item_ids),
+        "batches": batches,
+        "task_ids": task_ids,
+    }
 
 
 def _stale_external_rating_item_ids(now=None, limit=EXTERNAL_RATING_STALE_LIMIT):
