@@ -32,3 +32,5 @@ TODO.txt
 *.xcuserstate
 xcuserdata/
 ios/.derivedData
+
+.build/

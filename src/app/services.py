@@ -16,6 +16,7 @@ COMPLETABLE_MEDIA_MODELS = {
     MediaTypes.MANGA.value: "Manga",
     MediaTypes.COMIC.value: "Comic",
     MediaTypes.BOOK.value: "Book",
+    MediaTypes.MUSIC.value: "Music",
 }
 
 
@@ -59,6 +60,14 @@ def update_diary_entry_tags(entry, tag_names):
 
 def set_media_like(user, item: Item, liked: bool, *, audit=True, sync_diary=True):
     """Set the canonical user/title like."""
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(item):
+        return book_tracking.set_like(user, item, liked)
+
+    if single_weight.supports(item):
+        return single_weight.set_like(user, item, liked, audit=audit)
+
     if liked:
         media_like, created = MediaLike.objects.get_or_create(user=user, item=item)
         action = "media_like"
@@ -94,6 +103,14 @@ def create_diary_entry(
     is_rewatch=False,
     auto_mark_consumed=False,
     tags=None,
+    review_title="",
+    contains_spoilers=False,
+    visibility="public",
+    import_source="",
+    import_source_id="",
+    import_source_order=None,
+    emit_activity=True,
+    update_current=True,
 ) -> DiaryEntry:
     """
     Create a diary entry for a media item.
@@ -112,6 +129,50 @@ def create_diary_entry(
     Returns:
         The created DiaryEntry instance
     """
+    from uuid import uuid4
+
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(item):
+        _, entry = book_tracking.complete(
+            user,
+            item,
+            completion_date=consumed_at or timezone.localdate(),
+            rating=rating,
+            review=review,
+            liked=liked,
+            is_rewatch=is_rewatch,
+            tags=tags,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            mutation_id=uuid4(),
+            import_source=import_source,
+            import_source_id=import_source_id,
+            import_source_order=import_source_order,
+            emit_activity=emit_activity,
+            update_current=update_current,
+        )
+        return entry
+
+    if single_weight.supports(item):
+        entry, _ = single_weight.create_log(
+            user,
+            item,
+            consumed_at=consumed_at,
+            rating=rating,
+            review=review,
+            liked=liked,
+            is_rewatch=is_rewatch,
+            tags=tags,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            import_source=import_source,
+            import_source_id=import_source_id,
+            import_source_order=import_source_order,
+            emit_activity=emit_activity,
+        )
+        return entry
+
     if consumed_at is None:
         consumed_at = timezone.now()
     
@@ -143,6 +204,9 @@ def create_diary_entry(
             liked=title_liked,
             is_rewatch=is_rewatch,
             progress_snapshot=progress_snapshot,
+            review_title=review_title,
+            contains_spoilers=contains_spoilers,
+            visibility=visibility,
         )
 
         if liked:
@@ -197,6 +261,14 @@ def create_diary_entry(
 
 def sync_tracking_from_diary_entry(entry, *, previous_consumed_at=None):
     """Sync completed tracking dates from a diary entry date edit."""
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(entry.item):
+        return
+
+    if single_weight.supports(entry.item):
+        return
+
     if previous_consumed_at == entry.consumed_at:
         return
 
@@ -226,7 +298,17 @@ def sync_tracking_from_diary_entry(entry, *, previous_consumed_at=None):
 
 def update_diary_entry(entry, data, *, tags=None):
     """Update a diary entry and keep title-level state in sync."""
-    from social.models import SocialAuditLog
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(entry.item):
+        if tags is None:
+            return book_tracking.update_completion(entry, data)
+        return book_tracking.update_completion(entry, data, tags=tags)
+
+    if single_weight.supports(entry.item):
+        return single_weight.update_log(entry, data, tags=tags)
+
+    from social.models import Activity, SocialAuditLog
 
     previous_consumed_at = entry.consumed_at
     snapshot = {}
@@ -258,6 +340,18 @@ def update_diary_entry(entry, data, *, tags=None):
             set_media_like(entry.user, entry.item, data["liked"])
         if tags is not None:
             update_diary_entry_tags(entry, tags)
+        Activity.objects.filter(
+            actor=entry.user,
+            verb="diary_created",
+            target_type="diary",
+            target_id=entry.id,
+        ).update(
+            visibility=entry.visibility,
+            snapshot={
+                "rating": str(entry.rating) if entry.rating is not None else None,
+                "liked": bool(entry.liked),
+            },
+        )
         SocialAuditLog.objects.create(
             actor=entry.user,
             action="diary_updated",
@@ -270,6 +364,14 @@ def update_diary_entry(entry, data, *, tags=None):
 
 def delete_diary_entry(user, entry):
     """Delete a diary entry and mirror web tracking side effects."""
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(entry.item):
+        return book_tracking.delete_completion(user, entry)
+
+    if single_weight.supports(entry.item):
+        return single_weight.delete_log(user, entry)
+
     from social.models import Activity, SocialAuditLog
     from app.models import Book, Movie, Season, TV
 
@@ -333,6 +435,14 @@ def mark_consumed(user, media_instance: Media, when=None):
         media_instance: The Media instance to mark
         when: Optional datetime for when it was consumed (defaults to now)
     """
+    from app import book_tracking, single_weight
+
+    if book_tracking.supports(media_instance.item):
+        return book_tracking.mark_read(user, media_instance.item)
+
+    if single_weight.supports(media_instance.item):
+        return single_weight.mark_consumed(user, media_instance.item)
+
     if when is None:
         when = timezone.now()
         

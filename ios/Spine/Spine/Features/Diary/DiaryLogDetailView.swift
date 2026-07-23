@@ -9,7 +9,7 @@ extension Notification.Name {
 final class DiaryLogDetailViewModel {
     var entry: DiaryEntry?
     var mediaDetail: MediaDetail?
-    var isLoading = false
+    var isLoading = true
     var isDeleting = false
     var errorMessage: String?
     var isReviewRevealed = false
@@ -38,8 +38,8 @@ final class DiaryLogDetailViewModel {
 
         do {
             let loadedEntry = try await diaryRepository.detail(id: entryId)
-            entry = loadedEntry
             await loadMediaDetail(for: loadedEntry.media.ref)
+            entry = loadedEntry
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -58,6 +58,7 @@ final class DiaryLogDetailViewModel {
             self.entry = try await diaryRepository.update(id: entry.id, request: request)
             if let ref = self.entry?.media.ref {
                 await loadMediaDetail(for: ref)
+                MediaStateChange.post(ref: ref)
             }
             NotificationCenter.default.post(name: .diaryEntriesDidChange, object: nil)
             return true
@@ -77,8 +78,10 @@ final class DiaryLogDetailViewModel {
         defer { isDeleting = false }
 
         do {
+            let ref = entry.media.ref
             try await diaryRepository.delete(id: entry.id)
             NotificationCenter.default.post(name: .diaryEntriesDidChange, object: nil)
+            MediaStateChange.post(ref: ref)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -159,6 +162,7 @@ struct DiaryLogDetailView: View {
                             .padding()
                     }
                 }
+                .spineContentTransition(value: contentPhase)
                 .padding(.bottom, 38)
             }
             .scrollContentBackground(.hidden)
@@ -249,6 +253,14 @@ struct DiaryLogDetailView: View {
         return entry.user.id == currentUserId
     }
 
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.entry != nil,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
     private var edgeSwipeBackGesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
@@ -295,9 +307,18 @@ struct DiaryLogDetailView: View {
                         .textCase(.uppercase)
 
                     if let logged = DiaryLogFormat.dateLabel(entry.consumedAt) {
-                        Text("Logged \(logged)")
-                            .font(.system(size: 13, weight: .heavy))
-                            .foregroundStyle(.white.opacity(0.72))
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if entry.isTrueReread ?? entry.isRewatch {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.74))
+                                    .accessibilityLabel(entry.media.ref.repeatLabel)
+                            }
+
+                            Text("Logged \(logged)")
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
 
                         if let age = DiaryLogFormat.ageLabel(entry.consumedAt) {
                             Text(age)
@@ -308,18 +329,27 @@ struct DiaryLogDetailView: View {
 
                     let parts = titleParts(entry.media.displayTitle)
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(parts.title)
-                            .font(.system(size: 31, weight: .black))
-                            .foregroundStyle(.white)
-                            .lineLimit(4)
-                            .minimumScaleFactor(0.72)
-
-                        if entry.isRewatch {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 17.25, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.74))
-                                .accessibilityLabel("Rewatch")
+                        if let detail = viewModel.mediaDetail {
+                            MediaTitleDisplay(
+                                detail: detail,
+                                title: parts.title,
+                                showsLogo: .constant(true),
+                                font: .system(size: 31, weight: .black),
+                                lineLimit: 4,
+                                minimumScaleFactor: 0.72,
+                                maxLogoHeight: 48,
+                                alignment: .leading,
+                                onTap: { presentedRef = entry.media.ref },
+                                onLongPress: nil
+                            )
+                        } else {
+                            Text(parts.title)
+                                .font(.system(size: 31, weight: .black))
+                                .foregroundStyle(.white)
+                                .lineLimit(4)
+                                .minimumScaleFactor(0.72)
                         }
+
                     }
 
                     if let metadata = heroMetadata(entry) {
@@ -377,7 +407,11 @@ struct DiaryLogDetailView: View {
     private func ratingLikeLine(_ entry: DiaryEntry) -> some View {
         HStack(spacing: 10) {
             if let rating = clean(entry.rating) {
-                DiaryStarRating(rating: rating, fontSize: 17)
+                DiaryStarRating(
+                    rating: rating,
+                    fontSize: 17,
+                    mediaType: entry.media.ref.mediaType
+                )
             }
 
             if entry.liked {
@@ -424,6 +458,7 @@ struct DiaryLogDetailView: View {
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
+            currentUserId: currentUserId,
             selectedTab: selectedTab,
             onSelectTab: onSelectTab,
             onUnauthorized: onUnauthorized
@@ -433,7 +468,6 @@ struct DiaryLogDetailView: View {
     private func heroMetadata(_ entry: DiaryEntry) -> String? {
         var parts = [titleParts(entry.media.displayTitle).year, DiaryLogFormat.year(viewModel.mediaDetail?.releaseDate), detailString(viewModel.mediaDetail, "runtime")]
             .compactMap { clean($0) }
-        parts += detailArray(viewModel.mediaDetail, "genres").prefix(2)
         var seen = Set<String>()
         parts = parts.filter { seen.insert($0.lowercased()).inserted }
         return parts.isEmpty ? nil : parts.joined(separator: " - ")
@@ -449,16 +483,6 @@ struct DiaryLogDetailView: View {
         case let .bool(bool):
             return bool ? "Yes" : "No"
         default:
-            return nil
-        }
-    }
-
-    private func detailArray(_ detail: MediaDetail?, _ key: String) -> [String] {
-        guard case let .array(values)? = detail?.details?[key] else { return [] }
-        return values.compactMap { value in
-            if case let .string(string) = value {
-                return clean(string)
-            }
             return nil
         }
     }
@@ -519,7 +543,7 @@ private struct DiaryLogHeroArtwork: View {
             ZStack {
                 Color(red: 0.07, green: 0.07, blue: 0.065)
 
-                AsyncImage(url: artworkURL) { phase in
+                SpineAsyncImage(url: artworkURL) { phase in
                     switch phase {
                     case let .success(image):
                         image
@@ -594,26 +618,24 @@ private final class DiaryLogEditViewModel {
     init(entry: DiaryEntry, diaryRepository: DiaryRepository) {
         self.entry = entry
         self.diaryRepository = diaryRepository
-        consumedAt = ISO8601DateFormatter().date(from: entry.consumedAt ?? "") ?? Date()
-        ratingSteps = entry.rating.flatMap { Decimal(string: $0).map { NSDecimalNumber(decimal: $0).intValue } } ?? 0
+        consumedAt = CalendarDateCodec.date(from: entry.consumedAt) ?? Date()
+        let rating = entry.rating.flatMap { Decimal(string: $0) }
+        ratingSteps = rating.map {
+            entry.media.ref.usesFiveStarRatingScale
+                ? NSDecimalNumber(decimal: $0 * 2).intValue
+                : NSDecimalNumber(decimal: $0).intValue
+        } ?? 0
         reviewTitle = entry.reviewTitle ?? ""
         review = entry.review ?? ""
         tags = entry.tags
         liked = entry.liked
-        isRewatch = entry.isRewatch
+        isRewatch = entry.isTrueReread ?? entry.isRewatch
         containsSpoilers = entry.containsSpoilers
         visibility = entry.visibility
     }
 
     var repeatLabel: String {
-        switch entry.media.ref.mediaType {
-        case "book", "manga", "comic":
-            "Reread"
-        case "game", "boardgame":
-            "Replay"
-        default:
-            "Rewatch"
-        }
+        entry.media.ref.repeatLabel
     }
 
     func ratingLabel() -> String {
@@ -656,14 +678,18 @@ private final class DiaryLogEditViewModel {
     func request() -> DiaryEntryUpdateRequest {
         DiaryEntryUpdateRequest(
             consumedAt: consumedAt,
-            rating: ratingSteps > 0 ? Decimal(ratingSteps) : nil,
+            rating: ratingSteps > 0
+                ? entry.media.ref.usesFiveStarRatingScale ? Decimal(ratingSteps) / 2 : Decimal(ratingSteps)
+                : nil,
             review: review,
             reviewTitle: reviewTitle,
             tags: tags,
             liked: liked,
             isRewatch: isRewatch,
             containsSpoilers: containsSpoilers,
-            visibility: visibility
+            visibility: entry.media.ref.isSingleWeight ? nil : visibility,
+            calendarDateOnly: entry.media.ref.usesCalendarConsumptionDate,
+            includesRating: true
         )
     }
 }
@@ -746,7 +772,12 @@ private struct DiaryLogEditSheet: View {
     private var fields: some View {
         VStack(alignment: .leading, spacing: 16) {
             fieldGroup {
-                DatePicker("Date", selection: $viewModel.consumedAt, displayedComponents: [.date])
+                DatePicker(
+                    viewModel.entry.media.ref.consumedDateLabel,
+                    selection: $viewModel.consumedAt,
+                    in: Date.distantPast...(viewModel.entry.media.ref.usesCalendarConsumptionDate ? Date() : Date.distantFuture),
+                    displayedComponents: [.date]
+                )
                     .datePickerStyle(.compact)
                     .colorScheme(.dark)
                 ratingPicker
@@ -758,9 +789,11 @@ private struct DiaryLogEditSheet: View {
                     .lineLimit(5...9)
             }
             fieldGroup {
-                Picker("Visibility", selection: $viewModel.visibility) {
-                    ForEach(APIConstants.visibilityChoices, id: \.self) { value in
-                        Text(value.capitalized).tag(value)
+                if !viewModel.entry.media.ref.isSingleWeight {
+                    Picker("Visibility", selection: $viewModel.visibility) {
+                        ForEach(APIConstants.visibilityChoices, id: \.self) { value in
+                            Text(value.capitalized).tag(value)
+                        }
                     }
                 }
                 Toggle("Contains spoilers", isOn: $viewModel.containsSpoilers)
@@ -780,8 +813,9 @@ private struct DiaryLogEditSheet: View {
                                 .frame(width: 33)
                         }
                     }
+                    .accessibilityHidden(true)
                     .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { value in
                         viewModel.setRating(locationX: value.location.x, width: proxy.size.width)
                     })
                 }
@@ -893,11 +927,14 @@ private struct DiaryLogEditSheet: View {
         } label: {
             HStack {
                 Spacer()
-                if viewModel.isSaving {
-                    ProgressView().tint(.black)
-                } else {
-                    Text("Save Changes").font(.system(size: 16, weight: .heavy))
+                Group {
+                    if viewModel.isSaving {
+                        ProgressView().tint(.black)
+                    } else {
+                        Text("Save Changes").font(.system(size: 16, weight: .heavy))
+                    }
                 }
+                .spineContentTransition(value: viewModel.isSaving)
                 Spacer()
             }
             .foregroundStyle(.black)

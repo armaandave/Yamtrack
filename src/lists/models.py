@@ -75,6 +75,7 @@ class CustomList(models.Model):
         ],
     )
     description = models.TextField(blank=True, default="")
+    tags = models.JSONField(blank=True, default=list)
     visibility = models.CharField(
         max_length=20,
         choices=Visibility.choices,

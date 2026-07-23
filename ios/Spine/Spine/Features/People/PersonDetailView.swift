@@ -1,40 +1,76 @@
 import Foundation
 import SwiftUI
 
+private struct PersonTopSafeAreaInsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 @MainActor
 @Observable
 final class PersonDetailViewModel {
     var detail: PersonDetail?
     var filmography: [MediaSummary] = []
-    var isLoading = false
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
+    var isLoading = true
+    var isPreparationPolling = false
+    var preparationTimedOut = false
     var errorMessage: String?
 
     private let ref: PersonRef
     private let peopleRepository: PeopleRepository
     private let onUnauthorized: () -> Void
+    private let pollInterval: Duration
+    private let maxPollAttempts: Int
+    private var requestGeneration = 0
+    private var presentedFilter: MediaFilterState?
+    private var pollingTask: Task<Void, Never>?
 
     init(
         ref: PersonRef,
         peopleRepository: PeopleRepository,
-        onUnauthorized: @escaping () -> Void
+        onUnauthorized: @escaping () -> Void,
+        pollInterval: Duration = .seconds(5),
+        maxPollAttempts: Int = 12
     ) {
         self.ref = ref
         self.peopleRepository = peopleRepository
         self.onUnauthorized = onUnauthorized
+        self.pollInterval = pollInterval
+        self.maxPollAttempts = maxPollAttempts
     }
 
     func load() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            let loaded = try await peopleRepository.detail(ref: ref)
-            detail = loaded
-            filmography = Self.uniqueFilmography(from: loaded.filmography)
-        } catch {
+        stopPreparationPolling()
+        requestGeneration += 1
+        let generation = requestGeneration
+        let requestFilter = filter
+        if presentedFilter != requestFilter {
             detail = nil
             filmography = []
+        }
+        presentedFilter = requestFilter
+        isLoading = true
+        errorMessage = nil
+        defer {
+            if generation == requestGeneration, requestFilter == filter {
+                isLoading = false
+            }
+        }
+
+        do {
+            let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            apply(loaded, requestFilter: requestFilter)
+            startPreparationPollingIfNeeded(requestFilter: requestFilter, generation: generation)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -42,18 +78,103 @@ final class PersonDetailViewModel {
         }
     }
 
+    func cancelPreparation() {
+        requestGeneration += 1
+        stopPreparationPolling()
+    }
+
+    private func apply(_ loaded: PersonDetail, requestFilter: MediaFilterState) {
+        let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
+        detail = loaded
+        filmography = loadedFilmography
+        if let options = loaded.filterOptions {
+            filterOptions = options
+        } else if !requestFilter.isActive || filterOptions == .empty {
+            filterOptions = Self.options(from: loadedFilmography)
+        }
+    }
+
+    private func startPreparationPollingIfNeeded(
+        requestFilter: MediaFilterState,
+        generation: Int
+    ) {
+        guard requestFilter.sort?.isExternalRating == true,
+              detail?.ratingPreparation?.state == .pending else { return }
+        preparationTimedOut = false
+        isPreparationPolling = true
+        pollingTask = Task { [weak self] in
+            await self?.pollPreparation(requestFilter: requestFilter, generation: generation)
+        }
+    }
+
+    private func pollPreparation(requestFilter: MediaFilterState, generation: Int) async {
+        for _ in 0..<maxPollAttempts {
+            do {
+                try await Task.sleep(for: pollInterval)
+                guard !Task.isCancelled,
+                      generation == requestGeneration,
+                      requestFilter == filter else { return }
+                let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+                guard generation == requestGeneration, requestFilter == filter else { return }
+                apply(loaded, requestFilter: requestFilter)
+                if loaded.ratingPreparation?.state != .pending {
+                    stopPreparationPolling()
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == requestGeneration, requestFilter == filter else { return }
+                stopPreparationPolling()
+                if case APIError.unauthorized = error {
+                    onUnauthorized()
+                } else {
+                    preparationTimedOut = true
+                }
+                return
+            }
+        }
+        guard generation == requestGeneration, requestFilter == filter else { return }
+        isPreparationPolling = false
+        preparationTimedOut = true
+        pollingTask = nil
+    }
+
+    private func stopPreparationPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
+        isPreparationPolling = false
+    }
+
     static func uniqueFilmography(from media: [MediaSummary]) -> [MediaSummary] {
         var seen = Set<String>()
         return media.filter { seen.insert($0.id).inserted }
+    }
+
+    static func options(from media: [MediaSummary]) -> MediaFilterOptionsResponse {
+        let years = Set(media.compactMap { item -> Int? in
+            guard let releaseDate = item.releaseDate, releaseDate.count >= 4 else { return nil }
+            return Int(releaseDate.prefix(4))
+        })
+        let genres = Set(media.flatMap(\.genres)).sorted()
+        let languages = Set(media.flatMap(\.languages)).sorted()
+        return MediaFilterOptionsResponse(
+            sorts: [],
+            genres: genres.map { FilterChoice(value: $0, label: $0) },
+            languages: languages.map { FilterChoice(value: $0, label: $0) },
+            years: years.sorted(by: >)
+        )
     }
 }
 
 struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PersonDetailViewModel
-    @State private var selectedRef: MediaRef?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var selectedFilmographyType: FilmographyType = .movie
+    @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
+    @State private var topSafeAreaInset: CGFloat = 0
 
     private let peopleRepository: PeopleRepository
     private let mediaRepository: MediaRepository
@@ -98,6 +219,7 @@ struct PersonDetailView: View {
             SpinePageBackground()
 
             content
+                .spineContentTransition(value: contentPhase)
 
             PersonBackButton {
                 dismiss()
@@ -114,9 +236,16 @@ struct PersonDetailView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
-        .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: PersonTopSafeAreaInsetKey.self, value: proxy.safeAreaInsets.top)
+            }
+        }
+        .onPreferenceChange(PersonTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
-                ref: ref,
+                ref: selection.ref,
+                browsingContext: selection.context,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -131,7 +260,15 @@ struct PersonDetailView: View {
         .task {
             if viewModel.detail == nil {
                 await viewModel.load()
+                syncSelectedFilmographyType()
+                expandPrimaryCreditRole()
             }
+        }
+        .onDisappear {
+            viewModel.cancelPreparation()
+        }
+        .onChange(of: selectedFilmographyType) { _, _ in
+            expandPrimaryCreditRole()
         }
     }
 
@@ -154,26 +291,34 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading {
+        if viewModel.isLoading, viewModel.detail == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let detail = viewModel.detail {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 26) {
-                    hero(detail)
-                    biographySection(detail)
-                    filmographySection
+                ZStack(alignment: .top) {
+                    PersonHeroArtwork(urlString: detail.profileUrl)
+                        .frame(height: topSafeAreaInset + 390)
+                        .allowsHitTesting(false)
+
+                    VStack(alignment: .leading, spacing: 26) {
+                        hero(detail)
+                        biographySection(detail)
+                        filmographySection
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, topSafeAreaInset + 68)
+                    .padding(.bottom, 36)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 44)
-                .padding(.bottom, 36)
             }
             .scrollContentBackground(.hidden)
+            .ignoresSafeArea(edges: .top)
             .refreshable {
                 await viewModel.load()
+                syncSelectedFilmographyType()
             }
-        } else if let error = viewModel.errorMessage {
+        } else if let error = viewModel.errorMessage, viewModel.detail == nil {
             ContentUnavailableView(
                 "Could not load person",
                 systemImage: "exclamationmark.triangle",
@@ -182,6 +327,14 @@ struct PersonDetailView: View {
             .foregroundStyle(.white)
             .padding()
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.detail != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private func hero(_ detail: PersonDetail) -> some View {
@@ -243,61 +396,164 @@ struct PersonDetailView: View {
     @ViewBuilder
     private func biographySection(_ detail: PersonDetail) -> some View {
         if let biography = clean(detail.biography) {
-            VStack(alignment: .leading, spacing: 12) {
-                PersonSectionLabel(title: "Biography")
-                PersonBiographyCard(text: biography)
-            }
+            SynopsisText(text: biography)
         }
     }
 
     private var filmographySection: some View {
-        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedFilmographyType.rawValue }
+        let types = FilmographyType.available(in: viewModel.filmography)
+        let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
+        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
+        let groups = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: viewModel.detail?.knownForDepartment
+        )
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                PersonSectionLabel(title: "Filmography")
+                PersonSectionLabel(title: selectedType.sectionTitle)
 
                 Spacer()
 
-                Picker("Filmography type", selection: $selectedFilmographyType) {
-                    ForEach(FilmographyType.allCases) { type in
-                        Text(type.title).tag(type)
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .person(ref: viewModel.detail?.ref ?? PersonRef(source: "", id: "")),
+                    options: viewModel.filterOptions,
+                    mediaTypes: types.map(\.rawValue)
+                ) {
+                    Task {
+                        await viewModel.load()
+                        if let mediaType = viewModel.filter.mediaType, let selectedType = FilmographyType(rawValue: mediaType) {
+                            selectedFilmographyType = selectedType
+                        }
+                        syncSelectedFilmographyType()
+                        expandPrimaryCreditRole()
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
+
+                if types.count > 1 {
+                    Picker("Credit type", selection: $selectedFilmographyType) {
+                        ForEach(types) { type in
+                            Text(type.title).tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: max(75, CGFloat(types.count) * 75))
+                }
             }
 
-            if filmography.isEmpty {
-                ContentUnavailableView(
-                    "No \(selectedFilmographyType.title.lowercased())",
-                    systemImage: "square.grid.2x2",
-                    description: Text("TMDB credits will appear here when available.")
-                )
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 220)
-            } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-                    ForEach(filmography) { media in
-                        Button {
-                            selectedRef = media.ref
-                        } label: {
-                            MediaArtwork(
-                                url: media.displayPosterURL,
-                                title: media.title,
-                                slot: .tagGrid,
-                                mediaType: media.ref.mediaType,
-                                orientation: media.posterOrientation
-                            )
-                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+            ratingPreparationStatus
+
+            Group {
+                if filmography.isEmpty {
+                    ContentUnavailableView(
+                        "No \(selectedType.title.lowercased())",
+                        systemImage: "square.grid.2x2",
+                        description: Text("Credits will appear here when available.")
+                    )
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                } else {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(groups) { group in
+                            roleDisclosureRow(group, type: selectedType)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("View \(media.title)")
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .spineContentTransition(value: selectedType)
+        }
+    }
+
+    @ViewBuilder
+    private var ratingPreparationStatus: some View {
+        if viewModel.filter.sort?.isExternalRating == true,
+           let preparation = viewModel.detail?.ratingPreparation,
+           preparation.state != .ready {
+            HStack(spacing: 8) {
+                if preparation.state == .pending, viewModel.isPreparationPolling {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white.opacity(0.72))
+                }
+                Text(preparationText(preparation))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func preparationText(_ preparation: PersonRatingPreparation) -> String {
+        if preparation.state == .degraded {
+            return "Some ratings could not be prepared"
+        }
+        if viewModel.preparationTimedOut {
+            return "Ratings are still preparing. Pull to refresh."
+        }
+        let label = viewModel.filterOptions.sorts.first {
+            $0.value == viewModel.filter.sort?.rawValue
+        }?.label ?? "ratings"
+        return "Preparing \(label.lowercased()) · \(preparation.processed) of \(preparation.total)"
+    }
+
+    private func roleDisclosureRow(_ group: FilmographyCreditGroup, type: FilmographyType) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedCreditRoles.contains(group.id) {
+                        expandedCreditRoles.remove(group.id)
+                    } else {
+                        expandedCreditRoles.insert(group.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text(group.compactTitle(for: type))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.74))
+
+                    Spacer()
+
+                    Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 42)
+                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            if expandedCreditRoles.contains(group.id) {
+                filmographyGrid(group.media)
             }
         }
+    }
+
+    private func filmographyGrid(_ media: [MediaSummary]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
+            ForEach(media) { item in
+                Button {
+                    selectedMedia = MediaBrowsingSelection(
+                        ref: item.ref,
+                        within: media.map(\.ref)
+                    )
+                } label: {
+                    MediaArtwork(
+                        url: item.displayPosterURL,
+                        title: item.title,
+                        slot: .tagGrid,
+                        mediaType: item.ref.mediaType,
+                        orientation: item.posterOrientation
+                    )
+                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View \(item.title)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func metadataChips(_ detail: PersonDetail) -> [String] {
@@ -317,6 +573,27 @@ struct PersonDetailView: View {
         return chips
     }
 
+    private func syncSelectedFilmographyType() {
+        let types = FilmographyType.available(in: viewModel.filmography)
+        if let first = types.first, !types.contains(selectedFilmographyType) {
+            selectedFilmographyType = first
+        }
+    }
+
+    private func expandPrimaryCreditRole() {
+        let types = FilmographyType.available(in: viewModel.filmography)
+        let selectedType = types.contains(selectedFilmographyType) ? selectedFilmographyType : types.first ?? selectedFilmographyType
+        let filmography = viewModel.filmography.filter { $0.ref.mediaType == selectedType.rawValue }
+        if let primaryGroup = FilmographyCreditGroup.groups(
+            from: filmography,
+            knownForDepartment: viewModel.detail?.knownForDepartment
+        ).first {
+            expandedCreditRoles = [primaryGroup.id]
+        } else {
+            expandedCreditRoles = []
+        }
+    }
+
     private func clean(_ value: String?) -> String? {
         guard let text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
             return nil
@@ -329,9 +606,11 @@ struct PersonDetailView: View {
     }
 }
 
-private enum FilmographyType: String, CaseIterable, Identifiable {
+enum FilmographyType: String, CaseIterable, Identifiable {
     case movie
     case tv
+    case book
+    case music
 
     var id: String { rawValue }
 
@@ -341,6 +620,148 @@ private enum FilmographyType: String, CaseIterable, Identifiable {
             "Film"
         case .tv:
             "TV"
+        case .book:
+            "Books"
+        case .music:
+            "Music"
+        }
+    }
+
+    var sectionTitle: String {
+        switch self {
+        case .book:
+            "Books"
+        case .music:
+            "Discography"
+        case .movie, .tv:
+            "Filmography"
+        }
+    }
+
+    static func available(in media: [MediaSummary]) -> [FilmographyType] {
+        allCases.filter { type in
+            media.contains { $0.ref.mediaType == type.rawValue }
+        }
+    }
+}
+
+struct FilmographyCreditGroup: Identifiable {
+    let role: String
+    let media: [MediaSummary]
+
+    var id: String { role }
+
+    static func groups(
+        from media: [MediaSummary],
+        knownForDepartment: String? = nil
+    ) -> [FilmographyCreditGroup] {
+        var grouped: [String: [MediaSummary]] = [:]
+
+        for item in media {
+            let roles = cleanRoles(item.creditRoles)
+            for role in roles.isEmpty ? ["Credits"] : roles {
+                grouped[role, default: []].append(item)
+            }
+        }
+
+        let primaryRoles = primaryRoles(for: knownForDepartment)
+        let isMusic = media.allSatisfy { $0.ref.mediaType == FilmographyType.music.rawValue }
+
+        return grouped
+            .map { FilmographyCreditGroup(role: $0.key, media: $0.value) }
+            .sorted {
+                if isMusic {
+                    let firstOrder = musicRoleOrder($0.role)
+                    let secondOrder = musicRoleOrder($1.role)
+                    if firstOrder != secondOrder {
+                        return firstOrder < secondOrder
+                    }
+                }
+                let firstIsPrimary = primaryRoles.contains($0.role.lowercased())
+                let secondIsPrimary = primaryRoles.contains($1.role.lowercased())
+                if firstIsPrimary != secondIsPrimary {
+                    return firstIsPrimary
+                }
+                if $0.media.count != $1.media.count {
+                    return $0.media.count > $1.media.count
+                }
+                return $0.role < $1.role
+            }
+    }
+
+    fileprivate func title(for type: FilmographyType) -> String {
+        if role == "Credits" {
+            return compactTitle(for: type)
+        }
+        return "\(role) \(connector) \(media.count) \(type.creditNoun(count: media.count))"
+    }
+
+    fileprivate func compactTitle(for type: FilmographyType) -> String {
+        if type == .music {
+            return "\(role) · \(media.count)"
+        }
+        return "\(role) · \(media.count) \(type.creditNoun(count: media.count))"
+    }
+
+    private var connector: String {
+        switch role.lowercased() {
+        case "actor", "actress":
+            "in"
+        case "author":
+            "of"
+        default:
+            "of"
+        }
+    }
+
+    private static func cleanRoles(_ roles: [String]) -> [String] {
+        var seen = Set<String>()
+        return roles.compactMap { role in
+            let clean = role.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
+            return clean
+        }
+    }
+
+    private static func primaryRoles(for department: String?) -> Set<String> {
+        switch department?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "acting":
+            ["actor", "actress"]
+        case "directing":
+            ["director"]
+        case "writing":
+            ["writer"]
+        case "production":
+            ["producer"]
+        case "author":
+            ["author"]
+        case "artist":
+            ["artist"]
+        default:
+            []
+        }
+    }
+
+    private static func musicRoleOrder(_ role: String) -> Int {
+        [
+            "Albums", "EPs", "Singles", "Mixtapes", "Compilations", "Soundtracks",
+            "Live releases", "Remix releases", "DJ mixes", "Demos", "Broadcasts",
+            "Audiobooks", "Interviews", "Other",
+        ].firstIndex(of: role) ?? .max
+    }
+}
+
+extension FilmographyType {
+    func creditNoun(count: Int) -> String {
+        switch self {
+        case .movie:
+            count == 1 ? "film" : "films"
+        case .tv:
+            count == 1 ? "show" : "shows"
+        case .book:
+            count == 1 ? "book" : "books"
+        case .music:
+            count == 1 ? "release" : "releases"
         }
     }
 }
@@ -350,7 +771,7 @@ private struct PersonProfileImage: View {
     let name: String
 
     var body: some View {
-        AsyncImage(url: imageURL) { phase in
+        SpineAsyncImage(url: imageURL) { phase in
             switch phase {
             case let .success(image):
                 image
@@ -381,82 +802,60 @@ private struct PersonProfileImage: View {
     }
 }
 
-private struct PersonBiographyCard: View {
-    let text: String
-    @State private var isExpanded = false
-    @State private var truncatedHeight: CGFloat = 0
-    @State private var fullHeight: CGFloat = 0
-
-    private var canExpand: Bool {
-        fullHeight > truncatedHeight + 1
-    }
+private struct PersonHeroArtwork: View {
+    let urlString: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(text)
-                .font(biographyFont)
-                .foregroundStyle(.white.opacity(0.9))
-                .lineSpacing(2)
-                .lineLimit(isExpanded ? nil : 3)
-                .background {
-                    measuredText(lineLimit: 3, key: PersonBiographyTruncatedHeightKey.self)
-                }
-                .background {
-                    measuredText(lineLimit: nil, key: PersonBiographyFullHeightKey.self)
-                }
-
-            if canExpand {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isExpanded.toggle()
+        GeometryReader { proxy in
+            ZStack {
+                SpineAsyncImage(url: imageURL) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    default:
+                        SpinePalette.pageBackground
                     }
-                } label: {
-                    Label(isExpanded ? "READ LESS" : "READ MORE", systemImage: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .heavy))
-                        .foregroundStyle(.white.opacity(0.62))
                 }
-                .buttonStyle(.plain)
+                .blur(radius: 30, opaque: true)
+                .scaleEffect(1.28)
+                .brightness(-0.04)
+                .saturation(1.2)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.4), location: 0),
+                        .init(color: .black.opacity(0.14), location: 0.3),
+                        .init(color: .clear, location: 0.58),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.32),
+                        .init(color: SpinePalette.pageBackground.opacity(0.2), location: 0.54),
+                        .init(color: SpinePalette.pageBackground.opacity(0.7), location: 0.78),
+                        .init(color: SpinePalette.pageBackground, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             }
+            .clipped()
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
-        .onPreferenceChange(PersonBiographyTruncatedHeightKey.self) { truncatedHeight = $0 }
-        .onPreferenceChange(PersonBiographyFullHeightKey.self) { fullHeight = $0 }
     }
 
-    private func measuredText<Key: PreferenceKey>(lineLimit: Int?, key: Key.Type) -> some View where Key.Value == CGFloat {
-        Text(text)
-            .font(biographyFont)
-            .lineSpacing(2)
-            .lineLimit(lineLimit)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: key, value: proxy.size.height)
-                }
-            }
-            .hidden()
-    }
-
-    private var biographyFont: Font {
-        .system(size: 14, weight: .semibold)
-    }
-}
-
-private struct PersonBiographyTruncatedHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct PersonBiographyFullHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    private var imageURL: URL? {
+        guard let urlString, !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return URL(string: urlString)
     }
 }
 

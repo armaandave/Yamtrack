@@ -204,6 +204,152 @@ payload.
 | DELETE | `/api/v1/imports/schedules/{schedule_id}/` | Yes |
 | GET | `/api/v1/exports/csv/` | Yes |
 
+### Stats Summary
+
+`GET /api/v1/stats/me/summary/` and
+`GET /api/v1/users/{username}/stats/summary/` return the same additive native
+stats contract. The existing `start_date`, `end_date`, `media_count`,
+`media_type_distribution`, `score_distribution`, `status_distribution`,
+and `top_rated` keys remain for older clients. Native clients should use
+`range`, `overview`, `media_types`, and the typed arrays below.
+
+Supported query parameters:
+
+- Omit both dates for the inclusive range from one year ago through today.
+- Pass ISO `start_date=YYYY-MM-DD` and `end_date=YYYY-MM-DD` for a custom
+  inclusive range. An omitted boundary keeps its default.
+- Pass `start_date=all&end_date=all` for all time. `all` must be supplied for
+  both boundaries.
+- Invalid dates and reversed ranges return `400` field errors.
+
+The selected range scopes diary-backed consumption data: activity, ratings,
+reviews, repeats, top-rated/most-logged media, release years, genres, and
+languages. `tracked_count`, status counts, `completed_count`, and
+`liked_count` describe the user's current all-time library snapshot.
+Season- and episode-level diary entries roll up into the `tv` media bucket.
+The stable primary media buckets are `movie`, `tv`, `anime`, `manga`, `game`,
+`book`, and `comic`, including zero-valued buckets.
+
+```json
+{
+  "schema_version": 1,
+  "range": {
+    "start_date": "2026-01-01",
+    "end_date": "2026-12-31",
+    "timezone": "America/Los_Angeles",
+    "is_all_time": false
+  },
+  "overview": {
+    "tracked_count": 760,
+    "completed_count": 496,
+    "diary_entry_count": 812,
+    "unique_logged_count": 760,
+    "repeat_count": 52,
+    "rated_count": 523,
+    "average_rating": "7.6",
+    "review_count": 110,
+    "liked_count": 86,
+    "active_days": 421,
+    "current_streak_days": 4,
+    "longest_streak_days": 28
+  },
+  "media_types": [
+    {
+      "media_type": "movie",
+      "tracked_count": 120,
+      "completed_count": 95,
+      "diary_entry_count": 135,
+      "unique_logged_count": 120,
+      "repeat_count": 15,
+      "rated_count": 110,
+      "average_rating": "7.8",
+      "review_count": 40,
+      "liked_count": 20,
+      "statuses": {
+        "completed": 95,
+        "in_progress": 2,
+        "planning": 18,
+        "paused": 3,
+        "dropped": 2
+      },
+      "rating_distribution": [
+        { "rating": "0.0", "count": 0 },
+        { "rating": "0.5", "count": 1 }
+      ],
+      "top_rated": [
+        { "media": { "ref": { "item_id": 42 } }, "rating": "10.0" }
+      ],
+      "most_logged": [
+        { "media": { "ref": { "item_id": 42 } }, "log_count": 5 }
+      ],
+      "release_years": [{ "year": 1999, "count": 12 }],
+      "top_genres": [{ "name": "Drama", "count": 44 }],
+      "top_languages": [{ "name": "English", "count": 95 }],
+      "metadata_coverage": {
+        "total_items": 120,
+        "release_year_items": 118,
+        "genre_items": 115,
+        "language_items": 101
+      }
+    }
+  ],
+  "activity": {
+    "days": [{ "date": "2026-07-14", "count": 2 }],
+    "months": [{ "month": "2026-07", "count": 18 }],
+    "active_days": 421,
+    "current_streak_days": 4,
+    "longest_streak_days": 28,
+    "most_active_weekday": {
+      "weekday": 1,
+      "name": "Tuesday",
+      "active_day_count": 72,
+      "percentage": 17.1
+    }
+  },
+  "rating_distribution": [{ "rating": "8.5", "count": 14 }],
+  "diary_top_rated": [
+    { "media": { "ref": { "item_id": 42 } }, "rating": "10.0" }
+  ],
+  "most_logged": [
+    { "media": { "ref": { "item_id": 42 } }, "log_count": 5 }
+  ],
+  "release_years": [{ "year": 1999, "count": 42 }],
+  "top_genres": [{ "name": "Drama", "count": 80 }],
+  "top_languages": [{ "name": "English", "count": 95 }],
+  "metadata_coverage": {
+    "total_items": 760,
+    "release_year_items": 735,
+    "genre_items": 700,
+    "language_items": 645
+  }
+}
+```
+
+Contract details:
+
+- `rating_distribution` always contains all 21 half-point buckets from `0.0`
+  through `10.0`; decimal values are strings.
+- `release_years` is sparse and sorted ascending. Genre and language arrays are
+  capped at ten values, ordered by count descending and then name.
+- Top-level media arrays are capped at 12 entries. Each media-type entry is
+  self-contained and caps `top_rated` and `most_logged` at six entries.
+- `diary_top_rated` is the native visibility-aware ranked array. The legacy
+  top-level `top_rated` key remains tracking-score based for the current user;
+  other-user responses project visible diary ratings into legacy
+  `score_distribution` and `top_rated` so private activity cannot leak.
+- `activity.days` contains active days only; clients may fill zero days for a
+  calendar presentation. `months` uses `YYYY-MM`. Weekdays use `0` for Monday
+  through `6` for Sunday. `most_active_weekday` is `null` when there is no
+  activity.
+- Genre, language, and release-year statistics use only locally indexed
+  `Item`/`ItemFilterFacet` data and never trigger provider requests. The
+  coverage object makes incomplete metadata explicit.
+- For another user's stats, account privacy, accepted follows, and blocks are
+  enforced. Public entries are always eligible, followers-only entries require
+  an accepted follow, and private entries are never included. Embedded media
+  summaries deliberately return `user_state: null` so a target user's private
+  tracking, diary, and list state is not exposed.
+
 ## Auth Flow
 
 1. iOS calls `/api/v1/auth/login/` or `/api/v1/auth/register/`.
@@ -603,8 +749,8 @@ Unsupported media types/sources return `501` with a clear `detail`. Invalid para
     }
   ],
   "external_ratings": [
-    { "source": "TMDB", "value": "8.4", "vote_count": 1000, "max_value": "10" },
-    { "source": "IMDb", "value": "8.8", "vote_count": 2300000, "max_value": "10" },
+    { "source": "TMDB", "value": "8.4", "vote_count": 1000, "max_value": "10", "url": "https://www.themoviedb.org/movie/550" },
+    { "source": "IMDb", "value": "8.8", "vote_count": 2300000, "max_value": "10", "url": "https://www.imdb.com/title/tt0137523/" },
     { "source": "Rotten Tomatoes", "value": "79%", "vote_count": 100, "max_value": "100%" }
   ],
   "community": {
@@ -622,6 +768,7 @@ Unsupported media types/sources return `501` with a clear `detail`. Invalid para
 
 Rules:
 
+- Each `external_ratings` entry may include an optional absolute HTTP(S) `url` for the exact media page on that rating provider. Native clients should make the rating pill actionable only when this field is present and valid; entries without `url` remain display-only. Representative provider URLs include `https://letterboxd.com/film/fight-club/`, `https://hardcover.app/books/the-great-gatsby`, and `https://openlibrary.org/books/OL7353617M`. Provider API URLs, credentials, and generic search-result pages must not be returned.
 - Books expose `other_editions` and recommendations when providers return them.
 - Games expose typed sections such as `dlcs`, `expansions`, and canonical `all_related`.
 - Anime and manga expose MAL/MangaUpdates related sections such as `related_anime`, `related_manga`, and recommendations.

@@ -1,0 +1,92 @@
+[
+  {
+    "release_group_mbid": "f5093c06-23e3-404f-aeaa-40f72885ee3a",
+    "title": "The Dark Side of the Moon",
+    "expected_release_mbid": "82e70b1b-5165-4d04-9951-959b707bdb39",
+    "release": {"id": "82e70b1b-5165-4d04-9951-959b707bdb39", "title": "The Dark Side of the Moon", "status": "Official", "country": "XW", "date": "2016", "media": [{"position": 1, "format": "Digital Media", "track-count": 10}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+    "title": "Year Zero",
+    "expected_release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+    "release": {"id": "2d0bad69-f735-484b-bc0b-2ea54c76225e", "title": "Year Zero", "status": "Official", "country": "XW", "date": "2016-09-02", "media": [{"position": 1, "format": "Digital Media", "track-count": 16}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://music.apple.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "fc4d7589-a6b9-35ca-a6b6-8c8e70c3baaa",
+    "title": "The Fragile",
+    "expected_release_mbid": "4771bdd1-7e9e-42f3-b8e7-b85c71c39024",
+    "release": {"id": "4771bdd1-7e9e-42f3-b8e7-b85c71c39024", "title": "The Fragile", "status": "Official", "country": "XW", "date": "2015", "media": [{"position": 1, "format": "Digital Media", "track-count": 12}, {"position": 2, "format": "Digital Media", "track-count": 11}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "1703cd63-9401-33c0-87c6-50c4ba2e0ba8",
+    "title": "Pulp Fiction: Music From the Motion Picture",
+    "expected_release_mbid": "729642fc-cd24-416d-9f14-4611b04a0614",
+    "release": {"id": "729642fc-cd24-416d-9f14-4611b04a0614", "title": "Pulp Fiction: Music From the Motion Picture", "status": "Official", "country": "XW", "date": "2019-03-15", "media": [{"position": 1, "format": "Digital Media", "track-count": 20}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "dc1f9d7d-9a98-3f2c-83aa-c16dbb4a9ae1",
+    "title": "千と千尋の神隠し サウンドトラック",
+    "expected_release_mbid": "80eec3d5-a44a-43b6-a95b-b4004461c6ca",
+    "release": {"id": "80eec3d5-a44a-43b6-a95b-b4004461c6ca", "title": "Spirited Away Soundtrack", "status": "Official", "country": "XW", "date": null, "media": [{"position": 1, "format": "Digital Media", "track-count": 21}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "fb3770f6-83fb-32b7-85c4-1f522a92287e",
+    "title": "MTV Unplugged in New York",
+    "expected_release_mbid": "195973ed-07eb-4db0-951b-515fdb6dc20c",
+    "release": {"id": "195973ed-07eb-4db0-951b-515fdb6dc20c", "title": "MTV Unplugged in New York", "status": "Official", "country": "XW", "date": "2005", "media": [{"position": 1, "format": "Digital Media", "track-count": 14}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "3b6b7688-c97b-3d11-9334-3158468074f7",
+    "title": "Jar of Flies",
+    "expected_release_mbid": "cb7b887a-44bf-4a59-a5da-d229c0357128",
+    "release": {"id": "cb7b887a-44bf-4a59-a5da-d229c0357128", "title": "Jar of Flies", "status": "Official", "country": "XW", "date": "2014-07-25", "media": [{"position": 1, "format": "Digital Media", "track-count": 7}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "8a772dab-6832-34cd-85c6-a9f666058593",
+    "title": "Survivalism",
+    "expected_release_mbid": "09fc1530-ccb4-44c5-96ad-629a9d783f70",
+    "release": {"id": "09fc1530-ccb4-44c5-96ad-629a9d783f70", "title": "Survivalism", "status": "Official", "country": null, "date": "2007-04-02", "media": [{"position": 1, "format": "Digital Media", "track-count": 2}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "b14e9927-081e-4a07-b0f7-8ddf22319b27",
+    "title": "The Immaculate Collection",
+    "expected_release_mbid": "e3584562-03f0-428e-8aeb-abc96b46cd73",
+    "release": {"id": "e3584562-03f0-428e-8aeb-abc96b46cd73", "title": "The Immaculate Collection", "status": "Official", "country": null, "date": "2023-05-05", "media": [{"position": 1, "format": "Digital Media", "track-count": 17}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "aa997ea0-2936-40bd-884d-3af8a0e064dc",
+    "title": "Random Access Memories",
+    "expected_release_mbid": "ec116461-5b0d-4c98-bb44-a4de5de63076",
+    "release": {"id": "ec116461-5b0d-4c98-bb44-a4de5de63076", "title": "Random Access Memories", "status": "Official", "country": "US", "date": "2013", "media": [{"position": 1, "format": "Digital Media", "track-count": 13}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "4d9ec1c2-58ec-48a4-aa0a-916718adead0",
+    "title": "1989",
+    "expected_release_mbid": "f04b5341-454f-4085-b90d-82d5c6a6cb82",
+    "release": {"id": "f04b5341-454f-4085-b90d-82d5c6a6cb82", "title": "1989", "status": "Official", "country": "US", "date": "2025-06-06", "media": [{"position": 1, "format": "Digital Media", "track-count": 13}], "relations": [{"type-id": "08445ccf-7b99-4438-9f9a-fb9ac18099ee", "url": {"resource": "https://www.qobuz.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "87199163-cf50-3c84-8774-e09c5de47d6a",
+    "title": "Elbentanz",
+    "expected_release_mbid": "f2de8bce-e736-4318-928e-63a1a1e38914",
+    "release": {"id": "f2de8bce-e736-4318-928e-63a1a1e38914", "title": "Elbentanz", "status": "Official", "country": "AT", "date": "2003", "media": [{"position": 1, "format": "CD", "track-count": 14}], "relations": []}
+  },
+  {
+    "release_group_mbid": "e13cb9ab-19b2-4df6-bb50-20a7cdd65f11",
+    "title": "Frøstbytę",
+    "expected_release_mbid": "dcdba0f4-c979-4947-bfc2-b820406e9cad",
+    "release": {"id": "dcdba0f4-c979-4947-bfc2-b820406e9cad", "title": "Frøstbytę", "status": "Official", "country": "CA", "date": "2026-12-17", "media": [{"position": 1, "format": "CD", "track-count": 5}], "relations": []}
+  },
+  {
+    "release_group_mbid": "bcd7ac33-7a46-346d-b2f2-72dcf51012af",
+    "title": "Now That’s What I Call Music",
+    "expected_release_mbid": "7e917011-ab60-41c3-a65f-1fe2638e29ae",
+    "release": {"id": "7e917011-ab60-41c3-a65f-1fe2638e29ae", "title": "Now That’s What I Call Music", "status": "Official", "country": "GB", "date": "2018-07-20", "media": [{"position": 1, "format": "Digital Media", "track-count": 15}, {"position": 2, "format": "Digital Media", "track-count": 15}], "relations": [{"type-id": "320adf26-96fa-4183-9045-1f5f32f833cb", "url": {"resource": "https://open.spotify.com/album/fixture"}}]}
+  },
+  {
+    "release_group_mbid": "fc851e0c-0261-472b-847c-a0cf8fedf80f",
+    "title": "The Making of The Dark Side of the Moon",
+    "expected_release_mbid": "65071ca2-6d90-4b35-a7ac-c5057ce28123",
+    "release": {"id": "65071ca2-6d90-4b35-a7ac-c5057ce28123", "title": "The Making of The Dark Side of the Moon", "status": "Official", "country": "DE", "date": "2003", "media": [{"position": 1, "format": "DVD-Video", "track-count": 23}], "relations": []}
+  }
+]

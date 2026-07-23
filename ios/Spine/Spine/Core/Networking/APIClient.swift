@@ -32,8 +32,20 @@ struct APIClient: Sendable {
         self.multipartSession = multipartSession
     }
 
-    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], authenticated: Bool = false) async throws -> T {
-        try await request(path: path, method: "GET", query: query, body: Optional<Data>.none, authenticated: authenticated)
+    func get<T: Decodable>(
+        _ path: String,
+        query: [URLQueryItem] = [],
+        authenticated: Bool = false,
+        requestTimeout: TimeInterval? = nil
+    ) async throws -> T {
+        try await request(
+            path: path,
+            method: "GET",
+            query: query,
+            body: Optional<Data>.none,
+            authenticated: authenticated,
+            requestTimeout: requestTimeout
+        )
     }
 
     func post<Body: Encodable, Response: Decodable>(
@@ -111,6 +123,10 @@ struct APIClient: Sendable {
         do {
             let delegate = progressHandler.map(MultipartUploadProgressDelegate.init(progressHandler:))
             (data, response) = try await multipartSession.upload(for: request, fromFile: bodyURL, delegate: delegate)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw APIError.network(error)
         }
@@ -139,14 +155,16 @@ struct APIClient: Sendable {
         method: String,
         query: [URLQueryItem],
         body: Data?,
-        authenticated: Bool
+        authenticated: Bool,
+        requestTimeout: TimeInterval? = nil
     ) async throws -> T {
         var request = try makeRequest(
             path: path,
             method: method,
             query: query,
             body: body,
-            authenticated: authenticated
+            authenticated: authenticated,
+            requestTimeout: requestTimeout
         )
 
         let data: Data
@@ -162,7 +180,8 @@ struct APIClient: Sendable {
                 method: method,
                 query: query,
                 body: body,
-                authenticated: authenticated
+                authenticated: authenticated,
+                requestTimeout: requestTimeout
             )
             do {
                 (data, http) = try await perform(request)
@@ -192,12 +211,13 @@ struct APIClient: Sendable {
         method: String,
         query: [URLQueryItem],
         body: Data?,
-        authenticated: Bool
+        authenticated: Bool,
+        requestTimeout: TimeInterval? = nil
     ) throws -> URLRequest {
         let url = try endpointURL(path: path, query: query)
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 10
+        request.timeoutInterval = requestTimeout ?? 10
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
@@ -213,6 +233,10 @@ struct APIClient: Sendable {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw APIError.network(error)
         }

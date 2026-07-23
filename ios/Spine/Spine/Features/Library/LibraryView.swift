@@ -10,35 +10,86 @@ enum LibraryViewMode: String, CaseIterable, Identifiable {
 enum LibraryShelf: String, CaseIterable, Identifiable {
     case tracked = "Tracked"
     case planning = "Planning"
+    case currentlyReading = "Currently Reading"
+    case paused = "Paused"
+    case didNotFinish = "Did Not Finish"
+    case read = "Read"
 
     var id: String { rawValue }
+
+    func title(mediaType: String) -> String {
+        if mediaType == "book", self == .planning { return "To Read" }
+        return rawValue
+    }
+
+    static func available(for mediaType: String) -> [LibraryShelf] {
+        mediaType == "book"
+            ? [.planning, .currentlyReading, .paused, .didNotFinish, .read]
+            : [.tracked, .planning]
+    }
+
+    var apiStatus: String {
+        switch self {
+        case .tracked: "tracked"
+        case .planning: "Planning"
+        case .currentlyReading: "In progress"
+        case .paused: "Paused"
+        case .didNotFinish: "Dropped"
+        case .read: "Completed"
+        }
+    }
+
+    func matches(status: String?) -> Bool {
+        let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if self == .tracked {
+            return normalized?.caseInsensitiveCompare("Planning") != .orderedSame
+        }
+        return normalized?.caseInsensitiveCompare(apiStatus) == .orderedSame
+    }
 }
 
 @MainActor
 @Observable
 final class LibraryViewModel {
+    private struct RequestScope: Equatable {
+        let mediaType: String
+        let filter: MediaFilterState
+    }
+
     var mediaType = "movie"
     var mediaTypes = LibraryViewModel.libraryMediaTypes(from: APIConstants.fallbackMediaTypes)
     var query = ""
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
     var viewMode: LibraryViewMode = .grid
     var shelf: LibraryShelf = .tracked
     var items: [LibraryItem] = []
     var totalCount = 0
+    var isBootstrapping = true
     var isLoadingInitial = false
     var isLoadingNextPage = false
     var errorMessage: String?
     var nextPageErrorMessage: String?
+    var contentRevision = 0
 
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
     private var didBootstrap = false
+    private var presentedScope: RequestScope?
 
-    init(mediaRepository: MediaRepository, trackingRepository: TrackingRepository, onUnauthorized: @escaping () -> Void) {
+    init(
+        mediaRepository: MediaRepository,
+        trackingRepository: TrackingRepository,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
+        onUnauthorized: @escaping () -> Void
+    ) {
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
+        self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
     }
 
@@ -46,15 +97,16 @@ final class LibraryViewModel {
         nextPage != nil
     }
 
+    var paginationTaskID: String? {
+        nextPage
+    }
+
     var displayedItems: [LibraryItem] {
-        items.filter { item in
-            switch shelf {
-            case .tracked:
-                !Self.isPlanning(item)
-            case .planning:
-                Self.isPlanning(item)
-            }
-        }
+        items.filter { shelf.matches(status: $0.tracking.status) }
+    }
+
+    var availableShelves: [LibraryShelf] {
+        LibraryShelf.available(for: mediaType)
     }
 
     static func libraryMediaTypes(from mediaTypes: [String]) -> [String] {
@@ -63,17 +115,32 @@ final class LibraryViewModel {
     }
 
     static func isPlanning(_ item: LibraryItem) -> Bool {
-        item.tracking.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "planning"
+        hasStatus(item, "Planning")
+    }
+
+    static func hasStatus(_ item: LibraryItem, _ status: String) -> Bool {
+        item.tracking.status?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(status) == .orderedSame
     }
 
     private var statusFilter: String? {
-        shelf == .planning ? "Planning" : nil
+        shelf.apiStatus
     }
 
     func bootstrap(selectedMediaType: String? = nil) async {
         guard !didBootstrap else { return }
         didBootstrap = true
+        defer {
+            if Task.isCancelled {
+                didBootstrap = false
+            } else {
+                isBootstrapping = false
+            }
+        }
         await loadMeta(selectedMediaType: selectedMediaType)
+        guard !Task.isCancelled else { return }
+        await loadFilterOptions()
+        guard !Task.isCancelled else { return }
         await reload()
     }
 
@@ -81,6 +148,8 @@ final class LibraryViewModel {
         do {
             let meta = try await mediaRepository.meta()
             mediaTypes = Self.libraryMediaTypes(from: meta.mediaTypes)
+        } catch is CancellationError {
+            return
         } catch {
             mediaTypes = Self.libraryMediaTypes(from: APIConstants.fallbackMediaTypes)
         }
@@ -96,7 +165,19 @@ final class LibraryViewModel {
         let selectedQuery = searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? query
         guard mediaType != type || query != selectedQuery else { return }
         mediaType = type
+        if !availableShelves.contains(shelf) {
+            shelf = type == "book" ? .currentlyReading : .tracked
+        }
         query = selectedQuery
+        filter.genres = []
+        filter.languages = []
+        filter.excludedGenres = []
+        filter.excludedLanguages = []
+        filter.year = nil
+        filter.yearMin = nil
+        filter.yearMax = nil
+        await loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: true)
+        guard !Task.isCancelled else { return }
         await reload()
     }
 
@@ -116,27 +197,34 @@ final class LibraryViewModel {
     func reload() async {
         requestGeneration += 1
         let generation = requestGeneration
-        let selectedType = mediaType
-        let selectedStatus = statusFilter
-        let selectedQuery = query
-        let requestQuery = selectedQuery.isEmpty ? nil : selectedQuery
+        let scope = currentRequestScope
+        let preservesLastGoodContent = presentedScope == scope && !items.isEmpty
 
-        items = []
-        totalCount = 0
-        nextPage = nil
+        if !preservesLastGoodContent {
+            items = []
+            totalCount = 0
+            nextPage = nil
+        }
+        presentedScope = scope
         errorMessage = nil
         nextPageErrorMessage = nil
         isLoadingInitial = true
+        isLoadingNextPage = false
+        defer {
+            if generation == requestGeneration, scope == currentRequestScope {
+                isLoadingInitial = false
+            }
+        }
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: nil, status: selectedStatus, query: requestQuery)
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            let response = try await trackingRepository.list(mediaType: scope.mediaType, page: nil, filter: scope.filter)
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             apply(response, replacingItems: true)
-            isLoadingInitial = false
+        } catch is CancellationError {
+            return
         } catch {
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             errorMessage = error.localizedDescription
-            isLoadingInitial = false
             handleUnauthorized(error)
         }
     }
@@ -155,22 +243,24 @@ final class LibraryViewModel {
         guard !isLoadingInitial, !isLoadingNextPage, let page = nextPage else { return }
 
         let generation = requestGeneration
-        let selectedType = mediaType
-        let selectedStatus = statusFilter
-        let selectedQuery = query
-        let requestQuery = selectedQuery.isEmpty ? nil : selectedQuery
+        let scope = currentRequestScope
         isLoadingNextPage = true
         nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, scope == currentRequestScope {
+                isLoadingNextPage = false
+            }
+        }
 
         do {
-            let response = try await trackingRepository.list(mediaType: selectedType, page: page, status: selectedStatus, query: requestQuery)
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            let response = try await trackingRepository.list(mediaType: scope.mediaType, page: page, filter: scope.filter)
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             apply(response, replacingItems: false)
-            isLoadingNextPage = false
+        } catch is CancellationError {
+            return
         } catch {
-            guard generation == requestGeneration, selectedType == mediaType, selectedStatus == statusFilter, selectedQuery == query else { return }
+            guard generation == requestGeneration, scope == currentRequestScope else { return }
             nextPageErrorMessage = error.localizedDescription
-            isLoadingNextPage = false
             handleUnauthorized(error)
         }
     }
@@ -181,11 +271,61 @@ final class LibraryViewModel {
 
         if replacingItems {
             items = response.results
+            contentRevision += 1
             return
         }
 
         let existingIDs = Set(items.map(\.id))
         items += response.results.filter { !existingIDs.contains($0.id) }
+    }
+
+    func loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: Bool = false) async {
+        prepareForScopeChangeIfNeeded()
+        do {
+            let scope = currentRequestScope
+            let options = try await filterOptionsRepository.options(
+                scope: .tracking(mediaType: scope.mediaType),
+                filter: scope.filter
+            )
+            guard scope == currentRequestScope else { return }
+            filterOptions = options
+            if let sort = filter.sort,
+               !options.sorts.contains(where: { $0.value == sort.rawValue }) {
+                filter.sort = nil
+                filter.direction = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            filterOptions = .empty
+            if clearingUnconfirmedExternalSortOnFailure,
+               filter.sort?.isExternalRating == true {
+                filter.sort = nil
+                filter.direction = nil
+            }
+        }
+    }
+
+    private var currentRequestScope: RequestScope {
+        var requestFilter = filter
+        requestFilter.q = query
+        requestFilter.status = statusFilter
+        return RequestScope(mediaType: mediaType, filter: requestFilter)
+    }
+
+    private func prepareForScopeChangeIfNeeded() {
+        let scope = currentRequestScope
+        guard presentedScope != scope else { return }
+
+        requestGeneration += 1
+        presentedScope = scope
+        items = []
+        totalCount = 0
+        nextPage = nil
+        errorMessage = nil
+        nextPageErrorMessage = nil
+        isLoadingInitial = true
+        isLoadingNextPage = false
     }
 
     private func handleUnauthorized(_ error: Error) {
@@ -196,15 +336,25 @@ final class LibraryViewModel {
 }
 
 struct LibraryView: View {
+    private struct ContentTransitionKey: Hashable {
+        let phase: SpineContentPhase
+        let revision: Int
+        let mediaType: String
+        let shelf: String
+        let query: String
+        let viewMode: String
+    }
+
     @State private var viewModel: LibraryViewModel
-    @State private var isMediaLensExpanded = false
     @State private var searchDraftText = ""
+    @State private var selectedGridMedia: MediaBrowsingSelection?
     @Binding private var requestedShelf: LibraryShelf?
 
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let mediaLensStore: MediaLensStore
     private let currentUserId: Int?
     private let selectedTab: AppTab
@@ -217,6 +367,7 @@ struct LibraryView: View {
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
         listRepository: ListRepository? = nil,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
         mediaLensStore: MediaLensStore? = nil,
         currentUserId: Int? = nil,
         requestedShelf: Binding<LibraryShelf?> = .constant(nil),
@@ -229,6 +380,7 @@ struct LibraryView: View {
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository ?? AppRepositories.current().lists
+        self.filterOptionsRepository = filterOptionsRepository ?? AppRepositories.current().filterOptions
         self.mediaLensStore = mediaLensStore ?? MediaLensStore()
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
@@ -237,6 +389,7 @@ struct LibraryView: View {
         _viewModel = State(initialValue: LibraryViewModel(
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
+            filterOptionsRepository: self.filterOptionsRepository,
             onUnauthorized: onUnauthorized
         ))
     }
@@ -250,6 +403,7 @@ struct LibraryView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         header
                         content
+                            .spineContentTransition(value: contentTransitionKey)
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 18)
@@ -275,7 +429,11 @@ struct LibraryView: View {
                 consumeRequestedShelf()
             }
             .onChange(of: viewModel.shelf) {
-                Task { await viewModel.reload() }
+                Task {
+                    await viewModel.loadFilterOptions(clearingUnconfirmedExternalSortOnFailure: true)
+                    guard !Task.isCancelled else { return }
+                    await viewModel.reload()
+                }
             }
             .onChange(of: mediaLensStore.selectedMediaType) {
                 Task { await viewModel.selectMediaType(mediaLensStore.selectedMediaType, searchText: searchDraftText) }
@@ -286,6 +444,23 @@ struct LibraryView: View {
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
                 Task { await viewModel.reload() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+                Task { await viewModel.reload() }
+            }
+        }
+        .fullScreenCover(item: $selectedGridMedia, onDismiss: { selectedGridMedia = nil }) { selection in
+            MediaDetailView(
+                ref: selection.ref,
+                browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
         }
     }
 
@@ -303,9 +478,7 @@ struct LibraryView: View {
     }
 
     private func validateSelectedMediaType() {
-        guard !viewModel.mediaTypes.contains(mediaLensStore.selectedMediaType) else { return }
-        mediaLensStore.setMediaType(viewModel.mediaTypes.first ?? "movie")
-        viewModel.mediaType = mediaLensStore.selectedMediaType
+        viewModel.mediaType = mediaLensStore.validateSelection(in: viewModel.mediaTypes)
     }
 
     private var header: some View {
@@ -314,21 +487,18 @@ struct LibraryView: View {
                 Text("Library")
                     .font(.system(size: 32, weight: .black))
                     .foregroundStyle(.white)
-
-                Text("Your tracked media, separated from planning.")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.58))
             }
+
+            mediaPicker
 
             MediaSearchBar(
                 text: $searchDraftText,
                 selectedMediaType: selectedMediaTypeBinding,
-                isLensExpanded: $isMediaLensExpanded,
+                isLensExpanded: .constant(false),
                 availableTypes: viewModel.mediaTypes,
                 horizontalPadding: 0,
-                onLensTap: {
-                    isMediaLensExpanded = true
-                },
+                showsMediaLens: false,
+                onLensTap: {},
                 onLensSelect: { _ in },
                 onSearch: { text in
                     Task { await viewModel.setSearchQuery(text) }
@@ -339,24 +509,72 @@ struct LibraryView: View {
             )
 
             HStack(spacing: 12) {
-                Picker("Shelf", selection: $viewModel.shelf) {
-                    ForEach(LibraryShelf.allCases) { shelf in
-                        Text(shelf.rawValue).tag(shelf)
-                    }
-                }
-                .pickerStyle(.segmented)
+                shelfPicker
 
                 LibraryViewModeToggle(selection: $viewModel.viewMode)
+
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .tracking(mediaType: viewModel.mediaType),
+                    options: viewModel.filterOptions,
+                    mediaTypes: viewModel.mediaTypes
+                ) {
+                    Task {
+                        await viewModel.loadFilterOptions()
+                        guard !Task.isCancelled else { return }
+                        await viewModel.reload()
+                    }
+                }
             }
         }
         .padding(.bottom, 14)
     }
 
     @ViewBuilder
+    private var shelfPicker: some View {
+        if viewModel.mediaType == "book" {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(viewModel.availableShelves) { shelf in
+                        Button {
+                            viewModel.shelf = shelf
+                        } label: {
+                            Text(shelf.title(mediaType: viewModel.mediaType))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(viewModel.shelf == shelf ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
+                                .background(viewModel.shelf == shelf ? .white : .white.opacity(0.08), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } else {
+            Picker("Shelf", selection: $viewModel.shelf) {
+                ForEach(viewModel.availableShelves) { shelf in
+                    Text(shelf.title(mediaType: viewModel.mediaType)).tag(shelf)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var mediaPicker: some View {
+        MediaSearchLensPicker(
+            selectedType: selectedMediaTypeBinding,
+            availableTypes: viewModel.mediaTypes,
+            horizontalPadding: 0,
+            fitsAllTypes: true,
+            isCompact: true
+        ) { _ in }
+    }
+
+    @ViewBuilder
     private var content: some View {
         let displayedItems = viewModel.displayedItems
-        if viewModel.isLoadingInitial, viewModel.items.isEmpty {
-            LibrarySkeleton(mode: viewModel.viewMode)
+        if viewModel.isBootstrapping || (viewModel.isLoadingInitial && viewModel.items.isEmpty) {
+            LibrarySkeleton(mode: viewModel.viewMode, mediaType: viewModel.mediaType)
         } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
             LibraryStateCard(
                 title: "Could not load library",
@@ -366,11 +584,20 @@ struct LibraryView: View {
             ) {
                 Task { await viewModel.reload() }
             }
+        } else if let error = viewModel.nextPageErrorMessage, displayedItems.isEmpty {
+            LibraryStateCard(
+                title: "Could not load more library items",
+                systemImage: "exclamationmark.triangle",
+                message: error,
+                actionTitle: "Retry"
+            ) {
+                Task { await viewModel.loadNextPage() }
+            }
         } else if displayedItems.isEmpty, viewModel.hasMorePages || viewModel.isLoadingNextPage {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 260)
-                .task {
+                .task(id: viewModel.paginationTaskID) {
                     await viewModel.loadNextPage()
                 }
         } else if displayedItems.isEmpty {
@@ -391,6 +618,29 @@ struct LibraryView: View {
         }
     }
 
+    private var contentPhase: SpineContentPhase {
+        let hasContent = !viewModel.displayedItems.isEmpty
+        let hasPaginationError = viewModel.nextPageErrorMessage != nil
+        return .resolve(
+            isLoading: viewModel.isBootstrapping
+                || viewModel.isLoadingInitial
+                || (!hasContent && !hasPaginationError && (viewModel.hasMorePages || viewModel.isLoadingNextPage)),
+            hasContent: hasContent,
+            hasError: viewModel.errorMessage != nil || hasPaginationError
+        )
+    }
+
+    private var contentTransitionKey: ContentTransitionKey {
+        ContentTransitionKey(
+            phase: contentPhase,
+            revision: viewModel.contentRevision,
+            mediaType: viewModel.mediaType,
+            shelf: viewModel.shelf.rawValue,
+            query: viewModel.query,
+            viewMode: viewModel.viewMode.rawValue
+        )
+    }
+
     private var emptyTitle: String {
         if !viewModel.query.isEmpty {
             return "No \(MediaTypeTheme.theme(for: viewModel.mediaType).displayName.lowercased()) found"
@@ -400,7 +650,15 @@ struct LibraryView: View {
         case .tracked:
             return "No tracked \(mediaName)"
         case .planning:
-            return "No planned \(mediaName)"
+            return viewModel.mediaType == "book" ? "No books to read" : "No planned \(mediaName)"
+        case .currentlyReading:
+            return "No books currently reading"
+        case .paused:
+            return "No paused books"
+        case .didNotFinish:
+            return "No books marked Did Not Finish"
+        case .read:
+            return "No read books"
         }
     }
 
@@ -412,24 +670,47 @@ struct LibraryView: View {
         case .tracked:
             return "Consumed, logged, watched, read, or played media will appear here."
         case .planning:
-            return "Planning items stay separate from the rest of your library."
+            return viewModel.mediaType == "book" ? "Books saved for later will appear here." : "Planning items stay separate from the rest of your library."
+        case .currentlyReading:
+            return "Start a reading journey to see its progress here."
+        case .paused:
+            return "Paused reading journeys will appear here."
+        case .didNotFinish:
+            return "Books you stop reading will appear here."
+        case .read:
+            return "Completed reading journeys will appear here."
         }
     }
 
     private func libraryGrid(_ items: [LibraryItem]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(items) { item in
-                NavigationLink {
-                    mediaDestination(for: item)
-                } label: {
-                    MediaArtwork(
-                        url: item.media.displayPosterURL,
-                        title: item.media.title,
-                        slot: .tagGrid,
-                        mediaType: item.media.ref.mediaType,
-                        orientation: item.media.posterOrientation
+                Button {
+                    selectedGridMedia = MediaBrowsingSelection(
+                        ref: item.media.ref,
+                        within: items.map(\.media.ref)
                     )
-                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                } label: {
+                    ZStack(alignment: .bottom) {
+                        MediaArtwork(
+                            url: item.media.displayPosterURL,
+                            title: item.media.title,
+                            slot: .tagGrid,
+                            mediaType: item.media.ref.mediaType,
+                            orientation: item.media.posterOrientation
+                        )
+                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+
+                        if let progressText = bookProgressBadge(item) {
+                            Text(progressText)
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
+                                .background(.black.opacity(0.76), in: Capsule())
+                                .padding(5)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("View \(item.media.title)")
@@ -439,6 +720,16 @@ struct LibraryView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func bookProgressBadge(_ item: LibraryItem) -> String? {
+        guard item.media.ref.mediaType == "book" else { return nil }
+        if let text = item.tracking.progress?.compactDisplayText(
+            preferredMode: ProgressDisplayPreferences.mode(for: item.media.ref)
+        ) {
+            return text
+        }
+        return LibraryViewModel.hasStatus(item, "Completed") ? "Complete" : nil
     }
 
     private func libraryList(_ items: [LibraryItem]) -> some View {
@@ -459,26 +750,57 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var paginationFooter: some View {
-        if viewModel.isLoadingNextPage {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        } else if let error = viewModel.nextPageErrorMessage {
-            LibraryStateCard(
-                title: "Could not load more",
-                systemImage: "exclamationmark.triangle",
-                message: error,
-                actionTitle: "Retry"
-            ) {
-                Task { await viewModel.loadNextPage() }
+        VStack(spacing: 0) {
+            Group {
+                if viewModel.isLoadingNextPage {
+                    ProgressView()
+                        .tint(.white)
+                } else if let error = viewModel.nextPageErrorMessage {
+                    LibraryStateCard(
+                        title: "Could not load more",
+                        systemImage: "exclamationmark.triangle",
+                        message: error,
+                        actionTitle: "Retry"
+                    ) {
+                        Task { await viewModel.loadNextPage() }
+                    }
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .spineContentTransition(value: paginationPhase)
+
+            if viewModel.hasMorePages, let last = viewModel.displayedItems.last {
+                Color.clear
+                    .frame(height: 1)
+                    .id(last.id)
+                    .onAppear {
+                        Task {
+                            await viewModel.loadNextPageIfNeeded(currentItem: last)
+                        }
+                    }
             }
         }
     }
 
-    private func mediaDestination(for item: LibraryItem) -> some View {
+    private var paginationPhase: String {
+        if viewModel.isLoadingNextPage {
+            return "loading"
+        }
+        if viewModel.nextPageErrorMessage != nil {
+            return "error"
+        }
+        return viewModel.hasMorePages ? "available" : "empty"
+    }
+
+    private func mediaDestination(
+        for item: LibraryItem,
+        browsingContext: MediaBrowsingContext? = nil
+    ) -> some View {
         MediaDetailView(
             ref: item.media.ref,
+            browsingContext: browsingContext,
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
@@ -545,7 +867,7 @@ private struct LibraryListRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
 
-                Text(item.tracking.status ?? "Tracked")
+                Text(item.tracking.status.map(item.media.ref.trackingStatusLabel) ?? "Tracked")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)
@@ -584,6 +906,8 @@ private struct LibraryListRow: View {
             if let progressText = progress.compactDisplayText(preferredMode: ProgressDisplayPreferences.mode(for: item.media.ref)) {
                 parts.append(progressText)
             }
+        } else if item.media.ref.mediaType == "book", LibraryViewModel.hasStatus(item, "Completed") {
+            parts.append("Complete")
         }
         return parts.joined(separator: " - ")
     }
@@ -591,6 +915,7 @@ private struct LibraryListRow: View {
 
 private struct LibrarySkeleton: View {
     let mode: LibraryViewMode
+    let mediaType: String
 
     var body: some View {
         switch mode {
@@ -599,7 +924,7 @@ private struct LibrarySkeleton: View {
                 ForEach(0 ..< 12, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: PosterSlot.tagGrid.cornerRadius, style: .continuous)
                         .fill(.white.opacity(0.08))
-                        .frame(width: PosterSlot.tagGrid.size.width, height: PosterSlot.tagGrid.size.height)
+                        .frame(width: gridArtworkSize.width, height: gridArtworkSize.height)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -609,7 +934,7 @@ private struct LibrarySkeleton: View {
                     HStack(spacing: 14) {
                         RoundedRectangle(cornerRadius: PosterSlot.libraryRow.cornerRadius, style: .continuous)
                             .fill(.white.opacity(0.08))
-                            .frame(width: PosterSlot.libraryRow.size.width, height: PosterSlot.libraryRow.size.height)
+                            .frame(width: listArtworkSize.width, height: listArtworkSize.height)
 
                         VStack(alignment: .leading, spacing: 8) {
                             RoundedRectangle(cornerRadius: 4)
@@ -625,6 +950,14 @@ private struct LibrarySkeleton: View {
                 }
             }
         }
+    }
+
+    private var gridArtworkSize: CGSize {
+        PosterSlot.tagGrid.artworkSize(mediaType: mediaType, orientation: nil)
+    }
+
+    private var listArtworkSize: CGSize {
+        PosterSlot.libraryRow.artworkSize(mediaType: mediaType, orientation: nil)
     }
 }
 

@@ -3,19 +3,57 @@ import contextlib
 from django.apps import apps
 from django.contrib import admin
 from django.contrib.admin.sites import AlreadyRegistered
+from django.db.models import Q
+from django.utils import timezone
+
+from app.external_ratings import RATING_SOURCES
 
 from app.models import (
     BookSession,
     CustomBackdropPreference,
+    CustomLogoPreference,
     CustomPosterPreference,
     DiaryEntry,
     DiaryEntryTag,
     Episode,
+    ExternalRating,
     Item,
+    ItemFilterFacet,
     MediaLike,
     Tag,
     UserMessage,
 )
+
+
+class ExternalRatingFreshnessFilter(admin.SimpleListFilter):
+    """Filter rating rows with the same registry freshness rules as tasks."""
+
+    title = "freshness"
+    parameter_name = "freshness"
+
+    def lookups(self, request, model_admin):  # noqa: ARG002
+        return (("fresh", "Fresh"), ("stale", "Stale"), ("unregistered", "Unregistered"))
+
+    def queryset(self, request, queryset):  # noqa: ARG002
+        now = timezone.now()
+        terminal = [
+            ExternalRating.Status.AVAILABLE,
+            ExternalRating.Status.UNAVAILABLE,
+        ]
+        fresh = Q(pk__isnull=True)
+        for source, definition in RATING_SOURCES.items():
+            fresh |= Q(
+                rating_source=source,
+                status__in=terminal,
+                last_attempted_at__gte=now - definition["fresh_for"],
+            )
+        if self.value() == "fresh":
+            return queryset.filter(fresh)
+        if self.value() == "stale":
+            return queryset.filter(rating_source__in=RATING_SOURCES).exclude(fresh)
+        if self.value() == "unregistered":
+            return queryset.exclude(rating_source__in=RATING_SOURCES)
+        return queryset
 
 
 # Custom ModelAdmin classes with search functionality
@@ -33,6 +71,48 @@ class ItemAdmin(admin.ModelAdmin):
         "source",
     ]
     list_filter = ["media_type", "source"]
+
+
+@admin.register(ExternalRating)
+class ExternalRatingAdmin(admin.ModelAdmin):
+    """Admin visibility for cached external ratings."""
+
+    search_fields = ["item__title", "item__media_id", "rating_source"]
+    list_display = [
+        "item",
+        "rating_source",
+        "status",
+        "value",
+        "max_value",
+        "last_attempted_at",
+        "last_success_at",
+        "freshness",
+    ]
+    list_filter = [
+        "rating_source",
+        "item__media_type",
+        "item__source",
+        "status",
+        ExternalRatingFreshnessFilter,
+    ]
+    list_select_related = ["item"]
+
+    @admin.display(description="Freshness")
+    def freshness(self, rating):
+        definition = RATING_SOURCES.get(rating.rating_source)
+        if definition is None:
+            return "unregistered"
+        terminal = {
+            ExternalRating.Status.AVAILABLE,
+            ExternalRating.Status.UNAVAILABLE,
+        }
+        return (
+            "fresh"
+            if rating.status in terminal
+            and rating.last_attempted_at
+            >= timezone.now() - definition["fresh_for"]
+            else "stale"
+        )
 
 
 @admin.register(Episode)
@@ -69,6 +149,15 @@ class MediaLikeAdmin(admin.ModelAdmin):
     list_filter = ["item__media_type", "created_at"]
 
 
+@admin.register(ItemFilterFacet)
+class ItemFilterFacetAdmin(admin.ModelAdmin):
+    """Admin for cached item filter facets."""
+
+    search_fields = ["item__title", "value"]
+    list_display = ["item", "facet_type", "value"]
+    list_filter = ["facet_type"]
+
+
 class CustomPosterPreferenceAdmin(admin.ModelAdmin):
     """Custom admin for CustomPosterPreference model."""
     
@@ -79,6 +168,14 @@ class CustomPosterPreferenceAdmin(admin.ModelAdmin):
 
 class CustomBackdropPreferenceAdmin(admin.ModelAdmin):
     """Custom admin for CustomBackdropPreference model."""
+
+    search_fields = ["item__title", "user__username"]
+    list_display = ["__str__", "user", "item", "updated_at"]
+    list_filter = ["user"]
+
+
+class CustomLogoPreferenceAdmin(admin.ModelAdmin):
+    """Custom admin for CustomLogoPreference model."""
 
     search_fields = ["item__title", "user__username"]
     list_display = ["__str__", "user", "item", "updated_at"]
@@ -121,6 +218,7 @@ class BookSessionAdmin(admin.ModelAdmin):
 
 admin.site.register(CustomPosterPreference, CustomPosterPreferenceAdmin)
 admin.site.register(CustomBackdropPreference, CustomBackdropPreferenceAdmin)
+admin.site.register(CustomLogoPreference, CustomLogoPreferenceAdmin)
 admin.site.register(DiaryEntry, DiaryEntryAdmin)
 admin.site.register(Tag, TagAdmin)
 admin.site.register(DiaryEntryTag, DiaryEntryTagAdmin)
@@ -134,12 +232,14 @@ SpecialModels = [
     "Episode",
     "BasicMedia",
     "CustomBackdropPreference",
+    "CustomLogoPreference",
     "CustomPosterPreference",
     "DiaryEntry",
     "Tag",
     "DiaryEntryTag",
     "BookSession",
     "MediaLike",
+    "ItemFilterFacet",
     "UserMessage",
 ]
 for model in app_models:

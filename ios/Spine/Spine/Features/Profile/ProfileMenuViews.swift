@@ -5,7 +5,7 @@ import UIKit
 @Observable
 private final class ProfileDiaryFilterViewModel {
     var entries: [DiaryEntry] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let filter: DiaryFilter
@@ -125,17 +125,20 @@ struct ProfileLikesView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load likes", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.media.isEmpty {
-                        DiaryStateCard(title: "No liked media yet", systemImage: "heart", message: "Media you like while logging will appear here.")
-                    } else {
-                        mediaGrid(viewModel.media)
+                    Group {
+                        if viewModel.isLoading, viewModel.media.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.media.isEmpty {
+                            DiaryStateCard(title: "Could not load likes", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.media.isEmpty {
+                            DiaryStateCard(title: "No liked media yet", systemImage: "heart", message: "Media you like while logging will appear here.")
+                        } else {
+                            mediaGrid(viewModel.media)
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -157,12 +160,24 @@ struct ProfileLikesView: View {
         }
     }
 
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.media.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
     private func mediaGrid(_ media: [MediaSummary]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(media) { item in
                 NavigationLink {
                     MediaDetailView(
                         ref: item.ref,
+                        browsingContext: MediaBrowsingContext(
+                            refs: media.map(\.ref),
+                            selected: item.ref
+                        ),
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,
@@ -193,7 +208,7 @@ struct ProfileLikesView: View {
 @Observable
 private final class ProfileLikesViewModel {
     var media: [MediaSummary] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
 
     private let profileRepository: ProfileRepository
@@ -239,28 +254,31 @@ private struct ProfileDiaryEntriesScreen: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load \(title.lowercased())", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.entries.isEmpty {
-                        DiaryStateCard(title: emptyTitle, systemImage: "text.bubble", message: emptyMessage)
-                    } else {
-                        DiaryEntryList(entries: viewModel.entries) { entry in
-                            DiaryLogDetailView(
-                                entryId: entry.id,
-                                diaryRepository: diaryRepository,
-                                mediaRepository: mediaRepository,
-                                trackingRepository: trackingRepository,
-                                currentUserId: currentUserId,
-                                selectedTab: selectedTab,
-                                onSelectTab: onSelectTab,
-                                onUnauthorized: onUnauthorized
-                            )
+                    Group {
+                        if viewModel.isLoading, viewModel.entries.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
+                            DiaryStateCard(title: "Could not load \(title.lowercased())", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.entries.isEmpty {
+                            DiaryStateCard(title: emptyTitle, systemImage: "text.bubble", message: emptyMessage)
+                        } else {
+                            DiaryEntryList(entries: viewModel.entries) { entry in
+                                DiaryLogDetailView(
+                                    entryId: entry.id,
+                                    diaryRepository: diaryRepository,
+                                    mediaRepository: mediaRepository,
+                                    trackingRepository: trackingRepository,
+                                    currentUserId: currentUserId,
+                                    selectedTab: selectedTab,
+                                    onSelectTab: onSelectTab,
+                                    onUnauthorized: onUnauthorized
+                                )
+                            }
                         }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -281,13 +299,21 @@ private struct ProfileDiaryEntriesScreen: View {
             }
         }
     }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
 }
 
 @MainActor
 @Observable
 private final class ProfileTagsViewModel {
     var tags: [DiaryTagSuggestion] = []
-    var isLoading = false
+    var isLoading = true
     var errorMessage: String?
     var totalTagUses: Int {
         tags.reduce(0) { $0 + $1.usageCount }
@@ -365,17 +391,20 @@ struct ProfileTagsView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load tags", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.tags.isEmpty {
-                        DiaryStateCard(title: "No tags yet", systemImage: "tag", message: "Tags you add while logging will appear here.")
-                    } else {
-                        tagsContent
+                    Group {
+                        if viewModel.isLoading, viewModel.tags.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.tags.isEmpty {
+                            DiaryStateCard(title: "Could not load tags", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.tags.isEmpty {
+                            DiaryStateCard(title: "No tags yet", systemImage: "tag", message: "Tags you add while logging will appear here.")
+                        } else {
+                            tagsContent
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -395,6 +424,14 @@ struct ProfileTagsView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.tags.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     @ViewBuilder
@@ -527,12 +564,13 @@ private struct ProfileTagRow: View {
 @Observable
 private final class ProfileListsViewModel {
     var lists: [CustomListSummary] = []
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
     private let listRepository: ListRepository
     private let onUnauthorized: () -> Void
+    private var hasLoaded = false
 
     init(listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
         self.listRepository = listRepository
@@ -540,12 +578,15 @@ private final class ProfileListsViewModel {
     }
 
     func load() async {
-        isLoading = true
+        isLoading = !hasLoaded
         errorMessage = nil
         defer { isLoading = false }
 
         do {
             lists = try await listRepository.list()
+            hasLoaded = true
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -576,29 +617,58 @@ private final class ProfileListsViewModel {
 struct ProfileListsView: View {
     @State private var viewModel: ProfileListsViewModel
     @State private var searchText = ""
-    @State private var presentedForm: CustomListFormMode?
+    @State private var presentedForm: ListComposerMode?
+    @State private var pendingCreatedListID: Int?
+    @State private var createdListDestination: ProfileCreatedListDestination?
 
     private let listRepository: ListRepository
+    private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
+    private let activityRepository: ActivityRepository
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
+    private let currentUserId: Int?
+    private let onLogout: () -> Void
+    private let onOpenDiary: () -> Void
+    private let onOpenLibrary: (LibraryShelf) -> Void
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
 
     init(
+        profileRepository: ProfileRepository,
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        activityRepository: ActivityRepository,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
+        currentUserId: Int? = nil,
+        onLogout: @escaping () -> Void = {},
+        onOpenDiary: @escaping () -> Void = {},
+        onOpenLibrary: @escaping (LibraryShelf) -> Void = { _ in },
         selectedTab: AppTab,
         onSelectTab: @escaping (AppTab) -> Void,
         onUnauthorized: @escaping () -> Void
     ) {
+        self.profileRepository = profileRepository
         self.listRepository = listRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
+        self.activityRepository = activityRepository
+        self.importCoordinator = importCoordinator
+        self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
+        self.currentUserId = currentUserId
+        self.onLogout = onLogout
+        self.onOpenDiary = onOpenDiary
+        self.onOpenLibrary = onOpenLibrary
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
@@ -611,17 +681,20 @@ struct ProfileListsView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 12) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load lists", systemImage: "exclamationmark.triangle", message: error)
-                    } else if viewModel.lists.isEmpty {
-                        DiaryStateCard(title: "No lists yet", systemImage: "list.bullet.rectangle", message: "Custom lists you create will appear here.")
-                    } else {
-                        listsContent
+                    Group {
+                        if viewModel.isLoading, viewModel.lists.isEmpty {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
+                        } else if let error = viewModel.errorMessage, viewModel.lists.isEmpty {
+                            DiaryStateCard(title: "Could not load lists", systemImage: "exclamationmark.triangle", message: error)
+                        } else if viewModel.lists.isEmpty {
+                            DiaryStateCard(title: "No lists yet", systemImage: "list.bullet.rectangle", message: "Custom lists you create will appear here.")
+                        } else {
+                            listsContent
+                        }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -642,19 +715,36 @@ struct ProfileListsView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .disabled(viewModel.isSaving)
+                .disabled(viewModel.isLoading)
             }
         }
-        .sheet(item: $presentedForm) { mode in
-            CustomListFormSheet(mode: mode, isSaving: viewModel.isSaving) { request in
-                await viewModel.create(request)
+        .fullScreenCover(item: $presentedForm, onDismiss: openCreatedListIfNeeded) { mode in
+            ListComposerView(
+                mode: mode,
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            ) { listID in
+                pendingCreatedListID = listID
+                Task { await viewModel.load() }
             }
+        }
+        .navigationDestination(item: $createdListDestination) { destination in
+            listDetailDestination(listID: destination.id)
         }
         .task {
             if viewModel.lists.isEmpty {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.lists.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     @ViewBuilder
@@ -672,10 +762,19 @@ struct ProfileListsView: View {
                 NavigationLink {
                     ProfileListDetailView(
                         listId: list.id,
+                        profileRepository: profileRepository,
                         listRepository: listRepository,
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,
+                        activityRepository: activityRepository,
+                        importCoordinator: importCoordinator,
+                        storygraphImportCoordinator: storygraphImportCoordinator,
+                        goodreadsImportCoordinator: goodreadsImportCoordinator,
+                        currentUserId: currentUserId,
+                        onLogout: onLogout,
+                        onOpenDiary: onOpenDiary,
+                        onOpenLibrary: onOpenLibrary,
                         selectedTab: selectedTab,
                         onSelectTab: onSelectTab,
                         onUnauthorized: onUnauthorized
@@ -693,6 +792,38 @@ struct ProfileListsView: View {
         guard !query.isEmpty else { return viewModel.lists }
         return viewModel.lists.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
+
+    private func openCreatedListIfNeeded() {
+        guard let listID = pendingCreatedListID else { return }
+        pendingCreatedListID = nil
+        createdListDestination = ProfileCreatedListDestination(id: listID)
+    }
+
+    private func listDetailDestination(listID: Int) -> some View {
+        ProfileListDetailView(
+            listId: listID,
+            profileRepository: profileRepository,
+            listRepository: listRepository,
+            mediaRepository: mediaRepository,
+            trackingRepository: trackingRepository,
+            diaryRepository: diaryRepository,
+            activityRepository: activityRepository,
+            importCoordinator: importCoordinator,
+            storygraphImportCoordinator: storygraphImportCoordinator,
+            goodreadsImportCoordinator: goodreadsImportCoordinator,
+            currentUserId: currentUserId,
+            onLogout: onLogout,
+            onOpenDiary: onOpenDiary,
+            onOpenLibrary: onOpenLibrary,
+            selectedTab: selectedTab,
+            onSelectTab: onSelectTab,
+            onUnauthorized: onUnauthorized
+        )
+    }
+}
+
+private struct ProfileCreatedListDestination: Identifiable, Hashable {
+    let id: Int
 }
 
 private struct ProfileListRow: View {
@@ -773,27 +904,141 @@ private struct ProfileListRow: View {
 @Observable
 private final class ProfileListDetailViewModel {
     var list: CustomListDetail?
-    var isLoading = false
+    var filter = MediaFilterState()
+    var filterOptions: MediaFilterOptionsResponse = .empty
+    var filteredItems: [MediaSummary] = []
+    var isLoading = true
+    var isLoadingFilteredItems = false
     var isSaving = false
     var errorMessage: String?
+    var nextPageErrorMessage: String?
 
     private let listId: Int
     private let listRepository: ListRepository
+    private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
+    private var nextPage: String?
+    private var requestGeneration = 0
 
-    init(listId: Int, listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
+    init(
+        listId: Int,
+        listRepository: ListRepository,
+        filterOptionsRepository: FilterOptionsRepository? = nil,
+        onUnauthorized: @escaping () -> Void
+    ) {
         self.listId = listId
         self.listRepository = listRepository
+        self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
     }
 
+    var displayedItems: [MediaSummary] {
+        filteredItems
+    }
+
     func load() async {
-        isLoading = true
+        requestGeneration += 1
+        let generation = requestGeneration
+        isLoading = list == nil
         errorMessage = nil
-        defer { isLoading = false }
+        let requestFilter = filter
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
-            list = try await listRepository.detail(id: listId)
+            let detail = try await listRepository.detail(id: listId)
+            let response = try await listRepository.items(listId: listId, page: nil, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            filteredItems = response.results
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            list = detail.withItems(response.results)
+            Task { await loadFilterOptions() }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            errorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadFilterOptions() async {
+        do {
+            filterOptions = try await filterOptionsRepository.options(scope: .list(id: listId), filter: filter)
+        } catch {
+            filterOptions = .empty
+        }
+    }
+
+    func loadFilteredItems(reset: Bool) async {
+        if reset {
+            requestGeneration += 1
+            filteredItems = []
+            nextPage = nil
+        }
+        let generation = requestGeneration
+        let requestFilter = filter
+        isLoadingFilteredItems = true
+        nextPageErrorMessage = nil
+        defer { isLoadingFilteredItems = false }
+
+        do {
+            let response = try await listRepository.items(listId: listId, page: reset ? nil : nextPage, filter: requestFilter)
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            if reset {
+                filteredItems = response.results
+            } else {
+                let existingIDs = Set(filteredItems.map(\.id))
+                filteredItems += response.results.filter { !existingIDs.contains($0.id) }
+            }
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            if !requestFilter.isActive || list?.items.isEmpty == true {
+                list = list?.withItems(filteredItems)
+            }
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            nextPageErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadNextFilteredPageIfNeeded(currentItem: MediaSummary) async {
+        guard nextPage != nil, !isLoadingFilteredItems,
+              let thresholdIndex = filteredItems.index(filteredItems.endIndex, offsetBy: -8, limitedBy: filteredItems.startIndex) ?? filteredItems.indices.first,
+              let currentIndex = filteredItems.firstIndex(where: { $0.id == currentItem.id }),
+              currentIndex >= thresholdIndex else {
+            return
+        }
+        await loadFilteredItems(reset: false)
+    }
+
+    func loadAllItemsForEditing() async {
+        guard let currentList = list, currentList.items.count < currentList.itemsCount else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            var items: [MediaSummary] = []
+            var page: String?
+            repeat {
+                let response = try await listRepository.items(listId: listId, page: page, filter: MediaFilterState())
+                let existingIDs = Set(items.map(\.id))
+                items += response.results.filter { !existingIDs.contains($0.id) }
+                page = APIPageCursor.nextPage(from: response.next)
+            } while page != nil
+            list = currentList.withItems(items)
+            if !filter.isActive {
+                filteredItems = items
+                nextPage = nil
+            }
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -808,7 +1053,12 @@ private final class ProfileListDetailViewModel {
         defer { isSaving = false }
 
         do {
-            list = try await listRepository.update(id: listId, request)
+            let updatedList = try await listRepository.update(id: listId, request)
+            list = updatedList
+            if !filter.isActive {
+                filteredItems = updatedList.items
+                nextPage = nil
+            }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -857,28 +1107,21 @@ private final class ProfileListDetailViewModel {
         guard var items = list?.items else { return }
         items.move(fromOffsets: source, toOffset: destination)
         guard items.allSatisfy({ $0.ref.itemId != nil }) else { return }
-        list = list.map { current in
-            CustomListDetail(
-                id: current.id,
-                name: current.name,
-                slug: current.slug,
-                description: current.description,
-                visibility: current.visibility,
-                isRanked: current.isRanked,
-                owner: current.owner,
-                imageUrl: current.imageUrl,
-                itemsCount: current.itemsCount,
-                updatedAt: current.updatedAt,
-                likeCount: current.likeCount,
-                items: items
-            )
+        list = list?.withItems(items)
+        if !filter.isActive {
+            filteredItems = items
+            nextPage = nil
         }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
 
         do {
-            list = try await listRepository.reorderItems(listId: listId, itemIds: items.compactMap(\.ref.itemId))
+            let updatedList = try await listRepository.reorderItems(listId: listId, itemIds: items.compactMap(\.ref.itemId))
+            list = updatedList
+            if !filter.isActive {
+                filteredItems = updatedList.items
+            }
         } catch {
             errorMessage = error.localizedDescription
             await load()
@@ -889,36 +1132,84 @@ private final class ProfileListDetailViewModel {
     }
 }
 
+private extension CustomListDetail {
+    func withItems(_ items: [MediaSummary]) -> CustomListDetail {
+        CustomListDetail(
+            id: id,
+            name: name,
+            slug: slug,
+            description: description,
+            tags: tags,
+            visibility: visibility,
+            isRanked: isRanked,
+            owner: owner,
+            imageUrl: imageUrl,
+            itemsCount: itemsCount,
+            updatedAt: updatedAt,
+            likeCount: likeCount,
+            items: items
+        )
+    }
+}
+
 private struct ProfileListDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: ProfileListDetailViewModel
-    @State private var presentedForm: CustomListFormMode?
+    @State private var presentedForm: ListComposerMode?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var isDeleteAlertPresented = false
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var edgeDragOffset: CGFloat = 0
 
     private let listRepository: ListRepository
+    private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
+    private let activityRepository: ActivityRepository
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
+    private let currentUserId: Int?
+    private let onLogout: () -> Void
+    private let onOpenDiary: () -> Void
+    private let onOpenLibrary: (LibraryShelf) -> Void
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
 
     init(
         listId: Int,
+        profileRepository: ProfileRepository,
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
+        activityRepository: ActivityRepository,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
+        currentUserId: Int? = nil,
+        onLogout: @escaping () -> Void = {},
+        onOpenDiary: @escaping () -> Void = {},
+        onOpenLibrary: @escaping (LibraryShelf) -> Void = { _ in },
         selectedTab: AppTab,
         onSelectTab: @escaping (AppTab) -> Void,
         onUnauthorized: @escaping () -> Void
     ) {
+        self.profileRepository = profileRepository
         self.listRepository = listRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
+        self.activityRepository = activityRepository
+        self.importCoordinator = importCoordinator
+        self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
+        self.currentUserId = currentUserId
+        self.onLogout = onLogout
+        self.onOpenDiary = onOpenDiary
+        self.onOpenLibrary = onOpenLibrary
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
@@ -931,27 +1222,36 @@ private struct ProfileListDetailView: View {
 
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
-                    } else if let error = viewModel.errorMessage {
-                        DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
-                    } else if let list = viewModel.list {
-                        listHeader(list)
-                            .padding(.top, -(topSafeAreaInset + 32))
-                        if list.items.isEmpty {
-                            DiaryStateCard(title: "No items yet", systemImage: "square.grid.2x2", message: "Add items from any media detail page.")
+                    Group {
+                        if viewModel.isLoading, viewModel.list == nil {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(maxWidth: .infinity, minHeight: 320)
                                 .padding(.horizontal, 14)
-                        } else {
-                            mediaGrid(list.items)
+                                .padding(.top, 12)
+                        } else if let error = viewModel.errorMessage, viewModel.list == nil {
+                            DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
                                 .padding(.horizontal, 14)
+                                .padding(.top, 12)
+                        } else if let list = viewModel.list {
+                            listHeader(list)
+                                .padding(.top, -(topSafeAreaInset + 32))
+                            if viewModel.displayedItems.isEmpty {
+                                DiaryStateCard(
+                                    title: viewModel.filter.isActive ? "No matching items" : "No items yet",
+                                    systemImage: "square.grid.2x2",
+                                    message: viewModel.filter.isActive ? "Try changing or resetting the filters." : "Add items from any media detail page."
+                                )
+                                    .padding(.horizontal, 14)
+                            } else {
+                                mediaGrid(viewModel.displayedItems)
+                                    .padding(.horizontal, 14)
+                                filteredPaginationFooter
+                                    .padding(.horizontal, 14)
+                            }
                         }
                     }
+                    .spineContentTransition(value: contentPhase)
                 }
                 .padding(.bottom, 28)
             }
@@ -980,19 +1280,27 @@ private struct ProfileListDetailView: View {
             }
         }
         .onPreferenceChange(ProfileListTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
-        .sheet(item: $presentedForm) { mode in
-            CustomListFormSheet(
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
+            MediaDetailView(
+                ref: selection.ref,
+                browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedForm) { mode in
+            ListComposerView(
                 mode: mode,
-                currentList: viewModel.list,
-                isSaving: viewModel.isSaving,
-                onDeleteItem: { item in
-                    await viewModel.remove(item)
-                },
-                onMoveItem: { source, destination in
-                    await viewModel.move(from: source, to: destination)
-                }
-            ) { request in
-                await viewModel.update(request)
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            ) { _ in
+                Task { await viewModel.load() }
             }
         }
         .alert("Delete List?", isPresented: $isDeleteAlertPresented) {
@@ -1012,6 +1320,14 @@ private struct ProfileListDetailView: View {
                 await viewModel.load()
             }
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.list != nil,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var edgeSwipeBackGesture: some Gesture {
@@ -1040,10 +1356,24 @@ private struct ProfileListDetailView: View {
             Spacer()
 
             if viewModel.list != nil {
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .list(id: viewModel.list?.id ?? 0),
+                    options: viewModel.filterOptions
+                ) {
+                    Task {
+                        await viewModel.loadFilterOptions()
+                        await viewModel.loadFilteredItems(reset: true)
+                    }
+                }
+
                 Menu {
                     Button("Edit List", systemImage: "slider.horizontal.3") {
-                        if let list = viewModel.list {
-                            presentedForm = .edit(list)
+                        Task {
+                            await viewModel.loadAllItemsForEditing()
+                            if let list = viewModel.list {
+                                presentedForm = .edit(list)
+                            }
                         }
                     }
                     Button("Delete List", systemImage: "trash", role: .destructive) {
@@ -1071,11 +1401,60 @@ private struct ProfileListDetailView: View {
                 .padding(.bottom, 20)
                 .padding(.top, backdropURL == nil ? 18 : topSafeAreaInset + 112)
         }
-        .frame(maxWidth: .infinity, minHeight: backdropURL == nil ? nil : topSafeAreaInset + 340, alignment: .bottomLeading)
+        .frame(maxWidth: .infinity, minHeight: backdropURL == nil ? nil : topSafeAreaInset + 408, alignment: .bottomLeading)
     }
 
     private func listHeaderText(_ list: CustomListDetail) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let isOwnerCurrentUser = list.owner.id == currentUserId
+
+        return VStack(alignment: .leading, spacing: 7) {
+            NavigationLink {
+                ProfileView(
+                    profileRepository: profileRepository,
+                    diaryRepository: diaryRepository,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    activityRepository: activityRepository,
+                    listRepository: listRepository,
+                    importCoordinator: importCoordinator,
+                    storygraphImportCoordinator: storygraphImportCoordinator,
+                    goodreadsImportCoordinator: goodreadsImportCoordinator,
+                    currentUserId: currentUserId,
+                    onLogout: onLogout,
+                    onOpenDiary: onOpenDiary,
+                    onOpenLibrary: onOpenLibrary,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    username: isOwnerCurrentUser ? nil : list.owner.username,
+                    isPushedProfile: true,
+                    onUnauthorized: onUnauthorized
+                )
+            } label: {
+                HStack(spacing: 9) {
+                    SpineAsyncImage(url: URL(string: list.owner.avatarUrl ?? "")) { phase in
+                        if case let .success(image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.54))
+                        }
+                    }
+                    .frame(width: 21, height: 21)
+                    .background(.white.opacity(0.12), in: Circle())
+                    .clipShape(Circle())
+
+                    Text(list.owner.username)
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+
             Text(list.name)
                 .font(.system(size: 34, weight: .black))
                 .foregroundStyle(.white)
@@ -1098,6 +1477,10 @@ private struct ProfileListDetailView: View {
                 }
             }
 
+            if !list.tags.isEmpty {
+                tagRow(list.tags)
+            }
+
             let description = list.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !description.isEmpty {
                 Text(description)
@@ -1109,19 +1492,26 @@ private struct ProfileListDetailView: View {
         }
     }
 
+    private func tagRow(_ tags: [String]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(tags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(.white.opacity(0.13), in: Capsule())
+                }
+            }
+        }
+    }
+
     private func mediaGrid(_ items: [MediaSummary]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(items) { item in
-                NavigationLink {
-                    MediaDetailView(
-                        ref: item.ref,
-                        mediaRepository: mediaRepository,
-                        trackingRepository: trackingRepository,
-                        diaryRepository: diaryRepository,
-                        selectedTab: selectedTab,
-                        onSelectTab: onSelectTab,
-                        onUnauthorized: onUnauthorized
-                    )
+                Button {
+                    selectedMedia = MediaBrowsingSelection(ref: item.ref, within: items.map(\.ref))
                 } label: {
                     VStack(spacing: 5) {
                         MediaArtwork(
@@ -1142,8 +1532,35 @@ private struct ProfileListDetailView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .task {
+                    await viewModel.loadNextFilteredPageIfNeeded(currentItem: item)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var filteredPaginationFooter: some View {
+        Group {
+            if viewModel.isLoadingFilteredItems {
+                ProgressView()
+                    .tint(.white)
+            } else if let error = viewModel.nextPageErrorMessage {
+                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 56)
+        .spineContentTransition(value: filteredPaginationPhase)
+    }
+
+    private var filteredPaginationPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingFilteredItems,
+            hasContent: false,
+            hasError: viewModel.nextPageErrorMessage != nil
+        )
     }
 }
 
@@ -1197,7 +1614,7 @@ private struct ProfileListBackdropArtwork: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                AsyncImage(url: URL(string: urlString)) { phase in
+                SpineAsyncImage(url: URL(string: urlString)) { phase in
                     switch phase {
                     case let .success(image):
                         image
@@ -1373,7 +1790,6 @@ private struct CustomListFormSheet: View {
         VStack(spacing: 0) {
             Picker("Visibility", selection: $visibility) {
                 Text("Public").tag("public")
-                Text("Unlisted").tag("unlisted")
                 Text("Private").tag("private")
             }
             .font(.system(size: 15, weight: .semibold))

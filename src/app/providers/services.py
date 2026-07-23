@@ -17,6 +17,7 @@ from app.providers import (
     mal,
     mangaupdates,
     manual,
+    musicbrainz,
     openlibrary,
     tmdb,
 )
@@ -35,11 +36,23 @@ def get_redis_client():
 
 redis_db = get_redis_client()
 bucket_key = f"{settings.REDIS_PREFIX}_api" if settings.REDIS_PREFIX else "api"
+musicbrainz_bucket_key = (
+    f"{settings.REDIS_PREFIX}_musicbrainz_api"
+    if settings.REDIS_PREFIX
+    else "musicbrainz_api"
+)
 
 session = LimiterSession(
     per_second=5,
     bucket_class=RedisBucket,
     bucket_kwargs={"redis": redis_db, "bucket_key": bucket_key},
+)
+
+musicbrainz_session = LimiterSession(
+    per_second=1,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": musicbrainz_bucket_key},
+    limit_statuses=(requests.codes.service_unavailable,),
 )
 
 session.mount("http://", HTTPAdapter(max_retries=3))
@@ -73,6 +86,16 @@ session.mount(
     "https://api.hardcover.app/v1/graphql",
     LimiterAdapter(per_minute=50),
 )
+session.mount(
+    "https://www.steamgriddb.com/api/v2",
+    LimiterAdapter(per_second=3),
+)
+session.mount(
+    "https://store.steampowered.com/api",
+    LimiterAdapter(per_second=3),
+)
+
+
 class ProviderAPIError(Exception):
     """Exception raised when a provider API fails to respond."""
 
@@ -134,6 +157,8 @@ def api_request(
     data=None,
     headers=None,
     response_format="json",
+    request_session=None,
+    timeout=None,
 ):
     """Make a request to the API and return the response.
 
@@ -145,6 +170,8 @@ def api_request(
         data: Raw data for POST
         headers: Request headers
         response_format: "json" (default) or "xml" for XML parsing
+        request_session: Optional requests session; defaults to the shared provider session
+        timeout: Optional request timeout; defaults to the global provider timeout
 
     Returns:
         Parsed JSON dict or ElementTree for XML
@@ -153,16 +180,18 @@ def api_request(
         request_kwargs = {
             "url": url,
             "headers": headers,
-            "timeout": settings.REQUEST_TIMEOUT,
+            "timeout": timeout or settings.REQUEST_TIMEOUT,
         }
+
+        active_session = request_session or session
 
         if method == "GET":
             request_kwargs["params"] = params
-            request_func = session.get
+            request_func = active_session.get
         elif method == "POST":
             request_kwargs["data"] = data
             request_kwargs["json"] = params
-            request_func = session.post
+            request_func = active_session.post
 
         response = request_func(**request_kwargs)
         response.raise_for_status()
@@ -189,6 +218,8 @@ def api_request(
                 data=data,
                 headers=headers,
                 response_format=response_format,
+                request_session=request_session,
+                timeout=timeout,
             )
 
         raise error from None
@@ -242,30 +273,100 @@ def get_media_metadata(
             else openlibrary.book(media_id)
         ),
         MediaTypes.COMIC.value: lambda: comicvine.comic(media_id),
+        MediaTypes.MUSIC.value: lambda: musicbrainz.music(media_id),
     }
     return metadata_retrievers[media_type]()
 
 
-def search(media_type, query, page, source=None):
+def search(
+    media_type,
+    query,
+    page,
+    source=None,
+    *,
+    preserve_ranking_fields=False,
+    timeout=None,
+):
     """Search for media based on the query and return the results."""
+    search_options = {}
+    if preserve_ranking_fields:
+        search_options["preserve_ranking_fields"] = True
+    if timeout is not None:
+        search_options["timeout"] = timeout
+
     search_handlers = {
         MediaTypes.MANGA.value: lambda: (
-            mangaupdates.search(query, page)
+            mangaupdates.search(
+                query,
+                page,
+                **search_options,
+            )
             if source == Sources.MANGAUPDATES.value
-            else mal.search(media_type, query, page)
+            else mal.search(
+                media_type,
+                query,
+                page,
+                **search_options,
+            )
         ),
-        MediaTypes.ANIME.value: lambda: mal.search(media_type, query, page),
-        MediaTypes.TV.value: lambda: tmdb.search(media_type, query, page),
-        MediaTypes.MOVIE.value: lambda: tmdb.search(media_type, query, page),
-        MediaTypes.SEASON.value: lambda: tmdb.search(MediaTypes.TV.value, query, page),
-        MediaTypes.EPISODE.value: lambda: tmdb.search(MediaTypes.TV.value, query, page),
-        MediaTypes.GAME.value: lambda: igdb.search(query, page),
+        MediaTypes.ANIME.value: lambda: mal.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.TV.value: lambda: tmdb.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.MOVIE.value: lambda: tmdb.search(
+            media_type,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.SEASON.value: lambda: tmdb.search(
+            MediaTypes.TV.value,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.EPISODE.value: lambda: tmdb.search(
+            MediaTypes.TV.value,
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.GAME.value: lambda: igdb.search(
+            query,
+            page,
+            **search_options,
+        ),
         MediaTypes.BOOK.value: lambda: (
-            openlibrary.search(query, page)
+            openlibrary.search(
+                query,
+                page,
+                **search_options,
+            )
             if source == Sources.OPENLIBRARY.value
-            else hardcover.search(query, page)
+            else hardcover.search(
+                query,
+                page,
+                **search_options,
+            )
         ),
-        MediaTypes.COMIC.value: lambda: comicvine.search(query, page),
+        MediaTypes.COMIC.value: lambda: comicvine.search(
+            query,
+            page,
+            **search_options,
+        ),
+        MediaTypes.MUSIC.value: lambda: musicbrainz.search(
+            query,
+            page,
+            **search_options,
+        ),
     }
     return search_handlers[media_type]()
 
@@ -289,6 +390,18 @@ def discover(media_type, *, source=None, page=1, page_size=None, genre=None, yea
             return openlibrary.discover(page=page, page_size=page_size, genre=genre, year=year)
         return hardcover.discover(page=page, page_size=page_size, genre=genre, year=year)
 
+    if source == Sources.MUSICBRAINZ.value and media_type == MediaTypes.MUSIC.value:
+        if year:
+            msg = "year discovery is not supported for music."
+            raise ValueError(msg)
+        if platform:
+            msg = "platform discovery is only supported for games."
+            raise ValueError(msg)
+        if not str(genre or "").strip():
+            msg = "genre is required for MusicBrainz discovery."
+            raise ValueError(msg)
+        return musicbrainz.discover(page=page, page_size=page_size, genre=genre)
+
     msg = f"Discovery is not supported for media_type={media_type!r} and source={source!r}."
     raise NotImplementedError(msg)
 
@@ -297,6 +410,31 @@ def get_person_page(source, person_id):
     """Return person details and credits for the person page."""
     if source == Sources.TMDB.value:
         return tmdb.person_page(person_id)
+    if source == Sources.HARDCOVER.value:
+        return hardcover.person_page(person_id)
     if source == Sources.OPENLIBRARY.value:
         return openlibrary.person_page(person_id)
+    if source == Sources.MUSICBRAINZ.value:
+        return musicbrainz.person_page(person_id)
     raise_not_found_error(source, person_id, "person")
+
+
+def get_company(source, company_id):
+    """Return a provider company profile for native company pages."""
+    if source == Sources.IGDB.value:
+        return igdb.company(company_id)
+    raise_not_found_error(source, company_id, "company")
+
+
+def get_company_catalog(source, company_id, role):
+    """Return normalized provider games for a company catalogue role."""
+    if source == Sources.IGDB.value:
+        return igdb.company_catalog(company_id, role)
+    raise_not_found_error(source, company_id, "company")
+
+
+def company_catalog_count(source, company, role):
+    """Return the provider-advertised count for a company catalogue role."""
+    if source == Sources.IGDB.value:
+        return igdb.company_catalog_count(company, role)
+    raise_not_found_error(source, company.get("id"), "company")

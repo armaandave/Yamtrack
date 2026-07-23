@@ -63,3 +63,7 @@ fi
 
 curl --fail --show-error --silent https://api.spine-api.com/api/v1/health/
 echo
+
+meta_json="$(curl --fail --show-error --silent https://api.spine-api.com/api/v1/meta/)"
+python3 -c 'import json, sys; data = json.load(sys.stdin); missing = ({"music"} - set(data["media_types"])) | ({"musicbrainz"} - set(data["source_choices"])); missing and sys.exit(f"Music rollout missing from API metadata: {sorted(missing)}")' <<<"$meta_json"
+echo "Music rollout verified."

@@ -26,6 +26,13 @@ class NotificationTests(TestCase):
 
     def setUp(self):
         """Set up test data."""
+        metadata_patcher = patch(
+            "app.models.providers.services.get_media_metadata",
+            return_value={"max_progress": 100},
+        )
+        metadata_patcher.start()
+        self.addCleanup(metadata_patcher.stop)
+
         # Create users
         self.credentials = {
             "username": "user1",

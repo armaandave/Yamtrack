@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from app.models import (
+    DiaryEntry,
     MediaTypes,
     Movie,
     Status,
@@ -45,16 +46,18 @@ class ImportTrakt(TestCase):
         trakt_importer = TraktImporter("test", self.user, "new")
         trakt_importer.process_watched_movie(movie_entry)
 
-        self.assertEqual(len(trakt_importer.bulk_media[MediaTypes.MOVIE.value]), 1)
-        self.assertEqual(len(trakt_importer.media_instances[MediaTypes.MOVIE.value]), 1)
-
-        # Verify progress is set to 1 for completed movies
-        movie_obj = trakt_importer.bulk_media[MediaTypes.MOVIE.value][0]
+        self.assertEqual(len(trakt_importer.single_weight_logs), 1)
+        self.assertEqual(trakt_importer._import_single_weight_history()[MediaTypes.MOVIE.value], 1)
+        movie_obj = Movie.objects.get(user=self.user)
         self.assertEqual(movie_obj.progress, 1)
+        self.assertEqual(movie_obj.status, Status.COMPLETED.value)
+        self.assertFalse(movie_obj.direct_consumption)
+        self.assertEqual(DiaryEntry.objects.filter(user=self.user).count(), 1)
 
-        # Process the same movie again to test repeat handling
+        # Reprocessing the same source record is idempotent.
         trakt_importer.process_watched_movie(movie_entry)
-        self.assertEqual(len(trakt_importer.bulk_media[MediaTypes.MOVIE.value]), 2)
+        self.assertEqual(trakt_importer._import_single_weight_history()[MediaTypes.MOVIE.value], 0)
+        self.assertEqual(DiaryEntry.objects.filter(user=self.user).count(), 1)
 
     @patch("integrations.imports.trakt.TraktImporter._get_metadata")
     def test_process_watched_episode(self, mock_get_metadata):
@@ -212,6 +215,7 @@ class ImportTrakt(TestCase):
 
         self.assertEqual(imported_counts[MediaTypes.MOVIE.value], 1)
         self.assertEqual(Movie.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(DiaryEntry.objects.filter(user=self.user).count(), 1)
 
     @patch("integrations.imports.trakt.TraktImporter._get_paginated_data")
     @patch("integrations.imports.trakt.TraktImporter._make_api_request")
@@ -251,6 +255,7 @@ class ImportTrakt(TestCase):
 
         self.assertEqual(imported_counts[MediaTypes.MOVIE.value], 1)
         self.assertEqual(Movie.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(DiaryEntry.objects.filter(user=self.user).count(), 1)
 
     def test_trakt_importer_with_refresh_token(self):
         """Test TraktImporter initialization with refresh token."""

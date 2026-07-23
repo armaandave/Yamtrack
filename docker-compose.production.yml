@@ -6,7 +6,10 @@
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        SPINE_COMMIT_SHA: ${SPINE_COMMIT_SHA:-unknown}
     container_name: spine
     restart: unless-stopped
     depends_on:
@@ -14,6 +17,8 @@ services:
       - redis
     env_file:
       - .env.production
+    environment:
+      MUSIC_ENABLED: "True"
     ports:
       - "8000:8000"
     volumes:

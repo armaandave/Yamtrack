@@ -44,10 +44,11 @@ def handle_error(error):
     )
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for media on MangaUpdates."""
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
     cache_key = (
-        f"search_{Sources.MANGAUPDATES.value}_{MediaTypes.MANGA.value}_{query}_{page}"
+        f"search_{Sources.MANGAUPDATES.value}_{MediaTypes.MANGA.value}_{query}_{page}{rank_suffix}"
     )
     data = cache.get(cache_key)
 
@@ -74,6 +75,7 @@ def search(query, page):
                 "POST",
                 url,
                 params=params,
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             response = handle_error(error)
@@ -88,7 +90,12 @@ def search(query, page):
             }
             for media in response["results"]
         ]
-        results = rank_results(query, results, MediaTypes.MANGA.value)
+        results = rank_results(
+            query,
+            results,
+            MediaTypes.MANGA.value,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         total_results = response["total_hits"]
         data = helpers.format_search_response(

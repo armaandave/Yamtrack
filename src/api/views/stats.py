@@ -1,9 +1,7 @@
-from datetime import datetime
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
-from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -11,43 +9,86 @@ from rest_framework.views import APIView
 
 from api.permissions import can_view_user_profile
 from api.serializers.common import media_summary_from_item
-from app import statistics as stats
-
-
-def _date_range(request):
-    start = request.query_params.get("start_date")
-    end = request.query_params.get("end_date")
-    if start == "all" and end == "all":
-        return None, None
-    today = timezone.localdate()
-    start_date = parse_date(start) if start else today.replace(year=today.year - 1)
-    end_date = parse_date(end) if end else today
-    return (
-        timezone.make_aware(datetime.combine(start_date, datetime.min.time())),
-        timezone.make_aware(datetime.combine(end_date, datetime.max.time())),
-    )
+from api.services import stats as stats_service
+from app import statistics as legacy_stats
 
 
 def stats_payload(user, request):
-    """Build a compact stats response."""
-    start_date, end_date = _date_range(request)
-    user_media, media_count = stats.get_user_media(user, start_date, end_date)
-    score_distribution, top_rated = stats.get_score_distribution(user_media)
-    status_distribution = stats.get_status_distribution(user_media)
-    return {
-        "start_date": start_date,
-        "end_date": end_date,
-        "media_count": media_count,
-        "media_type_distribution": stats.get_media_type_distribution(media_count),
-        "score_distribution": score_distribution,
-        "status_distribution": status_distribution,
-        "top_rated": [
+    """Build legacy chart keys plus the native-client stats contract."""
+    stats_range = stats_service.parse_stats_range(request.query_params)
+    native_payload = stats_service.build_stats_payload(
+        user=user,
+        viewer=request.user,
+        request=request,
+        stats_range=stats_range,
+    )
+    user_media, media_count = legacy_stats.get_user_media(
+        user,
+        stats_range.start_datetime,
+        stats_range.end_datetime,
+    )
+    if request.user == user:
+        score_distribution, top_rated = legacy_stats.get_score_distribution(user_media)
+        score_distribution = _wire_score_distribution(score_distribution, user_media)
+        legacy_top_rated = [
             {
-                "media": media_summary_from_item(media.item, request=request, user=user),
-                "rating": str(media.score) if media.score is not None else None,
+                "media": media_summary_from_item(
+                    media.item,
+                    request=request,
+                    user=None,
+                    include_user_state=False,
+                ),
+                "rating": (
+                    str(stats_service.wire_rating(media.score, media.item.media_type))
+                    if media.score is not None
+                    else None
+                ),
             }
             for media in top_rated
-        ],
+        ]
+    else:
+        # Tracking scores have no per-entry visibility. Public legacy fields
+        # therefore project the already-filtered diary data instead.
+        score_distribution = stats_service.legacy_score_distribution(native_payload)
+        legacy_top_rated = native_payload["diary_top_rated"]
+    status_distribution = legacy_stats.get_status_distribution(user_media)
+    payload = {
+        "start_date": stats_range.start_datetime,
+        "end_date": stats_range.end_datetime,
+        "media_count": media_count,
+        "media_type_distribution": legacy_stats.get_media_type_distribution(media_count),
+        "score_distribution": score_distribution,
+        "status_distribution": status_distribution,
+        "top_rated": legacy_top_rated,
+    }
+    payload.update(native_payload)
+    return payload
+
+
+def _wire_score_distribution(distribution, user_media):
+    """Project legacy tracking-score buckets onto the public rating scale."""
+    labels = [f"{Decimal(index) / 2:.1f}" for index in range(21)]
+    total = Decimal(0)
+    count = 0
+    datasets = []
+    for (media_type, media_list), dataset in zip(
+        user_media.items(),
+        distribution["datasets"],
+        strict=True,
+    ):
+        values = [0] * len(labels)
+        for storage_bucket, bucket_count in enumerate(dataset["data"]):
+            index = storage_bucket if media_type in stats_service.SINGLE_WEIGHT_MEDIA_TYPES else storage_bucket * 2
+            values[index] += bucket_count
+        datasets.append({**dataset, "data": values})
+        for rating in media_list.exclude(score__isnull=True).values_list("score", flat=True):
+            total += stats_service.wire_rating(rating, media_type)
+            count += 1
+    return {
+        "labels": labels,
+        "datasets": datasets,
+        "average_score": float(round(total / count, 2)) if count else None,
+        "total_scored": count,
     }
 
 

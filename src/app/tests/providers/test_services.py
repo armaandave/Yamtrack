@@ -18,6 +18,15 @@ mock_path = Path(__file__).resolve().parent.parent / "mock_data"
 class ServicesTests(TestCase):
     """Test the services module functions."""
 
+    @patch("app.providers.services.musicbrainz.person_page")
+    def test_get_person_page_dispatches_musicbrainz(self, person_page):
+        person_page.return_value = {"person_id": "artist-1"}
+
+        result = services.get_person_page(Sources.MUSICBRAINZ.value, "artist-1")
+
+        self.assertEqual(result, {"person_id": "artist-1"})
+        person_page.assert_called_once_with("artist-1")
+
     @patch("app.providers.services.session.get")
     def test_api_request_get(self, mock_get):
         """Test the api_request function with GET method."""
@@ -30,6 +39,7 @@ class ServicesTests(TestCase):
             "GET",
             "https://example.com/api",
             params={"param": "value"},
+            timeout=2,
         )
 
         self.assertEqual(result, {"data": "test"})
@@ -38,7 +48,7 @@ class ServicesTests(TestCase):
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["url"], "https://example.com/api")
         self.assertEqual(kwargs["params"], {"param": "value"})
-        self.assertIn("timeout", kwargs)
+        self.assertEqual(kwargs["timeout"], 2)
 
     @patch("app.providers.services.session.post")
     def test_api_request_post(self, mock_post):
@@ -316,6 +326,19 @@ class ServicesTests(TestCase):
 
         mock_comic.assert_called_once_with("1")
 
+    @patch("app.providers.musicbrainz.music")
+    def test_get_media_metadata_music(self, mock_music):
+        mock_music.return_value = {"title": "Year Zero"}
+
+        result = services.get_media_metadata(
+            MediaTypes.MUSIC.value,
+            "release-group-id",
+            Sources.MUSICBRAINZ.value,
+        )
+
+        self.assertEqual(result, {"title": "Year Zero"})
+        mock_music.assert_called_once_with("release-group-id")
+
     @patch("app.providers.openlibrary.book")
     def test_get_media_metadata_book(self, mock_book):
         """Test the get_media_metadata function for books."""
@@ -534,3 +557,64 @@ class ServicesTests(TestCase):
         self.assertEqual(result, [{"title": "Test Comic"}])
 
         mock_search.assert_called_once_with("test", 1)
+
+    @patch("app.providers.musicbrainz.search")
+    def test_search_music(self, mock_search):
+        mock_search.return_value = [{"title": "Year Zero"}]
+
+        result = services.search(MediaTypes.MUSIC.value, "year zero", 1)
+
+        self.assertEqual(result, [{"title": "Year Zero"}])
+        mock_search.assert_called_once_with("year zero", 1)
+
+    @patch("app.providers.services.musicbrainz.discover")
+    def test_discover_musicbrainz_genre(self, discover):
+        discover.return_value = {"results": [{"title": "Year Zero"}]}
+
+        result = services.discover(
+            MediaTypes.MUSIC.value,
+            source=Sources.MUSICBRAINZ.value,
+            page=2,
+            page_size=25,
+            genre="Industrial Rock",
+        )
+
+        self.assertEqual(result, discover.return_value)
+        discover.assert_called_once_with(
+            page=2,
+            page_size=25,
+            genre="Industrial Rock",
+        )
+
+    def test_discover_musicbrainz_requires_genre(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "genre is required for MusicBrainz discovery.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="   ",
+            )
+
+    def test_discover_musicbrainz_rejects_year_and_platform(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "year discovery is not supported for music.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="Rock",
+                year="2007",
+            )
+        with self.assertRaisesMessage(
+            ValueError,
+            "platform discovery is only supported for games.",
+        ):
+            services.discover(
+                MediaTypes.MUSIC.value,
+                source=Sources.MUSICBRAINZ.value,
+                genre="Rock",
+                platform="Spotify",
+            )

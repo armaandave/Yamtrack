@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from app.models import Item, MediaTypes, Music, Sources, Status
 from social.models import SocialAuditLog
 from users.models import DateFormatChoices, QuickWatchDateChoices
 
@@ -121,6 +122,79 @@ class ApiProfileSettingsTests(TestCase):
         self.assertEqual(bad_type.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(large.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_profile_backdrop_put_delete_and_read_back(self):
+        backdrop_url = "https://example.com/backdrop.jpg"
+        item = Item.objects.create(
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            media_id="550",
+            title="Fight Club",
+        )
+
+        saved = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "550",
+                },
+                "backdrop_url": backdrop_url,
+            },
+            format="json",
+        )
+
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
+        self.assertEqual(saved.data["profile_backdrop_url"], backdrop_url)
+        self.assertEqual(saved.data["profile_backdrop_item"]["ref"]["media_id"], item.media_id)
+        read_back = self.client.get("/api/v1/me/")
+        self.assertEqual(read_back.data["profile_backdrop_url"], backdrop_url)
+        self.assertEqual(read_back.data["profile_backdrop_item"]["ref"]["media_id"], item.media_id)
+
+        deleted = self.client.delete("/api/v1/me/profile-backdrop/")
+
+        self.assertEqual(deleted.status_code, status.HTTP_200_OK)
+        self.assertIsNone(deleted.data["profile_backdrop_url"])
+        self.assertIsNone(deleted.data["profile_backdrop_item"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile_backdrop_url, "")
+        self.assertIsNone(self.user.profile_backdrop_item)
+
+    def test_profile_backdrop_rejects_bad_url(self):
+        response = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "550",
+                },
+                "backdrop_url": "not-a-url",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("backdrop_url", response.data["error"]["fields"])
+
+    def test_profile_backdrop_rejects_unsupported_media_type(self):
+        response = self.client.put(
+            "/api/v1/me/profile-backdrop/",
+            {
+                "ref": {
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.SEASON.value,
+                    "media_id": "1399",
+                    "season_number": 1,
+                },
+                "backdrop_url": "https://example.com/backdrop.jpg",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ref", response.data)
+
     def test_preferences_patch_valid_and_invalid_enum_values(self):
         valid = self.client.patch(
             "/api/v1/me/preferences/",
@@ -153,6 +227,71 @@ class ApiProfileSettingsTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("enabled_media_types", response.data)
+
+    def test_music_preferences_and_hall_of_fame_are_exposed_when_enabled(self):
+        response = self.client.get("/api/v1/me/")
+
+        self.assertIn(MediaTypes.MUSIC.value, response.data["preferences"]["enabled_media_types"])
+        self.assertIn(MediaTypes.MUSIC.value, response.data["hof"])
+
+    def test_music_counts_and_hall_of_fame_are_public_profile_data(self):
+        listened = Item.objects.create(
+            media_id="listened",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Listened Album",
+            image="https://example.com/listened.jpg",
+        )
+        planned = Item.objects.create(
+            media_id="planned",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Planned Album",
+            image="https://example.com/planned.jpg",
+        )
+        Music.objects.bulk_create([
+            Music(user=self.user, item=listened, status=Status.COMPLETED.value),
+            Music(user=self.user, item=planned, status=Status.PLANNING.value),
+        ])
+        self.user.hof_music = listened
+        self.user.save(update_fields=["hof_music"])
+
+        profile = self.client.get(f"/api/v1/users/{self.user.username}/")
+        hall_of_fame = self.client.get(f"/api/v1/users/{self.user.username}/hof/")
+
+        self.assertEqual(profile.status_code, status.HTTP_200_OK)
+        self.assertEqual(profile.data["counts"]["library_items"], 1)
+        self.assertEqual(profile.data["counts"]["planned_items"], 1)
+        self.assertEqual(profile.data["hof"]["music"]["title"], "Listened Album")
+        self.assertEqual(hall_of_fame.data["items"]["music"]["title"], "Listened Album")
+
+    @override_settings(MUSIC_ENABLED=False)
+    def test_hidden_music_profile_fields_are_preserved_on_preference_write(self):
+        item = Item.objects.create(
+            media_id="3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Year Zero",
+            image="https://example.com/year-zero.jpg",
+        )
+        self.user.hof_music = item
+        self.user.save(update_fields=["hof_music"])
+
+        profile = self.client.get("/api/v1/me/")
+        updated = self.client.patch(
+            "/api/v1/me/preferences/",
+            {"enabled_media_types": [MediaTypes.MOVIE.value]},
+            format="json",
+        )
+        hidden_hof_write = self.client.delete("/api/v1/me/hof/music/")
+
+        self.assertNotIn(MediaTypes.MUSIC.value, profile.data["preferences"]["enabled_media_types"])
+        self.assertNotIn(MediaTypes.MUSIC.value, profile.data["hof"])
+        self.assertNotIn(MediaTypes.MUSIC.value, updated.data["enabled_media_types"])
+        self.assertEqual(hidden_hof_write.status_code, status.HTTP_404_NOT_FOUND)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.music_enabled)
+        self.assertEqual(self.user.hof_music, item)
 
     def test_password_change_success_and_failure(self):
         failed = self.client.post(

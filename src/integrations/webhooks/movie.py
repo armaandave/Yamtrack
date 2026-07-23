@@ -3,6 +3,7 @@ import logging
 from django.utils import timezone
 
 import app
+from app import single_weight
 from app.models import MediaTypes, Sources, Status
 
 from . import anime_mappings
@@ -94,43 +95,13 @@ class MovieWebhookMixin:
         )
         movie_played = self._is_played(payload)
 
-        progress = 1 if movie_played else 0
-        now = timezone.now().replace(second=0, microsecond=0)
-
-        if current_instance and current_instance.status != Status.COMPLETED.value:
-            current_instance.progress = progress
-
-            if movie_played:
-                current_instance.end_date = now
-                current_instance.status = Status.COMPLETED.value
-
-            elif current_instance.status != Status.IN_PROGRESS.value:
-                current_instance.start_date = now
-                current_instance.status = Status.IN_PROGRESS.value
-
-            if current_instance.tracker.changed():
-                current_instance.save()
-                logger.info(
-                    "Updated existing movie instance to status: %s",
-                    current_instance.status,
-                )
-            else:
-                logger.debug(
-                    "No changes detected for existing movie instance: %s",
-                    current_instance.item,
-                )
+        if movie_played:
+            current_instance = single_weight.mark_consumed(user, movie_item)
         else:
-            app.models.Movie.objects.create(
-                item=movie_item,
-                user=user,
-                progress=progress,
-                status=Status.COMPLETED.value
-                if movie_played
-                else Status.IN_PROGRESS.value,
-                start_date=now if not movie_played else None,
-                end_date=now if movie_played else None,
+            current_instance = single_weight.apply_tracking_state(
+                user,
+                movie_item,
+                status=Status.IN_PROGRESS.value,
+                start_date=timezone.now().replace(second=0, microsecond=0),
             )
-            logger.info(
-                "Created new movie instance with status: %s",
-                Status.COMPLETED.value if movie_played else Status.IN_PROGRESS.value,
-            )
+        logger.info("Movie tracking status is now: %s", current_instance.status)

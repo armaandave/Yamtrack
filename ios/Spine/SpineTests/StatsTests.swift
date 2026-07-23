@@ -1,0 +1,566 @@
+import Foundation
+import XCTest
+@testable import Spine
+
+@MainActor
+final class StatsTests: XCTestCase {
+    override func tearDown() {
+        StatsRequestCaptureURLProtocol.handler = nil
+        KeychainTokenStore.shared.clear()
+        super.tearDown()
+    }
+
+    func testStatsPeriodProvidesStableIdentityTitlesAndQueries() {
+        XCTAssertEqual(StatsPeriod.allTime.id, "all-time")
+        XCTAssertEqual(StatsPeriod.allTime.title, "All Time")
+        XCTAssertEqual(queryDictionary(StatsPeriod.allTime.query), [
+            "start_date": "all",
+            "end_date": "all",
+        ])
+
+        let year = StatsPeriod.year(2026)
+        XCTAssertEqual(year.id, "year-2026")
+        XCTAssertEqual(year.title, "2026")
+        XCTAssertEqual(queryDictionary(year.query), [
+            "start_date": "2026-01-01",
+            "end_date": "2026-12-31",
+        ])
+    }
+
+    func testStatsPeriodBuildsRecentYearsNewestFirst() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let date = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 14)))
+
+        XCTAssertEqual(
+            StatsPeriod.recentYears(count: 4, from: date, calendar: calendar),
+            [.year(2026), .year(2025), .year(2024), .year(2023)]
+        )
+        XCTAssertEqual(StatsPeriod.recentYears(count: 0, from: date, calendar: calendar), [])
+    }
+
+    func testStatsSummaryDecodesVersionedContract() throws {
+        let summary = try JSONDecoder.api.decode(StatsSummary.self, from: Self.fullSummaryData)
+
+        XCTAssertEqual(summary.schemaVersion, 1)
+        XCTAssertTrue(summary.range.isAllTime)
+        XCTAssertEqual(summary.range.timezone, "America/Los_Angeles")
+        XCTAssertEqual(summary.overview.trackedCount, 42)
+        XCTAssertEqual(summary.overview.reviewCount, 4)
+        XCTAssertEqual(summary.overview.numericAverageRating, 8.25)
+        XCTAssertEqual(summary.activity.days.first?.parsedDate, Self.utcDate(year: 2026, month: 7, day: 13))
+        XCTAssertEqual(summary.activity.mostActiveWeekday?.name, "Sunday")
+        XCTAssertEqual(summary.activity.mostActiveWeekday?.percentage, 42.5)
+        XCTAssertEqual(summary.ratingDistribution.first?.numericRating, 8)
+        XCTAssertEqual(summary.releaseYears.first?.year, 1999)
+        XCTAssertEqual(summary.topGenres.first?.name, "Drama")
+        XCTAssertEqual(summary.metadataCoverage.genreItems, 30)
+        XCTAssertEqual(summary.topRated.first?.media.title, "Fight Club")
+        XCTAssertEqual(summary.topRated.first?.rating, "9.5")
+        XCTAssertEqual(summary.mostLogged.first?.logCount, 5)
+
+        let movies = try XCTUnwrap(summary.mediaTypeSummary(for: "movie"))
+        XCTAssertEqual(movies.statuses["completed"], 31)
+        XCTAssertEqual(movies.numericAverageRating, 8.5)
+        XCTAssertEqual(movies.topLanguages.first?.name, "English")
+        XCTAssertEqual(movies.metadataCoverage.releaseYearItems, 28)
+        XCTAssertFalse(summary.isEmpty)
+    }
+
+    func testMusicStatsFixtureDrivesEveryBucketAndExcludesSongs() throws {
+        let data = Data(
+            """
+            {
+              "schema_version": 1,
+              "range": {"start_date": null, "end_date": null, "timezone": "UTC", "is_all_time": true},
+              "overview": {
+                "tracked_count": 3,
+                "completed_count": 2,
+                "diary_entry_count": 4,
+                "unique_logged_count": 2,
+                "review_count": 1,
+                "repeat_count": 1,
+                "rated_count": 2,
+                "average_rating": "8.5",
+                "liked_count": 1
+              },
+              "media_types": [
+                {
+                  "media_type": "music",
+                  "tracked_count": 3,
+                  "completed_count": 2,
+                  "diary_entry_count": 4,
+                  "unique_logged_count": 2,
+                  "review_count": 1,
+                  "repeat_count": 1,
+                  "rated_count": 2,
+                  "average_rating": "8.5",
+                  "liked_count": 1,
+                  "statuses": {"in_progress": 1, "completed": 2},
+                  "rating_distribution": [{"rating": "9.0", "count": 2}],
+                  "release_years": [{"year": 2007, "count": 3}],
+                  "top_genres": [{"name": "Industrial", "count": 2}],
+                  "top_languages": [{"name": "English", "count": 3}],
+                  "metadata_coverage": {"total_items": 3, "release_year_items": 3, "genre_items": 2, "language_items": 3},
+                  "top_rated": [
+                    {
+                      "media": {
+                        "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                        "title": "Year Zero",
+                        "poster_url": "https://example.com/year-zero.jpg",
+                        "poster_orientation": "square"
+                      },
+                      "rating": "9.0"
+                    }
+                  ],
+                  "most_logged": [
+                    {
+                      "media": {
+                        "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                        "title": "Year Zero",
+                        "poster_url": "https://example.com/year-zero.jpg",
+                        "poster_orientation": "square"
+                      },
+                      "log_count": 4
+                    }
+                  ]
+                }
+              ],
+              "activity": {"days": [{"date": "2026-07-13", "count": 1}], "months": [{"month": "2026-07", "count": 1}]},
+              "rating_distribution": [{"rating": "9.0", "count": 2}],
+              "release_years": [{"year": 2007, "count": 3}],
+              "top_genres": [{"name": "Industrial", "count": 2}],
+              "top_languages": [{"name": "English", "count": 3}],
+              "metadata_coverage": {"total_items": 3, "release_year_items": 3, "genre_items": 2, "language_items": 3},
+              "diary_top_rated": [
+                {
+                  "media": {
+                    "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                    "title": "Year Zero",
+                    "poster_url": "https://example.com/year-zero.jpg",
+                    "poster_orientation": "square"
+                  },
+                  "rating": "9.0"
+                }
+              ],
+              "most_logged": [
+                {
+                  "media": {
+                    "ref": {"item_id": 902, "source": "musicbrainz", "media_type": "music", "media_id": "album", "season_number": null, "episode_number": null},
+                    "title": "Year Zero",
+                    "poster_url": "https://example.com/year-zero.jpg",
+                    "poster_orientation": "square"
+                  },
+                  "log_count": 4
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let summary = try JSONDecoder.api.decode(StatsSummary.self, from: data)
+        let music = try XCTUnwrap(summary.mediaTypeSummary(for: "music"))
+
+        XCTAssertEqual(summary.overview.trackedCount, 3)
+        XCTAssertEqual(summary.overview.diaryEntryCount, 4)
+        XCTAssertEqual(summary.mediaTypes.map(\.mediaType), ["music"])
+        XCTAssertFalse(summary.mediaTypes.contains { $0.mediaType == "song" })
+        XCTAssertEqual(music.statuses, ["in_progress": 1, "completed": 2])
+        XCTAssertEqual(music.ratingDistribution.first?.numericRating, 9)
+        XCTAssertEqual(music.releaseYears.first?.year, 2007)
+        XCTAssertEqual(music.topGenres.first?.name, "Industrial")
+        XCTAssertEqual(music.topLanguages.first?.name, "English")
+        XCTAssertEqual(music.topRated.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(music.topRated.first?.media.posterOrientation, .square)
+        XCTAssertEqual(music.mostLogged.first?.logCount, 4)
+        XCTAssertEqual(summary.ratingDistribution.first?.count, 2)
+        XCTAssertEqual(summary.releaseYears.first?.count, 3)
+        XCTAssertEqual(summary.topGenres.first?.count, 2)
+        XCTAssertEqual(summary.topLanguages.first?.count, 3)
+        XCTAssertEqual(summary.topRated.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(summary.mostLogged.first?.media.ref.mediaType, "music")
+        XCTAssertEqual(MediaTypeTheme.theme(for: "music").statsColor, MediaTypeTheme.theme(for: "music").accentColor)
+    }
+
+    func testStatsSummaryDefaultsAdditiveFieldsAndTreatsZeroBucketsAsEmpty() throws {
+        let data = Data(
+            """
+            {
+              "schema_version": 1,
+              "rating_distribution": [
+                {"rating": "0.0", "count": 0},
+                {"rating": "0.5", "count": 0}
+              ],
+              "media_types": [
+                {
+                  "media_type": "movie",
+                  "rating_distribution": [{"rating": "0.0", "count": 0}]
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let summary = try JSONDecoder.api.decode(StatsSummary.self, from: data)
+
+        XCTAssertEqual(summary.range, .empty)
+        XCTAssertEqual(summary.overview, .empty)
+        XCTAssertEqual(summary.activity, .empty)
+        XCTAssertEqual(summary.mediaTypes.first?.trackedCount, 0)
+        XCTAssertTrue(summary.mediaTypes.first?.isEmpty == true)
+        XCTAssertTrue(summary.isEmpty)
+    }
+
+    func testYearWithOnlyCurrentLibrarySnapshotIsEmpty() throws {
+        let data = Data(
+            """
+            {
+              "schema_version": 1,
+              "range": {
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "timezone": "UTC",
+                "is_all_time": false
+              },
+              "overview": {"tracked_count": 42, "completed_count": 30, "liked_count": 8},
+              "media_types": [{"media_type": "movie", "tracked_count": 42, "completed_count": 30, "liked_count": 8}]
+            }
+            """.utf8
+        )
+
+        let summary = try JSONDecoder.api.decode(StatsSummary.self, from: data)
+
+        XCTAssertTrue(summary.isEmpty)
+        XCTAssertEqual(summary.range.parsedStartDate, Self.utcDate(year: 2025, month: 1, day: 1))
+        XCTAssertEqual(summary.range.parsedEndDate, Self.utcDate(year: 2025, month: 12, day: 31))
+    }
+
+    func testAPIProfileRepositoryRequestsOwnAllTimeStatsWithAuthentication() async throws {
+        let repository = makeAPIRepository()
+        repository.client.tokenProvider.accessToken = "stats-access"
+        StatsRequestCaptureURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(components.path, "/api/v1/stats/me/summary/")
+            XCTAssertEqual(self.queryDictionary(components.queryItems ?? []), [
+                "start_date": "all",
+                "end_date": "all",
+            ])
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer stats-access")
+            return Self.response(for: request, data: Self.emptySummaryData)
+        }
+
+        let summary = try await repository.statsSummary(username: nil, period: .allTime)
+
+        XCTAssertTrue(summary.isEmpty)
+    }
+
+    func testAPIProfileRepositoryRequestsUserYearStats() async throws {
+        let repository = makeAPIRepository()
+        repository.client.tokenProvider.accessToken = "stats-access"
+        StatsRequestCaptureURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            XCTAssertEqual(components.path, "/api/v1/users/mika/stats/summary/")
+            XCTAssertEqual(self.queryDictionary(components.queryItems ?? []), [
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+            ])
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer stats-access")
+            return Self.response(for: request, data: Self.emptySummaryData)
+        }
+
+        _ = try await repository.statsSummary(username: "mika", period: .year(2025))
+    }
+
+    func testStatsViewModelLoadsContentAndTracksRequest() async {
+        let expected = Self.summary(trackedCount: 3)
+        let repository = StatsProfileRepositoryFake { _, _ in expected }
+        let viewModel = StatsViewModel(
+            profileRepository: repository,
+            username: "mika",
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .loaded(expected))
+        XCTAssertEqual(viewModel.summary, expected)
+        XCTAssertFalse(viewModel.isLoading)
+        XCTAssertEqual(repository.requests, [StatsFakeRequest(username: "mika", period: .allTime)])
+    }
+
+    func testStatsViewModelSurfacesEmptyState() async {
+        let repository = StatsProfileRepositoryFake { _, _ in StatsSummary() }
+        let viewModel = StatsViewModel(profileRepository: repository, onUnauthorized: {})
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .empty)
+        XCTAssertNil(viewModel.summary)
+    }
+
+    func testStatsViewModelSurfacesErrorAndUnauthorizedCallback() async {
+        var didCallUnauthorized = false
+        let repository = StatsProfileRepositoryFake { _, _ in throw APIError.unauthorized }
+        let viewModel = StatsViewModel(
+            profileRepository: repository,
+            onUnauthorized: { didCallUnauthorized = true }
+        )
+
+        await viewModel.load()
+
+        guard case let .error(message) = viewModel.state else {
+            return XCTFail("Expected an error state")
+        }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertEqual(viewModel.errorMessage, message)
+        XCTAssertTrue(didCallUnauthorized)
+    }
+
+    func testStatsViewModelIgnoresStaleRequestAfterPeriodChange() async {
+        let firstRequestStarted = expectation(description: "All-time request started")
+        let repository = StatsProfileRepositoryFake { _, period in
+            switch period {
+            case .allTime:
+                firstRequestStarted.fulfill()
+                try await Task<Never, Never>.sleep(nanoseconds: 80_000_000)
+                return Self.summary(trackedCount: 1)
+            case .year:
+                return Self.summary(trackedCount: 2)
+            }
+        }
+        let viewModel = StatsViewModel(profileRepository: repository, onUnauthorized: {})
+
+        let firstLoad = Task { await viewModel.load() }
+        await fulfillment(of: [firstRequestStarted], timeout: 1)
+        await viewModel.selectPeriod(.year(2026))
+        await firstLoad.value
+
+        XCTAssertEqual(viewModel.selectedPeriod, .year(2026))
+        XCTAssertEqual(viewModel.summary?.overview.trackedCount, 2)
+        XCTAssertEqual(repository.requests, [
+            StatsFakeRequest(username: nil, period: .allTime),
+            StatsFakeRequest(username: nil, period: .year(2026)),
+        ])
+    }
+
+    private func makeAPIRepository() -> APIProfileRepository {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StatsRequestCaptureURLProtocol.self]
+        return APIProfileRepository(client: APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: .shared,
+            session: URLSession(configuration: configuration)
+        ))
+    }
+
+    private func queryDictionary(_ items: [URLQueryItem]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: items.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+    }
+
+    private static func summary(trackedCount: Int) -> StatsSummary {
+        StatsSummary(overview: StatsOverview(trackedCount: trackedCount))
+    }
+
+    private static func utcDate(year: Int, month: Int, day: Int) -> Date? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar.date(from: DateComponents(year: year, month: month, day: day))
+    }
+
+    private static func response(for request: URLRequest, data: Data) -> (HTTPURLResponse, Data) {
+        (
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!,
+            data
+        )
+    }
+
+    private static let emptySummaryData = Data(
+        """
+        {
+          "schema_version": 1,
+          "range": {"start_date": null, "end_date": null, "timezone": "UTC", "is_all_time": true},
+          "overview": {},
+          "media_types": [],
+          "activity": {"days": [], "months": []},
+          "rating_distribution": [],
+          "release_years": [],
+          "top_genres": [],
+          "top_languages": [],
+          "metadata_coverage": {},
+          "diary_top_rated": [],
+          "most_logged": []
+        }
+        """.utf8
+    )
+
+    private static let fullSummaryData = Data(
+        """
+        {
+          "schema_version": 1,
+          "range": {
+            "start_date": null,
+            "end_date": null,
+            "timezone": "America/Los_Angeles",
+            "is_all_time": true
+          },
+          "overview": {
+            "tracked_count": 42,
+            "completed_count": 31,
+            "diary_entry_count": 36,
+            "unique_logged_count": 30,
+            "review_count": 4,
+            "repeat_count": 6,
+            "rated_count": 28,
+            "average_rating": "8.25",
+            "liked_count": 12,
+            "active_days": 20,
+            "current_streak_days": 3,
+            "longest_streak_days": 8
+          },
+          "media_types": [
+            {
+              "media_type": "movie",
+              "tracked_count": 42,
+              "completed_count": 31,
+              "diary_entry_count": 36,
+              "unique_logged_count": 30,
+              "review_count": 4,
+              "repeat_count": 6,
+              "rated_count": 28,
+              "average_rating": "8.5",
+              "liked_count": 12,
+              "statuses": {"completed": 31, "planning": 11},
+              "rating_distribution": [{"rating": "8.0", "count": 4}],
+              "top_rated": [
+                {
+                  "media": {
+                    "ref": {"item_id": 42, "source": "tmdb", "media_type": "movie", "media_id": "550", "season_number": null, "episode_number": null},
+                    "title": "Fight Club",
+                    "poster_url": "https://example.com/fight-club.jpg"
+                  },
+                  "rating": "9.5"
+                }
+              ],
+              "most_logged": [
+                {
+                  "media": {
+                    "ref": {"item_id": 42, "source": "tmdb", "media_type": "movie", "media_id": "550", "season_number": null, "episode_number": null},
+                    "title": "Fight Club",
+                    "poster_url": "https://example.com/fight-club.jpg"
+                  },
+                  "log_count": 5
+                }
+              ],
+              "release_years": [{"year": 1999, "count": 1}],
+              "top_genres": [{"name": "Drama", "count": 18}],
+              "top_languages": [{"name": "English", "count": 24}],
+              "metadata_coverage": {"total_items": 31, "release_year_items": 28, "genre_items": 27, "language_items": 26}
+            }
+          ],
+          "activity": {
+            "days": [{"date": "2026-07-13", "count": 2}],
+            "months": [{"month": "2026-07", "count": 8}],
+            "active_days": 20,
+            "current_streak_days": 3,
+            "longest_streak_days": 8,
+            "most_active_weekday": {"weekday": 6, "name": "Sunday", "active_day_count": 8, "percentage": 42.5}
+          },
+          "rating_distribution": [{"rating": "8.0", "count": 4}],
+          "release_years": [{"year": 1999, "count": 1}],
+          "top_genres": [{"name": "Drama", "count": 18}],
+          "top_languages": [{"name": "English", "count": 24}],
+          "metadata_coverage": {"total_items": 31, "release_year_items": 28, "genre_items": 30, "language_items": 29},
+          "diary_top_rated": [
+            {
+              "media": {
+                "ref": {"item_id": 42, "source": "tmdb", "media_type": "movie", "media_id": "550", "season_number": null, "episode_number": null},
+                "title": "Fight Club",
+                "poster_url": "https://example.com/fight-club.jpg"
+              },
+              "rating": "9.5"
+            }
+          ],
+          "most_logged": [
+            {
+              "media": {
+                "ref": {"item_id": 42, "source": "tmdb", "media_type": "movie", "media_id": "550", "season_number": null, "episode_number": null},
+                "title": "Fight Club",
+                "poster_url": "https://example.com/fight-club.jpg"
+              },
+              "log_count": 5
+            }
+          ]
+        }
+        """.utf8
+    )
+}
+
+private struct StatsFakeRequest: Equatable {
+    let username: String?
+    let period: StatsPeriod
+}
+
+private final class StatsProfileRepositoryFake: ProfileRepository {
+    typealias Handler = (String?, StatsPeriod) async throws -> StatsSummary
+
+    private(set) var requests: [StatsFakeRequest] = []
+    private let handler: Handler
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func statsSummary(username: String?, period: StatsPeriod) async throws -> StatsSummary {
+        requests.append(StatsFakeRequest(username: username, period: period))
+        return try await handler(username, period)
+    }
+
+    func me() async throws -> UserProfile { fatalError("Not used") }
+    func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile { fatalError("Not used") }
+    func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String? { fatalError("Not used") }
+    func deleteAvatar() async throws -> String? { fatalError("Not used") }
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences { fatalError("Not used") }
+    func changePassword(_ request: PasswordChangeRequest) async throws { fatalError("Not used") }
+    func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?] { fatalError("Not used") }
+    func clearHallOfFameItem(mediaType: String) async throws -> [String: MediaSummary?] { fatalError("Not used") }
+}
+
+private final class StatsRequestCaptureURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: APIError.invalidResponse)
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}

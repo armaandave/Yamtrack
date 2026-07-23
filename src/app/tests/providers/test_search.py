@@ -3,11 +3,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
 from django.core.cache import cache
 from django.test import TestCase
 
 from app.models import MediaTypes, Sources
 from app.providers import (
+    comicvine,
     hardcover,
     igdb,
     mal,
@@ -109,11 +111,180 @@ class Search(TestCase):
 
         Assert that all required keys are present in each entry.
         """
-        response = igdb.search("Batman", 1)
+        response = comicvine.search("Batman", 1)
         required_keys = {"media_id", "media_type", "title", "image"}
 
         for comic in response["results"]:
             self.assertTrue(all(key in comic for key in required_keys))
+
+    @patch("app.providers.comicvine.cache")
+    @patch("app.providers.comicvine.services.api_request")
+    def test_comic_search_promotes_canonical_watchmen(
+        self,
+        mock_api_request,
+        mock_cache,
+    ):
+        """Test localized editions no longer bury the canonical comic volume."""
+        mock_cache.get.return_value = None
+        mock_api_request.return_value = {
+            "number_of_total_results": 6,
+            "results": [
+                self._comicvine_volume(
+                    53871,
+                    "Watchmen",
+                    "1999",
+                    12,
+                    "Abril",
+                    "Brazilian publication in the Portuguese language.",
+                ),
+                self._comicvine_volume(
+                    79545,
+                    "Watchmen",
+                    "1987",
+                    12,
+                    "Ediciones Zinco",
+                    "Spanish publication of Watchmen",
+                ),
+                self._comicvine_volume(
+                    3622,
+                    "Watchmen",
+                    "1986",
+                    12,
+                    "DC Comics",
+                ),
+                self._comicvine_volume(
+                    29927,
+                    "Watchmen",
+                    "1987",
+                    1,
+                    "DC Comics",
+                ),
+                self._comicvine_volume(
+                    106703,
+                    "Watchmen Annotated",
+                    "2017",
+                    1,
+                    "DC Comics",
+                ),
+                self._comicvine_volume(
+                    44421,
+                    "Watchmen - Die Wächter",
+                    "1989",
+                    6,
+                    "Carlsen Verlag",
+                ),
+            ],
+        }
+
+        response = comicvine.search("watchmen", 1)
+
+        media_ids = [result["media_id"] for result in response["results"]]
+        self.assertEqual(media_ids[:3], ["3622", "29927", "106703"])
+        self.assertCountEqual(
+            media_ids,
+            ["53871", "79545", "3622", "29927", "106703", "44421"],
+        )
+        self.assertGreater(media_ids.index("44421"), media_ids.index("106703"))
+        self.assertEqual(
+            response["results"][0]["subtitle"],
+            "1986 · DC Comics · 12 issues",
+        )
+        self.assertNotIn("provider_rank_boost", response["results"][0])
+        self.assertNotIn("first_publish_year", response["results"][0])
+
+        params = mock_api_request.call_args.kwargs["params"]
+        self.assertEqual(params["resources"], "volume")
+        self.assertEqual(params["page"], 1)
+        self.assertEqual(
+            params["field_list"],
+            "id,name,image,deck,publisher,start_year,count_of_issues",
+        )
+        self.assertTrue(
+            mock_cache.set.call_args.args[0].startswith("search_v2_comicvine_comic_"),
+        )
+
+    @patch("app.providers.comicvine.cache")
+    @patch("app.providers.comicvine.services.api_request")
+    def test_comic_search_does_not_penalize_all_localized_title_group(
+        self,
+        mock_api_request,
+        mock_cache,
+    ):
+        """Test foreign-title searches stay relevant when no primary edition exists."""
+        mock_cache.get.return_value = None
+        mock_api_request.return_value = {
+            "number_of_total_results": 3,
+            "results": [
+                self._comicvine_volume(
+                    1,
+                    "El Eternauta",
+                    "1957",
+                    1,
+                    "Editorial Frontera",
+                    "Spanish publication.",
+                ),
+                self._comicvine_volume(
+                    2,
+                    "El Eternauta",
+                    "1969",
+                    1,
+                    "Ediciones Record",
+                    "Argentine edition.",
+                ),
+                self._comicvine_volume(
+                    3,
+                    "El Eternauta Companion",
+                    "2025",
+                    1,
+                    "Example Press",
+                ),
+            ],
+        }
+
+        response = comicvine.search("El Eternauta", 1)
+
+        self.assertEqual(
+            [result["media_id"] for result in response["results"][:2]],
+            ["1", "2"],
+        )
+
+    def test_comic_search_does_not_treat_english_translation_as_localized(self):
+        """Test desired English editions are not caught by foreign-edition markers."""
+        self.assertFalse(
+            comicvine._is_likely_localized_edition(  # noqa: SLF001
+                {
+                    "deck": "New English translations of the classic stories.",
+                    "publisher": {"name": "Mad Cave Studios"},
+                },
+            ),
+        )
+        self.assertTrue(
+            comicvine._is_likely_localized_edition(  # noqa: SLF001
+                {
+                    "deck": "Brazilian publication in the Portuguese language.",
+                    "publisher": {"name": "Abril"},
+                },
+            ),
+        )
+
+    @staticmethod
+    def _comicvine_volume(
+        media_id,
+        name,
+        start_year,
+        issue_count,
+        publisher,
+        deck=None,
+    ):
+        return {
+            "id": media_id,
+            "name": name,
+            "start_year": start_year,
+            "count_of_issues": issue_count,
+            "publisher": {"name": publisher},
+            "deck": deck,
+            "image": {"medium_url": f"https://example.com/{media_id}.jpg"},
+        }
 
     @requires_provider_network
     def test_hardcover(self):
@@ -309,6 +480,58 @@ class Search(TestCase):
         self.assertIn("total_rating_count", search_request.kwargs["data"])
         self.assertIn("game_type", search_request.kwargs["data"])
         self.assertNotIn("name ~", search_request.kwargs["data"])
+
+    @patch("app.providers.igdb.cache")
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb.services.api_request")
+    def test_igdb_preserved_search_skips_count_request(
+        self,
+        mock_api_request,
+        _mock_get_access_token,
+        mock_cache,
+    ):
+        mock_cache.get.return_value = None
+        mock_api_request.return_value = [
+            {
+                "id": 1,
+                "name": "Dune",
+                "total_rating_count": 500,
+                "total_rating": 80,
+                "game_type": 0,
+            },
+        ]
+
+        response = igdb.search("dune", 1, preserve_ranking_fields=True)
+
+        self.assertEqual(mock_api_request.call_count, 1)
+        self.assertTrue(mock_api_request.call_args.args[2].endswith("/games"))
+        self.assertEqual(response["total_results"], 1)
+        self.assertEqual(response["results"][0]["total_rating_count"], 500)
+
+    @patch("app.providers.igdb.cache")
+    @patch("app.providers.igdb.handle_error", return_value={"retry": True})
+    @patch("app.providers.igdb.get_access_token", side_effect=["old", "new"])
+    @patch("app.providers.igdb.services.api_request")
+    def test_igdb_preserved_auth_retry_still_skips_count_request(
+        self,
+        mock_api_request,
+        _mock_get_access_token,
+        _mock_handle_error,
+        mock_cache,
+    ):
+        mock_cache.get.return_value = None
+        mock_api_request.side_effect = [
+            requests.exceptions.HTTPError("unauthorized"),
+            [{"id": 1, "name": "Dune", "game_type": 0}],
+        ]
+
+        response = igdb.search("dune", 1, preserve_ranking_fields=True)
+
+        self.assertEqual(mock_api_request.call_count, 2)
+        self.assertTrue(
+            all(call.args[2].endswith("/games") for call in mock_api_request.call_args_list),
+        )
+        self.assertEqual(response["total_results"], 1)
 
     @patch("app.providers.openlibrary.cache")
     @patch("app.providers.openlibrary.services.api_request")

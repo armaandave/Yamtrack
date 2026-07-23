@@ -1,0 +1,7 @@
+Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,My Rating,Publisher,Binding,Number of Pages,Year Published,Original Publication Year,Date Read,Date Added,Bookshelves,Bookshelves with positions,Exclusive Shelf,My Review,Spoiler,Private Notes,Read Count,Owned Copies
+1001,Atlas of Quiet Signals,Avery North,"North, Avery",,"=""0306406152""","=""9780306406157""",4,Example Press,Hardcover,321,2025,2025,2025/01/03,2024/12/31,"favorite, migration","favorite (#1), migration (#2)",read,"A precise, thoughtful read.",true,"Keep this private.",2,1
+1002,The Tenth Character,Blair Rowan,"Rowan, Blair",,"=""097522980X""","=""""",0,Sample House,Paperback,240,2024,2024,,,reference,reference (#3),currently-reading,,false,,,0
+1003,The Mismatched Compass,Casey Vale,"Vale, Casey",,"=""0975229800""","=""9780306406158""",5,Fictional Books,Ebook,198,2023,2022,,2025/02/02,to-read,to-read (#7),to-read,,false,"Metadata fallback expected.",0,0
+1004,Paused Between Pages,Drew Sol,"Sol, Drew",,"=""""","=""""",3,Test Editions,Audiobook,,2022,2022,,2025/02/03,,,on-hold,,false,,0,0
+1005,The Deliberate Exit,Ellis Mar,"Mar, Ellis",,"=""""","=""""",2,Test Editions,Paperback,175,2021,2021,2025/02/10,2025/02/04,unfinished,unfinished (#2),dnf,"Not for me.",yes,,1,0
+1006,An Unfamiliar Shelf,Finley Reed,"Reed, Finley",,"=""""","=""""",1,Test Editions,Hardcover,110,2020,2020,,2025/02/05,owned-only,owned-only (#1),owned-only,,no,,0,1

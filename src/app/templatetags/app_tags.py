@@ -9,7 +9,7 @@ from django.utils import formats, timezone
 from django.utils.html import format_html
 from unidecode import unidecode
 
-from app import config, helpers
+from app import config, exposure, helpers
 from app.models import MediaTypes, Sources, Status
 
 register = template.Library()
@@ -164,6 +164,17 @@ def media_status_readable(media_status):
 
 
 @register.filter
+def media_status_label(media_status, media_type):
+    """Return presentation-only status wording for a media type."""
+    if media_type == MediaTypes.MUSIC.value:
+        return {
+            Status.IN_PROGRESS.value: "Listening",
+            Status.COMPLETED.value: "Listened",
+        }.get(media_status, media_status_readable(media_status))
+    return media_status_readable(media_status)
+
+
+@register.filter
 def default_source(media_type):
     """Return the default source for the media type."""
     return config.get_default_source_name(media_type).label
@@ -204,9 +215,9 @@ def get_search_media_types(user):
     """Return available media types for search based on user preferences."""
     # Handle anonymous users
     if not user.is_authenticated or not hasattr(user, 'get_enabled_media_types'):
-        enabled_types = MediaTypes.values
+        enabled_types = exposure.media_types()
     else:
-        enabled_types = user.get_enabled_media_types()
+        enabled_types = exposure.filter_media_types(user.get_enabled_media_types())
 
     # Filter and format the types for search
     return [
@@ -226,7 +237,7 @@ def get_sidebar_media_types(user):
     if not user.is_authenticated or not hasattr(user, 'get_enabled_media_types'):
         return []
     
-    enabled_types = user.get_enabled_media_types()
+    enabled_types = exposure.filter_media_types(user.get_enabled_media_types())
 
     # Format the types for sidebar
     return [
@@ -236,6 +247,17 @@ def get_sidebar_media_types(user):
         }
         for media_type in enabled_types
     ]
+
+
+@register.simple_tag
+def get_exposed_hall_of_fame_items(user):
+    """Return Hall of Fame items for exposed media types."""
+    allowed = set(exposure.media_types())
+    return {
+        media_type: item
+        for media_type, item in user.get_hall_of_fame_items().items()
+        if media_type in allowed
+    }
 
 
 @register.filter

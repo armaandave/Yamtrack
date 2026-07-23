@@ -1,0 +1,2935 @@
+{
+  "activity": {
+    "next_cursor": null,
+    "previous_cursor": null,
+    "results": [
+      {
+        "actor": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "created_at": "2026-07-16T12:00:00Z",
+        "id": 4,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "object": {
+          "id": 1,
+          "list_name": "Favorite Albums",
+          "type": "list"
+        },
+        "type": "list_item_added",
+        "viewer": {
+          "can_view": true,
+          "has_liked": false
+        }
+      },
+      {
+        "actor": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "created_at": "2026-07-16T12:00:00Z",
+        "id": 2,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "object": {
+          "id": 1,
+          "liked": true,
+          "rating": "4.5",
+          "type": "diary"
+        },
+        "type": "diary_created",
+        "viewer": {
+          "can_view": true,
+          "has_liked": false
+        }
+      },
+      {
+        "actor": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "created_at": "2026-07-16T12:00:00Z",
+        "id": 1,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "object": {
+          "id": 903,
+          "rating": "4.5",
+          "type": "tracking"
+        },
+        "type": "rating_updated",
+        "viewer": {
+          "can_view": true,
+          "has_liked": false
+        }
+      }
+    ]
+  },
+  "album_detail": {
+    "backdrop_url": null,
+    "cast": [],
+    "community": {
+      "average_rating": null,
+      "diary_count": 0,
+      "liked_count": 0,
+      "rating_count": 0,
+      "rating_distribution": [],
+      "review_count": 0
+    },
+    "credit_roles": [],
+    "crew": [],
+    "custom_backdrop_url": null,
+    "custom_logo_url": null,
+    "custom_poster_url": null,
+    "default_source": "musicbrainz",
+    "details": {
+      "artist": "Nine Inch Nails",
+      "artist_credits": [
+        {
+          "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+          "join_phrase": "",
+          "name": "Nine Inch Nails"
+        }
+      ],
+      "first_release_date": "2007-04-13",
+      "genres": [
+        "industrial rock"
+      ],
+      "primary_type": "Album",
+      "release_count": 13,
+      "secondary_types": []
+    },
+    "episodes": [],
+    "external_links": {
+      "MusicBrainz": "https://musicbrainz.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e"
+    },
+    "external_ratings": [
+      {
+        "max_value": "5",
+        "source": "MusicBrainz",
+        "url": "https://musicbrainz.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "value": "4.25",
+        "vote_count": 20
+      }
+    ],
+    "genres": [
+      "industrial rock"
+    ],
+    "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "languages": [
+      "eng"
+    ],
+    "logo_aspect_ratio": null,
+    "logo_height": null,
+    "logo_url": null,
+    "logo_width": null,
+    "music": {
+      "annotation": null,
+      "artist_credit": [
+        {
+          "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+          "join_phrase": "",
+          "name": "Nine Inch Nails"
+        }
+      ],
+      "cover_art": {
+        "fallback_used": false,
+        "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "source": "cover_art_archive"
+      },
+      "disambiguation": null,
+      "first_release_date": "2007-04-13",
+      "primary_type": "Album",
+      "release_count": 13,
+      "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+      "representative_release": {
+        "barcode": "00602547582812",
+        "country": "XW",
+        "date": "2016-09-02",
+        "disc_count": 1,
+        "format": "Digital Media",
+        "is_deluxe_or_remastered": false,
+        "labels": [],
+        "media": [
+          {
+            "format": "Digital Media",
+            "medium_mbid": "b05740f0-cf72-3ea2-aabf-e00c85065525",
+            "position": 1,
+            "title": null,
+            "track_count": 1,
+            "tracks": [
+              {
+                "artist_credit": [
+                  {
+                    "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                    "join_phrase": "",
+                    "name": "Nine Inch Nails"
+                  }
+                ],
+                "disc_number": 1,
+                "length_ms": 101790,
+                "number": "1",
+                "position": 1,
+                "recording": {
+                  "disambiguation": null,
+                  "first_release_date": "2007-04-13",
+                  "is_video": false,
+                  "isrcs": [
+                    "USUM70727128"
+                  ],
+                  "length_ms": 102000,
+                  "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+                  "title": "HYPERPOWER!"
+                },
+                "title": "HYPERPOWER!",
+                "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f"
+              }
+            ]
+          }
+        ],
+        "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+        "selection_basis": "streaming_standard_edition",
+        "status": "Official",
+        "streaming_links": [
+          {
+            "service": "music.apple.com",
+            "url": "https://music.apple.com/album/year-zero/1440766015"
+          }
+        ],
+        "title": "Year Zero",
+        "track_count": 1
+      },
+      "secondary_types": []
+    },
+    "overview": null,
+    "parent": null,
+    "poster_accent_color": null,
+    "poster_aspect_ratio": 1.0,
+    "poster_height": 500,
+    "poster_orientation": "square",
+    "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "poster_width": 500,
+    "providers": null,
+    "ref": {
+      "episode_number": null,
+      "item_id": 902,
+      "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+      "media_type": "music",
+      "season_number": null,
+      "source": "musicbrainz"
+    },
+    "related": {},
+    "related_sections": [],
+    "release_date": "2007-04-13",
+    "roles": [],
+    "seasons": [],
+    "subtitle": "Nine Inch Nails",
+    "synopsis": null,
+    "title": "Year Zero",
+    "user_state": {
+      "diary_consumed_at": null,
+      "diary_count": 0,
+      "diary_entry_id": null,
+      "diary_rating": null,
+      "has_liked": false,
+      "in_lists": [],
+      "is_tracked": false,
+      "rating": null,
+      "status": null
+    }
+  },
+  "diary_create": {
+    "consumed_at": "2026-07-16",
+    "contains_spoilers": false,
+    "created_at": "2026-07-16T12:00:00Z",
+    "id": 1,
+    "is_rewatch": false,
+    "like_count": 0,
+    "liked": true,
+    "media": {
+      "backdrop_url": null,
+      "custom_backdrop_url": null,
+      "custom_poster_url": null,
+      "default_source": "musicbrainz",
+      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "overview": null,
+      "poster_accent_color": null,
+      "poster_aspect_ratio": null,
+      "poster_height": null,
+      "poster_orientation": "unknown",
+      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "poster_width": null,
+      "ref": {
+        "episode_number": null,
+        "item_id": 902,
+        "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "media_type": "music",
+        "season_number": null,
+        "source": "musicbrainz"
+      },
+      "release_date": null,
+      "subtitle": null,
+      "title": "Year Zero",
+      "user_state": null
+    },
+    "rating": "4.5",
+    "review": "Still sounds dangerous.",
+    "review_title": "A loud future",
+    "tags": [
+      "industrial"
+    ],
+    "updated_at": "2026-07-16T12:00:00Z",
+    "user": {
+      "avatar_url": null,
+      "display_name": "Phase Nine",
+      "id": 901,
+      "username": "phase9"
+    },
+    "viewer_has_liked": false,
+    "visibility": "public"
+  },
+  "diary_detail": {
+    "consumed_at": "2026-07-16",
+    "contains_spoilers": false,
+    "created_at": "2026-07-16T12:00:00Z",
+    "id": 1,
+    "is_rewatch": false,
+    "like_count": 0,
+    "liked": true,
+    "media": {
+      "backdrop_url": null,
+      "custom_backdrop_url": null,
+      "custom_poster_url": null,
+      "default_source": "musicbrainz",
+      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "overview": null,
+      "poster_accent_color": null,
+      "poster_aspect_ratio": null,
+      "poster_height": null,
+      "poster_orientation": "unknown",
+      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "poster_width": null,
+      "ref": {
+        "episode_number": null,
+        "item_id": 902,
+        "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "media_type": "music",
+        "season_number": null,
+        "source": "musicbrainz"
+      },
+      "release_date": null,
+      "subtitle": null,
+      "title": "Year Zero",
+      "user_state": null
+    },
+    "rating": "4.5",
+    "review": "Still sounds dangerous.",
+    "review_title": "A loud future",
+    "tags": [
+      "industrial"
+    ],
+    "updated_at": "2026-07-16T12:00:00Z",
+    "user": {
+      "avatar_url": null,
+      "display_name": "Phase Nine",
+      "id": 901,
+      "username": "phase9"
+    },
+    "viewer_has_liked": false,
+    "visibility": "public"
+  },
+  "diary_list": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "consumed_at": "2026-07-16",
+        "contains_spoilers": false,
+        "created_at": "2026-07-16T12:00:00Z",
+        "id": 1,
+        "is_rewatch": false,
+        "like_count": 0,
+        "liked": true,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "rating": "4.5",
+        "review": "Still sounds dangerous.",
+        "review_title": "A loud future",
+        "tags": [
+          "industrial"
+        ],
+        "updated_at": "2026-07-16T12:00:00Z",
+        "user": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "viewer_has_liked": false,
+        "visibility": "public"
+      }
+    ]
+  },
+  "filter_options": {
+    "genres": [
+      {
+        "label": "industrial rock",
+        "value": "industrial rock"
+      }
+    ],
+    "languages": [
+      {
+        "label": "eng",
+        "value": "eng"
+      }
+    ],
+    "sorts": [
+      {
+        "label": "Title",
+        "value": "title"
+      },
+      {
+        "label": "Release Date",
+        "value": "release_date"
+      },
+      {
+        "label": "Your Rating",
+        "value": "your_rating"
+      },
+      {
+        "label": "Average Rating",
+        "value": "average_rating"
+      },
+      {
+        "label": "MusicBrainz Rating",
+        "value": "rating:musicbrainz"
+      }
+    ],
+    "years": [
+      2007
+    ]
+  },
+  "hall_of_fame": {
+    "items": {
+      "anime": null,
+      "book": null,
+      "comic": null,
+      "game": null,
+      "manga": null,
+      "movie": null,
+      "music": {
+        "backdrop_url": null,
+        "custom_backdrop_url": null,
+        "custom_poster_url": null,
+        "default_source": "musicbrainz",
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "overview": null,
+        "poster_accent_color": null,
+        "poster_aspect_ratio": null,
+        "poster_height": null,
+        "poster_orientation": "unknown",
+        "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "poster_width": null,
+        "ref": {
+          "episode_number": null,
+          "item_id": 902,
+          "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+          "media_type": "music",
+          "season_number": null,
+          "source": "musicbrainz"
+        },
+        "release_date": null,
+        "subtitle": null,
+        "title": "Year Zero",
+        "user_state": {
+          "diary_consumed_at": "2026-07-16",
+          "diary_count": 1,
+          "diary_entry_id": 1,
+          "diary_rating": "4.5",
+          "direct_consumption": true,
+          "has_liked": true,
+          "in_lists": [
+            1
+          ],
+          "is_tracked": true,
+          "like_is_independent": false,
+          "like_source_diary_entry_id": 1,
+          "rating": "4.5",
+          "rating_source_diary_entry_id": 1,
+          "status": "Completed",
+          "tracking_id": 903
+        }
+      },
+      "tv": null
+    }
+  },
+  "list_create": {
+    "collaborators": [],
+    "description": "",
+    "id": 1,
+    "image_url": "https://www.themoviedb.org/assets/2/v4/glyphicons/basic/glyphicons-basic-38-picture-grey-c2ebdbb057f2a7614185931650f8cee23fa137b93812ccb132b9df511df1cfac.svg",
+    "is_ranked": true,
+    "items_count": 0,
+    "like_count": 0,
+    "name": "Favorite Albums",
+    "owner": {
+      "avatar_url": null,
+      "display_name": "Phase Nine",
+      "id": 901,
+      "username": "phase9"
+    },
+    "slug": "favorite-albums",
+    "tags": [],
+    "updated_at": "2026-07-16T12:00:00Z",
+    "visibility": "public"
+  },
+  "list_detail": {
+    "collaborators": [],
+    "description": "",
+    "id": 1,
+    "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "is_ranked": true,
+    "items": [
+      {
+        "backdrop_url": null,
+        "custom_backdrop_url": null,
+        "custom_poster_url": null,
+        "default_source": "musicbrainz",
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "overview": null,
+        "position": 1,
+        "poster_accent_color": null,
+        "poster_aspect_ratio": null,
+        "poster_height": null,
+        "poster_orientation": "unknown",
+        "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "poster_width": null,
+        "ref": {
+          "episode_number": null,
+          "item_id": 902,
+          "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+          "media_type": "music",
+          "season_number": null,
+          "source": "musicbrainz"
+        },
+        "release_date": null,
+        "subtitle": null,
+        "title": "Year Zero",
+        "user_state": null
+      }
+    ],
+    "items_count": 1,
+    "like_count": 0,
+    "name": "Favorite Albums",
+    "owner": {
+      "avatar_url": null,
+      "display_name": "Phase Nine",
+      "id": 901,
+      "username": "phase9"
+    },
+    "slug": "favorite-albums",
+    "tags": [],
+    "updated_at": "2026-07-16T12:00:00Z",
+    "visibility": "public"
+  },
+  "list_item_add": {
+    "item": {
+      "backdrop_url": null,
+      "custom_backdrop_url": null,
+      "custom_poster_url": null,
+      "default_source": "musicbrainz",
+      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "overview": null,
+      "poster_accent_color": null,
+      "poster_aspect_ratio": null,
+      "poster_height": null,
+      "poster_orientation": "unknown",
+      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "poster_width": null,
+      "ref": {
+        "episode_number": null,
+        "item_id": 902,
+        "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "media_type": "music",
+        "season_number": null,
+        "source": "musicbrainz"
+      },
+      "release_date": null,
+      "subtitle": null,
+      "title": "Year Zero",
+      "user_state": {
+        "diary_consumed_at": "2026-07-16",
+        "diary_count": 1,
+        "diary_entry_id": 1,
+        "diary_rating": "4.5",
+        "direct_consumption": true,
+        "has_liked": true,
+        "in_lists": [
+          1
+        ],
+        "is_tracked": true,
+        "like_is_independent": false,
+        "like_source_diary_entry_id": 1,
+        "rating": "4.5",
+        "rating_source_diary_entry_id": 1,
+        "status": "Completed",
+        "tracking_id": 903
+      }
+    }
+  },
+  "lists": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "collaborators": [],
+        "description": "",
+        "id": 1,
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "is_ranked": true,
+        "items_count": 1,
+        "like_count": 0,
+        "name": "Favorite Albums",
+        "owner": {
+          "avatar_url": null,
+          "display_name": "Phase Nine",
+          "id": 901,
+          "username": "phase9"
+        },
+        "preview_items": [
+          {
+            "backdrop_url": null,
+            "custom_backdrop_url": null,
+            "custom_poster_url": null,
+            "default_source": "musicbrainz",
+            "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+            "overview": null,
+            "position": 1,
+            "poster_accent_color": null,
+            "poster_aspect_ratio": null,
+            "poster_height": null,
+            "poster_orientation": "unknown",
+            "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+            "poster_width": null,
+            "ref": {
+              "episode_number": null,
+              "item_id": 902,
+              "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+              "media_type": "music",
+              "season_number": null,
+              "source": "musicbrainz"
+            },
+            "release_date": null,
+            "subtitle": null,
+            "title": "Year Zero",
+            "user_state": null
+          }
+        ],
+        "slug": "favorite-albums",
+        "tags": [],
+        "updated_at": "2026-07-16T12:00:00Z",
+        "visibility": "public"
+      }
+    ]
+  },
+  "meta": {
+    "date_formats": [
+      {
+        "label": "2026-01-18 (ISO)",
+        "value": "Y-m-d"
+      },
+      {
+        "label": "18/01/2026 (EU)",
+        "value": "d/m/Y"
+      },
+      {
+        "label": "01/18/2026 (US)",
+        "value": "m/d/Y"
+      },
+      {
+        "label": "Jan 18, 2026",
+        "value": "M j, Y"
+      },
+      {
+        "label": "18 Jan, 2026",
+        "value": "j M, Y"
+      }
+    ],
+    "enabled_media_types": [
+      "movie",
+      "tv",
+      "anime",
+      "manga",
+      "game",
+      "book",
+      "comic",
+      "music"
+    ],
+    "media_types": [
+      "tv",
+      "season",
+      "episode",
+      "movie",
+      "anime",
+      "manga",
+      "game",
+      "book",
+      "comic",
+      "music"
+    ],
+    "quick_watch_dates": [
+      {
+        "label": "Current Date",
+        "value": "current_date"
+      },
+      {
+        "label": "Release Date",
+        "value": "release_date"
+      },
+      {
+        "label": "No Date",
+        "value": "no_date"
+      }
+    ],
+    "source_choices": [
+      "tmdb",
+      "mal",
+      "mangaupdates",
+      "igdb",
+      "openlibrary",
+      "hardcover",
+      "comicvine",
+      "musicbrainz",
+      "manual"
+    ],
+    "sources": {
+      "anime": [
+        "mal"
+      ],
+      "book": [
+        "hardcover",
+        "openlibrary"
+      ],
+      "comic": [
+        "comicvine"
+      ],
+      "episode": [
+        "tmdb"
+      ],
+      "game": [
+        "igdb"
+      ],
+      "manga": [
+        "mal",
+        "mangaupdates"
+      ],
+      "movie": [
+        "tmdb"
+      ],
+      "music": [
+        "musicbrainz"
+      ],
+      "season": [
+        "tmdb"
+      ],
+      "tv": [
+        "tmdb"
+      ]
+    },
+    "status_choices": [
+      "Completed",
+      "In progress",
+      "Planning",
+      "Paused",
+      "Dropped"
+    ],
+    "time_formats": [
+      {
+        "label": "14:30 (24-hour)",
+        "value": "H:i"
+      },
+      {
+        "label": "2:30 PM (12-hour)",
+        "value": "g:i A"
+      }
+    ],
+    "version": "v1",
+    "week_start_days": [
+      {
+        "label": "Monday",
+        "value": "monday"
+      },
+      {
+        "label": "Sunday",
+        "value": "sunday"
+      }
+    ]
+  },
+  "music_search": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "backdrop_url": null,
+        "credit_roles": [],
+        "custom_poster_url": null,
+        "default_source": "musicbrainz",
+        "genres": [
+          "industrial rock"
+        ],
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "languages": [
+          "eng"
+        ],
+        "overview": null,
+        "poster_accent_color": null,
+        "poster_aspect_ratio": 1.0,
+        "poster_height": 500,
+        "poster_orientation": "square",
+        "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "poster_width": 500,
+        "ref": {
+          "episode_number": null,
+          "item_id": 902,
+          "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+          "media_type": "music",
+          "season_number": null,
+          "source": "musicbrainz"
+        },
+        "release_date": "2007-04-13",
+        "roles": [],
+        "subtitle": "Nine Inch Nails",
+        "title": "Year Zero",
+        "user_state": {
+          "diary_consumed_at": null,
+          "diary_count": 0,
+          "diary_entry_id": null,
+          "diary_rating": null,
+          "has_liked": false,
+          "in_lists": [],
+          "is_tracked": false,
+          "rating": null,
+          "status": null
+        }
+      }
+    ]
+  },
+  "preferences": {
+    "daily_digest_enabled": true,
+    "date_format": "Y-m-d",
+    "enabled_media_types": [
+      "tv",
+      "season",
+      "movie",
+      "anime",
+      "manga",
+      "game",
+      "book",
+      "comic",
+      "music"
+    ],
+    "quick_watch_date": "current_date",
+    "release_notifications_enabled": true,
+    "time_format": "H:i",
+    "week_start_day": "monday"
+  },
+  "profile": {
+    "avatar_url": null,
+    "bio": "",
+    "counts": {
+      "diary_entries": 1,
+      "followers": 0,
+      "following": 0,
+      "library_items": 1,
+      "liked_items": 1,
+      "lists": 1,
+      "planned_items": 0,
+      "reviews": 1,
+      "tags": 1
+    },
+    "display_name": "Phase Nine",
+    "email": "phase9@example.com",
+    "hof": {
+      "anime": null,
+      "book": null,
+      "comic": null,
+      "game": null,
+      "manga": null,
+      "movie": null,
+      "music": {
+        "backdrop_url": null,
+        "custom_backdrop_url": null,
+        "custom_poster_url": null,
+        "default_source": "musicbrainz",
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "overview": null,
+        "poster_accent_color": null,
+        "poster_aspect_ratio": null,
+        "poster_height": null,
+        "poster_orientation": "unknown",
+        "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "poster_width": null,
+        "ref": {
+          "episode_number": null,
+          "item_id": 902,
+          "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+          "media_type": "music",
+          "season_number": null,
+          "source": "musicbrainz"
+        },
+        "release_date": null,
+        "subtitle": null,
+        "title": "Year Zero",
+        "user_state": {
+          "diary_consumed_at": "2026-07-16",
+          "diary_count": 1,
+          "diary_entry_id": 1,
+          "diary_rating": "4.5",
+          "direct_consumption": true,
+          "has_liked": true,
+          "in_lists": [
+            1
+          ],
+          "is_tracked": true,
+          "like_is_independent": false,
+          "like_source_diary_entry_id": 1,
+          "rating": "4.5",
+          "rating_source_diary_entry_id": 1,
+          "status": "Completed",
+          "tracking_id": 903
+        }
+      },
+      "tv": null
+    },
+    "id": 901,
+    "is_private": false,
+    "location": "",
+    "preferences": {
+      "daily_digest_enabled": true,
+      "date_format": "Y-m-d",
+      "enabled_media_types": [
+        "tv",
+        "season",
+        "movie",
+        "anime",
+        "manga",
+        "game",
+        "book",
+        "comic",
+        "music"
+      ],
+      "quick_watch_date": "current_date",
+      "release_notifications_enabled": true,
+      "time_format": "H:i",
+      "week_start_day": "monday"
+    },
+    "profile_backdrop_item": null,
+    "profile_backdrop_url": null,
+    "pronouns": "",
+    "username": "phase9",
+    "viewer_relationship": {
+      "blocked": false,
+      "followed_by": false,
+      "following": false,
+      "requested": false
+    }
+  },
+  "recording_detail": {
+    "albums": [
+      {
+        "backdrop_url": null,
+        "credit_roles": [],
+        "custom_poster_url": null,
+        "default_source": "musicbrainz",
+        "genres": [
+          "industrial rock"
+        ],
+        "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "languages": [
+          "eng"
+        ],
+        "overview": null,
+        "poster_accent_color": null,
+        "poster_aspect_ratio": 1.0,
+        "poster_height": 500,
+        "poster_orientation": "square",
+        "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+        "poster_width": 500,
+        "ref": {
+          "episode_number": null,
+          "item_id": 902,
+          "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+          "media_type": "music",
+          "season_number": null,
+          "source": "musicbrainz"
+        },
+        "release_date": "2007-04-13",
+        "roles": [],
+        "subtitle": "Nine Inch Nails",
+        "title": "Year Zero",
+        "user_state": {
+          "diary_consumed_at": null,
+          "diary_count": 0,
+          "diary_entry_id": null,
+          "diary_rating": null,
+          "has_liked": false,
+          "in_lists": [],
+          "is_tracked": false,
+          "rating": null,
+          "status": null
+        }
+      }
+    ],
+    "alternative_recordings": [],
+    "annotation": null,
+    "artist_credit": [
+      {
+        "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+        "join_phrase": "",
+        "name": "Nine Inch Nails"
+      }
+    ],
+    "capabilities": {
+      "diary_loggable": false,
+      "library_addable": false,
+      "likeable": false,
+      "listable": false,
+      "rateable": false,
+      "reviewable": false,
+      "trackable": false
+    },
+    "context_release": {
+      "medium_mbid": "b05740f0-cf72-3ea2-aabf-e00c85065525",
+      "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+      "track": {
+        "artist_credit": [
+          {
+            "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+            "join_phrase": "",
+            "name": "Nine Inch Nails"
+          }
+        ],
+        "disc_number": 1,
+        "length_ms": 101790,
+        "number": "1",
+        "position": 1,
+        "recording": {
+          "disambiguation": null,
+          "first_release_date": "2007-04-13",
+          "is_video": false,
+          "isrcs": [
+            "USUM70727128"
+          ],
+          "length_ms": 102000,
+          "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+          "title": "HYPERPOWER!"
+        },
+        "title": "HYPERPOWER!",
+        "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f"
+      }
+    },
+    "disambiguation": null,
+    "external_links": {
+      "MusicBrainz": "https://musicbrainz.org/recording/35518724-a25a-4627-a2cc-0786dd1d2272"
+    },
+    "first_release_date": "2007-04-13",
+    "genres": [
+      "industrial rock"
+    ],
+    "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+    "is_video": false,
+    "isrcs": [
+      "USUM70727128"
+    ],
+    "length_ms": 102000,
+    "parent_album": {
+      "backdrop_url": null,
+      "credit_roles": [],
+      "custom_poster_url": null,
+      "default_source": "musicbrainz",
+      "genres": [
+        "industrial rock"
+      ],
+      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "languages": [
+        "eng"
+      ],
+      "overview": null,
+      "poster_accent_color": null,
+      "poster_aspect_ratio": 1.0,
+      "poster_height": 500,
+      "poster_orientation": "square",
+      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+      "poster_width": 500,
+      "ref": {
+        "episode_number": null,
+        "item_id": 902,
+        "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "media_type": "music",
+        "season_number": null,
+        "source": "musicbrainz"
+      },
+      "release_date": "2007-04-13",
+      "roles": [],
+      "subtitle": "Nine Inch Nails",
+      "title": "Year Zero",
+      "user_state": {
+        "diary_consumed_at": null,
+        "diary_count": 0,
+        "diary_entry_id": null,
+        "diary_rating": null,
+        "has_liked": false,
+        "in_lists": [],
+        "is_tracked": false,
+        "rating": null,
+        "status": null
+      }
+    },
+    "rating": {
+      "max_value": 5,
+      "value": 4.5,
+      "votes_count": 8
+    },
+    "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+    "releases": [
+      {
+        "barcode": "00602547582812",
+        "country": "XW",
+        "date": "2016-09-02",
+        "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+        "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+        "status": "Official",
+        "title": "Year Zero"
+      }
+    ],
+    "source_url": "https://musicbrainz.org/recording/35518724-a25a-4627-a2cc-0786dd1d2272",
+    "title": "HYPERPOWER!",
+    "works": []
+  },
+  "statistics": {
+    "activity": {
+      "active_days": 1,
+      "current_streak_days": 1,
+      "days": [
+        {
+          "count": 1,
+          "date": "2026-07-16"
+        }
+      ],
+      "longest_streak_days": 1,
+      "months": [
+        {
+          "count": 1,
+          "month": "2026-07"
+        }
+      ],
+      "most_active_weekday": {
+        "active_day_count": 1,
+        "name": "Thursday",
+        "percentage": 100.0,
+        "weekday": 3
+      }
+    },
+    "diary_top_rated": [
+      {
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "rating": "4.5"
+      }
+    ],
+    "end_date": "2026-07-16T23:59:59.999999Z",
+    "media_count": {
+      "anime": 0,
+      "book": 0,
+      "comic": 0,
+      "game": 0,
+      "manga": 0,
+      "movie": 0,
+      "music": 1,
+      "season": 0,
+      "total": 1,
+      "tv": 0
+    },
+    "media_type_distribution": {
+      "datasets": [
+        {
+          "backgroundColor": [
+            "#84cc16"
+          ],
+          "data": [
+            1
+          ]
+        }
+      ],
+      "labels": [
+        "Music"
+      ]
+    },
+    "media_types": [
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "movie",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "tv",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "anime",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "manga",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "game",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "book",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": null,
+        "completed_count": 0,
+        "diary_entry_count": 0,
+        "liked_count": 0,
+        "media_type": "comic",
+        "metadata_coverage": {
+          "genre_items": 0,
+          "language_items": 0,
+          "release_year_items": 0,
+          "total_items": 0
+        },
+        "most_logged": [],
+        "rated_count": 0,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 0,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [],
+        "repeat_count": 0,
+        "review_count": 0,
+        "statuses": {
+          "completed": 0,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [],
+        "top_languages": [],
+        "top_rated": [],
+        "tracked_count": 0,
+        "unique_logged_count": 0
+      },
+      {
+        "average_rating": "4.5",
+        "completed_count": 1,
+        "diary_entry_count": 1,
+        "liked_count": 1,
+        "media_type": "music",
+        "metadata_coverage": {
+          "genre_items": 1,
+          "language_items": 1,
+          "release_year_items": 1,
+          "total_items": 1
+        },
+        "most_logged": [
+          {
+            "log_count": 1,
+            "media": {
+              "backdrop_url": null,
+              "custom_backdrop_url": null,
+              "custom_poster_url": null,
+              "default_source": "musicbrainz",
+              "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+              "overview": null,
+              "poster_accent_color": null,
+              "poster_aspect_ratio": null,
+              "poster_height": null,
+              "poster_orientation": "unknown",
+              "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+              "poster_width": null,
+              "ref": {
+                "episode_number": null,
+                "item_id": 902,
+                "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+                "media_type": "music",
+                "season_number": null,
+                "source": "musicbrainz"
+              },
+              "release_date": null,
+              "subtitle": null,
+              "title": "Year Zero",
+              "user_state": null
+            }
+          }
+        ],
+        "rated_count": 1,
+        "rating_distribution": [
+          {
+            "count": 0,
+            "rating": "0.0"
+          },
+          {
+            "count": 0,
+            "rating": "0.5"
+          },
+          {
+            "count": 0,
+            "rating": "1.0"
+          },
+          {
+            "count": 0,
+            "rating": "1.5"
+          },
+          {
+            "count": 0,
+            "rating": "2.0"
+          },
+          {
+            "count": 0,
+            "rating": "2.5"
+          },
+          {
+            "count": 0,
+            "rating": "3.0"
+          },
+          {
+            "count": 0,
+            "rating": "3.5"
+          },
+          {
+            "count": 0,
+            "rating": "4.0"
+          },
+          {
+            "count": 1,
+            "rating": "4.5"
+          },
+          {
+            "count": 0,
+            "rating": "5.0"
+          },
+          {
+            "count": 0,
+            "rating": "5.5"
+          },
+          {
+            "count": 0,
+            "rating": "6.0"
+          },
+          {
+            "count": 0,
+            "rating": "6.5"
+          },
+          {
+            "count": 0,
+            "rating": "7.0"
+          },
+          {
+            "count": 0,
+            "rating": "7.5"
+          },
+          {
+            "count": 0,
+            "rating": "8.0"
+          },
+          {
+            "count": 0,
+            "rating": "8.5"
+          },
+          {
+            "count": 0,
+            "rating": "9.0"
+          },
+          {
+            "count": 0,
+            "rating": "9.5"
+          },
+          {
+            "count": 0,
+            "rating": "10.0"
+          }
+        ],
+        "release_years": [
+          {
+            "count": 1,
+            "year": 2007
+          }
+        ],
+        "repeat_count": 0,
+        "review_count": 1,
+        "statuses": {
+          "completed": 1,
+          "dropped": 0,
+          "in_progress": 0,
+          "paused": 0,
+          "planning": 0
+        },
+        "top_genres": [
+          {
+            "count": 1,
+            "name": "industrial rock"
+          }
+        ],
+        "top_languages": [
+          {
+            "count": 1,
+            "name": "eng"
+          }
+        ],
+        "top_rated": [
+          {
+            "media": {
+              "backdrop_url": null,
+              "custom_backdrop_url": null,
+              "custom_poster_url": null,
+              "default_source": "musicbrainz",
+              "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+              "overview": null,
+              "poster_accent_color": null,
+              "poster_aspect_ratio": null,
+              "poster_height": null,
+              "poster_orientation": "unknown",
+              "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+              "poster_width": null,
+              "ref": {
+                "episode_number": null,
+                "item_id": 902,
+                "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+                "media_type": "music",
+                "season_number": null,
+                "source": "musicbrainz"
+              },
+              "release_date": null,
+              "subtitle": null,
+              "title": "Year Zero",
+              "user_state": null
+            },
+            "rating": "4.5"
+          }
+        ],
+        "tracked_count": 1,
+        "unique_logged_count": 1
+      }
+    ],
+    "metadata_coverage": {
+      "genre_items": 1,
+      "language_items": 1,
+      "release_year_items": 1,
+      "total_items": 1
+    },
+    "most_logged": [
+      {
+        "log_count": 1,
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        }
+      }
+    ],
+    "overview": {
+      "active_days": 1,
+      "average_rating": "4.5",
+      "completed_count": 1,
+      "current_streak_days": 1,
+      "diary_entry_count": 1,
+      "liked_count": 1,
+      "longest_streak_days": 1,
+      "rated_count": 1,
+      "repeat_count": 0,
+      "review_count": 1,
+      "tracked_count": 1,
+      "unique_logged_count": 1
+    },
+    "range": {
+      "end_date": "2026-07-16",
+      "is_all_time": false,
+      "start_date": "2025-07-16",
+      "timezone": "UTC"
+    },
+    "rating_distribution": [
+      {
+        "count": 0,
+        "rating": "0.0"
+      },
+      {
+        "count": 0,
+        "rating": "0.5"
+      },
+      {
+        "count": 0,
+        "rating": "1.0"
+      },
+      {
+        "count": 0,
+        "rating": "1.5"
+      },
+      {
+        "count": 0,
+        "rating": "2.0"
+      },
+      {
+        "count": 0,
+        "rating": "2.5"
+      },
+      {
+        "count": 0,
+        "rating": "3.0"
+      },
+      {
+        "count": 0,
+        "rating": "3.5"
+      },
+      {
+        "count": 0,
+        "rating": "4.0"
+      },
+      {
+        "count": 1,
+        "rating": "4.5"
+      },
+      {
+        "count": 0,
+        "rating": "5.0"
+      },
+      {
+        "count": 0,
+        "rating": "5.5"
+      },
+      {
+        "count": 0,
+        "rating": "6.0"
+      },
+      {
+        "count": 0,
+        "rating": "6.5"
+      },
+      {
+        "count": 0,
+        "rating": "7.0"
+      },
+      {
+        "count": 0,
+        "rating": "7.5"
+      },
+      {
+        "count": 0,
+        "rating": "8.0"
+      },
+      {
+        "count": 0,
+        "rating": "8.5"
+      },
+      {
+        "count": 0,
+        "rating": "9.0"
+      },
+      {
+        "count": 0,
+        "rating": "9.5"
+      },
+      {
+        "count": 0,
+        "rating": "10.0"
+      }
+    ],
+    "release_years": [
+      {
+        "count": 1,
+        "year": 2007
+      }
+    ],
+    "schema_version": 1,
+    "score_distribution": {
+      "average_score": 4.5,
+      "datasets": [
+        {
+          "background_color": "#10b981",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "TV Show"
+        },
+        {
+          "background_color": "#a855f7",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "TV Season"
+        },
+        {
+          "background_color": "#f97316",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Movie"
+        },
+        {
+          "background_color": "#3b82f6",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Anime"
+        },
+        {
+          "background_color": "#ef4444",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Manga"
+        },
+        {
+          "background_color": "#eab308",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Game"
+        },
+        {
+          "background_color": "#d946ef",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Book"
+        },
+        {
+          "background_color": "#06b6d4",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Comic"
+        },
+        {
+          "background_color": "#84cc16",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Music"
+        }
+      ],
+      "labels": [
+        "0.0",
+        "0.5",
+        "1.0",
+        "1.5",
+        "2.0",
+        "2.5",
+        "3.0",
+        "3.5",
+        "4.0",
+        "4.5",
+        "5.0",
+        "5.5",
+        "6.0",
+        "6.5",
+        "7.0",
+        "7.5",
+        "8.0",
+        "8.5",
+        "9.0",
+        "9.5",
+        "10.0"
+      ],
+      "total_scored": 1
+    },
+    "start_date": "2025-07-16T00:00:00Z",
+    "status_distribution": {
+      "datasets": [
+        {
+          "background_color": "#10b981",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "label": "Completed",
+          "total": 1
+        },
+        {
+          "background_color": "#6366f1",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "In progress",
+          "total": 0
+        },
+        {
+          "background_color": "#87ceeb",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Planning",
+          "total": 0
+        },
+        {
+          "background_color": "#f97316",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Paused",
+          "total": 0
+        },
+        {
+          "background_color": "#ef4444",
+          "data": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Dropped",
+          "total": 0
+        }
+      ],
+      "labels": [
+        "TV Show",
+        "TV Season",
+        "Movie",
+        "Anime",
+        "Manga",
+        "Game",
+        "Book",
+        "Comic",
+        "Music"
+      ],
+      "total_completed": 1
+    },
+    "top_genres": [
+      {
+        "count": 1,
+        "name": "industrial rock"
+      }
+    ],
+    "top_languages": [
+      {
+        "count": 1,
+        "name": "eng"
+      }
+    ],
+    "top_rated": [
+      {
+        "media": {
+          "backdrop_url": null,
+          "custom_backdrop_url": null,
+          "custom_poster_url": null,
+          "default_source": "musicbrainz",
+          "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "overview": null,
+          "poster_accent_color": null,
+          "poster_aspect_ratio": null,
+          "poster_height": null,
+          "poster_orientation": "unknown",
+          "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+          "poster_width": null,
+          "ref": {
+            "episode_number": null,
+            "item_id": 902,
+            "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            "media_type": "music",
+            "season_number": null,
+            "source": "musicbrainz"
+          },
+          "release_date": null,
+          "subtitle": null,
+          "title": "Year Zero",
+          "user_state": null
+        },
+        "rating": "4.5"
+      }
+    ]
+  },
+  "tracking_action": {
+    "diary_count": 0,
+    "direct_consumption": true,
+    "end_date": null,
+    "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
+    "notes": "Headphones recommended.",
+    "progress": {
+      "kind": "binary",
+      "max": 1,
+      "unit": "album",
+      "value": 1
+    },
+    "rating": "4.5",
+    "rating_source_diary_entry_id": null,
+    "repeats": 1,
+    "start_date": "2026-07-15T12:00:00Z",
+    "status": "Completed",
+    "tracking_id": 903,
+    "updated_at": "2026-07-16T12:00:00Z"
+  },
+  "tracking_detail": {
+    "diary_count": 0,
+    "direct_consumption": false,
+    "end_date": null,
+    "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
+    "notes": "",
+    "progress": {
+      "kind": "binary",
+      "max": 1,
+      "unit": "album",
+      "value": 0
+    },
+    "rating": null,
+    "rating_source_diary_entry_id": null,
+    "repeats": 1,
+    "start_date": null,
+    "status": "Planning",
+    "tracking_id": 903,
+    "updated_at": "2026-07-16T12:00:00Z"
+  },
+  "tracking_update": {
+    "diary_count": 0,
+    "direct_consumption": true,
+    "end_date": null,
+    "latest_progress_change": null,
+    "like_is_independent": false,
+    "like_source_diary_entry_id": null,
+    "liked": false,
+    "notes": "Headphones recommended.",
+    "progress": {
+      "kind": "binary",
+      "max": 1,
+      "unit": "album",
+      "value": 1
+    },
+    "rating": "4.5",
+    "rating_source_diary_entry_id": null,
+    "repeats": 1,
+    "start_date": "2026-07-15T12:00:00Z",
+    "status": "Completed",
+    "tracking_id": 903,
+    "updated_at": "2026-07-16T12:00:00Z"
+  }
+}

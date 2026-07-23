@@ -1,3 +1,10 @@
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+
+_external_rating_item_ids = ContextVar("external_rating_item_ids", default=None)
+
+
 class CalendarTriggerMixin:
     """Mixin to handle calendar trigger disabling functionality."""
 
@@ -10,6 +17,26 @@ def disable_fetch_releases():
     Applies for models using CalendarTriggerMixin.
     """
     return _DisableCalendarTriggers()
+
+
+@contextmanager
+def collect_external_rating_item_ids():
+    """Collect created eligible Item IDs for one bounded enqueue point."""
+    item_ids = set()
+    token = _external_rating_item_ids.set(item_ids)
+    try:
+        yield item_ids
+    finally:
+        _external_rating_item_ids.reset(token)
+
+
+def collect_external_rating_item_id(item_id):
+    """Return whether an active collector accepted an Item ID."""
+    item_ids = _external_rating_item_ids.get()
+    if item_ids is None:
+        return False
+    item_ids.add(item_id)
+    return True
 
 
 class _DisableCalendarTriggers:

@@ -6,25 +6,28 @@ final class BackdropPickerViewModel {
     var backdrops: [PosterOption] = []
     var selectedLanguage = "all"
     var selectedBackdropURL: String?
-    var isLoading = false
+    var isLoading = true
     var isSaving = false
     var errorMessage: String?
 
     private let ref: MediaRef
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
-    private let onSaved: (BackdropSaveResponse) -> Void
+    private let currentBackdropURL: String?
+    private let saveAction: (MediaRef, String) async throws -> Void
 
     init(
         ref: MediaRef,
         mediaRepository: MediaRepository,
+        currentBackdropURL: String? = nil,
         onUnauthorized: @escaping () -> Void,
-        onSaved: @escaping (BackdropSaveResponse) -> Void
+        saveAction: @escaping (MediaRef, String) async throws -> Void
     ) {
         self.ref = ref
         self.mediaRepository = mediaRepository
+        self.currentBackdropURL = currentBackdropURL
         self.onUnauthorized = onUnauthorized
-        self.onSaved = onSaved
+        self.saveAction = saveAction
     }
 
     var languageOptions: [PosterLanguageOption] {
@@ -44,25 +47,22 @@ final class BackdropPickerViewModel {
     }
 
     var filteredBackdrops: [PosterOption] {
-        let filtered: [PosterOption]
         switch selectedLanguage {
         case "all":
-            filtered = backdrops
+            return backdrops
         case "none":
-            filtered = backdrops.filter { $0.language == nil }
+            return backdrops.filter { $0.language == nil }
         default:
-            filtered = backdrops.filter { $0.language == selectedLanguage }
+            return backdrops.filter { $0.language == selectedLanguage }
         }
-        guard let selectedBackdropURL,
-              let selected = backdrops.first(where: { $0.url == selectedBackdropURL }),
-              !filtered.contains(selected) else {
-            return filtered
-        }
-        return [selected] + filtered
     }
 
     var canSave: Bool {
         selectedBackdropURL != nil && !isSaving
+    }
+
+    func isCurrent(_ backdrop: PosterOption) -> Bool {
+        currentBackdropURL.map { $0 == backdrop.url } ?? backdrop.isSelected
     }
 
     func load() async {
@@ -72,8 +72,12 @@ final class BackdropPickerViewModel {
         defer { isLoading = false }
 
         do {
-            backdrops = try await mediaRepository.backdrops(ref: ref).pinningCurrentFirst()
-            selectedBackdropURL = backdrops.first(where: \.isSelected)?.url ?? backdrops.first?.url
+            backdrops = try await mediaRepository.backdrops(ref: ref).uniquedByURL().pinningCurrentFirst()
+            let currentInOptions = currentBackdropURL.flatMap { current in
+                backdrops.contains { $0.url == current } ? current : nil
+            }
+            selectedBackdropURL = currentInOptions ?? backdrops.first(where: \.isSelected)?.url ?? backdrops.first?.url
+            selectedLanguage = backdrops.contains(where: { $0.language == nil }) ? "none" : "all"
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -89,8 +93,7 @@ final class BackdropPickerViewModel {
         defer { isSaving = false }
 
         do {
-            let response = try await mediaRepository.saveBackdrop(ref: ref, backdropURL: selectedBackdropURL)
-            onSaved(response)
+            try await saveAction(ref, selectedBackdropURL)
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -101,6 +104,11 @@ final class BackdropPickerViewModel {
 }
 
 private extension Array where Element == PosterOption {
+    func uniquedByURL() -> [PosterOption] {
+        var seen = Set<String>()
+        return filter { seen.insert($0.url).inserted }
+    }
+
     func pinningCurrentFirst() -> [PosterOption] {
         guard let selectedIndex = firstIndex(where: \.isSelected), selectedIndex != startIndex else { return self }
         var options = self
@@ -124,7 +132,30 @@ struct BackdropPickerView: View {
             ref: ref,
             mediaRepository: mediaRepository,
             onUnauthorized: onUnauthorized,
-            onSaved: onSaved
+            saveAction: { ref, backdropURL in
+                let response = try await mediaRepository.saveBackdrop(ref: ref, backdropURL: backdropURL)
+                onSaved(response)
+            }
+        ))
+    }
+
+    init(
+        ref: MediaRef,
+        currentBackdropURL: String?,
+        mediaRepository: MediaRepository,
+        profileRepository: ProfileRepository,
+        onUnauthorized: @escaping () -> Void,
+        onSaved: @escaping (ProfileBackdropSaveResponse) -> Void
+    ) {
+        _viewModel = State(initialValue: BackdropPickerViewModel(
+            ref: ref,
+            mediaRepository: mediaRepository,
+            currentBackdropURL: currentBackdropURL,
+            onUnauthorized: onUnauthorized,
+            saveAction: { ref, backdropURL in
+                let response = try await profileRepository.saveProfileBackdrop(ref: ref, backdropURL: backdropURL)
+                onSaved(response)
+            }
         ))
     }
 
@@ -147,14 +178,17 @@ struct BackdropPickerView: View {
                             .padding()
                     } else {
                         backdropGrid
+                            .allowsHitTesting(!viewModel.isSaving)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .navigationTitle("Customize Backdrop")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(viewModel.isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -165,11 +199,14 @@ struct BackdropPickerView: View {
                             }
                         }
                     } label: {
-                        if viewModel.isSaving {
-                            ProgressView()
-                        } else {
-                            Text("Save")
+                        Group {
+                            if viewModel.isSaving {
+                                ProgressView()
+                            } else {
+                                Text("Save")
+                            }
                         }
+                        .spineContentTransition(value: viewModel.isSaving)
                     }
                     .disabled(!viewModel.canSave)
                 }
@@ -178,6 +215,15 @@ struct BackdropPickerView: View {
                 await viewModel.load()
             }
         }
+        .interactiveDismissDisabled(viewModel.isSaving)
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.backdrops.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var backdropGrid: some View {
@@ -204,7 +250,8 @@ struct BackdropPickerView: View {
                     ForEach(viewModel.filteredBackdrops) { backdrop in
                         BackdropOptionCell(
                             backdrop: backdrop,
-                            isSelected: viewModel.selectedBackdropURL == backdrop.url
+                            isSelected: viewModel.selectedBackdropURL == backdrop.url,
+                            isCurrent: viewModel.isCurrent(backdrop)
                         ) {
                             viewModel.selectedBackdropURL = backdrop.url
                         }
@@ -221,29 +268,15 @@ struct BackdropPickerView: View {
 private struct BackdropOptionCell: View {
     let backdrop: PosterOption
     let isSelected: Bool
+    let isCurrent: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .topLeading) {
-                AsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
-                    switch phase {
-                    case let .success(image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        Color.gray.opacity(0.18)
-                    }
-                }
-                .aspectRatio(16.0 / 9.0, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? .white : .clear, lineWidth: 3)
-                }
+                backdropImage
 
-                if backdrop.isSelected {
+                if isCurrent {
                     Text("Current")
                         .font(.caption2.weight(.heavy))
                         .foregroundStyle(.white)
@@ -264,6 +297,28 @@ private struct BackdropOptionCell: View {
             }
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityLabel(backdrop.isSelected ? "Current backdrop" : "Backdrop option")
+    }
+
+    private var backdropImage: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.gray.opacity(0.18))
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                SpineAsyncImage(url: URL(string: backdrop.thumbnailUrl ?? backdrop.url)) { phase in
+                    if case let .success(image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? .white : .clear, lineWidth: 3)
+            }
     }
 }

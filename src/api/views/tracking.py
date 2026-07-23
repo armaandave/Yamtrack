@@ -4,18 +4,24 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from api.pagination import StandardResultsSetPagination
-from api.serializers.common import media_summary_from_item
+from api.serializers.common import media_summary_from_item, prime_collection_items
 from api.serializers.tracking import (
+    BookActionSerializer,
+    BookCompletionSerializer,
+    BookJourneyWriteSerializer,
     BookProgressSerializer,
     ConsumeSerializer,
     EpisodeWatchSerializer,
     TrackingWriteSerializer,
 )
+from api.services import diary as diary_service
+from api.services import filters as filter_service
 from api.services import tracking as tracking_service
+from api.views.mixins import MediaExposureMixin
 from app.models import BasicMedia, MediaTypes, Status
 
 
-class TrackingListView(APIView):
+class TrackingListView(MediaExposureMixin, APIView):
     """List tracked media for the current user."""
 
     permission_classes = [IsAuthenticated]
@@ -25,22 +31,51 @@ class TrackingListView(APIView):
         if not media_type:
             return Response({"media_type": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
         status_filter = request.query_params.get("status", "All")
-        ordering = request.query_params.get("ordering") or request.query_params.get("sort") or "title"
+        manager_status_filter = "All" if str(status_filter).lower() == "tracked" else status_filter
+        ordering = request.query_params.get("ordering") or request.query_params.get("sort") or "release_date"
         search = request.query_params.get("q")
+        manager_sort = ordering if ordering in {"score", "progress", "start_date", "end_date", "title"} else None
         queryset = BasicMedia.objects.get_media_list(
             request.user,
             media_type,
-            status_filter,
-            ordering,
-            search=search,
+            manager_status_filter,
+            manager_sort,
+            search=None,
         )
+        if str(status_filter).lower() == "tracked":
+            queryset = queryset.exclude(status=Status.PLANNING.value)
+        rating_scope_queryset = queryset
+        filter_service.ensure_filter_metadata(queryset, request.query_params)
+        queryset = filter_service.apply_item_filters(queryset, request.query_params)
+        if search:
+            queryset = queryset.filter(item__title__icontains=search)
+        queryset = filter_service.apply_rating_range(queryset, request.query_params, "score")
+        queryset = filter_service.apply_watched_range(queryset, request.query_params, "end_date")
+        if manager_sort is None or request.query_params.get("direction"):
+            queryset = filter_service.order_queryset(
+                queryset,
+                request.query_params,
+                your_rating_field="score",
+                default_sort="release_date",
+                extra_sorts={
+                    "score": "score",
+                    "start_date": "start_date",
+                    "end_date": "end_date",
+                },
+                rating_scope_queryset=rating_scope_queryset,
+            )
         paginator = StandardResultsSetPagination()
         page = list(paginator.paginate_queryset(queryset, request, view=self))
         BasicMedia.objects.annotate_max_progress(page, media_type)
+        prime_collection_items(
+            [media.item for media in page],
+            request.user,
+            media_by_item={media.item_id: media for media in page},
+        )
         return paginator.get_paginated_response(
             [
                 {
-                    "media": media_summary_from_item(media.item, request=request),
+                    "media": media_summary_from_item(media.item, request=request, user=request.user),
                     "tracking": tracking_service.serialize_tracking(media),
                 }
                 for media in page
@@ -48,7 +83,7 @@ class TrackingListView(APIView):
         )
 
 
-class TrackingDetailView(APIView):
+class TrackingDetailView(MediaExposureMixin, APIView):
     """Retrieve, upsert, patch, or delete tracking state."""
 
     permission_classes = [IsAuthenticated]
@@ -102,13 +137,23 @@ class TrackingDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class TrackingActionView(APIView):
+class TrackingActionView(MediaExposureMixin, APIView):
     """Generic tracking status actions."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, source, media_type, media_id, action):
-        if action == "consume":
+        if media_type == MediaTypes.BOOK.value:
+            serializer = BookActionSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            media = tracking_service.perform_book_action(
+                request.user,
+                source=source,
+                media_id=media_id,
+                action=action,
+                data=serializer.validated_data,
+            )
+        elif action == "consume":
             serializer = ConsumeSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             media = tracking_service.consume_media(
@@ -144,6 +189,8 @@ class TrackingActionView(APIView):
             )
         else:
             return Response(status=status.HTTP_404_NOT_FOUND)
+        if media is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
         return Response(tracking_service.serialize_tracking(media))
 
 
@@ -247,21 +294,70 @@ class BookProgressView(APIView):
             progress_type=serializer.validated_data["progress_type"],
             value=serializer.validated_data["value"],
             notes=serializer.validated_data.get("notes", ""),
+            progressed_on=serializer.validated_data.get("progressed_on"),
         )
         return Response(tracking_service.serialize_tracking(book))
 
 
 class BookCompleteView(APIView):
-    """Mark a book complete."""
+    """Save an atomic completion, with legacy undated Mark Read support."""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, source, media_id):
-        media = tracking_service.consume_media(
+        if "completion_date" not in request.data and "mutation_id" not in request.data:
+            media = tracking_service.consume_media(
+                request.user,
+                source=source,
+                media_type=MediaTypes.BOOK.value,
+                media_id=media_id,
+            )
+            return Response(tracking_service.serialize_tracking(media))
+        serializer = BookCompletionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        media, entry = tracking_service.complete_book(
             request.user,
             source=source,
-            media_type=MediaTypes.BOOK.value,
             media_id=media_id,
-            consumed_at=request.data.get("completed_at"),
+            data=serializer.validated_data,
         )
-        return Response(tracking_service.serialize_tracking(media))
+        return Response(
+            {
+                "tracking": tracking_service.serialize_tracking(media),
+                "diary_entry": diary_service.diary_payload(
+                    entry,
+                    request=request,
+                    viewer=request.user,
+                ),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class BookJourneyView(APIView):
+    """Edit or delete one book reading journey."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, source, media_id, journey_id):
+        serializer = BookJourneyWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        book = tracking_service.update_book_journey(
+            request.user,
+            source=source,
+            media_id=media_id,
+            journey_id=journey_id,
+            data=serializer.validated_data,
+        )
+        return Response(tracking_service.serialize_tracking(book))
+
+    def delete(self, request, source, media_id, journey_id):
+        book = tracking_service.delete_book_journey(
+            request.user,
+            source=source,
+            media_id=media_id,
+            journey_id=journey_id,
+        )
+        if book is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(tracking_service.serialize_tracking(book))

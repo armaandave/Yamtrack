@@ -363,9 +363,31 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
 VERSION = config("VERSION", default="dev")
 
+MUSICBRAINZ_CONTACT = config(
+    "MUSICBRAINZ_CONTACT",
+    default="github@fuzzygrim.com",
+)
+MUSIC_DEFAULT_MARKET = config("MUSIC_DEFAULT_MARKET", default="US")
+LISTENBRAINZ_TOKEN = config(
+    "LISTENBRAINZ_TOKEN",
+    default=secret("LISTENBRAINZ_TOKEN_FILE", ""),
+)
+
 ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 
 TRACK_TIME = config("TRACK_TIME", default=True, cast=bool)
+
+MUSIC_ENABLED = config("MUSIC_ENABLED", default=DEBUG, cast=bool)
+EXTERNAL_RATING_PERSON_PREPARATION_ENABLED = config(
+    "EXTERNAL_RATING_PERSON_PREPARATION_ENABLED",
+    default=False,
+    cast=bool,
+)
+MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED = config(
+    "MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED",
+    default=False,
+    cast=bool,
+)
 
 TZ = zoneinfo.ZoneInfo(TIME_ZONE)
 
@@ -425,6 +447,14 @@ STEAM_API_KEY = config(
         "STEAM_API_KEY_FILE",
         "",
     ),  # Generate default key https://steamcommunity.com/dev/apikey
+)
+
+STEAMGRIDDB_API_KEY = config(
+    "STEAMGRIDDB_API_KEY",
+    default=secret(
+        "STEAMGRIDDB_API_KEY_FILE",
+        "",
+    ),
 )
 
 HARDCOVER_API = config(
@@ -511,6 +541,18 @@ MDBLIST_API = config(
         "amflpjg68ju7wcqf5n2ugd315",
     ),
 )
+
+# Optional licensed IMDb API integration through AWS Data Exchange. Boto3 uses
+# the standard AWS credential chain (for example, an instance role or
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables).
+IMDB_API_KEY = config(
+    "IMDB_API_KEY",
+    default=secret("IMDB_API_KEY_FILE", ""),
+)
+IMDB_DATA_SET_ID = config("IMDB_DATA_SET_ID", default="")
+IMDB_REVISION_ID = config("IMDB_REVISION_ID", default="")
+IMDB_ASSET_ID = config("IMDB_ASSET_ID", default="")
+IMDB_AWS_REGION = config("IMDB_AWS_REGION", default="us-east-1")
 
 TESTING = False
 
@@ -642,6 +684,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "cleanup_user_messages": {
         "task": "Cleanup user messages",
+        "schedule": 60 * 60 * 24,  # every 24 hours
+    },
+    "queue_stale_external_ratings": {
+        "task": "Queue stale external ratings",
         "schedule": 60 * 60 * 24,  # every 24 hours
     },
 }

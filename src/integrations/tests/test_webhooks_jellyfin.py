@@ -18,9 +18,10 @@ from app.models import (
     Status,
 )
 from integrations.webhooks.jellyfin import JellyfinWebhookProcessor
+from integrations.tests.webhook_provider_mocks import WebhookProviderMocksMixin
 
 
-class JellyfinWebhookTests(TestCase):
+class JellyfinWebhookTests(WebhookProviderMocksMixin, TestCase):
     """Tests for Jellyfin webhook."""
 
     def setUp(self):
@@ -29,6 +30,7 @@ class JellyfinWebhookTests(TestCase):
         self.credentials = {"username": "testuser", "token": "test-token"}
         self.user = get_user_model().objects.create_superuser(**self.credentials)
         self.url = reverse("jellyfin_webhook", kwargs={"token": "test-token"})
+        self.patch_webhook_providers()
 
     def test_invalid_token(self):
         """Test webhook with invalid token returns 401."""
@@ -540,7 +542,23 @@ class JellyfinWebhookTests(TestCase):
         self.assertEqual(movie.status, Status.COMPLETED.value)
         self.assertEqual(movie.progress, 1)
 
-    def test_anime_movie_mark_played(self):
+    @patch(
+        "integrations.webhooks.anime.app.providers.mal.anime",
+        return_value={
+            "title": "Perfect Blue",
+            "image": "perfect-blue.jpg",
+            "max_progress": 1,
+        },
+    )
+    @patch(
+        "integrations.webhooks.movie.anime_mappings.get_mal_id_from_imdb",
+        return_value=437,
+    )
+    @patch(
+        "integrations.webhooks.movie.anime_mappings.fetch_mapping_data",
+        return_value={},
+    )
+    def test_anime_movie_mark_played(self, *_mocks):
         """Test webhook handles movie mark played event."""
         payload = {
             "Event": "Stop",
@@ -569,7 +587,31 @@ class JellyfinWebhookTests(TestCase):
         self.assertEqual(movie.status, Status.COMPLETED.value)
         self.assertEqual(movie.progress, 1)
 
-    def test_anime_episode_mark_played(self):
+    @patch(
+        "integrations.webhooks.anime.app.providers.mal.anime",
+        return_value={
+            "title": "Frieren: Beyond Journey's End",
+            "image": "frieren.jpg",
+            "max_progress": 28,
+        },
+    )
+    @patch(
+        "integrations.webhooks.tv.anime_mappings.get_mal_id_from_tvdb",
+        return_value=(52991, 1),
+    )
+    @patch(
+        "integrations.webhooks.tv.anime_mappings.fetch_mapping_data",
+        return_value={},
+    )
+    @patch(
+        "integrations.webhooks.tv.tvdb_provider.episode",
+        return_value={
+            "series_id": 424536,
+            "season_number": 1,
+            "episode_number": 1,
+        },
+    )
+    def test_anime_episode_mark_played(self, *_mocks):
         """Test webhook handles anime episode mark played event."""
         payload = {
             "Event": "Stop",
@@ -701,9 +743,10 @@ class JellyfinWebhookTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         movie = Movie.objects.filter(item__media_id="603")
-        self.assertEqual(movie.count(), 2)
+        self.assertEqual(movie.count(), 1)
         self.assertEqual(movie[0].status, Status.COMPLETED.value)
-        self.assertEqual(movie[1].status, Status.COMPLETED.value)
+        self.assertTrue(movie[0].direct_consumption)
+        self.assertIsNone(movie[0].end_date)
 
     def test_extract_external_ids(self):
         """Test extracting external IDs from provider payload."""

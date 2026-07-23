@@ -5,13 +5,12 @@ from django.db import models
 from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
 
-from app.models import Item, MediaTypes, Status
+from app.models import PRIMARY_MEDIA_TYPES, USER_OWNED_MEDIA_TYPES, Item, MediaTypes, Status
 from users import helpers
 
 EXCLUDED_SEARCH_TYPES = [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
-
 VALID_SEARCH_TYPES = [
-    value for value in MediaTypes.values if value not in EXCLUDED_SEARCH_TYPES
+    media_type for media_type in MediaTypes.values if media_type in PRIMARY_MEDIA_TYPES
 ]
 
 
@@ -281,6 +280,24 @@ class User(AbstractUser):
         choices=MediaStatusChoices,
     )
 
+    # Media type preferences: Music
+    music_enabled = models.BooleanField(default=True)
+    music_layout = models.CharField(
+        max_length=20,
+        default=LayoutChoices.GRID,
+        choices=LayoutChoices,
+    )
+    music_sort = models.CharField(
+        max_length=20,
+        default=MediaSortChoices.SCORE,
+        choices=MediaSortChoices,
+    )
+    music_status = models.CharField(
+        max_length=20,
+        default=MediaStatusChoices.ALL,
+        choices=MediaStatusChoices,
+    )
+
     # UI preferences
     clickable_media_cards = models.BooleanField(
         default=False,
@@ -434,6 +451,22 @@ class User(AbstractUser):
         help_text="User profile picture",
     )
 
+    profile_backdrop_url = models.URLField(
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text="Selected profile backdrop image URL",
+    )
+
+    profile_backdrop_item = models.ForeignKey(
+        'app.Item',
+        null=True,
+        blank=True,
+        related_name='+',
+        on_delete=models.SET_NULL,
+        help_text="Media item used for the selected profile backdrop",
+    )
+
     # Hall of Fame - one favorite item per media type
     hof_tv = models.ForeignKey(
         'app.Item',
@@ -491,6 +524,14 @@ class User(AbstractUser):
         on_delete=models.SET_NULL,
         help_text="Hall of Fame comic"
     )
+    hof_music = models.ForeignKey(
+        'app.Item',
+        null=True,
+        blank=True,
+        related_name='+',
+        on_delete=models.SET_NULL,
+        help_text="Hall of Fame music"
+    )
 
     # Hall of Fame helper methods
     def get_hall_of_fame_items(self):
@@ -501,13 +542,8 @@ class User(AbstractUser):
             dict: Dictionary mapping media types to their hall of fame items
         """
         return {
-            MediaTypes.TV.value: self.hof_tv,
-            MediaTypes.MOVIE.value: self.hof_movie,
-            MediaTypes.ANIME.value: self.hof_anime,
-            MediaTypes.MANGA.value: self.hof_manga,
-            MediaTypes.GAME.value: self.hof_game,
-            MediaTypes.BOOK.value: self.hof_book,
-            MediaTypes.COMIC.value: self.hof_comic,
+            media_type: getattr(self, f"hof_{media_type}")
+            for media_type in PRIMARY_MEDIA_TYPES
         }
     
     def get_hall_of_fame_item(self, media_type):
@@ -606,6 +642,10 @@ class User(AbstractUser):
                 condition=models.Q(book_layout__in=LayoutChoices.values),
             ),
             models.CheckConstraint(
+                name="music_layout_valid",
+                condition=models.Q(music_layout__in=LayoutChoices.values),
+            ),
+            models.CheckConstraint(
                 name="tv_sort_valid",
                 condition=models.Q(tv_sort__in=MediaSortChoices.values),
             ),
@@ -632,6 +672,10 @@ class User(AbstractUser):
             models.CheckConstraint(
                 name="book_sort_valid",
                 condition=models.Q(book_sort__in=MediaSortChoices.values),
+            ),
+            models.CheckConstraint(
+                name="music_sort_valid",
+                condition=models.Q(music_sort__in=MediaSortChoices.values),
             ),
             models.CheckConstraint(
                 name="calendar_layout_valid",
@@ -676,6 +720,10 @@ class User(AbstractUser):
             models.CheckConstraint(
                 name="book_status_valid",
                 condition=models.Q(book_status__in=MediaStatusChoices.values),
+            ),
+            models.CheckConstraint(
+                name="music_status_valid",
+                condition=models.Q(music_status__in=MediaStatusChoices.values),
             ),
             models.CheckConstraint(
                 name="quick_watch_date_valid",
@@ -762,10 +810,7 @@ class User(AbstractUser):
         """Return a list of enabled media type values based on user preferences."""
         enabled_types = []
 
-        for media_type in MediaTypes.values:
-            if media_type == MediaTypes.EPISODE.value:
-                continue
-
+        for media_type in USER_OWNED_MEDIA_TYPES:
             enabled_field = f"{media_type}_enabled"
             if getattr(self, enabled_field, False):
                 enabled_types.append(media_type)

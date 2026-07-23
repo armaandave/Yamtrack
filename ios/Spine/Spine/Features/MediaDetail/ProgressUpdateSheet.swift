@@ -198,30 +198,45 @@ final class ProgressUpdateViewModel {
 
 struct ProgressUpdateSheet: View {
     @State private var viewModel: ProgressUpdateViewModel
-    @State private var isFullProgressAlertPresented = false
     @State private var isInputActive = true
+    @State private var pendingJourneyAction: BookJourneyMenuAction?
 
     let isSaving: Bool
     let errorMessage: String?
+    let journeyStatus: String?
     let onSave: (ProgressUpdateSaveRequest) async -> Bool
     let onDismiss: () -> Void
     let onLogFinished: () -> Void
+    let onPause: (() async -> Bool)?
+    let onDrop: (() async -> Bool)?
+    let onRestart: (() async -> Bool)?
+    let onDelete: (() async -> Bool)?
 
     init(
         detail: MediaDetail,
         progress: ProgressState?,
         isSaving: Bool,
         errorMessage: String?,
+        journeyStatus: String? = nil,
         onSave: @escaping (ProgressUpdateSaveRequest) async -> Bool,
         onDismiss: @escaping () -> Void,
-        onLogFinished: @escaping () -> Void
+        onLogFinished: @escaping () -> Void,
+        onPause: (() async -> Bool)? = nil,
+        onDrop: (() async -> Bool)? = nil,
+        onRestart: (() async -> Bool)? = nil,
+        onDelete: (() async -> Bool)? = nil
     ) {
         _viewModel = State(initialValue: ProgressUpdateViewModel(detail: detail, progress: progress))
         self.isSaving = isSaving
         self.errorMessage = errorMessage
+        self.journeyStatus = journeyStatus
         self.onSave = onSave
         self.onDismiss = onDismiss
         self.onLogFinished = onLogFinished
+        self.onPause = onPause
+        self.onDrop = onDrop
+        self.onRestart = onRestart
+        self.onDelete = onDelete
     }
 
     var body: some View {
@@ -244,19 +259,22 @@ struct ProgressUpdateSheet: View {
             .frame(width: 1, height: 1)
             .allowsHitTesting(false)
         }
-        .alert("Log as finished?", isPresented: $isFullProgressAlertPresented) {
-            Button("Save Progress Only") {
-                Task {
-                    await save()
+        .confirmationDialog(
+            pendingJourneyAction?.confirmationTitle ?? "",
+            isPresented: Binding(
+                get: { pendingJourneyAction != nil },
+                set: { if !$0 { pendingJourneyAction = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let action = pendingJourneyAction {
+                Button(action.confirmationButton, role: action.isDestructive ? .destructive : nil) {
+                    Task { await perform(action) }
                 }
-            }
-            Button("Log Finished") {
-                close()
-                onLogFinished()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This progress is complete. You can save only progress or open the full log screen.")
+            Text(pendingJourneyAction?.confirmationMessage ?? "")
         }
     }
 
@@ -265,28 +283,53 @@ struct ProgressUpdateSheet: View {
             viewModel: viewModel,
             isSaving: isSaving,
             errorMessage: errorMessage,
+            journeyStatus: journeyStatus,
             onClose: {
                 close()
             },
-            onSave: saveTapped
+            onSave: saveTapped,
+            onJourneyAction: { action in
+                if action.requiresConfirmation {
+                    pendingJourneyAction = action
+                } else {
+                    Task { await perform(action) }
+                }
+            }
         )
     }
 
     private func saveTapped() {
         guard viewModel.canSave else { return }
-        if viewModel.isFullProgress {
-            isFullProgressAlertPresented = true
-        } else {
-            Task {
-                await save()
-            }
+        Task {
+            await save()
         }
     }
 
     private func save() async {
         guard let request = viewModel.saveRequest else { return }
         if await onSave(request) {
+            let shouldLogFinished = viewModel.isFullProgress
             close()
+            if shouldLogFinished {
+                onLogFinished()
+            }
+        }
+    }
+
+    private func perform(_ action: BookJourneyMenuAction) async {
+        pendingJourneyAction = nil
+        switch action {
+        case .pause:
+            if await onPause?() == true { close() }
+        case .didNotFinish:
+            if await onDrop?() == true { close() }
+        case .finish:
+            close()
+            onLogFinished()
+        case .restart:
+            if await onRestart?() == true { close() }
+        case .delete:
+            if await onDelete?() == true { close() }
         }
     }
 
@@ -296,12 +339,61 @@ struct ProgressUpdateSheet: View {
     }
 }
 
+private enum BookJourneyMenuAction: String, CaseIterable, Identifiable {
+    case pause
+    case didNotFinish
+    case finish
+    case restart
+    case delete
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .pause: "Pause"
+        case .didNotFinish: "Mark as DNF"
+        case .finish: "Finish & Log"
+        case .restart: "Restart from Beginning"
+        case .delete: "Delete Journey"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .pause: "pause.fill"
+        case .didNotFinish: "xmark"
+        case .finish: "checkmark"
+        case .restart: "arrow.counterclockwise"
+        case .delete: "trash"
+        }
+    }
+    var requiresConfirmation: Bool { self == .didNotFinish || self == .restart || self == .delete }
+    var isDestructive: Bool { self == .delete || self == .restart }
+    var confirmationTitle: String {
+        switch self {
+        case .didNotFinish: "Mark this book as Did Not Finish?"
+        case .restart: "Restart from Beginning?"
+        case .delete: "Delete this reading journey?"
+        default: title
+        }
+    }
+    var confirmationButton: String { title }
+    var confirmationMessage: String {
+        switch self {
+        case .didNotFinish: "Your current progress will remain in reading history."
+        case .restart: "The current journey will end and a new journey will begin today."
+        case .delete: "This journey and its progress will be removed. Completion diary logs are managed separately."
+        default: ""
+        }
+    }
+}
+
 private struct ProgressUpdatePanel: View {
     let viewModel: ProgressUpdateViewModel
     let isSaving: Bool
     let errorMessage: String?
+    let journeyStatus: String?
     let onClose: () -> Void
     let onSave: () -> Void
+    let onJourneyAction: (BookJourneyMenuAction) -> Void
 
     var body: some View {
         VStack(spacing: 18) {
@@ -350,6 +442,26 @@ private struct ProgressUpdatePanel: View {
 
             Spacer()
 
+            if viewModel.detail.ref.mediaType == "book" {
+                Menu {
+                    ForEach(availableJourneyActions) { action in
+                        Button(role: action == .delete ? .destructive : nil) {
+                            onJourneyAction(action)
+                        } label: {
+                            Label(action.title, systemImage: action.systemImage)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .controlSize(.regular)
+                .disabled(isSaving)
+                .accessibilityLabel("Reading journey actions")
+            }
+
             Button {
                 onClose()
             } label: {
@@ -360,6 +472,12 @@ private struct ProgressUpdatePanel: View {
             .buttonBorderShape(.circle)
             .controlSize(.regular)
             .accessibilityLabel("Close")
+        }
+    }
+
+    private var availableJourneyActions: [BookJourneyMenuAction] {
+        BookJourneyMenuAction.allCases.filter { action in
+            action != .pause || journeyStatus == "In progress"
         }
     }
 
@@ -455,12 +573,15 @@ private struct ProgressUpdatePanel: View {
         Button(action: onSave) {
             HStack {
                 Spacer()
-                if isSaving {
-                    ProgressView()
-                } else {
-                    Text("Save Progress")
-                        .font(.headline.weight(.semibold))
+                Group {
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Text("Save Progress")
+                            .font(.headline.weight(.semibold))
+                    }
                 }
+                .spineContentTransition(value: isSaving)
                 Spacer()
             }
             .frame(height: 50)

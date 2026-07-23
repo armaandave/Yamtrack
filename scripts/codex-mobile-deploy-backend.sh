@@ -22,12 +22,28 @@ if [[ ! -f "$env_file" ]]; then
   exit 1
 fi
 
+if ! grep -q '^STEAMGRIDDB_API_KEY=' "$env_file"; then
+  echo "Missing STEAMGRIDDB_API_KEY in production env file: $env_file" >&2
+  exit 1
+fi
+
 if [[ -z "$repo_url" ]]; then
   if [[ -d "$source_repo_dir/.git" ]]; then
     repo_url="$(git -C "$source_repo_dir" remote get-url origin)"
   else
     repo_url="https://github.com/armaandave/spine.git"
   fi
+fi
+
+source_repo_abs=""
+if [[ -d "$source_repo_dir" ]]; then
+  source_repo_abs="$(cd "$source_repo_dir" && pwd -P)"
+fi
+repo_parent="$(dirname "$repo_dir")"
+repo_abs="$(mkdir -p "$repo_parent" && cd "$repo_parent" && pwd -P)/$(basename "$repo_dir")"
+if [[ -n "$source_repo_abs" && "$repo_abs" == "$source_repo_abs" ]]; then
+  echo "Deploy directory must be separate from source repo: $repo_dir" >&2
+  exit 1
 fi
 
 if [[ -e "$repo_dir" && ! -d "$repo_dir/.git" ]]; then
@@ -46,6 +62,9 @@ git remote set-url origin "$repo_url"
 git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
 git checkout -B "$branch" "origin/$branch"
 git reset --hard "origin/$branch"
+echo "Deploying $branch at $(git rev-parse --short HEAD) from $repo_dir"
+export SPINE_COMMIT_SHA
+SPINE_COMMIT_SHA="$(git rev-parse HEAD)"
 
 if [[ ! -e .env.production && ! -L .env.production ]]; then
   ln -s "$env_file" .env.production

@@ -136,6 +136,15 @@ private struct MockImportRepository: ImportRepository {
         fatalError("Not used")
     }
 
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
         ImportTaskStatus(
             taskId: taskId,

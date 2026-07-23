@@ -41,9 +41,10 @@ def handle_error(error):
     raise services.ProviderAPIError(Sources.MAL.value, error)
 
 
-def search(media_type, query, page):
+def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for media on MyAnimeList."""
-    cache_key = f"search_{Sources.MAL.value}_{media_type}_{query}_{page}"
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
+    cache_key = f"search_{Sources.MAL.value}_{media_type}_{query}_{page}{rank_suffix}"
     data = cache.get(cache_key)
 
     if data is None:
@@ -63,6 +64,7 @@ def search(media_type, query, page):
                 url,
                 params=params,
                 headers={"X-MAL-CLIENT-ID": settings.MAL_API},
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             response = handle_error(error)
@@ -81,7 +83,12 @@ def search(media_type, query, page):
             }
             for media in response
         ]
-        results = rank_results(query, results, media_type)
+        results = rank_results(
+            query,
+            results,
+            media_type,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         data = helpers.format_search_response(
             page,

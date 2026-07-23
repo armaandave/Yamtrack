@@ -5,6 +5,7 @@ enum PosterSlot {
     case libraryRow
     case diaryRow
     case profileRow
+    case profileRail
     case listPreview
     case hero
     case carousel
@@ -21,6 +22,8 @@ enum PosterSlot {
             CGSize(width: 54, height: 81)
         case .libraryRow, .diaryRow, .profileRow:
             CGSize(width: 56, height: 84)
+        case .profileRail:
+            CGSize(width: 70, height: 105)
         case .listPreview:
             CGSize(width: 45, height: 67)
         case .hero:
@@ -53,8 +56,11 @@ enum PosterSlot {
         }
     }
 
-    var glyphSize: CGFloat {
-        min(size.width, size.height) * 0.36
+    func artworkSize(mediaType: String?, orientation: PosterOrientation?) -> CGSize {
+        let usesSquareArtwork = orientation == .square
+            || ((orientation == nil || orientation == .unknown)
+                && MediaTypeTheme.theme(for: mediaType ?? "unknown").artworkOrientation == .square)
+        return usesSquareArtwork ? CGSize(width: size.width, height: size.width) : size
     }
 }
 

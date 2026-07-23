@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import io
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -28,6 +30,7 @@ LIST_HEADER = ["Position", "Name", "Year", "URL", "Description"]
 class LetterboxdList:
     name: str
     description: str
+    tags: list[str] = field(default_factory=list)
     rows: list[dict] = field(default_factory=list)
 
 
@@ -70,6 +73,7 @@ def parse_export(file_or_bytes):
             continue
         if path in STANDARD_FILES:
             rows = [_normalize_row(row) for row in _read_dicts(archive, member)]
+            _add_source_identity(rows)
             setattr(export, _attr_for_path(path), rows)
         elif path.startswith("lists/") and path.endswith(".csv"):
             export.lists.append(_read_list(archive, member, path))
@@ -111,15 +115,20 @@ def _read_list(archive, member, path):
         raise MediaImportError(f"{path}: Unsupported Letterboxd list CSV format.")
 
     metadata = {
-        row[0].strip().lower(): row[1].strip()
+        row[0].strip().lower(): ",".join(row[1:]).strip()
         for row in rows[:header_index]
         if len(row) > 1 and row[0].strip()
     }
-    name = metadata.get("name") or PurePosixPath(path).stem
+    name = metadata.get("name") or _display_name_from_path(path)
     description = metadata.get("description", "")
+    tags = _tags(metadata.get("tags") or metadata.get("tag") or "")
     headers = rows[header_index]
     items = [_normalize_row(dict(zip(headers, row, strict=False))) for row in rows[header_index + 1 :] if row]
-    return LetterboxdList(name=name, description=description, rows=items)
+    return LetterboxdList(name=name, description=description, tags=tags, rows=items)
+
+
+def _display_name_from_path(path):
+    return PurePosixPath(path).stem.replace("-", " ").replace("_", " ").title()
 
 
 def _normalize_row(row):
@@ -129,11 +138,28 @@ def _normalize_row(row):
     row["year"] = _int_or_none(row.get("Year"))
     row["rating"] = _rating(row.get("Rating"))
     row["date"] = _date(row.get("Watched Date") or row.get("Date"))
-    row["rewatch"] = row.get("Rewatch") == "Yes"
-    row["tags"] = [tag.strip() for tag in row.get("Tags", "").split(",") if tag.strip()]
+    rewatch = row.get("Rewatch")
+    row["rewatch"] = None if rewatch == "" else rewatch == "Yes"
+    row["tags"] = _tags(row.get("Tags", ""))
     row["review"] = row.get("Review", "")
     row["position"] = _int_or_none(row.get("Position"))
     return row
+
+
+def _add_source_identity(rows):
+    """Add stable per-record identity without treating a date as unique."""
+    occurrences = Counter()
+    for order, row in enumerate(rows):
+        key = (row.get("uri"), row.get("date"))
+        occurrence = occurrences[key]
+        occurrences[key] += 1
+        identity = f"{key[0]}|{key[1].date().isoformat() if key[1] else ''}|{occurrence}"
+        row["source_id"] = hashlib.sha256(identity.encode()).hexdigest()
+        row["source_order"] = order
+
+
+def _tags(value):
+    return [tag.strip() for tag in value.split(",") if tag.strip()]
 
 
 def _int_or_none(value):

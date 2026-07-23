@@ -5,6 +5,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
     let name: String
     let slug: String
     let description: String
+    let tags: [String]
     let visibility: String
     let isRanked: Bool
     let hasItem: Bool?
@@ -20,6 +21,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         name: String,
         slug: String,
         description: String,
+        tags: [String] = [],
         visibility: String,
         isRanked: Bool = false,
         hasItem: Bool? = nil,
@@ -34,6 +36,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         self.name = name
         self.slug = slug
         self.description = description
+        self.tags = tags
         self.visibility = visibility
         self.isRanked = isRanked
         self.hasItem = hasItem
@@ -50,6 +53,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         case name
         case slug
         case description
+        case tags
         case visibility
         case isRanked
         case hasItem
@@ -67,6 +71,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         name = try container.decode(String.self, forKey: .name)
         slug = try container.decode(String.self, forKey: .slug)
         description = try container.decode(String.self, forKey: .description)
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         visibility = try container.decode(String.self, forKey: .visibility)
         isRanked = try container.decodeIfPresent(Bool.self, forKey: .isRanked) ?? false
         hasItem = try container.decodeIfPresent(Bool.self, forKey: .hasItem)
@@ -84,6 +89,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
     let name: String
     let slug: String
     let description: String
+    let tags: [String]
     let visibility: String
     let isRanked: Bool
     let owner: UserSummary
@@ -98,6 +104,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         name: String,
         slug: String,
         description: String,
+        tags: [String] = [],
         visibility: String,
         isRanked: Bool = false,
         owner: UserSummary,
@@ -111,6 +118,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         self.name = name
         self.slug = slug
         self.description = description
+        self.tags = tags
         self.visibility = visibility
         self.isRanked = isRanked
         self.owner = owner
@@ -126,6 +134,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         case name
         case slug
         case description
+        case tags
         case visibility
         case isRanked
         case owner
@@ -142,6 +151,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         name = try container.decode(String.self, forKey: .name)
         slug = try container.decode(String.self, forKey: .slug)
         description = try container.decode(String.self, forKey: .description)
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         visibility = try container.decode(String.self, forKey: .visibility)
         isRanked = try container.decodeIfPresent(Bool.self, forKey: .isRanked) ?? false
         owner = try container.decode(UserSummary.self, forKey: .owner)
@@ -149,7 +159,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         itemsCount = try container.decode(Int.self, forKey: .itemsCount)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         likeCount = try container.decode(Int.self, forKey: .likeCount)
-        items = try container.decode([MediaSummary].self, forKey: .items)
+        items = try container.decodeIfPresent([MediaSummary].self, forKey: .items) ?? []
     }
 }
 

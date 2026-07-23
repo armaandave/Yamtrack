@@ -18,7 +18,8 @@ struct TaggedDiaryMedia: Identifiable {
 @Observable
 final class TaggedDiaryViewModel {
     var entries: [DiaryEntry] = []
-    var isLoading = false
+    var filter = MediaFilterState()
+    var isLoading = true
     var errorMessage: String?
     var selectedTab: TaggedDiaryTab = .diary
 
@@ -42,7 +43,9 @@ final class TaggedDiaryViewModel {
         defer { isLoading = false }
 
         do {
-            entries = try await diaryRepository.list(tag: tag)
+            var requestFilter = filter
+            requestFilter.tag = tag
+            entries = try await diaryRepository.list(filter: requestFilter)
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -103,15 +106,13 @@ struct TaggedDiaryView: View {
             SpinePageBackground()
 
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    Picker("View", selection: $viewModel.selectedTab) {
-                        ForEach(TaggedDiaryTab.allCases) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        content
+                            .spineContentTransition(value: contentPhase)
+                    } header: {
+                        viewToggle
                     }
-                    .pickerStyle(.segmented)
-
-                    content
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -121,10 +122,24 @@ struct TaggedDiaryView: View {
                 await viewModel.load()
             }
         }
+        .overlay(alignment: .top) {
+            DiaryTopSafeAreaScrim()
+        }
         .navigationTitle(tag)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                MediaFilterButton(
+                    filter: $viewModel.filter,
+                    scope: .diary,
+                    showsTagFilter: false
+                ) {
+                    Task { await viewModel.load() }
+                }
+            }
+        }
         .toolbar(.hidden, for: .tabBar)
         .task {
             if viewModel.entries.isEmpty {
@@ -142,13 +157,24 @@ struct TaggedDiaryView: View {
         }
     }
 
+    private var viewToggle: some View {
+        Picker("View", selection: $viewModel.selectedTab) {
+            ForEach(TaggedDiaryTab.allCases) { tab in
+                Text(tab.rawValue).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.bottom, 16)
+        .background(Color(red: 0.07, green: 0.07, blue: 0.065))
+    }
+
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading {
+        if viewModel.isLoading, viewModel.entries.isEmpty {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, minHeight: 320)
-        } else if let error = viewModel.errorMessage {
+        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
             DiaryStateCard(
                 title: "Could not load tag",
                 systemImage: "exclamationmark.triangle",
@@ -181,12 +207,24 @@ struct TaggedDiaryView: View {
         }
     }
 
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: !viewModel.entries.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
     private var mediaGrid: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(viewModel.media) { item in
                 NavigationLink {
                     MediaDetailView(
                         ref: item.media.ref,
+                        browsingContext: MediaBrowsingContext(
+                            refs: viewModel.media.map(\.media.ref),
+                            selected: item.media.ref
+                        ),
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,

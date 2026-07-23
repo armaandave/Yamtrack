@@ -1,12 +1,15 @@
 import logging
 import os
+from functools import partial
 
 from celery import shared_task
 from django.contrib.auth import get_user_model
+from django.db import transaction
 
 import events
-from app.mixins import disable_fetch_releases
+from app.mixins import collect_external_rating_item_ids, disable_fetch_releases
 from app.models import MediaTypes
+from app.tasks import enqueue_external_rating_batches
 from app.templatetags import app_tags
 from integrations.imports import (
     anilist,
@@ -78,7 +81,7 @@ def import_media(
     """Handle the import process for different media services."""
     user = get_user_model().objects.get(id=user_id)
 
-    with disable_fetch_releases():
+    with disable_fetch_releases(), collect_external_rating_item_ids() as item_ids:
         if oauth_username is None:
             imported_counts, warnings = importer_func(
                 identifier,
@@ -95,6 +98,10 @@ def import_media(
                 **kwargs,
             )
 
+    transaction.on_commit(
+        partial(enqueue_external_rating_batches, sorted(item_ids)),
+        robust=True,
+    )
     events.tasks.reload_calendar.delay()
 
     return format_import_message(imported_counts, warnings)
@@ -165,9 +172,16 @@ def import_imdb(file, user_id, mode):
 
 
 @shared_task(name="Import from GoodReads")
-def import_goodreads(file, user_id, mode):
+def import_goodreads(file_path, user_id, mode):
     """Celery task for importing media data from GoodReads."""
-    return import_media(goodreads.importer, file, user_id, mode)
+    try:
+        with open(file_path, "rb") as export_file:
+            return import_media(goodreads.importer, export_file, user_id, mode)
+    finally:
+        try:
+            os.unlink(file_path)
+        except OSError:
+            logger.warning("Could not delete temporary Goodreads import file: %s", file_path)
 
 
 @shared_task(name="Import from Letterboxd")

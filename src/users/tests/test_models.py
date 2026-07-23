@@ -2,17 +2,58 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
 from django_celery_results.models import TaskResult
 
+from app.models import Item, Sources
 from users.models import (
     HomeSortChoices,
+    LayoutChoices,
+    MediaSortChoices,
+    MediaStatusChoices,
     MediaTypes,
     QuickWatchDateChoices,
     WeekStartDayChoices,
 )
+
+
+class UserMusicPreferenceTests(TestCase):
+    """Music user fields follow the primary media defaults."""
+
+    def test_defaults_and_nullable_hall_of_fame(self):
+        user = get_user_model().objects.create_user(username="listener")
+
+        self.assertTrue(user.music_enabled)
+        self.assertEqual(user.music_layout, LayoutChoices.GRID)
+        self.assertEqual(user.music_sort, MediaSortChoices.SCORE)
+        self.assertEqual(user.music_status, MediaStatusChoices.ALL)
+        self.assertIsNone(user.hof_music)
+
+        item = Item.objects.create(
+            media_id="3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            source=Sources.MUSICBRAINZ.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Year Zero",
+            image="https://example.com/year-zero.jpg",
+        )
+        user.hof_music = item
+        user.save(update_fields=["hof_music"])
+        item.delete()
+        user.refresh_from_db()
+        self.assertIsNone(user.hof_music)
+
+    def test_music_preference_database_constraints(self):
+        user = get_user_model().objects.create_user(username="listener")
+
+        for field in ["music_layout", "music_sort", "music_status"]:
+            with self.subTest(field=field):
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    get_user_model().objects.filter(pk=user.pk).update(
+                        **{field: "invalid"},
+                    )
 
 
 class UserUpdatePreferenceTests(TestCase):
@@ -105,13 +146,13 @@ class UserUpdatePreferenceTests(TestCase):
         self.user.save()
 
         # Call update_preference with new valid value
-        result = self.user.update_preference("last_search_type", MediaTypes.MOVIE.value)
+        result = self.user.update_preference("last_search_type", MediaTypes.MUSIC.value)
 
         # Should return new value
-        self.assertEqual(result, MediaTypes.MOVIE.value)
+        self.assertEqual(result, MediaTypes.MUSIC.value)
         # Should change the value
         self.user.refresh_from_db()
-        self.assertEqual(self.user.last_search_type, MediaTypes.MOVIE.value)
+        self.assertEqual(self.user.last_search_type, MediaTypes.MUSIC.value)
 
     def test_update_preference_last_search_type_invalid(self):
         """Test update_preference with last_search_type and invalid value."""

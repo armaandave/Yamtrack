@@ -39,6 +39,13 @@ struct TrackingState: Codable, Equatable {
     let endDate: String?
     let notes: String?
     let updatedAt: String?
+    let liked: Bool?
+    let directConsumption: Bool?
+    let ratingSourceDiaryEntryId: Int?
+    let likeSourceDiaryEntryId: Int?
+    let likeIsIndependent: Bool?
+    let diaryCount: Int?
+    let book: BookTrackingState?
 
     init(
         trackingId: Int,
@@ -50,7 +57,14 @@ struct TrackingState: Codable, Equatable {
         startDate: String?,
         endDate: String?,
         notes: String?,
-        updatedAt: String?
+        updatedAt: String?,
+        liked: Bool? = nil,
+        directConsumption: Bool? = nil,
+        ratingSourceDiaryEntryId: Int? = nil,
+        likeSourceDiaryEntryId: Int? = nil,
+        likeIsIndependent: Bool? = nil,
+        diaryCount: Int? = nil,
+        book: BookTrackingState? = nil
     ) {
         self.trackingId = trackingId
         self.status = status
@@ -62,6 +76,13 @@ struct TrackingState: Codable, Equatable {
         self.endDate = endDate
         self.notes = notes
         self.updatedAt = updatedAt
+        self.liked = liked
+        self.directConsumption = directConsumption
+        self.ratingSourceDiaryEntryId = ratingSourceDiaryEntryId
+        self.likeSourceDiaryEntryId = likeSourceDiaryEntryId
+        self.likeIsIndependent = likeIsIndependent
+        self.diaryCount = diaryCount
+        self.book = book
     }
 
     func replacingProgress(_ progress: ProgressState?) -> TrackingState {
@@ -75,7 +96,14 @@ struct TrackingState: Codable, Equatable {
             startDate: startDate,
             endDate: endDate,
             notes: notes,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            liked: liked,
+            directConsumption: directConsumption,
+            ratingSourceDiaryEntryId: ratingSourceDiaryEntryId,
+            likeSourceDiaryEntryId: likeSourceDiaryEntryId,
+            likeIsIndependent: likeIsIndependent,
+            diaryCount: diaryCount,
+            book: book
         )
     }
 
@@ -87,6 +115,123 @@ struct TrackingState: Codable, Equatable {
             return progressText
         }
         return status == "In progress" ? "Started" : status ?? "In progress"
+    }
+}
+
+struct BookJourneyState: Codable, Equatable, Hashable, Identifiable {
+    let id: Int
+    let status: String
+    let origin: String?
+    let startDate: String?
+    let endDate: String?
+    let progress: ProgressState?
+    let completionDiaryEntryId: Int?
+    let isReread: Bool
+
+    init(
+        id: Int,
+        status: String,
+        origin: String? = nil,
+        startDate: String? = nil,
+        endDate: String? = nil,
+        progress: ProgressState? = nil,
+        completionDiaryEntryId: Int? = nil,
+        isReread: Bool = false
+    ) {
+        self.id = id
+        self.status = status
+        self.origin = origin
+        self.startDate = startDate
+        self.endDate = endDate
+        self.progress = progress
+        self.completionDiaryEntryId = completionDiaryEntryId
+        self.isReread = isReread
+    }
+}
+
+struct BookUndatedReadState: Codable, Equatable, Hashable {
+    let id: String
+    let status: String
+    let date: String?
+
+    init(id: String = "undated", status: String = "Completed", date: String? = nil) {
+        self.id = id
+        self.status = status
+        self.date = date
+    }
+}
+
+struct BookTrackingState: Codable, Equatable, Hashable {
+    let currentJourney: BookJourneyState?
+    let readingHistory: [BookJourneyState]
+    let undatedRead: BookUndatedReadState?
+    let statusSource: String?
+    let completionDates: [String]
+    let completedJourneyCount: Int
+    let lifetimeReadCount: Int
+    let isRereading: Bool
+    let completionRequired: Bool
+    let canRemoveTracking: Bool
+    let removeTrackingReason: String?
+    let availableActions: [String]
+    let actionReasons: [String: String]
+
+    init(
+        currentJourney: BookJourneyState? = nil,
+        readingHistory: [BookJourneyState] = [],
+        undatedRead: BookUndatedReadState? = nil,
+        statusSource: String? = nil,
+        completionDates: [String] = [],
+        completedJourneyCount: Int = 0,
+        lifetimeReadCount: Int = 0,
+        isRereading: Bool = false,
+        completionRequired: Bool = false,
+        canRemoveTracking: Bool = true,
+        removeTrackingReason: String? = nil,
+        availableActions: [String] = [],
+        actionReasons: [String: String] = [:]
+    ) {
+        self.currentJourney = currentJourney
+        self.readingHistory = readingHistory
+        self.undatedRead = undatedRead
+        self.statusSource = statusSource
+        self.completionDates = completionDates
+        self.completedJourneyCount = completedJourneyCount
+        self.lifetimeReadCount = lifetimeReadCount
+        self.isRereading = isRereading
+        self.completionRequired = completionRequired
+        self.canRemoveTracking = canRemoveTracking
+        self.removeTrackingReason = removeTrackingReason
+        self.availableActions = availableActions
+        self.actionReasons = actionReasons
+    }
+
+    var hasLiveJourney: Bool {
+        guard let status = currentJourney?.status.lowercased() else { return false }
+        return status == "in progress" || status == "paused"
+    }
+
+    func supports(_ action: String) -> Bool {
+        availableActions.isEmpty || availableActions.contains(action)
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(currentJourney)
+        hasher.combine(readingHistory)
+        hasher.combine(undatedRead)
+        hasher.combine(statusSource)
+        hasher.combine(completionDates)
+        hasher.combine(completedJourneyCount)
+        hasher.combine(lifetimeReadCount)
+        hasher.combine(isRereading)
+        hasher.combine(completionRequired)
+        hasher.combine(canRemoveTracking)
+        hasher.combine(removeTrackingReason)
+        hasher.combine(availableActions)
+        for key in actionReasons.keys.sorted() {
+            hasher.combine(key)
+            hasher.combine(actionReasons[key])
+        }
     }
 }
 
@@ -280,17 +425,61 @@ struct TrackingWriteRequest: Encodable {
     let rating: Decimal?
     let progress: Int?
     let notes: String?
+    let startDate: String?
+    let endDate: String?
+    let mutationId: UUID?
+    let includesRating: Bool
 
-    init(status: String? = nil, rating: Decimal? = nil, progress: Int? = nil, notes: String? = nil) {
+    init(
+        status: String? = nil,
+        rating: Decimal? = nil,
+        progress: Int? = nil,
+        notes: String? = nil,
+        startDate: String? = nil,
+        endDate: String? = nil,
+        mutationId: UUID? = nil,
+        includesRating: Bool = false
+    ) {
         self.status = status
         self.rating = rating
         self.progress = progress
         self.notes = notes
+        self.startDate = startDate
+        self.endDate = endDate
+        self.mutationId = mutationId
+        self.includesRating = includesRating || rating != nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case rating
+        case progress
+        case notes
+        case startDate
+        case endDate
+        case mutationId
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(status, forKey: .status)
+        if includesRating {
+            try container.encode(rating, forKey: .rating)
+        }
+        try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(notes, forKey: .notes)
+        try container.encodeIfPresent(startDate, forKey: .startDate)
+        try container.encodeIfPresent(endDate, forKey: .endDate)
+        try container.encodeIfPresent(mutationId, forKey: .mutationId)
     }
 }
 
 struct TrackingConsumeRequest: Encodable {
     let consumedAt: Date?
+}
+
+struct EpisodeWatchRequest: Encodable {
+    let watchedAt: Date?
 }
 
 struct BookProgressRequest: Encodable {
@@ -301,6 +490,51 @@ struct BookProgressRequest: Encodable {
 
 struct BookCompleteRequest: Encodable {
     let completedAt: Date?
+}
+
+struct BookActionRequest: Encodable, Equatable {
+    let mutationId: UUID?
+    let startDate: String?
+    let endDate: String?
+
+    init(mutationId: UUID? = UUID(), startDate: String? = nil, endDate: String? = nil) {
+        self.mutationId = mutationId
+        self.startDate = startDate
+        self.endDate = endDate
+    }
+}
+
+struct BookJourneyWriteRequest: Encodable, Equatable {
+    let startDate: String?
+    let endDate: String?
+}
+
+struct BookCompletionWriteRequest: Encodable, Equatable {
+    let journeyId: Int?
+    let completionDate: String
+    let rating: Decimal?
+    let review: String
+    let reviewTitle: String
+    let liked: Bool
+    let isRewatch: Bool
+    let containsSpoilers: Bool
+    let tags: [String]
+    let mutationId: UUID
+}
+
+struct BookCompletionResponse: Decodable {
+    let tracking: TrackingState
+    let diaryEntry: DiaryEntry
+}
+
+extension Notification.Name {
+    static let mediaStateDidChange = Notification.Name("mediaStateDidChange")
+}
+
+enum MediaStateChange {
+    static func post(ref: MediaRef) {
+        NotificationCenter.default.post(name: .mediaStateDidChange, object: nil, userInfo: ["ref": ref])
+    }
 }
 
 struct LibraryItem: Decodable, Identifiable {

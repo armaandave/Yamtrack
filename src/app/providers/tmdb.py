@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
+from django.utils.translation import get_language_info
 
 from app import helpers
 from app.models import MediaTypes, Sources
@@ -15,8 +16,7 @@ from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
-NO_LOGO = "__no_logo__"
-DETAIL_CACHE_VERSION = "v2"
+DETAIL_CACHE_VERSION = "v3"
 base_params = {
     "api_key": settings.TMDB_API,
     "language": settings.TMDB_LANG,
@@ -71,9 +71,10 @@ def get_external_links(external_ids, tmdb_id=None):
     return links
 
 
-def search(media_type, query, page):
+def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for media on TMDB."""
-    cache_key = f"search_{Sources.TMDB.value}_{media_type}_{query}_{page}"
+    rank_suffix = "_rank" if preserve_ranking_fields else ""
+    cache_key = f"search_{Sources.TMDB.value}_{media_type}_{query}_{page}{rank_suffix}"
     data = cache.get(cache_key)
 
     if data is None:
@@ -94,6 +95,7 @@ def search(media_type, query, page):
                 "GET",
                 url,
                 params=params,
+                timeout=timeout,
             )
         except requests.exceptions.HTTPError as error:
             handle_error(error)
@@ -111,7 +113,12 @@ def search(media_type, query, page):
             }
             for media in response["results"]
         ]
-        results = rank_results(query, results, media_type)
+        results = rank_results(
+            query,
+            results,
+            media_type,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
 
         total_results = response["total_results"]
         per_page = 20  # TMDB always returns 20 results per page
@@ -143,6 +150,34 @@ def _genre_map(media_type):
         data = {_normalize_name(genre["name"]): genre["id"] for genre in response.get("genres", [])}
         cache.set(cache_key, data, 60 * 60 * 24 * 7)
     return data
+
+
+def _genre_name_map(media_type):
+    cache_key = f"{Sources.TMDB.value}_{media_type}_genre_name_map"
+    data = cache.get(cache_key)
+    if data is None:
+        url = f"{base_url}/genre/{media_type}/list"
+        try:
+            response = services.api_request(Sources.TMDB.value, "GET", url, params=base_params)
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+        data = {genre["id"]: genre["name"] for genre in response.get("genres", [])}
+        cache.set(cache_key, data, 60 * 60 * 24 * 7)
+    return data
+
+
+def _genre_names_from_ids(media_type, genre_ids):
+    genre_names = _genre_name_map(media_type)
+    return [genre_names[genre_id] for genre_id in genre_ids or [] if genre_id in genre_names]
+
+
+def _language_name(code):
+    if not code:
+        return None
+    try:
+        return get_language_info(code).get("name") or code.upper()
+    except KeyError:
+        return code.upper()
 
 
 TV_GENRE_ALIASES = {
@@ -358,6 +393,44 @@ def get_director_id(credits):
     return directors[0].get("id") if directors else None
 
 
+def _people_details(people):
+    """Return ordered, de-duplicated person details for media metadata."""
+    result = []
+    seen = set()
+    for person in people or []:
+        if not isinstance(person, dict):
+            continue
+        name = (person.get("name") or "").strip()
+        if not name:
+            continue
+        person_id = person.get("id")
+        key = ("id", str(person_id)) if person_id is not None else ("name", name.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        detail = {"name": name}
+        if person_id is not None:
+            detail["id"] = str(person_id)
+        result.append(detail)
+    return result
+
+
+def get_directors(credits):
+    """Return all directors from movie credits in TMDB's supplied order."""
+    if not credits or "crew" not in credits:
+        return []
+    return _people_details(
+        crew
+        for crew in credits["crew"]
+        if (crew.get("job") or "").strip().lower() == "director"
+    )
+
+
+def get_creators(creators):
+    """Return all TV creators in TMDB's supplied order."""
+    return _people_details(creators)
+
+
 def get_creator_id(created_by):
     """Return the creator's person ID from created_by."""
     if not created_by:
@@ -438,6 +511,7 @@ def movie(media_id):
                 "languages": get_languages(response["spoken_languages"]),
                 "director": get_director(response.get("credits")),
                 "director_id": get_director_id(response.get("credits")),
+                "directors": get_directors(response.get("credits")),
             },
             "cast": get_cast(response.get("credits")),
             "crew": get_crew(response.get("credits")),
@@ -653,6 +727,7 @@ def process_tv(response):
             "languages": get_languages(response["spoken_languages"]),
             "creator": get_creator(response.get("created_by")),
             "creator_id": get_creator_id(response.get("created_by")),
+            "creators": get_creators(response.get("created_by")),
         },
         "cast": get_cast(response.get("credits")),
         "crew": get_crew(response.get("credits")),
@@ -945,7 +1020,11 @@ def process_episodes(season_metadata, episodes_in_db):
                 "season_number": season_metadata["season_number"],
                 "episode_number": episode_number,
                 "air_date": episode["air_date"],  # when unknown, response returns null
-                "image": get_image_url(episode["still_path"]),
+                "image": (
+                    get_image_url(episode["still_path"])
+                    if episode.get("still_path")
+                    else None
+                ),
                 "title": episode["name"],
                 "overview": episode["overview"],
                 "history": tracked_episodes.get(episode_number, []),
@@ -980,33 +1059,138 @@ def find_next_episode(episode_number, episodes_metadata):
 
 def episode(media_id, season_number, episode_number):
     """Return the metadata for the selected episode from The Movie Database."""
+    season_number = int(season_number)
+    episode_number = int(episode_number)
+    cache_key = (
+        f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.EPISODE.value}_"
+        f"{media_id}_{season_number}_{episode_number}"
+    )
+    data = cache.get(cache_key)
+    if data is not None:
+        return data
+
+    url = (
+        f"{base_url}/tv/{media_id}/season/{season_number}/"
+        f"episode/{episode_number}"
+    )
+    params = {
+        **base_params,
+        "append_to_response": "external_ids",
+    }
+    try:
+        response = services.api_request(
+            Sources.TMDB.value,
+            "GET",
+            url,
+            params=params,
+        )
+    except requests.exceptions.HTTPError as error:
+        if error.response is None or error.response.status_code != 404:
+            handle_error(error)
+        msg = (
+            f"Episode {episode_number} not found in season {season_number} "
+            f"for {Sources.TMDB.label} with ID {media_id}"
+        )
+        raise services.ProviderAPIError(
+            Sources.TMDB.value,
+            error=error,
+            details=msg,
+        ) from None
+
     tv_metadata = tv_with_seasons(media_id, [season_number])
     season_metadata = tv_metadata[f"season/{season_number}"]
+    series_title = season_metadata.get("title") or tv_metadata.get("title") or ""
+    season_title = season_metadata.get("season_title") or f"Season {season_number}"
+    # An episode's TVDB ID is not a series ID, so the shared TMDB link helper's
+    # series dereferrer would be misleading here. IMDb and Wikidata identifiers
+    # have media-agnostic destination formats and are safe to expose.
+    external_links = {
+        name: url
+        for name, url in get_external_links(response.get("external_ids", {})).items()
+        if name in {"IMDb", "Wikidata"}
+    }
+    imdb_url = external_links.get("IMDb")
+    still_path = response.get("still_path")
+    vote_average = response.get("vote_average")
+    vote_count = response.get("vote_count") or 0
 
-    for episode in season_metadata["episodes"]:
-        if episode["episode_number"] == int(episode_number):
-            return {
-                "title": season_metadata["title"],
-                "season_title": season_metadata["season_title"],
-                "episode_title": episode["name"],
-                "image": get_image_url(episode["still_path"]),
-            }
-
-    # Episode not found - throw ProviderAPIError
-    msg = (
-        f"Episode {episode_number} not found in season {season_number} "
-        f"for {Sources.TMDB.label} with ID {media_id}"
-    )
-    # Create a new response object with 404 status
-    not_found_response = requests.Response()
-    not_found_response.status_code = 404
-    # Set the error attribute to match what ProviderAPIError expects
-    not_found_error = type("Error", (), {"response": not_found_response})
-    raise services.ProviderAPIError(
-        Sources.TMDB.value,
-        error=not_found_error,
-        details=msg,
-    )
+    data = {
+        "media_id": str(media_id),
+        "source": Sources.TMDB.value,
+        "source_url": (
+            f"https://www.themoviedb.org/tv/{media_id}/season/"
+            f"{season_number}/episode/{episode_number}"
+        ),
+        "media_type": MediaTypes.EPISODE.value,
+        "title": response.get("name") or f"Episode {episode_number}",
+        "subtitle": f"{series_title} • S{season_number} E{episode_number}",
+        "series_title": series_title,
+        "season_title": season_title,
+        "episode_title": response.get("name") or f"Episode {episode_number}",
+        "season_number": season_number,
+        "episode_number": episode_number,
+        "max_progress": 1,
+        # Keep the still available to Item persistence while the API serializer
+        # presents episode artwork as a backdrop rather than a poster.
+        "image": get_image_url(still_path),
+        "backdrop_path": still_path,
+        "synopsis": get_synopsis(response.get("overview", "")),
+        "release_date": get_start_date(response.get("air_date", "")),
+        "score": get_score(vote_average) if vote_average and vote_count else None,
+        "score_count": vote_count,
+        "details": {
+            "format": "Episode",
+            "series_title": series_title,
+            "season_title": season_title,
+            "season_number": season_number,
+            "episode_number": episode_number,
+            "air_date": get_start_date(response.get("air_date", "")),
+            "runtime": get_readable_duration(response.get("runtime")),
+            "production_code": response.get("production_code") or None,
+        },
+        "cast": get_cast({"cast": response.get("guest_stars", [])}),
+        "crew": get_crew({"crew": response.get("crew", [])}),
+        "external_links": external_links,
+        "imdb_id": response.get("external_ids", {}).get("imdb_id"),
+        # Keep a truthful link-only fallback; the media service can enrich this
+        # shape through the optional licensed IMDb API without changing the
+        # public media-detail contract.
+        "external_ratings": {
+            "imdb": {
+                "value": None,
+                "votes": None,
+                "url": imdb_url,
+            },
+        }
+        if imdb_url
+        else {},
+        "parent": {
+            "show": {
+                "title": series_title,
+                "ref": {
+                    "item_id": None,
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.TV.value,
+                    "media_id": str(media_id),
+                    "season_number": None,
+                    "episode_number": None,
+                },
+            },
+            "season": {
+                "title": season_title,
+                "ref": {
+                    "item_id": None,
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.SEASON.value,
+                    "media_id": str(media_id),
+                    "season_number": season_number,
+                    "episode_number": None,
+                },
+            },
+        },
+    }
+    cache.set(cache_key, data)
+    return data
 
 
 def get_creator(creators):
@@ -1046,9 +1230,22 @@ def get_tv_rating(content_ratings):
     return None
 
 
+def _person_credit_role(job, department):
+    job = (job or "").strip()
+    department = (department or "").strip()
+    value = job.lower()
+    if department.lower() == "writing" or value in {"screenplay", "story", "writer"}:
+        return "Writer"
+    if "producer" in value:
+        return "Producer"
+    if value == "director":
+        return "Director"
+    return job or department or None
+
+
 def person_page(person_id):
     """Return person details and credits for the person page."""
-    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v6"
+    cache_key = f"{Sources.TMDB.value}_person_{person_id}_v9"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1085,7 +1282,11 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "credit_role": "Actor",
+                "release_date": item.get("release_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1107,7 +1308,11 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "credit_role": _person_credit_role(item.get("job"), item.get("department")),
+                "release_date": item.get("release_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.MOVIE.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1129,7 +1334,11 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("character"),
+                "credit_role": "Actor",
+                "release_date": item.get("first_air_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1151,7 +1360,11 @@ def person_page(person_id):
                 "title": title,
                 "image": get_image_url(item.get("poster_path")),
                 "role": item.get("job"),
+                "credit_role": _person_credit_role(item.get("job"), item.get("department")),
+                "release_date": item.get("first_air_date"),
                 "year": year,
+                "genres": _genre_names_from_ids(MediaTypes.TV.value, item.get("genre_ids")),
+                "languages": [_language_name(item.get("original_language"))] if item.get("original_language") else [],
                 "url": url_path,
                 "popularity": item.get("popularity"),
                 "vote_average": item.get("vote_average"),
@@ -1169,16 +1382,23 @@ def person_page(person_id):
                     "media_id": c["media_id"],
                     "title": c["title"],
                     "image": c["image"],
+                    "release_date": c.get("release_date"),
                     "year": c["year"],
+                    "genres": c.get("genres") or [],
+                    "languages": c.get("languages") or [],
                     "url": c["url"],
                     "popularity": c.get("popularity"),
                     "vote_average": c.get("vote_average"),
                     "vote_count": c.get("vote_count"),
                     "roles": [],
+                    "credit_roles": [],
                 }
             role = c.get("role")
             if role and role not in by_key[key]["roles"]:
                 by_key[key]["roles"].append(role)
+            credit_role = c.get("credit_role")
+            if credit_role and credit_role not in by_key[key]["credit_roles"]:
+                by_key[key]["credit_roles"].append(credit_role)
         credits = list(by_key.values())
 
         # Sort by vote_count (desc), then title; uses only TMDB data from person credits
@@ -1377,16 +1597,71 @@ def get_season_backdrop_images(media_id, season_number):
     return data
 
 
-def get_title_logo(media_id, media_type):
-    """Return the best title logo for a movie or TV show from TMDB."""
+def get_episode_backdrop_images(media_id, season_number, episode_number):
+    """Return all TMDB stills for one episode as backdrop options."""
+    season_number = int(season_number)
+    episode_number = int(episode_number)
+    cache_key = (
+        f"{Sources.TMDB.value}_episode_backdrops_{media_id}_"
+        f"{season_number}_{episode_number}"
+    )
+    data = cache.get(cache_key)
+
+    if data is None:
+        url = (
+            f"{base_url}/tv/{media_id}/season/{season_number}/"
+            f"episode/{episode_number}/images"
+        )
+        params = {**base_params}
+        params.pop("language", None)
+
+        try:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                url,
+                params=params,
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        data = sorted(
+            [
+                {
+                    "url": (
+                        "https://image.tmdb.org/t/p/original"
+                        f"{still['file_path']}"
+                    ),
+                    "thumbnail_url": (
+                        "https://image.tmdb.org/t/p/w780"
+                        f"{still['file_path']}"
+                    ),
+                    "width": still.get("width", 0),
+                    "height": still.get("height", 0),
+                    "aspect_ratio": still.get("aspect_ratio", 1.778),
+                    "vote_average": still.get("vote_average", 0),
+                    "vote_count": still.get("vote_count", 0),
+                    "language": still.get("iso_639_1"),
+                    "episode_number": episode_number,
+                }
+                for still in response.get("stills", [])
+                if still.get("file_path")
+            ],
+            key=lambda image: (image["vote_average"], image["vote_count"]),
+            reverse=True,
+        )
+        cache.set(cache_key, data, 86400)
+
+    return data
+
+
+def get_title_logos(media_id, media_type):
+    """Return all title logos for a movie or TV show from TMDB."""
     if media_type not in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
         raise ValueError("Title logos are only available for movies and TV shows")
 
-    cache_key = f"{Sources.TMDB.value}_{media_type}_logo_{media_id}"
+    cache_key = f"{Sources.TMDB.value}_{media_type}_logos_{media_id}_v1"
     data = cache.get(cache_key)
-    if data == NO_LOGO:
-        return None
-
     if data is None:
         url = f"{base_url}/{media_type}/{media_id}/images"
         params = {**base_params}
@@ -1402,34 +1677,54 @@ def get_title_logo(media_id, media_type):
         except requests.exceptions.HTTPError as error:
             handle_error(error)
 
-        lang = getattr(settings, "TMDB_LANG", "en") or "en"
-        logos = response.get("logos", [])
-        candidates = [logo for logo in logos if logo.get("iso_639_1") == lang]
-        if not candidates:
-            candidates = [logo for logo in logos if logo.get("iso_639_1") is None]
-
-        if not candidates:
-            data = NO_LOGO
-        else:
-            logo = max(
-                candidates,
-                key=lambda item: (
-                    item.get("vote_average") or 0,
-                    item.get("vote_count") or 0,
-                    item.get("width") or 0,
-                ),
-            )
+        logos = []
+        for logo in response.get("logos", []):
             file_path = logo["file_path"]
-            data = {
-                "url": f"https://image.tmdb.org/t/p/w500{file_path}",
-                "width": logo.get("width"),
-                "height": logo.get("height"),
-                "aspect_ratio": logo.get("aspect_ratio"),
-            }
+            logos.append(
+                {
+                    "url": f"https://image.tmdb.org/t/p/w500{file_path}",
+                    "thumbnail_url": f"https://image.tmdb.org/t/p/w300{file_path}",
+                    "width": logo.get("width") or 0,
+                    "height": logo.get("height") or 0,
+                    "aspect_ratio": logo.get("aspect_ratio"),
+                    "vote_average": logo.get("vote_average") or 0,
+                    "vote_count": logo.get("vote_count") or 0,
+                    "language": logo.get("iso_639_1"),
+                    "style": None,
+                }
+            )
+
+        data = sorted(
+            logos,
+            key=lambda item: (
+                item["vote_average"],
+                item["vote_count"],
+                item["width"],
+            ),
+            reverse=True,
+        )
 
         cache.set(cache_key, data, 86400)
 
-    return None if data == NO_LOGO else data
+    return data
+
+
+def get_title_logo(media_id, media_type):
+    """Return the best localized title logo for a movie or TV show."""
+    logos = get_title_logos(media_id, media_type)
+    lang = getattr(settings, "TMDB_LANG", "en") or "en"
+    candidates = [logo for logo in logos if logo.get("language") == lang]
+    if not candidates:
+        candidates = [logo for logo in logos if logo.get("language") is None]
+    if not candidates:
+        return None
+    logo = candidates[0]
+    return {
+        "url": logo["url"],
+        "width": logo["width"],
+        "height": logo["height"],
+        "aspect_ratio": logo["aspect_ratio"],
+    }
 
 
 def watch_provider_regions():

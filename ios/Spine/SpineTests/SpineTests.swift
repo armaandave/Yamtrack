@@ -2,6 +2,27 @@ import XCTest
 @testable import Spine
 
 final class SpineTests: XCTestCase {
+    func testAppRepositoriesExposeInjectedMusicRepository() async {
+        let repositories = fakeRepositories(auth: FakeAuthRepository(hasStoredTokens: false))
+        let album = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "album",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+
+        do {
+            _ = try await repositories.music.recordingDetail(album: album, recordingMbid: "recording")
+            XCTFail("Expected the injected fake music repository to be called")
+        } catch FakeMusicRepositoryError.called {
+            // The repository bundle forwarded the call to the injected fake.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testMediaTypeThemeLookup() {
         let movie = MediaTypeTheme.theme(for: "movie")
         let boardGame = MediaTypeTheme.theme(for: "boardgame")
@@ -23,6 +44,30 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(theme.displayName, "Podcast")
         XCTAssertEqual(theme.symbolName, "square.grid.2x2")
         XCTAssertEqual(theme.gradientColors.count, 2)
+    }
+
+    func testMediaBrowsingContextPreservesGridOrderAndRemovesDuplicates() {
+        let first = mediaRef("1")
+        let second = mediaRef("2")
+        let third = mediaRef("3")
+
+        let context = MediaBrowsingContext(
+            refs: [first, second, first, third],
+            selected: second
+        )
+
+        XCTAssertEqual(context.refs, [first, second, third])
+        XCTAssertEqual(context.selectedID, second.id)
+    }
+
+    func testMediaBrowsingContextIncludesSelectedMediaMissingFromGridSnapshot() {
+        let first = mediaRef("1")
+        let selected = mediaRef("2")
+
+        let context = MediaBrowsingContext(refs: [first], selected: selected)
+
+        XCTAssertEqual(context.refs, [first, selected])
+        XCTAssertEqual(context.selectedID, selected.id)
     }
 
     func testCustomListReorderMathClampsAndMapsDestinations() {
@@ -51,6 +96,149 @@ final class SpineTests: XCTestCase {
         )
     }
 
+    func testHomeAtmosphereUsesAlbumCoverWithoutInventingBackdrop() {
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: 902,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterUrl: "https://example.com/year-zero-square.jpg",
+            backdropUrl: nil,
+            posterOrientation: .square,
+            posterAspectRatio: 1
+        )
+
+        XCTAssertEqual(
+            HomeArtworkAtmosphereModel.url(for: album)?.absoluteString,
+            "https://example.com/year-zero-square.jpg"
+        )
+        XCTAssertNil(album.displayBackdropURL)
+        XCTAssertEqual(album.posterOrientation, .square)
+        XCTAssertEqual(album.posterAspectRatio, 1)
+    }
+
+    @MainActor
+    func testListComposerRequiresNameAndItemAndSupportsUndoAndOrdering() {
+        let repository = ScriptedListComposerRepository()
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        let first = composerMedia("1")
+        let second = composerMedia("2")
+
+        XCTAssertEqual(viewModel.draft.visibility, "private")
+        XCTAssertFalse(viewModel.canSave)
+
+        viewModel.draft.name = "Favorites"
+        viewModel.toggleSelection(first)
+        viewModel.toggleSelection(second)
+        XCTAssertTrue(viewModel.canSave)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [first.id, second.id])
+
+        viewModel.moveItem(from: 0, to: 2)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
+
+        viewModel.removeItem(id: second.id)
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [first.id])
+        viewModel.undoRemoval()
+        XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
+        XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+    }
+
+    @MainActor
+    func testListComposerSelectsMusic() {
+        let viewModel = ListComposerViewModel(
+            mode: .create,
+            listRepository: ScriptedListComposerRepository(),
+            onUnauthorized: {}
+        )
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterOrientation: .square
+        )
+
+        viewModel.toggleSelection(album)
+
+        XCTAssertTrue(viewModel.contains(album))
+        XCTAssertEqual(viewModel.draft.items, [album])
+    }
+
+    @MainActor
+    func testListComposerCreatesAddsAndSavesCompleteOrder() async {
+        let repository = ScriptedListComposerRepository()
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        viewModel.draft.name = "Favorites"
+        viewModel.draft.isRanked = true
+        viewModel.toggleSelection(composerMedia("1"))
+        viewModel.toggleSelection(composerMedia("album", mediaType: "music"))
+
+        let listID = await viewModel.save()
+
+        XCTAssertEqual(listID, 77)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["1", "album"])
+        XCTAssertEqual(repository.reorderedItemIDs, [101, 102])
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaType), ["movie", "music"])
+        XCTAssertEqual(repository.serverItems.last?.posterOrientation, .square)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testListComposerRetriesPartialCreateWithoutCreatingOrAddingTwice() async {
+        let repository = ScriptedListComposerRepository(failingMediaIDs: ["album"])
+        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        viewModel.draft.name = "Favorites"
+        viewModel.toggleSelection(composerMedia("1"))
+        viewModel.toggleSelection(composerMedia("album", mediaType: "music"))
+
+        let firstSaveResult = await viewModel.save()
+        XCTAssertNil(firstSaveResult)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1"])
+        XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+
+        repository.failingMediaIDs = []
+        let retryResult = await viewModel.save()
+        XCTAssertEqual(retryResult, 77)
+        XCTAssertEqual(repository.createCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["1", "album", "album"])
+        XCTAssertEqual(repository.serverItems.map(\.ref.mediaId), ["1", "album"])
+        XCTAssertEqual(repository.serverItems.last?.ref.mediaType, "music")
+    }
+
+    @MainActor
+    func testListComposerStagesEditDiffBeforeRemovingAndReordering() async {
+        let first = composerMedia("1", itemID: 11)
+        let second = composerMedia("2", itemID: 12)
+        let repository = ScriptedListComposerRepository(serverItems: [first, second])
+        let viewModel = ListComposerViewModel(
+            mode: .edit(composerList(items: [first, second])),
+            listRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.removeItem(id: first.id)
+        viewModel.toggleSelection(composerMedia("3"))
+        viewModel.moveItem(from: 1, to: 0)
+
+        let saveResult = await viewModel.save()
+        XCTAssertEqual(saveResult, 77)
+        XCTAssertEqual(repository.updateCount, 1)
+        XCTAssertEqual(repository.addAttempts, ["3"])
+        XCTAssertEqual(repository.removedItemIDs, [11])
+        XCTAssertEqual(repository.reorderedItemIDs, [101, 12])
+    }
+
     @MainActor
     func testSearchLensMediaTypesExcludeEpisodesAndSeasons() {
         let types = SearchViewModel.lensMediaTypes(from: ["movie", "episode", "season", "book"])
@@ -69,6 +257,416 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(types, ["movie", "book"])
         XCTAssertFalse(fallback.contains("episode"))
         XCTAssertFalse(fallback.contains("season"))
+    }
+
+    @MainActor
+    func testPersonFilterOptionsIncludeGenresAndLanguages() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(
+            MediaSummary.self,
+            from: Data(
+                """
+                {
+                  "ref": {"source": "tmdb", "media_type": "movie", "media_id": "1"},
+                  "title": "One",
+                  "genres": ["Drama", "Thriller"],
+                  "languages": ["English"]
+                }
+                """.utf8
+            )
+        )
+        let options = PersonDetailViewModel.options(from: [
+            decoded,
+            MediaSummary(
+                ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "2", seasonNumber: nil, episodeNumber: nil),
+                title: "Two",
+                genres: ["Drama"],
+                languages: ["French"]
+            ),
+        ])
+
+        XCTAssertEqual(options.genres.map(\.value), ["Drama", "Thriller"])
+        XCTAssertEqual(options.languages.map(\.value), ["English", "French"])
+    }
+
+    @MainActor
+    func testCompanyDetailDecodesStudioAPIContract() throws {
+        let detail = try JSONDecoder.api.decode(
+            CompanyDetail.self,
+            from: Data(
+                """
+                {
+                  "id": "77",
+                  "source": "igdb",
+                  "name": "Space Studio",
+                  "description": "Makes space games.",
+                  "logo_url": "https://example.com/logo.png",
+                  "logo_width": 284,
+                  "logo_height": 160,
+                  "founded_year": 1993,
+                  "country_code": 840,
+                  "status": "Active",
+                  "company_size": "Medium",
+                  "parent": {"id": "7", "name": "Parent Co"},
+                  "igdb_url": "https://www.igdb.com/companies/space-studio",
+                  "websites": ["https://example.com"],
+                  "catalogs": {
+                    "developed": {"count": 24},
+                    "published": {"count": 8}
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(detail.ref, CompanyRef(source: "igdb", companyId: "77"))
+        XCTAssertEqual(detail.catalogs.developed.count, 24)
+        XCTAssertEqual(detail.parent?.name, "Parent Co")
+    }
+
+    @MainActor
+    func testMediaCompanyCreditParsesStructuredDeveloperRole() {
+        let credit = MediaCompanyCredit(json: .object([
+            "id": .string("77"),
+            "source": .string("igdb"),
+            "name": .string("Space Studio"),
+            "roles": .array([.string("Developer"), .string("Publisher")]),
+        ]))
+
+        XCTAssertEqual(credit?.ref, CompanyRef(source: "igdb", companyId: "77"))
+        XCTAssertTrue(credit?.hasRole(.developed) == true)
+        XCTAssertTrue(credit?.hasRole(.published) == true)
+    }
+
+    func testCompanyFilterOptionsDecodePlatformsAndFallbackMissingPlatforms() throws {
+        let options = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(
+                """
+                {
+                  "sorts": [{"value": "popularity", "label": "Popularity"}],
+                  "genres": [{"value": "Action", "label": "Action"}],
+                  "languages": [],
+                  "platforms": [{"value": "PC", "label": "PC"}],
+                  "years": [2024]
+                }
+                """.utf8
+            )
+        )
+        let legacy = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(#"{"sorts":[],"genres":[],"languages":[],"years":[]}"#.utf8)
+        )
+
+        XCTAssertEqual(options.platforms.map(\.value), ["PC"])
+        XCTAssertTrue(legacy.platforms.isEmpty)
+    }
+
+    func testCompanyRepositorySendsSharedFiltersForInitialAndNextPages() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        let repository = APICompanyRepository(client: client)
+        var requestCount = 0
+        RequestCaptureURLProtocol.handler = { request in
+            requestCount += 1
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let query = components?.queryItems ?? []
+            XCTAssertEqual(components?.path, "/api/v1/companies/igdb/77/games/")
+            XCTAssertEqual(query.first { $0.name == "role" }?.value, "developed")
+            XCTAssertEqual(query.first { $0.name == "sort" }?.value, "average_rating")
+            XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+            XCTAssertEqual(query.first { $0.name == "year" }?.value, "2024")
+            XCTAssertEqual(query.first { $0.name == "genre" }?.value, "Action")
+            XCTAssertEqual(query.first { $0.name == "platform" }?.value, "PC")
+            XCTAssertEqual(query.first { $0.name == "rating_min" }?.value, "70")
+            XCTAssertEqual(query.first { $0.name == "page" }?.value, requestCount == 1 ? nil : "2")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"count":0,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        var filter = MediaFilterState()
+        filter.sort = .averageRating
+        filter.direction = .desc
+        filter.year = 2024
+        filter.genres = ["Action"]
+        filter.platforms = ["PC"]
+        filter.ratingMin = 70
+        let ref = CompanyRef(source: "igdb", companyId: "77")
+
+        _ = try await repository.games(ref: ref, role: .developed, page: nil, filter: filter)
+        _ = try await repository.games(ref: ref, role: .developed, page: "2", filter: filter)
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testCompanyRepositoryLoadsPublicGameFilterOptions() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        let repository = APICompanyRepository(client: client)
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/companies/igdb/77/game-options/"
+            )
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "sorts": [{"value": "popularity", "label": "Popularity"}],
+                  "genres": [],
+                  "languages": [],
+                  "platforms": [{"value": "PC", "label": "PC"}],
+                  "years": [2024]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        let options = try await repository.gameFilterOptions(ref: CompanyRef(source: "igdb", companyId: "77"))
+
+        XCTAssertEqual(options.sorts.map(\.value), ["popularity"])
+        XCTAssertEqual(options.platforms.map(\.value), ["PC"])
+    }
+
+    @MainActor
+    func testDynamicExternalRatingSortDecodesAndKeepsBackendLabel() throws {
+        let sort = try JSONDecoder.api.decode(
+            MediaFilterSort.self,
+            from: Data(#""rating:goodreads""#.utf8)
+        )
+        let options = try JSONDecoder.api.decode(
+            MediaFilterOptionsResponse.self,
+            from: Data(
+                """
+                {
+                  "sorts": [{"value": "rating:goodreads", "label": "Goodreads Rating"}],
+                  "genres": [],
+                  "languages": [],
+                  "years": []
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(sort.rawValue, "rating:goodreads")
+        XCTAssertTrue(sort.isExternalRating)
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: options, scope: .tracking(mediaType: "book")),
+            [FilterChoice(value: "rating:goodreads", label: "Goodreads Rating")]
+        )
+    }
+
+    @MainActor
+    func testDynamicExternalRatingSortDefaultsDescendingAndFallbacksStayStructural() {
+        var filter = MediaFilterState()
+        filter.selectSort(rawValue: "rating:goodreads")
+
+        XCTAssertEqual(filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(filter.direction, .desc)
+        XCTAssertEqual(filter.queryItems().first { $0.name == "direction" }?.value, "desc")
+
+        filter.direction = .asc
+        XCTAssertEqual(filter.queryItems().first { $0.name == "direction" }?.value, "asc")
+        XCTAssertTrue(MediaFilterSort(rawValue: "letterboxd_rating").isExternalRating)
+        XCTAssertTrue(MediaFilterSort(rawValue: "imdb_rating").isExternalRating)
+        XCTAssertTrue(MediaFilterSort(rawValue: "rotten_tomatoes_rating").isExternalRating)
+
+        let trackingFallback = MediaFilterSheet.availableSortChoices(
+            options: .empty,
+            scope: .tracking(mediaType: "book")
+        )
+        XCTAssertEqual(
+            trackingFallback.map(\.value),
+            ["title", "release_date", "your_rating", "average_rating"]
+        )
+        XCTAssertFalse(trackingFallback.contains { MediaFilterSort(rawValue: $0.value).isExternalRating })
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: .empty, scope: .diary).map(\.value),
+            ["title", "release_date", "your_rating", "average_rating", "consumed_at"]
+        )
+        XCTAssertEqual(
+            MediaFilterSheet.availableSortChoices(options: .empty, scope: .list(id: 7)).map(\.value),
+            ["title", "release_date", "your_rating", "average_rating", "date_added"]
+        )
+    }
+
+    @MainActor
+    func testMovieBookAndGameRatingTokensRemainOpaque() {
+        let choices = [
+            FilterChoice(value: "rating:imdb", label: "IMDb Rating"),
+            FilterChoice(value: "rating:hardcover", label: "Hardcover Rating"),
+            FilterChoice(value: "rating:metacritic", label: "Metacritic Rating"),
+        ]
+
+        for choice in choices {
+            var filter = MediaFilterState()
+            filter.selectSort(rawValue: choice.value)
+            XCTAssertEqual(filter.sort?.rawValue, choice.value)
+            XCTAssertEqual(filter.direction, .desc)
+            XCTAssertEqual(filter.queryItems().first { $0.name == "sort" }?.value, choice.value)
+        }
+        XCTAssertEqual(choices.map(\.label), ["IMDb Rating", "Hardcover Rating", "Metacritic Rating"])
+    }
+
+    @MainActor
+    func testTrackingRepositoryPreservesOpaqueSortAcrossPages() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APITrackingRepository(client: client)
+        var requests: [URLRequest] = []
+        RequestCaptureURLProtocol.handler = { request in
+            requests.append(request)
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"count":0,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        var filter = MediaFilterState()
+        filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        _ = try await repository.list(mediaType: "book", page: nil, filter: filter)
+        _ = try await repository.list(mediaType: "book", page: "2", filter: filter)
+
+        XCTAssertEqual(requests.count, 2)
+        for request in requests {
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "media_type" }?.value, "book")
+            XCTAssertEqual(query.first { $0.name == "sort" }?.value, "rating:goodreads")
+            XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+        }
+        let secondQuery = URLComponents(url: requests[1].url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertNil(URLComponents(url: requests[0].url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" })
+        XCTAssertEqual(secondQuery.first { $0.name == "page" }?.value, "2")
+    }
+
+    @MainActor
+    func testLibraryDynamicSortKeepsServerOrderAndRejectsPreviousSortPage() async {
+        let repository = DynamicSortLibraryTrackingRepository()
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = .title
+        await viewModel.reload()
+
+        let stalePage = Task { await viewModel.loadNextPage() }
+        try? await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .desc
+        await viewModel.reload()
+        await stalePage.value
+
+        XCTAssertEqual(viewModel.items.map(\.media.title), ["Zulu From Server", "Alpha From Server"])
+        XCTAssertEqual(repository.requests.map(\.sort), ["title", "title", "rating:goodreads"])
+        XCTAssertEqual(repository.requests.map(\.page), [nil, "2", nil])
+        XCTAssertEqual(repository.requests.last?.direction, .desc)
+    }
+
+    @MainActor
+    func testLibraryMediaTypeChangeReconcilesDynamicSortWithAdvertisedOptions() async {
+        let filterOptions = ScriptedFilterOptionsRepository { scope in
+            switch scope {
+            case .tracking(mediaType: "book"):
+                MediaFilterOptionsResponse(
+                    sorts: [FilterChoice(value: "rating:goodreads", label: "Goodreads Rating")],
+                    genres: [],
+                    languages: [],
+                    years: []
+                )
+            default:
+                MediaFilterOptionsResponse(
+                    sorts: [FilterChoice(value: "title", label: "Title")],
+                    genres: [],
+                    languages: [],
+                    years: []
+                )
+            }
+        }
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: DynamicSortLibraryTrackingRepository(),
+            filterOptionsRepository: filterOptions,
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .asc
+
+        await viewModel.selectMediaType("book")
+        XCTAssertEqual(viewModel.filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(viewModel.filter.direction, .asc)
+        XCTAssertEqual(viewModel.filterOptions.sorts.first?.label, "Goodreads Rating")
+
+        await viewModel.selectMediaType("game")
+        XCTAssertNil(viewModel.filter.sort)
+        XCTAssertNil(viewModel.filter.direction)
+    }
+
+    @MainActor
+    func testLibraryOptionFailurePreservesSameScopeSortButClearsItAfterScopeChange() async {
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: DynamicSortLibraryTrackingRepository(),
+            filterOptionsRepository: ScriptedFilterOptionsRepository { _ in throw DynamicSortTestError.optionsUnavailable },
+            onUnauthorized: {}
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:goodreads")
+        viewModel.filter.direction = .asc
+
+        await viewModel.loadFilterOptions()
+        XCTAssertEqual(viewModel.filter.sort?.rawValue, "rating:goodreads")
+        XCTAssertEqual(viewModel.filter.direction, .asc)
+        XCTAssertTrue(viewModel.filterOptions.sorts.isEmpty)
+
+        await viewModel.selectMediaType("book")
+        XCTAssertNil(viewModel.filter.sort)
+        XCTAssertNil(viewModel.filter.direction)
+    }
+
+    @MainActor
+    func testCompanyViewModelAppliesOneFilterToExpandedRolesAndRejectsStaleResponses() async throws {
+        let repository = ScriptedCompanyRepository()
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "igdb", companyId: "77"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        viewModel.filter.sort = .title
+        let staleTask = Task {
+            await viewModel.applyFilter(to: [.developed, .published])
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = .releaseDate
+        await viewModel.applyFilter(to: [.developed, .published])
+        await staleTask.value
+
+        XCTAssertEqual(viewModel.gamesByRole[.developed]?.map(\.title), ["Fresh developed"])
+        XCTAssertEqual(viewModel.gamesByRole[.published]?.map(\.title), ["Fresh published"])
+        let freshRequests = repository.requests.filter { $0.filter.sort == .releaseDate }
+        XCTAssertEqual(Set(freshRequests.map(\.role)), Set(CompanyCatalogRole.allCases))
     }
 
     @MainActor
@@ -97,7 +695,7 @@ final class SpineTests: XCTestCase {
         await viewModel.reload()
         XCTAssertEqual(viewModel.displayedItems.map(\.media.title), ["Planned"])
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked"),
             LibraryTrackingRequest(mediaType: "movie", page: nil, status: "Planning")
         ])
     }
@@ -130,15 +728,18 @@ final class SpineTests: XCTestCase {
             onUnauthorized: {}
         )
 
+        XCTAssertEqual(viewModel.contentRevision, 0)
         await viewModel.reload()
+        XCTAssertEqual(viewModel.contentRevision, 1)
         await viewModel.loadNextPage()
 
         XCTAssertEqual(viewModel.items.map(\.media.title), ["One", "Two", "Three"])
+        XCTAssertEqual(viewModel.contentRevision, 1)
         XCTAssertEqual(viewModel.totalCount, 3)
         XCTAssertFalse(viewModel.hasMorePages)
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil),
-            LibraryTrackingRequest(mediaType: "movie", page: "2")
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked"),
+            LibraryTrackingRequest(mediaType: "movie", page: "2", status: "tracked")
         ])
     }
 
@@ -184,7 +785,7 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(viewModel.query, "Dune")
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Dune")
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Dune")
         ])
     }
 
@@ -202,8 +803,8 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(viewModel.query, "")
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Dune"),
-            LibraryTrackingRequest(mediaType: "movie", page: nil)
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Dune"),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked")
         ])
     }
 
@@ -222,8 +823,8 @@ final class SpineTests: XCTestCase {
         await viewModel.reload()
 
         XCTAssertEqual(repository.requests, [
-            LibraryTrackingRequest(mediaType: "movie", page: nil, query: "Halo"),
-            LibraryTrackingRequest(mediaType: "game", page: nil, query: "Halo"),
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "tracked", query: "Halo"),
+            LibraryTrackingRequest(mediaType: "game", page: nil, status: "tracked", query: "Halo"),
             LibraryTrackingRequest(mediaType: "game", page: nil, status: "Planning", query: "Halo")
         ])
     }
@@ -256,10 +857,46 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.totalCount, 1)
     }
 
-    func testInProgressLoaderMapsMediaTypesAndSortsWithLimit() {
-        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "episode", "book"])
+    @MainActor
+    func testLibraryMusicRequestsPreserveSearchShelfAndPagination() async {
+        let repository = ScriptedLibraryTrackingRepository(responses: [
+            "music::Year Zero": PagedResponse(
+                count: 2,
+                next: "https://spine.test/api/v1/tracking/?media_type=music&page=2",
+                previous: nil,
+                results: [libraryItem(id: "album-1", title: "Year Zero", mediaType: "music")]
+            ),
+            "music:2:Year Zero": PagedResponse(
+                count: 2,
+                next: nil,
+                previous: "https://spine.test/api/v1/tracking/?media_type=music",
+                results: [libraryItem(id: "album-2", title: "Ghosts I–IV", mediaType: "music")]
+            )
+        ])
+        let viewModel = LibraryViewModel(
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: repository,
+            onUnauthorized: {}
+        )
+        viewModel.mediaType = "music"
 
-        XCTAssertEqual(InProgressLibraryLoader.mediaTypes(from: profile), ["movie", "season", "book"])
+        await viewModel.setSearchQuery("Year Zero")
+        await viewModel.loadNextPage()
+        viewModel.shelf = .planning
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.items.map(\.media.ref.mediaType), ["music"])
+        XCTAssertEqual(repository.requests, [
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "tracked", query: "Year Zero"),
+            LibraryTrackingRequest(mediaType: "music", page: "2", status: "tracked", query: "Year Zero"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "Planning", query: "Year Zero")
+        ])
+    }
+
+    func testInProgressLoaderMapsMediaTypesAndSortsWithLimit() {
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "episode", "book", "music"])
+
+        XCTAssertEqual(InProgressLibraryLoader.mediaTypes(from: profile), ["movie", "season", "book", "music"])
 
         let sorted = InProgressLibraryLoader.limitedSortedItems([
             libraryItem(id: "1", title: "Older", updatedAt: "2026-06-20T10:00:00Z"),
@@ -272,16 +909,32 @@ final class SpineTests: XCTestCase {
 
     @MainActor
     func testHomeViewModelLoadsProfileInProgressAndActivity() async throws {
-        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie"])
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie", "music"])
         let tracking = ScriptedLibraryTrackingRepository(responses: [
             "movie:": PagedResponse(
                 count: 1,
                 next: nil,
                 previous: nil,
                 results: [libraryItem(id: "1", title: "Watching", status: "In progress")]
-            )
+            ),
+            "music:": PagedResponse(
+                count: 1,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(
+                        id: "album",
+                        title: "Year Zero",
+                        mediaType: "music",
+                        status: "In progress",
+                        updatedAt: "2026-06-22T12:00:00Z"
+                    )
+                ]
+            ),
         ])
-        let activity = ScriptedHomeActivityRepository(items: [activityItem(id: 1, title: "Logged")])
+        let activity = ScriptedHomeActivityRepository(items: [
+            activityItem(id: 1, title: "Year Zero", type: "diary_created", mediaType: "music")
+        ])
         let viewModel = HomeViewModel(
             profileRepository: HallOfFameProfileRepository(profile: profile, setResponse: [:], clearResponse: [:]),
             trackingRepository: tracking,
@@ -292,9 +945,13 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.profile?.username, "mobile")
-        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Watching"])
-        XCTAssertEqual(viewModel.activityItems.compactMap(\.media?.title), ["Logged"])
-        XCTAssertEqual(tracking.requests, [LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress")])
+        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Year Zero", "Watching"])
+        XCTAssertEqual(viewModel.activityItems.compactMap(\.media?.title), ["Year Zero"])
+        XCTAssertEqual(ActivityFeedPresentation.actionText(for: try XCTUnwrap(viewModel.activityItems.first)), "listened to an album")
+        XCTAssertEqual(tracking.requests, [
+            LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "In progress"),
+        ])
         XCTAssertEqual(activity.requests, [ActivityRequest(username: "mobile", limit: 6)])
         XCTAssertFalse(viewModel.isLoading)
         XCTAssertNil(viewModel.profileErrorMessage)
@@ -337,6 +994,145 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(unauthorizedCount, 1)
         XCTAssertNotNil(viewModel.inProgressErrorMessage)
         XCTAssertFalse(viewModel.isLoading)
+    }
+
+    @MainActor
+    func testActivityFeedViewModelLoadsAndDeduplicatesNextPage() async {
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=next-page"
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nextLink,
+                previousCursor: nil,
+                results: [
+                    activityItem(id: 1, title: "First"),
+                    activityItem(id: 2, title: "Second"),
+                    activityItem(id: 2, title: "Second"),
+                ]
+            )),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 2, title: "Second"), activityItem(id: 3, title: "Third")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            pageSize: 2,
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPageIfNeeded(currentItem: viewModel.items[0])
+
+        XCTAssertEqual(repository.pageRequests.count, 1)
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2])
+        XCTAssertTrue(viewModel.hasMorePages)
+
+        await viewModel.loadNextPageIfNeeded(currentItem: viewModel.items[1])
+
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2, 3])
+        XCTAssertFalse(viewModel.hasMorePages)
+        XCTAssertEqual(repository.pageRequests, [
+            ActivityPageRequest(username: "mobile", pageSize: 2, cursorLink: nil),
+            ActivityPageRequest(username: "mobile", pageSize: 2, cursorLink: nextLink),
+        ])
+    }
+
+    @MainActor
+    func testActivityFeedViewModelRefreshReplacesItems() async {
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 1, title: "Old")]
+            )),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 4, title: "Fresh")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.items.map(\.id), [4])
+        XCTAssertEqual(repository.pageRequests.count, 2)
+    }
+
+    @MainActor
+    func testActivityFeedViewModelRetriesFailedNextPage() async {
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=retry-page"
+        let repository = ScriptedPagedActivityRepository(results: [
+            .success(ActivityCursorResponse(
+                nextCursor: nextLink,
+                previousCursor: nil,
+                results: [activityItem(id: 1, title: "First")]
+            )),
+            .failure(URLError(.cannotConnectToHost)),
+            .success(ActivityCursorResponse(
+                nextCursor: nil,
+                previousCursor: nil,
+                results: [activityItem(id: 2, title: "Recovered")]
+            )),
+        ])
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertNotNil(viewModel.nextPageErrorMessage)
+        XCTAssertEqual(viewModel.items.map(\.id), [1])
+
+        await viewModel.loadNextPage()
+
+        XCTAssertNil(viewModel.nextPageErrorMessage)
+        XCTAssertEqual(viewModel.items.map(\.id), [1, 2])
+        XCTAssertEqual(repository.pageRequests.compactMap(\.cursorLink), [nextLink, nextLink])
+    }
+
+    @MainActor
+    func testActivityFeedViewModelUnauthorizedCallsHandler() async {
+        let repository = ScriptedPagedActivityRepository(results: [.failure(APIError.unauthorized)])
+        var unauthorizedCount = 0
+        let viewModel = ActivityFeedViewModel(
+            username: "mobile",
+            activityRepository: repository,
+            onUnauthorized: { unauthorizedCount += 1 }
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(unauthorizedCount, 1)
+        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.items.isEmpty)
+    }
+
+    func testActivityTimestampFormatterUsesCompactRelativeUnits() throws {
+        let event = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-20T12:00:00Z"))
+
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(30)
+        ), "Now")
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(2 * 3_600)
+        ), "2h")
+        XCTAssertEqual(ActivityTimestampFormatter.shortText(
+            from: "2026-06-20T12:00:00Z",
+            now: event.addingTimeInterval(3 * 86_400)
+        ), "3d")
     }
 
     func testRecentSearchesKeepMediaTypeAndReadLegacyText() throws {
@@ -392,6 +1188,56 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(request.title, "PlayStation 5 · Games")
     }
 
+    func testMediaFilterStateBuildsRepeatedQueryItems() {
+        var filter = MediaFilterState()
+        filter.sort = .releaseDate
+        filter.direction = .desc
+        filter.q = " dune "
+        filter.year = 2024
+        filter.releaseStatus = "released"
+        filter.length = "feature"
+        filter.genres = ["Drama", "Comedy"]
+        filter.languages = ["English"]
+        filter.platforms = ["PC", "PlayStation 5"]
+        filter.excludedGenres = ["Horror"]
+        filter.excludedLanguages = ["French"]
+        filter.excludedPlatforms = ["Switch"]
+        filter.hasReview = true
+
+        let query = filter.queryItems(page: "3", mediaType: "movie")
+
+        XCTAssertEqual(query.first { $0.name == "media_type" }?.value, "movie")
+        XCTAssertEqual(query.first { $0.name == "q" }?.value, "dune")
+        XCTAssertEqual(query.first { $0.name == "sort" }?.value, "release_date")
+        XCTAssertEqual(query.first { $0.name == "direction" }?.value, "desc")
+        XCTAssertEqual(query.first { $0.name == "release_status" }?.value, "released")
+        XCTAssertEqual(query.first { $0.name == "length" }?.value, "feature")
+        XCTAssertEqual(query.filter { $0.name == "genre" }.map(\.value), ["Drama", "Comedy"])
+        XCTAssertEqual(query.first { $0.name == "language" }?.value, "English")
+        XCTAssertEqual(query.filter { $0.name == "platform" }.map(\.value), ["PC", "PlayStation 5"])
+        XCTAssertEqual(query.first { $0.name == "exclude_genre" }?.value, "Horror")
+        XCTAssertEqual(query.first { $0.name == "exclude_language" }?.value, "French")
+        XCTAssertEqual(query.first { $0.name == "exclude_platform" }?.value, "Switch")
+        XCTAssertEqual(query.first { $0.name == "has_review" }?.value, "true")
+        XCTAssertEqual(query.first { $0.name == "page" }?.value, "3")
+    }
+
+    func testMediaFilterStateCyclesFacetSelection() {
+        var filter = MediaFilterState()
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertEqual(filter.genres, ["Drama"])
+        XCTAssertTrue(filter.excludedGenres.isEmpty)
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertTrue(filter.genres.isEmpty)
+        XCTAssertEqual(filter.excludedGenres, ["Drama"])
+
+        filter.cycleFacet("Drama", include: \.genres, exclude: \.excludedGenres)
+        XCTAssertTrue(filter.genres.isEmpty)
+        XCTAssertTrue(filter.excludedGenres.isEmpty)
+    }
+
     func testMediaDiscoverRequestBuildsBookDetailPillRequests() {
         let ref = MediaRef(itemId: nil, source: "openlibrary", mediaType: "book", mediaId: "OL27448M", seasonNumber: nil, episodeNumber: nil)
         let genre = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .genre("Fiction"))
@@ -405,6 +1251,35 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(year?.mediaType, "book")
         XCTAssertEqual(year?.source, "openlibrary")
         XCTAssertEqual(year?.filter, .year("1965"))
+        XCTAssertNil(platform)
+    }
+
+    func testMediaDiscoverRequestBuildsMusicGenreDetailPillRequest() {
+        let ref = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+        let genre = MediaDiscoverRequest.detailPillRequest(
+            ref: ref,
+            filter: .genre("Industrial Rock")
+        )
+        let year = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .year("2007"))
+        let platform = MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .platform("Spotify"))
+        let query = Dictionary(uniqueKeysWithValues: (genre?.queryItems ?? []).map { ($0.name, $0.value) })
+
+        XCTAssertEqual(genre?.mediaType, "music")
+        XCTAssertEqual(genre?.source, "musicbrainz")
+        XCTAssertEqual(genre?.filter, .genre("Industrial Rock"))
+        XCTAssertEqual(genre?.title, "Industrial Rock · Music")
+        XCTAssertEqual(query["media_type"]!, "music")
+        XCTAssertEqual(query["source"]!, "musicbrainz")
+        XCTAssertEqual(query["genre"]!, "Industrial Rock")
+        XCTAssertEqual(query["sort"]!, "vote_count")
+        XCTAssertNil(year)
         XCTAssertNil(platform)
     }
 
@@ -537,6 +1412,41 @@ final class SpineTests: XCTestCase {
         XCTAssertNil(updated)
         XCTAssertTrue(repository.preferenceRequests.isEmpty)
         XCTAssertEqual(viewModel.fieldErrors["enabled_media_types"], "Enable at least one media type.")
+    }
+
+    @MainActor
+    func testProfileSettingsLoadsAndSavesMusicPreferenceFromMeta() async throws {
+        let profile = profileFixture(hof: [:], enabledMediaTypes: ["movie"])
+        let repository = RecordingProfileRepository(profile: profile)
+        let meta = try JSONDecoder.api.decode(MetaResponse.self, from: Data("""
+        {
+          "version": "v1",
+          "media_types": ["movie", "music"],
+          "sources": {},
+          "status_choices": [],
+          "source_choices": []
+        }
+        """.utf8))
+        let viewModel = ProfileSettingsViewModel(
+            profileRepository: repository,
+            mediaRepository: FakeMediaRepository(metaResponse: meta),
+            onUnauthorized: {}
+        )
+        viewModel.load(profile: profile)
+
+        await viewModel.loadOptions()
+        viewModel.enabledMediaTypes.insert("music")
+        let enabled = await viewModel.savePreferences()
+        viewModel.enabledMediaTypes.remove("music")
+        let disabled = await viewModel.savePreferences()
+
+        XCTAssertEqual(viewModel.mediaTypes, ["movie", "music"])
+        XCTAssertEqual(repository.preferenceRequests.map(\.enabledMediaTypes), [
+            ["movie", "music"],
+            ["movie"]
+        ])
+        XCTAssertEqual(enabled?.preferences.enabledMediaTypes, ["movie", "music"])
+        XCTAssertEqual(disabled?.preferences.enabledMediaTypes, ["movie"])
     }
 
     @MainActor
@@ -779,6 +1689,141 @@ final class SpineTests: XCTestCase {
         resumed.clearFinishedJob()
     }
 
+    @MainActor
+    func testGoodreadsImportCoordinatorTransitionsToSuccess() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorTransitions")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-1", taskName: nil, status: "SUCCESS", dateCreated: nil, dateDone: nil, result: "Imported 3 books.")
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+        let fileURL = try makeTemporaryGoodreadsCSV()
+        var notifiedTaskId: String?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .goodreadsImportDidSucceed,
+            object: nil,
+            queue: nil,
+        ) { notification in
+            notifiedTaskId = notification.userInfo?["taskId"] as? String
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
+        coordinator.startImport(fileURL: fileURL, mode: .new)
+
+        try await waitUntil {
+            if case let .uploading(fileName, progress) = coordinator.phase {
+                return fileName == fileURL.lastPathComponent && progress == 1
+            }
+            return false
+        }
+
+        try await waitUntil {
+            if case let .processing(taskId, _, _) = coordinator.phase {
+                return taskId == "goodreads-task-1"
+            }
+            return false
+        }
+
+        try await waitUntil {
+            coordinator.phase == .succeeded(message: "Imported 3 books.")
+        }
+
+        XCTAssertEqual(repository.queuedFileName, fileURL.lastPathComponent)
+        XCTAssertEqual(repository.queuedMode, .new)
+        XCTAssertEqual(repository.statusRequests, ["goodreads-task-1"])
+        XCTAssertEqual(notifiedTaskId, "goodreads-task-1")
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorPersistsAndResumesTask() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorPersistence")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-2", taskName: nil, status: "PENDING", dateCreated: nil, dateDone: nil, result: nil)
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .seconds(60),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryGoodreadsCSV(), mode: .overwrite)
+
+        try await waitUntil {
+            if case let .processing(taskId, _, _) = coordinator.phase {
+                return taskId == "goodreads-task-2"
+            }
+            return false
+        }
+
+        let resumed = GoodreadsImportCoordinator(
+            importRepository: ScriptedGoodreadsImportRepository(statuses: []),
+            defaults: defaults,
+            pollInterval: .seconds(60),
+            timeout: 5
+        )
+        resumed.resumeIfNeeded()
+
+        guard case let .processing(taskId, _, _) = resumed.phase else {
+            XCTFail("Expected persisted task to resume.")
+            return
+        }
+        XCTAssertEqual(taskId, "goodreads-task-2")
+
+        coordinator.clearFinishedJob()
+        resumed.clearFinishedJob()
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorSurfacesTaskFailure() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorFailure")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [
+            ImportTaskStatus(taskId: "goodreads-task-failure", taskName: nil, status: "FAILURE", dateCreated: nil, dateDone: nil, result: "Goodreads import could not be completed.")
+        ])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryGoodreadsCSV(), mode: .new)
+
+        try await waitUntil {
+            coordinator.phase == .failed(message: "Goodreads import could not be completed.")
+        }
+
+        XCTAssertEqual(repository.statusRequests, ["goodreads-task-failure"])
+        XCTAssertFalse(coordinator.canCheckStatus)
+    }
+
+    @MainActor
+    func testGoodreadsImportCoordinatorRejectsNonCSVFile() async throws {
+        let defaults = isolatedDefaults("GoodreadsImportCoordinatorInvalidExtension")
+        let repository = ScriptedGoodreadsImportRepository(statuses: [])
+        let coordinator = GoodreadsImportCoordinator(
+            importRepository: repository,
+            defaults: defaults,
+            pollInterval: .milliseconds(10),
+            timeout: 5
+        )
+
+        coordinator.startImport(fileURL: try makeTemporaryZip(), mode: .new)
+
+        try await waitUntil {
+            coordinator.phase == .failed(message: "Please upload the .csv export from Goodreads, not a ZIP file.")
+        }
+
+        XCTAssertNil(repository.queuedFileName)
+        XCTAssertTrue(repository.statusRequests.isEmpty)
+    }
+
     func testMultipartBodyIncludesFieldsAndFile() {
         let body = MultipartFormData.body(
             boundary: "TestBoundary",
@@ -811,6 +1856,22 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"mode\"\r\n\r\noverwrite\r\n"))
         XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"file\"; filename=\"storygraph.csv\""))
         XCTAssertTrue(text.contains("Content-Type: text/csv\r\n\r\nTitle,Authors\nBook,Author\n\r\n"))
+    }
+
+    func testGoodreadsMultipartBodyIncludesModeAndCSVFile() {
+        let body = MultipartFormData.body(
+            boundary: "TestBoundary",
+            fields: ["mode": "new"],
+            fileFieldName: "file",
+            fileName: "goodreads_library_export.csv",
+            fileData: Data("Book Id,Title,Author\n123,Book,Author\n".utf8),
+            mimeType: "text/csv"
+        )
+        let text = String(data: body, encoding: .utf8)!
+
+        XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"mode\"\r\n\r\nnew\r\n"))
+        XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"file\"; filename=\"goodreads_library_export.csv\""))
+        XCTAssertTrue(text.contains("Content-Type: text/csv\r\n\r\nBook Id,Title,Author\n123,Book,Author\n\r\n"))
     }
 
 
@@ -944,6 +2005,28 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(preview.title, "Fight Club")
         XCTAssertEqual(preview.displayPosterURL, "https://example.com/fight-club-poster.jpg")
         XCTAssertEqual(preview.posterOrientation, .portrait)
+    }
+
+    func testCustomListDetailDecodesWithoutItems() throws {
+        let data = """
+        {
+          "id": 7,
+          "name": "Weekend Watchlist",
+          "slug": "weekend-watchlist",
+          "description": "",
+          "visibility": "public",
+          "owner": { "id": 1, "username": "mika", "display_name": "Mika", "avatar_url": null },
+          "image_url": null,
+          "items_count": 3,
+          "updated_at": "2026-06-24T12:00:00Z",
+          "like_count": 5
+        }
+        """.data(using: .utf8)!
+
+        let list = try JSONDecoder.api.decode(CustomListDetail.self, from: data)
+
+        XCTAssertEqual(list.name, "Weekend Watchlist")
+        XCTAssertEqual(list.items, [])
     }
 
     func testCustomListRankedMembershipAndPositionDecoding() throws {
@@ -1089,6 +2172,56 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(customDetail.displayBackdropURL, "https://example.com/custom.jpg")
     }
 
+    func testMediaDetailCustomLogoDecodingAndReplacement() throws {
+        let data = """
+        {
+          "ref": {
+            "item_id": null,
+            "source": "tmdb",
+            "media_type": "movie",
+            "media_id": "550",
+            "season_number": null,
+            "episode_number": null
+          },
+          "title": "Movie",
+          "logo_url": "https://example.com/default.png",
+          "custom_logo_url": "https://example.com/custom.png",
+          "logo_width": 500,
+          "logo_height": 200,
+          "logo_aspect_ratio": 2.5,
+          "custom_poster_url": "https://example.com/poster.jpg",
+          "custom_backdrop_url": "https://example.com/backdrop.jpg"
+        }
+        """.data(using: .utf8)!
+
+        let detail = try JSONDecoder.api.decode(MediaDetail.self, from: data)
+        XCTAssertEqual(detail.displayLogoURL, "https://example.com/custom.png")
+
+        let updated = detail.replacingLogo(with: LogoSaveResponse(
+            logoUrl: "https://example.com/new.png",
+            customLogoUrl: "https://example.com/new.png",
+            logoWidth: nil,
+            logoHeight: nil,
+            logoAspectRatio: nil
+        ))
+
+        XCTAssertEqual(updated.logoUrl, "https://example.com/new.png")
+        XCTAssertEqual(updated.customLogoUrl, "https://example.com/new.png")
+        XCTAssertEqual(updated.displayLogoURL, "https://example.com/new.png")
+        XCTAssertNil(updated.logoWidth)
+        XCTAssertEqual(updated.customPosterUrl, detail.customPosterUrl)
+        XCTAssertEqual(updated.customBackdropUrl, detail.customBackdropUrl)
+        XCTAssertEqual(updated.replacingHasLiked(true).customLogoUrl, updated.customLogoUrl)
+        XCTAssertEqual(
+            updated.replacingPoster(with: PosterSaveResponse(
+                posterUrl: "https://example.com/replacement.jpg",
+                customPosterUrl: "https://example.com/replacement.jpg",
+                posterAccentColor: nil
+            )).customLogoUrl,
+            updated.customLogoUrl
+        )
+    }
+
     func testMediaDetailReplacingBackdropPreservesDefaultAndSetsCustom() {
         let detail = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "550", seasonNumber: nil, episodeNumber: nil),
@@ -1108,11 +2241,16 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(updated.displayBackdropURL, "https://example.com/saved.jpg")
     }
 
-    func testTitleLogoSupportRequiresTmdbMovieOrTVWithLogo() {
+    func testTitleLogoSupportUsesAnyAvailableLogo() {
         let movie = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "550", seasonNumber: nil, episodeNumber: nil),
             title: "Movie",
             logoUrl: "https://image.tmdb.org/t/p/w500/logo.png"
+        )
+        let game = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "igdb", mediaType: "game", mediaId: "1", seasonNumber: nil, episodeNumber: nil),
+            title: "Game",
+            logoUrl: "https://example.com/game-logo.png"
         )
         let season = MediaDetail(
             ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "season", mediaId: "1399", seasonNumber: 1, episodeNumber: nil),
@@ -1130,8 +2268,9 @@ final class SpineTests: XCTestCase {
         )
 
         XCTAssertTrue(supportsTitleLogo(movie))
-        XCTAssertFalse(supportsTitleLogo(season))
-        XCTAssertFalse(supportsTitleLogo(anime))
+        XCTAssertTrue(supportsTitleLogo(game))
+        XCTAssertTrue(supportsTitleLogo(season))
+        XCTAssertTrue(supportsTitleLogo(anime))
         XCTAssertFalse(supportsTitleLogo(missingLogo))
     }
 
@@ -1222,14 +2361,78 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(decodedBookOptions.posters.first?.thumbnailUrl, "https://example.com/book-original-thumb.jpg")
     }
 
+    func testLogoOptionsAndSaveResponseDecoding() throws {
+        let options = """
+        {
+          "logos": [
+            {
+              "url": "https://example.com/logo.png",
+              "thumbnail_url": "https://example.com/logo-thumb.png",
+              "width": 500,
+              "height": 200,
+              "aspect_ratio": 2.5,
+              "vote_average": 8.1,
+              "vote_count": 42,
+              "language": "en",
+              "style": "official",
+              "is_original": true,
+              "is_selected": true
+            },
+            {
+              "url": "https://example.com/external.png",
+              "thumbnail_url": "https://example.com/external.png",
+              "width": 0,
+              "height": 0,
+              "aspect_ratio": null,
+              "vote_average": 0,
+              "vote_count": 0,
+              "language": null,
+              "style": null,
+              "is_original": false,
+              "is_selected": false
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+        let save = """
+        {
+          "logo_url": "https://example.com/external.png",
+          "custom_logo_url": "https://example.com/external.png",
+          "logo_width": null,
+          "logo_height": null,
+          "logo_aspect_ratio": null
+        }
+        """.data(using: .utf8)!
+
+        let decodedOptions = try JSONDecoder.api.decode(LogoOptionsResponse.self, from: options)
+        let decodedSave = try JSONDecoder.api.decode(LogoSaveResponse.self, from: save)
+
+        XCTAssertEqual(decodedOptions.logos.first?.style, "official")
+        XCTAssertEqual(decodedOptions.logos.first?.language, "en")
+        XCTAssertNil(decodedOptions.logos.last?.aspectRatio)
+        XCTAssertEqual(decodedOptions.logos.last?.width, 0)
+        XCTAssertEqual(decodedSave.customLogoUrl, "https://example.com/external.png")
+        XCTAssertNil(decodedSave.logoWidth)
+    }
+
     func testMediaArtworkCustomizationEligibility() {
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "tmdb", mediaType: "tv"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "hardcover", mediaType: "book"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "igdb", mediaType: "game"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "musicbrainz", mediaType: "music"))
         XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "anime"))
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "movie"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "episode"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "movie"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "tv"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "igdb", mediaType: "game"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "season"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "mal", mediaType: "anime"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "openlibrary", mediaType: "book"))
     }
 
     func testTrackingDiaryAndProfileDecoding() throws {
@@ -1597,6 +2800,46 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(state.progress?.value(in: .percentage), 7)
     }
 
+    func testTrackingRepositoryDeletesMusicTracking() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defer {
+            RequestCaptureURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APITrackingRepository(client: client)
+        let ref = MediaRef(
+            itemId: nil,
+            source: "musicbrainz",
+            mediaType: "music",
+            mediaId: "album",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/tracking/musicbrainz/music/album/"
+            )
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
+                Data()
+            )
+        }
+
+        try await repository.delete(ref: ref)
+    }
+
     func testActivityRepositoryLoadsUserActivity() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -1655,6 +2898,49 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(items.first?.type, "progress_updated")
         XCTAssertEqual(items.first?.object.current?.compactDisplayText, "58%")
         XCTAssertEqual(items.first?.object.liked, false)
+        client.tokenProvider.clear()
+    }
+
+    func testActivityRepositoryLoadsCursorPage() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APIActivityRepository(client: client)
+        let nextLink = "https://example.com/api/v1/users/mobile/activity/?cursor=following-page"
+
+        RequestCaptureURLProtocol.handler = { request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let query = components?.queryItems ?? []
+            XCTAssertEqual(components?.path, "/api/v1/users/mobile/activity/")
+            XCTAssertEqual(query.first { $0.name == "page_size" }?.value, "25")
+            XCTAssertEqual(query.first { $0.name == "cursor" }?.value, "current-page")
+
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "next_cursor": "\(nextLink)",
+                  "previous_cursor": null,
+                  "results": []
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let response = try await repository.userActivityPage(
+            username: "mobile",
+            pageSize: 25,
+            cursorLink: "https://example.com/api/v1/users/mobile/activity/?cursor=current-page"
+        )
+
+        XCTAssertEqual(response.nextCursor, nextLink)
+        XCTAssertTrue(response.results.isEmpty)
         client.tokenProvider.clear()
     }
 
@@ -1856,7 +3142,12 @@ final class SpineTests: XCTestCase {
                       "count": 2,
                       "next": null,
                       "previous": "https://example.com/api/v1/me/liked-media/",
-                      "results": [\(TestFixtures.mediaSummaryJSON(mediaId: "551", title: "Second Like"))]
+                      "results": [\(TestFixtures.mediaSummaryJSON(
+                        mediaId: "album",
+                        source: "musicbrainz",
+                        mediaType: "music",
+                        title: "Year Zero"
+                      ))]
                     }
                     """.data(using: .utf8)!
                 )
@@ -1877,11 +3168,86 @@ final class SpineTests: XCTestCase {
 
         let media = try await repository.likedMedia()
 
-        XCTAssertEqual(media.map(\.title), ["First Like", "Second Like"])
+        XCTAssertEqual(media.map(\.title), ["First Like", "Year Zero"])
+        XCTAssertEqual(media.map(\.ref.mediaType), ["movie", "music"])
         XCTAssertEqual(requestedURLs, [
             "https://example.com/api/v1/me/liked-media/",
             "https://example.com/api/v1/me/liked-media/?page=2",
         ])
+        client.tokenProvider.clear()
+    }
+
+    func testProfileRepositoryLoadsPublicProfileByUsername() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        let repository = APIProfileRepository(client: client)
+
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            XCTAssertEqual(request.url?.path, "/api/v1/users/mika")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "id": 2,
+                  "username": "mika",
+                  "display_name": "Mika",
+                  "email": null,
+                  "bio": "",
+                  "pronouns": "",
+                  "location": "",
+                  "avatar_url": null,
+                  "is_private": false,
+                  "viewer_relationship": { "following": false, "followed_by": false, "requested": false, "blocked": false },
+                  "counts": {
+                    "followers": 0,
+                    "following": 0,
+                    "diary_entries": 1,
+                    "lists": 1,
+                    "library_items": 2,
+                    "reviews": 1,
+                    "planned_items": 1,
+                    "liked_items": 1,
+                    "tags": 1
+                  },
+                  "hof": {
+                    "music": \(TestFixtures.mediaSummaryJSON(
+                      mediaId: "album",
+                      source: "musicbrainz",
+                      mediaType: "music",
+                      title: "Year Zero"
+                    ))
+                  },
+                  "preferences": {
+                    "enabled_media_types": ["movie", "music"],
+                    "date_format": "Y-m-d",
+                    "time_format": "H:i",
+                    "week_start_day": "monday",
+                    "quick_watch_date": "current_date",
+                    "release_notifications_enabled": false,
+                    "daily_digest_enabled": false
+                  }
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let profile = try await repository.profile(username: "mika")
+
+        XCTAssertEqual(profile.username, "mika")
+        XCTAssertEqual(profile.counts.libraryItems, 2)
+        XCTAssertEqual(profile.counts.likedItems, 1)
+        XCTAssertEqual(profile.counts.tags, 1)
+        XCTAssertEqual(profile.hof["music"]??.ref.mediaType, "music")
+        XCTAssertEqual(profile.preferences.enabledMediaTypes, ["movie", "music"])
         client.tokenProvider.clear()
     }
 
@@ -1905,6 +3271,14 @@ final class SpineTests: XCTestCase {
 
             let method = request.httpMethod ?? ""
             let path = request.url!.path
+            if method == "GET", path.hasSuffix("/lists/9/") || path.hasSuffix("/lists/9") {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                XCTAssertEqual(query.first { $0.name == "include_items" }?.value, "false")
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    TestFixtures.customListDetailJSON(id: 9, name: "Watch").data(using: .utf8)!
+                )
+            }
             if method == "GET", path.hasSuffix("/lists/") || path.hasSuffix("/lists") {
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 XCTAssertEqual(query.first { $0.name == "ref[source]" }?.value, "tmdb")
@@ -1955,12 +3329,13 @@ final class SpineTests: XCTestCase {
         }
 
         _ = try await repository.list(membershipFor: ref)
+        _ = try await repository.detail(id: 9)
         _ = try await repository.create(CustomListWriteRequest(name: "Watch", description: "", visibility: "private", isRanked: true))
         _ = try await repository.addItem(listId: 9, ref: ref)
         _ = try await repository.reorderItems(listId: 9, itemIds: [42, 17])
         try await repository.delete(id: 9)
 
-        XCTAssertEqual(requests.map(\.method), ["GET", "POST", "POST", "PATCH", "DELETE"])
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "POST", "POST", "PATCH", "DELETE"])
         client.tokenProvider.clear()
     }
 
@@ -2110,13 +3485,21 @@ final class SpineTests: XCTestCase {
         )
         let second = try JSONDecoder.api.decode(
             DiaryEntry.self,
-            from: TestFixtures.diaryEntryJSON(id: 3, mediaId: "551", title: "Second Media", tags: ["comfort"]).data(using: .utf8)!
+            from: TestFixtures.diaryEntryJSON(
+                id: 3,
+                mediaId: "album",
+                title: "Year Zero",
+                tags: ["comfort"],
+                source: "musicbrainz",
+                mediaType: "music"
+            ).data(using: .utf8)!
         )
 
         let media = TaggedDiaryViewModel.uniqueMedia(from: [first, duplicate, second])
 
         XCTAssertEqual(media.map(\.entry.id), [1, 3])
-        XCTAssertEqual(media.map(\.media.ref.mediaId), ["550", "551"])
+        XCTAssertEqual(media.map(\.media.ref.mediaId), ["550", "album"])
+        XCTAssertEqual(media.map(\.media.ref.mediaType), ["movie", "music"])
     }
 
     @MainActor
@@ -2127,11 +3510,35 @@ final class SpineTests: XCTestCase {
             didAuthorize = true
         }
 
+        XCTAssertEqual(viewModel.filter.activeCount, 0)
         await viewModel.load()
 
         XCTAssertEqual(repository.requestedTags, ["comfort"])
         XCTAssertTrue(didAuthorize)
         XCTAssertNotNil(viewModel.errorMessage)
+    }
+
+    @MainActor
+    func testTaggedDiaryViewModelLoadsEveryPage() async throws {
+        let first = try JSONDecoder.api.decode(
+            DiaryEntry.self,
+            from: TestFixtures.diaryEntryJSON(id: 1, mediaId: "550", title: "First Log", tags: ["comfort"]).data(using: .utf8)!
+        )
+        let second = try JSONDecoder.api.decode(
+            DiaryEntry.self,
+            from: TestFixtures.diaryEntryJSON(id: 2, mediaId: "551", title: "Second Log", tags: ["comfort"]).data(using: .utf8)!
+        )
+        let repository = TaggedDiaryFixtureRepository(pages: [
+            PagedResponse(count: 2, next: "https://example.com/api/v1/diary/?tag=comfort&page=2", previous: nil, results: [first]),
+            PagedResponse(count: 2, next: nil, previous: "https://example.com/api/v1/diary/?tag=comfort", results: [second]),
+        ])
+        let viewModel = TaggedDiaryViewModel(tag: "comfort", diaryRepository: repository) {}
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2])
+        XCTAssertEqual(viewModel.media.map(\.media.ref.mediaId), ["550", "551"])
+        XCTAssertEqual(repository.requestedPages, [nil, "2"])
     }
 
     func testDiaryLogDateLabelKeepsImportedCalendarDate() {
@@ -2152,6 +3559,86 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(DiaryLogFormat.ageLabel("2023-03-06", now: now, calendar: calendar), "1 year, 2 months and 4 days ago")
         XCTAssertEqual(DiaryLogFormat.ageLabel("2024-03-06", now: now, calendar: calendar), "2 months and 4 days ago")
         XCTAssertEqual(DiaryLogFormat.ageLabel("2023-03-06T00:00:00Z", now: now, calendar: calendar), "1 year, 2 months and 4 days ago")
+    }
+
+    func testMusicDetailDecodingAndReplacementPreservation() throws {
+        let detail = try JSONDecoder.api.decode(
+            MediaDetail.self,
+            from: """
+            {
+              "ref": {"source": "musicbrainz", "media_type": "music", "media_id": "group-1"},
+              "title": "Album",
+              "music": {
+                "release_group_mbid": "group-1",
+                "primary_type": "Album",
+                "secondary_types": [],
+                "disambiguation": null,
+                "annotation": null,
+                "first_release_date": "2020",
+                "release_count": 2,
+                "artist_credit": [{"artist_mbid": "artist-1", "name": "Artist", "join_phrase": ""}],
+                "cover_art": {"source": "cover_art_archive", "release_group_mbid": "group-1", "fallback_used": false},
+                "representative_release": {
+                  "release_mbid": "release-1",
+                  "title": "Album",
+                  "status": "Official",
+                  "date": "2020-01",
+                  "country": "US",
+                  "barcode": null,
+                  "selection_basis": "streaming_market_match",
+                  "labels": [{"label_mbid": "label-1", "name": "Label", "catalog_number": null}],
+                  "format": "Digital Media",
+                  "is_deluxe_or_remastered": false,
+                  "streaming_links": [{"service": "open.spotify.com", "url": "https://open.spotify.com/album/example"}],
+                  "disc_count": 2,
+                  "track_count": 2,
+                  "media": [
+                    {
+                      "medium_mbid": "medium-1",
+                      "position": 1,
+                      "title": null,
+                      "format": "Digital Media",
+                      "track_count": 1,
+                      "tracks": [{
+                        "track_mbid": "track-1",
+                        "disc_number": 1,
+                        "position": 1,
+                        "number": "A1",
+                        "title": "First",
+                        "length_ms": 1000,
+                        "artist_credit": [{"artist_mbid": "artist-1", "name": "Artist", "join_phrase": ""}],
+                        "recording": {"recording_mbid": "recording-1", "title": "First", "length_ms": 1001, "disambiguation": null, "first_release_date": null, "is_video": false, "isrcs": ["USAAA0000001"]}
+                      }]
+                    },
+                    {
+                      "medium_mbid": null,
+                      "position": 2,
+                      "title": "Bonus disc",
+                      "format": "Digital Media",
+                      "track_count": 1,
+                      "tracks": [{
+                        "track_mbid": "track-2",
+                        "disc_number": 2,
+                        "position": 1,
+                        "number": "1",
+                        "title": "Second",
+                        "length_ms": null,
+                        "artist_credit": [],
+                        "recording": {"recording_mbid": "recording-2", "title": "Second", "length_ms": null, "disambiguation": null, "first_release_date": null, "is_video": false, "isrcs": []}
+                      }]
+                    }
+                  ]
+                }
+              }
+            }
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(detail.music?.representativeRelease?.media.count, 2)
+        XCTAssertEqual(detail.music?.representativeRelease?.media[0].tracks[0].number, "A1")
+        XCTAssertEqual(detail.music?.representativeRelease?.media[0].tracks[0].recording.isrcs, ["USAAA0000001"])
+        XCTAssertEqual(detail.music?.representativeRelease?.streamingLinks.first?.service, "open.spotify.com")
+        XCTAssertEqual(detail.replacingHasLiked(true).music?.representativeRelease?.releaseMbid, "release-1")
     }
 
     func testRichMediaDetailAndReviewDecoding() throws {
@@ -2181,6 +3668,8 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(detail.userState?.diaryConsumedAt, "2026-06-20T12:00:00Z")
         XCTAssertEqual(detail.externalRatings?.count, 4)
         XCTAssertEqual(detail.externalRatings?.first { $0.source == "IMDb" }?.voteCount, 84231)
+        XCTAssertNil(detail.externalRatings?.first { $0.source == "IMDb" }?.url)
+        XCTAssertNil(detail.externalRatings?.first { $0.source == "IMDb" }?.destinationURL)
         XCTAssertEqual(detail.customBackdropUrl, "https://example.com/custom-backdrop.jpg")
         XCTAssertEqual(detail.cast?.first?.character, "Mika")
         XCTAssertEqual(detail.relatedSections?.first?.items.first?.title, "Pulp Fiction")
@@ -2188,8 +3677,72 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(season.episodes?.first?.runtime, "49m")
         XCTAssertEqual(season.episodes?.first?.overview, "Ada finds the first card.")
         XCTAssertEqual(anime.relatedSections?.count, 2)
+        XCTAssertEqual(anime.externalRatings?.first?.url, "https://myanimelist.net/anime/1")
+        XCTAssertEqual(anime.externalRatings?.first?.destinationURL?.absoluteString, "https://myanimelist.net/anime/1")
         XCTAssertEqual(reviews.results.first?.reviewTitle, "A pulse under glass")
         XCTAssertEqual(reviews.results.last?.containsSpoilers, true)
+    }
+
+    func testExternalRatingDestinationURLAcceptsOnlyAbsoluteHTTPURLs() throws {
+        let ratings = try JSONDecoder.api.decode(
+            [ExternalRating].self,
+            from: """
+            [
+              { "source": "HTTP", "value": "8", "url": "http://example.com/media/1" },
+              { "source": "JavaScript", "value": "8", "url": "javascript:alert(1)" },
+              { "source": "File", "value": "8", "url": "file:///tmp/media" },
+              { "source": "Relative", "value": "8", "url": "/media/1" },
+              { "source": "Missing Host", "value": "8", "url": "https:///media/1" }
+            ]
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(ratings[0].destinationURL?.absoluteString, "http://example.com/media/1")
+        for rating in ratings.dropFirst() {
+            XCTAssertNil(rating.destinationURL, "Expected \(rating.source) URL to be rejected")
+        }
+    }
+
+    func testMediaCreditPresentationUsesPluralCreditsAndLegacyFallback() throws {
+        let movie = try JSONDecoder.api.decode(MediaDetail.self, from: TestFixtures.richMediaDetailJSON.data(using: .utf8)!)
+        let tv = try JSONDecoder.api.decode(MediaDetail.self, from: TestFixtures.tvDetailJSON.data(using: .utf8)!)
+        let legacy = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "1", seasonNumber: nil, episodeNumber: nil),
+            title: "Legacy",
+            details: ["director": .string("Legacy Director"), "director_id": .number(7)]
+        )
+        let malformed = MediaDetail(
+            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "tv", mediaId: "2", seasonNumber: nil, episodeNumber: nil),
+            title: "Malformed",
+            details: [
+                "creators": .array([
+                    .object(["id": .string("1"), "name": .string("Creator One")]),
+                    .object(["id": .string("1"), "name": .string("Creator One")]),
+                    .object(["name": .string(" ")]),
+                    .string("not a person"),
+                ]),
+            ]
+        )
+
+        let movieCredits = try XCTUnwrap(MediaCreditPresentation.make(for: movie))
+        XCTAssertEqual(movieCredits.label, "Directors")
+        XCTAssertEqual(movieCredits.people.map(\.name), ["The Alchemist", "Mica Levi", "Jordan Peele"])
+        XCTAssertEqual(movieCredits.heroPeople.map(\.name), ["The Alchemist", "Mica Levi"])
+        XCTAssertEqual(movieCredits.heroMoreCount, 1)
+        XCTAssertEqual(movieCredits.people.first?.personRef?.id, "c1")
+
+        let tvCredits = try XCTUnwrap(MediaCreditPresentation.make(for: tv))
+        XCTAssertEqual(tvCredits.label, "Creators")
+        XCTAssertEqual(tvCredits.people.count, 5)
+        XCTAssertEqual(tvCredits.heroPeople.count, 2)
+        XCTAssertEqual(tvCredits.heroMoreCount, 3)
+
+        let legacyCredits = try XCTUnwrap(MediaCreditPresentation.make(for: legacy))
+        XCTAssertEqual(legacyCredits.label, "Director")
+        XCTAssertEqual(legacyCredits.people.map(\.name), ["Legacy Director"])
+        XCTAssertEqual(legacyCredits.people.first?.personRef?.id, "7")
+
+        XCTAssertEqual(MediaCreditPresentation.make(for: malformed)?.people.map(\.name), ["Creator One"])
     }
 
     func testHallOfFameItemsResponseDecodesMediaSummaryMap() throws {
@@ -2256,6 +3809,48 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileHallOfFameSelectsAndClearsMusic() async {
+        let album = MediaSummary(
+            ref: MediaRef(
+                itemId: 902,
+                source: "musicbrainz",
+                mediaType: "music",
+                mediaId: "album",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Year Zero",
+            posterOrientation: .square
+        )
+        let repository = HallOfFameProfileRepository(
+            profile: profileFixture(hof: ["music": nil], enabledMediaTypes: ["movie", "music"]),
+            setResponse: ["music": album],
+            clearResponse: ["music": nil]
+        )
+        let viewModel = ProfileViewModel(
+            profileRepository: repository,
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        let slots = ProfileFavorites.slots(
+            from: viewModel.profile?.hof ?? [:],
+            enabledMediaTypes: viewModel.profile?.preferences.enabledMediaTypes ?? []
+        )
+        let didSet = await viewModel.setHallOfFameItem(mediaType: "music", ref: album.ref)
+        let didClear = await viewModel.clearHallOfFameItem(mediaType: "music")
+
+        XCTAssertEqual(slots.map(\.id), ["movie", "music"])
+        XCTAssertTrue(didSet)
+        XCTAssertTrue(didClear)
+        XCTAssertEqual(repository.setMediaType, "music")
+        XCTAssertEqual(repository.setRef, album.ref)
+        XCTAssertEqual(repository.clearMediaType, "music")
+    }
+
+    @MainActor
     func testProfileViewModelLoadsInProgressAcrossEnabledMediaTypes() async {
         let trackingRepository = ScriptedLibraryTrackingRepository(responses: [
             "movie:": PagedResponse(
@@ -2300,11 +3895,25 @@ final class SpineTests: XCTestCase {
                         updatedAt: "2026-06-21T12:00:00Z"
                     )
                 ]
-            )
+            ),
+            "music:": PagedResponse(
+                count: 1,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(
+                        id: "album",
+                        title: "Newest Album",
+                        mediaType: "music",
+                        status: "In progress",
+                        updatedAt: "2026-06-23T12:00:00Z"
+                    )
+                ]
+            ),
         ])
         let viewModel = ProfileViewModel(
             profileRepository: HallOfFameProfileRepository(
-                profile: profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "book"]),
+                profile: profileFixture(hof: [:], enabledMediaTypes: ["movie", "tv", "book", "music"]),
                 setResponse: [:],
                 clearResponse: [:]
             ),
@@ -2315,12 +3924,13 @@ final class SpineTests: XCTestCase {
 
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Newest Season", "Middle Book", "Older Movie"])
-        XCTAssertEqual(viewModel.inProgressItems.first?.media.ref.mediaType, "season")
+        XCTAssertEqual(viewModel.inProgressItems.map(\.media.title), ["Newest Album", "Newest Season", "Middle Book", "Older Movie"])
+        XCTAssertEqual(viewModel.inProgressItems.first?.media.ref.mediaType, "music")
         XCTAssertEqual(trackingRepository.requests, [
             LibraryTrackingRequest(mediaType: "movie", page: nil, status: "In progress"),
             LibraryTrackingRequest(mediaType: "season", page: nil, status: "In progress"),
-            LibraryTrackingRequest(mediaType: "book", page: nil, status: "In progress")
+            LibraryTrackingRequest(mediaType: "book", page: nil, status: "In progress"),
+            LibraryTrackingRequest(mediaType: "music", page: nil, status: "In progress")
         ])
     }
 
@@ -2328,7 +3938,16 @@ final class SpineTests: XCTestCase {
     func testProfileViewModelLoadsRecentActivityFromActivityRepository() async {
         let activityRepository = ScriptedHomeActivityRepository(items: [
             activityItem(id: 1, title: "Progress"),
-            activityItem(id: 2, title: "Diary", type: "diary_created", previous: nil, current: nil, rating: "8.0", liked: true)
+            activityItem(
+                id: 2,
+                title: "Year Zero",
+                type: "diary_created",
+                previous: nil,
+                current: nil,
+                rating: "8.0",
+                liked: true,
+                mediaType: "music"
+            )
         ])
         let viewModel = ProfileViewModel(
             profileRepository: HallOfFameProfileRepository(
@@ -2344,7 +3963,62 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.recentActivityItems.map(\.type), ["progress_updated", "diary_created"])
+        XCTAssertEqual(ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).last?.media.ref.mediaType, "music")
+        XCTAssertEqual(ActivityFeedPresentation.actionText(for: viewModel.recentActivityItems[1]), "listened to an album")
         XCTAssertEqual(activityRepository.requests, [ActivityRequest(username: "mobile", limit: 6)])
+    }
+
+    @MainActor
+    func testProfileViewModelLoadsPrivateProfileWithMusicFavorite() async {
+        let album = composerMedia("album", itemID: 902, mediaType: "music")
+        let viewModel = ProfileViewModel(
+            profileRepository: HallOfFameProfileRepository(
+                profile: profileFixture(
+                    hof: ["music": album],
+                    enabledMediaTypes: ["movie", "music"],
+                    isPrivate: true
+                ),
+                setResponse: [:],
+                clearResponse: [:]
+            ),
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+
+        XCTAssertTrue(viewModel.profile?.isPrivate == true)
+        XCTAssertEqual(
+            ProfileFavorites.slots(
+                from: viewModel.profile?.hof ?? [:],
+                enabledMediaTypes: viewModel.profile?.preferences.enabledMediaTypes ?? []
+            ).map(\.id),
+            ["movie", "music"]
+        )
+        XCTAssertEqual(viewModel.profile?.hof["music"]??.ref.mediaType, "music")
+    }
+
+    @MainActor
+    func testProfileViewModelCancellationPreservesLoadedProfile() async {
+        let profile = profileFixture(hof: [:], enabledMediaTypes: [])
+        let repository = ScriptedProfileRepository(results: [
+            .success(profile),
+            .failure(CancellationError()),
+        ])
+        let viewModel = ProfileViewModel(
+            profileRepository: repository,
+            trackingRepository: ScriptedLibraryTrackingRepository(responses: [:]),
+            activityRepository: ScriptedHomeActivityRepository(items: []),
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.reload()
+
+        XCTAssertEqual(viewModel.profile?.id, profile.id)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertFalse(viewModel.isLoading)
     }
 
     func testHardcoverBookSeriesRelatedSectionDecoding() throws {
@@ -2477,6 +4151,37 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(message.contains("Cloudflare tunnel"))
     }
 
+    func testAPIErrorSurfacesFieldValidationMessage() {
+        let error = APIError.httpStatus(
+            400,
+            #"{"username":["A user with that username already exists."]}"#
+        )
+
+        XCTAssertEqual(
+            error.localizedDescription,
+            "Username: A user with that username already exists."
+        )
+    }
+
+    func testAPIErrorSurfacesNonFieldValidationMessageWithoutInternalKey() {
+        let error = APIError.httpStatus(
+            400,
+            #"{"non_field_errors":["Invalid username/email or password."]}"#
+        )
+
+        XCTAssertEqual(error.localizedDescription, "Invalid username/email or password.")
+    }
+
+    func testAPIErrorDoesNotExposeUnknownServerPayload() {
+        let error = APIError.httpStatus(
+            500,
+            #"{"debug":"internal stack detail"}"#
+        )
+
+        XCTAssertFalse(error.localizedDescription.contains("internal stack detail"))
+        XCTAssertTrue(error.localizedDescription.contains("HTTP 500"))
+    }
+
     func testAPIClientBuildsPrefixedPaths() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -2497,6 +4202,31 @@ final class SpineTests: XCTestCase {
 
         let response: HealthResponse = try await client.get("/health/")
         XCTAssertEqual(response.status, "ok")
+    }
+
+    func testAPIClientPreservesCancellation() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        RequestCaptureURLProtocol.handler = { _ in
+            throw URLError(.cancelled)
+        }
+
+        do {
+            let _: HealthResponse = try await client.get("/health/")
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected: cancellation is lifecycle control, not an API failure.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
     }
 
     func testAPIClientPreservesTrailingSlashForDjangoEndpoints() async throws {
@@ -2669,9 +4399,10 @@ final class SpineTests: XCTestCase {
         _ = try await repository.posters(ref: bookRef)
 
         let seasonRef = MediaRef(itemId: nil, source: "tmdb", mediaType: "season", mediaId: "1399", seasonNumber: 1, episodeNumber: nil)
+        let episodeRef = MediaRef(itemId: nil, source: "tmdb", mediaType: "episode", mediaId: "1399", seasonNumber: 1, episodeNumber: 2)
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/posters/")
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/posters")
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
             XCTAssertEqual(request.httpMethod, "GET")
@@ -2732,7 +4463,7 @@ final class SpineTests: XCTestCase {
 
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/backdrops/")
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/season/1399/backdrops")
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
             XCTAssertEqual(request.httpMethod, "GET")
@@ -2746,12 +4477,28 @@ final class SpineTests: XCTestCase {
 
         client.tokenProvider.accessToken = "access"
         RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/media/tmdb/episode/1399/backdrops")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "season_number" }?.value, "1")
+            XCTAssertEqual(query.first { $0.name == "episode_number" }?.value, "2")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"backdrops":[]}"#.data(using: .utf8)!
+            )
+        }
+        _ = try await repository.backdrops(ref: episodeRef)
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/backdrop/")
             XCTAssertEqual(request.httpMethod, "PUT")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
             let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
             XCTAssertEqual(body.backdropUrl, "https://example.com/new.jpg")
             XCTAssertNil(body.seasonNumber)
+            XCTAssertNil(body.episodeNumber)
             return (
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 """
@@ -2771,6 +4518,7 @@ final class SpineTests: XCTestCase {
             let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
             XCTAssertEqual(body.backdropUrl, "https://example.com/new-season-backdrop.jpg")
             XCTAssertEqual(body.seasonNumber, 1)
+            XCTAssertNil(body.episodeNumber)
             return (
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 """
@@ -2784,6 +4532,58 @@ final class SpineTests: XCTestCase {
         )
 
         XCTAssertEqual(seasonBackdropResponse.backdropUrl, "https://example.com/new-season-backdrop.jpg")
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/episode/1399/backdrop/")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            let body = try JSONDecoder.api.decode(BackdropSaveRequest.self, from: requestBodyData(for: request))
+            XCTAssertEqual(body.backdropUrl, "https://example.com/new-episode-backdrop.jpg")
+            XCTAssertEqual(body.seasonNumber, 1)
+            XCTAssertEqual(body.episodeNumber, 2)
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {"backdrop_url":"https://example.com/new-episode-backdrop.jpg","custom_backdrop_url":"https://example.com/new-episode-backdrop.jpg"}
+                """.data(using: .utf8)!
+            )
+        }
+        let episodeBackdropResponse = try await repository.saveBackdrop(
+            ref: episodeRef,
+            backdropURL: "https://example.com/new-episode-backdrop.jpg"
+        )
+
+        XCTAssertEqual(episodeBackdropResponse.backdropUrl, "https://example.com/new-episode-backdrop.jpg")
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/logos/")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"logos":[]}"#.data(using: .utf8)!
+            )
+        }
+        _ = try await repository.logos(ref: ref)
+
+        client.tokenProvider.accessToken = "access"
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://example.com/api/v1/media/tmdb/movie/550/logo/")
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            let body = try JSONDecoder.api.decode(LogoSaveRequest.self, from: requestBodyData(for: request))
+            XCTAssertEqual(body.logoUrl, "https://example.com/new-logo.png")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {"logo_url":"https://example.com/new-logo.png","custom_logo_url":"https://example.com/new-logo.png","logo_width":500,"logo_height":200,"logo_aspect_ratio":2.5}
+                """.data(using: .utf8)!
+            )
+        }
+        let logoResponse = try await repository.saveLogo(ref: ref, logoURL: "https://example.com/new-logo.png")
+        XCTAssertEqual(logoResponse.logoWidth, 500)
         client.tokenProvider.clear()
     }
 
@@ -2879,6 +4679,83 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(response.count, 1)
         XCTAssertEqual(response.results.first?.ref.mediaType, "book")
+    }
+
+    func testMediaRepositoryBuildsMusicGenreDiscoverRequest() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: session
+        )
+        client.tokenProvider.accessToken = "access"
+        defer {
+            RequestCaptureURLProtocol.handler = nil
+            client.tokenProvider.clear()
+        }
+        let repository = APIMediaRepository(client: client)
+        let discoverRequest = MediaDiscoverRequest(
+            mediaType: "music",
+            source: "musicbrainz",
+            filter: .genre("Industrial Rock")
+        )
+
+        RequestCaptureURLProtocol.handler = { request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+            let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+            XCTAssertEqual(components.path, "/api/v1/media/discover/")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            XCTAssertEqual(query["media_type"]!, "music")
+            XCTAssertEqual(query["source"]!, "musicbrainz")
+            XCTAssertEqual(query["genre"]!, "Industrial Rock")
+            XCTAssertEqual(query["sort"]!, "vote_count")
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                """
+                {
+                  "count": 2,
+                  "next": "https://example.com/api/v1/media/discover/?media_type=music&genre=Industrial%20Rock&page=2",
+                  "previous": null,
+                  "results": [
+                    {
+                      "ref": { "item_id": null, "source": "musicbrainz", "media_type": "music", "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e", "season_number": null, "episode_number": null },
+                      "title": "Year Zero",
+                      "subtitle": "Nine Inch Nails · 2007 · Album",
+                      "overview": null,
+                      "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+                      "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+                      "custom_poster_url": null,
+                      "backdrop_url": null,
+                      "poster_orientation": "square",
+                      "poster_aspect_ratio": 1.0,
+                      "poster_width": 500,
+                      "poster_height": 500,
+                      "poster_accent_color": null,
+                      "logo_url": null,
+                      "logo_width": null,
+                      "logo_height": null,
+                      "logo_aspect_ratio": null,
+                      "release_date": "2007-04-13",
+                      "default_source": "musicbrainz",
+                      "user_state": null
+                    }
+                  ]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+
+        let response = try await repository.discover(discoverRequest)
+
+        XCTAssertEqual(response.count, 2)
+        XCTAssertNotNil(response.next)
+        XCTAssertEqual(response.results.first?.ref.source, "musicbrainz")
+        XCTAssertEqual(response.results.first?.ref.mediaType, "music")
+        XCTAssertEqual(response.results.first?.posterOrientation, .square)
+        XCTAssertEqual(response.results.first?.posterAspectRatio, 1.0)
     }
 
     func testMediaRepositoryBuildsTVDiscoverRequest() async throws {
@@ -2996,6 +4873,38 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testLoginEntersHome() async {
+        let auth = FakeAuthRepository(hasStoredTokens: false)
+        let session = AppSession(repositories: fakeRepositories(auth: auth))
+
+        await session.login(usernameOrEmail: "reader", password: "password")
+
+        XCTAssertEqual(session.signedInEntryPoint, .home)
+        guard case .signedIn = session.state else {
+            XCTFail("Expected signed in state.")
+            return
+        }
+    }
+
+    @MainActor
+    func testRegistrationEntersSearchOnce() async {
+        let auth = FakeAuthRepository(hasStoredTokens: false)
+        let session = AppSession(repositories: fakeRepositories(auth: auth))
+
+        await session.register(username: "reader", email: "reader@example.com", password: "long-enough")
+
+        XCTAssertEqual(session.signedInEntryPoint, .search)
+        guard case .signedIn = session.state else {
+            XCTFail("Expected signed in state.")
+            return
+        }
+
+        session.markSignedInEntryPointHandled()
+
+        XCTAssertEqual(session.signedInEntryPoint, .home)
+    }
+
+    @MainActor
     func testMediaDetailViewModelLoadsReviewsAndTogglesLike() async {
         let viewModel = MediaDetailViewModel(
             ref: TestFixtures.movieDetail.ref,
@@ -3082,6 +4991,34 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
         XCTAssertEqual(tracking.consumedRefs.first?.consumedAt, completedAt)
         XCTAssertEqual(tracking.completedBooks.count, 0)
+    }
+
+    @MainActor
+    func testMediaDetailEpisodeWatchKeepsMutationSuccessWhenRefreshFails() async {
+        let detail = TestFixtures.episodeDetail
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaDetailViewModel(
+            ref: detail.ref,
+            mediaRepository: MediaDetailFixtureRepository(detailError: APIError.httpStatus(503, nil)),
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {}
+        )
+        viewModel.detail = detail
+        let watchedAt = Date(timeIntervalSince1970: 1_797_120_000)
+
+        let didSave = await viewModel.watchEpisode(detail, watchedAt: watchedAt)
+
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.source, "tmdb")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.mediaId, "1399")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.seasonNumber, 3)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.episodeNumber, 2)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.watchedAt, watchedAt)
+        XCTAssertEqual(viewModel.detail?.userState?.isTracked, true)
+        XCTAssertNil(viewModel.detail?.userState?.status)
+        XCTAssertNil(viewModel.quickActionErrorMessage)
+        XCTAssertNil(viewModel.tracking)
     }
 
     @MainActor
@@ -3353,10 +5290,27 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.filteredPosters.map(\.url), ["https://example.com/en.jpg"])
         XCTAssertEqual(viewModel.selectedPosterURL, "https://example.com/en.jpg")
 
+        viewModel.selectedLanguage = "all"
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            [
+                "https://example.com/en.jpg",
+                "https://example.com/fr.jpg",
+                "https://example.com/no-language.jpg",
+            ]
+        )
+
         viewModel.selectedLanguage = "none"
-        XCTAssertEqual(viewModel.filteredPosters.map(\.url), ["https://example.com/en.jpg", "https://example.com/no-language.jpg"])
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            ["https://example.com/en.jpg", "https://example.com/no-language.jpg"]
+        )
 
         viewModel.selectedPosterURL = "https://example.com/no-language.jpg"
+        XCTAssertEqual(
+            viewModel.filteredPosters.map(\.url),
+            ["https://example.com/en.jpg", "https://example.com/no-language.jpg"]
+        )
         await viewModel.save()
 
         XCTAssertEqual(savedResponse?.customPosterUrl, "https://example.com/no-language.jpg")
@@ -3369,33 +5323,63 @@ final class SpineTests: XCTestCase {
             ref: TestFixtures.movieDetail.ref,
             mediaRepository: PosterFixtureRepository(),
             onUnauthorized: {},
-            onSaved: { savedResponse = $0 }
+            saveAction: { _, backdropURL in
+                savedResponse = BackdropSaveResponse(backdropUrl: backdropURL, customBackdropUrl: backdropURL)
+            }
         )
 
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.selectedLanguage, "all")
-        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), [
-            "https://example.com/backdrop-fr.jpg",
-            "https://example.com/backdrop-en.jpg",
-            "https://example.com/backdrop-no-language.jpg",
-        ])
+        XCTAssertEqual(viewModel.selectedLanguage, "none")
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
         XCTAssertEqual(viewModel.selectedBackdropURL, "https://example.com/backdrop-fr.jpg")
 
         viewModel.selectedLanguage = "none"
-        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-fr.jpg", "https://example.com/backdrop-no-language.jpg"])
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
 
         viewModel.selectedBackdropURL = "https://example.com/backdrop-no-language.jpg"
+        XCTAssertEqual(viewModel.filteredBackdrops.map(\.url), ["https://example.com/backdrop-no-language.jpg"])
         await viewModel.save()
 
         XCTAssertEqual(savedResponse?.customBackdropUrl, "https://example.com/backdrop-no-language.jpg")
     }
 
     @MainActor
+    func testLogoPickerViewModelFiltersPinsCurrentAndSaves() async {
+        var savedResponse: LogoSaveResponse?
+        let viewModel = LogoPickerViewModel(
+            ref: TestFixtures.movieDetail.ref,
+            mediaRepository: PosterFixtureRepository(),
+            onUnauthorized: {},
+            onSaved: { savedResponse = $0 }
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.selectedLanguage, "en")
+        XCTAssertEqual(viewModel.selectedLogoURL, "https://example.com/logo-en.png")
+        XCTAssertEqual(viewModel.filteredLogos.map(\.url), ["https://example.com/logo-en.png"])
+
+        viewModel.selectedLanguage = "none"
+        XCTAssertEqual(
+            viewModel.filteredLogos.map(\.url),
+            ["https://example.com/logo-en.png", "https://example.com/logo-neutral.png"]
+        )
+
+        viewModel.selectedLogoURL = "https://example.com/logo-neutral.png"
+        await viewModel.save()
+
+        XCTAssertEqual(savedResponse?.customLogoUrl, "https://example.com/logo-neutral.png")
+        XCTAssertFalse(viewModel.isSaving)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    @MainActor
     func testMediaLogRatingMapping() {
-        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: 0))
-        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 1), Decimal(1))
-        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10), Decimal(10))
+        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: 0, mediaType: "movie"))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 1, mediaType: "movie"), Decimal(string: "0.5"))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "music"), Decimal(5))
+        XCTAssertEqual(MediaLogViewModel.ratingDecimal(for: 10, mediaType: "book"), Decimal(5))
 
         let viewModel = MediaLogViewModel(
             detail: TestFixtures.movieDetail,
@@ -3411,6 +5395,261 @@ final class SpineTests: XCTestCase {
 
         viewModel.setRating(locationX: 25, width: 100)
         XCTAssertEqual(viewModel.ratingSteps, 3)
+
+        viewModel.setRating(locationX: 0, width: 100)
+        XCTAssertEqual(viewModel.ratingSteps, 0)
+        XCTAssertNil(MediaLogViewModel.ratingDecimal(for: viewModel.ratingSteps, mediaType: "movie"))
+    }
+
+    @MainActor
+    func testMediaLogUsesMediaSpecificActionTitles() {
+        let movieLog = MediaLogViewModel(
+            detail: TestFixtures.movieDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let bookLog = MediaLogViewModel(
+            detail: TestFixtures.logDetail(mediaType: "book"),
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let episodeLog = MediaLogViewModel(
+            detail: TestFixtures.episodeDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let musicLog = MediaLogViewModel(
+            detail: TestFixtures.logDetail(mediaType: "music"),
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        XCTAssertEqual(movieLog.primaryActionTitle, "Log Movie")
+        XCTAssertEqual(bookLog.primaryActionTitle, "Log Book")
+        XCTAssertEqual(episodeLog.primaryActionTitle, "Log Episode")
+        XCTAssertEqual(musicLog.primaryActionTitle, "Log Album")
+        XCTAssertEqual(musicLog.repeatLabel, "Relisten")
+        XCTAssertFalse(musicLog.supportsProgress)
+        musicLog.isRepeat = true
+        XCTAssertEqual(musicLog.primaryActionTitle, "Relisten")
+    }
+
+    @MainActor
+    func testSingleWeightLogPrefillsCanonicalDraftAndRepeatEvidence() async {
+        let diary = RecordingDiaryRepository()
+        let detail = MediaDetail(
+            ref: MediaRef(
+                itemId: 41,
+                source: "tmdb",
+                mediaType: "movie",
+                mediaId: "41",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Prefilled",
+            userState: UserMediaState(
+                isTracked: true,
+                status: "Completed",
+                rating: "4.0",
+                diaryCount: 0,
+                hasLiked: true,
+                directConsumption: true
+            )
+        )
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        XCTAssertEqual(viewModel.ratingSteps, 8)
+        XCTAssertTrue(viewModel.liked)
+        XCTAssertTrue(viewModel.isRepeat)
+
+        let didSave = await viewModel.save()
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(4))
+        XCTAssertEqual(diary.createdRequests.first?.liked, true)
+        XCTAssertEqual(diary.createdRequests.first?.isRewatch, true)
+
+        let planned = MediaDetail(
+            ref: detail.ref,
+            title: "Planned",
+            userState: UserMediaState(
+                isTracked: true,
+                status: "Planning",
+                diaryCount: 0,
+                directConsumption: false
+            )
+        )
+        let plannedViewModel = MediaLogViewModel(
+            detail: planned,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        XCTAssertFalse(plannedViewModel.isRepeat)
+    }
+
+    @MainActor
+    func testMusicLogPassesFullDiaryFieldsThroughSharedRepository() async {
+        let diary = RecordingDiaryRepository()
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        viewModel.ratingSteps = 9
+        viewModel.reviewTitle = "A second spin"
+        viewModel.review = "New details emerged."
+        viewModel.tags = ["relisten", "headphones"]
+        viewModel.liked = true
+        viewModel.isRepeat = true
+        viewModel.containsSpoilers = true
+        viewModel.visibility = "followers"
+
+        let didSave = await viewModel.save()
+
+        XCTAssertTrue(didSave)
+        let request = diary.createdRequests.first
+        XCTAssertEqual(request?.ref, detail.ref)
+        XCTAssertEqual(request?.rating, Decimal(string: "4.5"))
+        XCTAssertEqual(request?.reviewTitle, "A second spin")
+        XCTAssertEqual(request?.review, "New details emerged.")
+        XCTAssertEqual(request?.tags, ["relisten", "headphones"])
+        XCTAssertEqual(request?.liked, true)
+        XCTAssertEqual(request?.isRewatch, true)
+        XCTAssertEqual(request?.containsSpoilers, true)
+        XCTAssertEqual(request?.visibility, "public")
+        XCTAssertEqual(request?.autoMarkConsumed, true)
+    }
+
+    @MainActor
+    func testMusicQuickActionsUseGenericTrackingRepository() async {
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaDetailViewModel(
+            ref: detail.ref,
+            mediaRepository: FakeMediaRepository(),
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {}
+        )
+        let completedAt = Date(timeIntervalSince1970: 1_797_120_000)
+
+        let planned = await viewModel.performQuickAction(.planning, for: detail)
+        let started = await viewModel.performQuickAction(.currently, for: detail)
+        let paused = await viewModel.performQuickAction(.paused, for: detail)
+        let dropped = await viewModel.performQuickAction(.stopped, for: detail)
+        let resumed = await viewModel.performQuickAction(.currently, for: detail)
+        let listened = await viewModel.performQuickAction(
+            .finished,
+            for: detail,
+            completedAt: completedAt
+        )
+        let removed = await viewModel.removeTracking(for: detail)
+
+        XCTAssertTrue(planned)
+        XCTAssertTrue(started)
+        XCTAssertTrue(paused)
+        XCTAssertTrue(dropped)
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(listened)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(tracking.updateRequests.map(\.ref), [detail.ref, detail.ref, detail.ref, detail.ref, detail.ref])
+        XCTAssertEqual(
+            tracking.updateRequests.map(\.request.status),
+            ["Planning", "In progress", "Paused", "Dropped", "In progress"]
+        )
+        XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
+        XCTAssertNil(tracking.consumedRefs.first?.consumedAt)
+        XCTAssertEqual(tracking.deletedRefs, [detail.ref])
+        XCTAssertTrue(tracking.completedBooks.isEmpty)
+    }
+
+    @MainActor
+    func testMusicPresentationUsesAlbumWordingWithoutChangingWireStatus() {
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let ref = detail.ref
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        XCTAssertEqual(ref.repeatLabel, "Relisten")
+        XCTAssertEqual(ref.consumedDateLabel, "Date listened")
+        XCTAssertEqual(ref.trackingStatusLabel("In progress"), "Listening")
+        XCTAssertEqual(ref.trackingStatusLabel("Completed"), "Listened")
+        XCTAssertEqual(ref.trackingStatusLabel("Dropped"), "Stopped")
+        XCTAssertEqual(ref.trackingStatusLabel("Planning"), "Planning")
+        XCTAssertEqual(viewModel.primaryActionTitle, "Log Album")
+        let copy = bookGameCopy(for: "music")
+        XCTAssertEqual(copy.currently, "Start Listening")
+        XCTAssertEqual(copy.finished, "Mark Listened")
+        XCTAssertEqual(copy.stopped, "Stopped")
+    }
+
+    @MainActor
+    func testMusicMarkOnlyCompletesWithoutCreatingDiaryEntry() async {
+        let diary = RecordingDiaryRepository()
+        let tracking = RecordingTrackingRepository()
+        let detail = TestFixtures.logDetail(mediaType: "music")
+        let listenedAt = Date(timeIntervalSince1970: 1_797_120_000)
+        let viewModel = MediaLogViewModel(
+            detail: detail,
+            trackingRepository: tracking,
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        viewModel.consumedAt = listenedAt
+
+        let didSave = await viewModel.markOnly()
+
+        XCTAssertTrue(didSave)
+        XCTAssertTrue(diary.createdRequests.isEmpty)
+        XCTAssertEqual(tracking.consumedRefs.first?.ref, detail.ref)
+        XCTAssertNil(tracking.consumedRefs.first?.consumedAt)
+    }
+
+    @MainActor
+    func testMediaLogTagsLoadOnlyForTypedQueries() async {
+        let diary = RecordingDiaryRepository()
+        let viewModel = MediaLogViewModel(
+            detail: TestFixtures.movieDetail,
+            trackingRepository: RecordingTrackingRepository(),
+            diaryRepository: diary,
+            onUnauthorized: {},
+            onSaved: {}
+        )
+
+        await viewModel.loadTags()
+
+        XCTAssertTrue(diary.tagQueries.isEmpty)
+        XCTAssertTrue(viewModel.tagSuggestions.isEmpty)
+
+        viewModel.tagQuery = "net"
+        await viewModel.loadTags()
+
+        XCTAssertEqual(diary.tagQueries, ["net"])
+        XCTAssertEqual(viewModel.tagSuggestions.map(\.name), ["netflix"])
     }
 
     @MainActor
@@ -3438,7 +5677,7 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(savedCount, 1)
         XCTAssertEqual(diary.createdRequests.count, 1)
         XCTAssertEqual(diary.createdRequests.first?.ref.mediaType, "movie")
-        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(9))
+        XCTAssertEqual(diary.createdRequests.first?.rating, Decimal(string: "4.5"))
         XCTAssertEqual(diary.createdRequests.first?.autoMarkConsumed, true)
         XCTAssertEqual(diary.createdRequests.first?.reviewTitle, "")
         XCTAssertEqual(diary.createdRequests.first?.visibility, "public")
@@ -3514,6 +5753,30 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testMediaLogEpisodeMarkOnlyUsesNestedEpisodeWatch() async {
+        let tracking = RecordingTrackingRepository()
+        let viewModel = MediaLogViewModel(
+            detail: TestFixtures.episodeDetail,
+            trackingRepository: tracking,
+            diaryRepository: RecordingDiaryRepository(),
+            onUnauthorized: {},
+            onSaved: {}
+        )
+        let watchedAt = Date(timeIntervalSince1970: 1_797_120_000)
+        viewModel.consumedAt = watchedAt
+
+        let didSave = await viewModel.markOnly()
+
+        XCTAssertTrue(didSave)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.source, "tmdb")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.mediaId, "1399")
+        XCTAssertEqual(tracking.watchedEpisodes.first?.seasonNumber, 3)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.episodeNumber, 2)
+        XCTAssertEqual(tracking.watchedEpisodes.first?.watchedAt, watchedAt)
+        XCTAssertTrue(tracking.consumedRefs.isEmpty)
+    }
+
+    @MainActor
     func testMediaLogUnauthorizedCallsHandler() async {
         let diary = RecordingDiaryRepository(error: APIError.unauthorized)
         var unauthorizedCount = 0
@@ -3583,13 +5846,15 @@ final class SpineTests: XCTestCase {
             "Planned",
             "Likes",
             "Tags",
+            "Stats",
         ])
-        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, 3, 4, 5, 6, 7])
+        XCTAssertEqual(ProfileMenuDestination.allCases.map { $0.count(from: counts) }, [1, 2, 3, 4, 5, 6, 7, nil])
     }
 
     private func profileFixture(
         hof: [String: MediaSummary?],
-        enabledMediaTypes: [String] = ["movie"]
+        enabledMediaTypes: [String] = ["movie"],
+        isPrivate: Bool = false
     ) -> UserProfile {
         UserProfile(
             id: 1,
@@ -3600,7 +5865,9 @@ final class SpineTests: XCTestCase {
             pronouns: nil,
             location: nil,
             avatarUrl: nil,
-            isPrivate: false,
+            profileBackdropUrl: nil,
+            profileBackdropItem: nil,
+            isPrivate: isPrivate,
             viewerRelationship: ViewerRelationship(following: false, followedBy: false, requested: false, blocked: false),
             counts: ProfileCounts(followers: 0, following: 0, diaryEntries: 0, lists: 0),
             hof: hof,
@@ -3764,6 +6031,7 @@ private func fakeRepositories(auth: AuthRepository) -> AppRepositories {
     AppRepositories(
         auth: auth,
         media: FakeMediaRepository(),
+        music: FakeMusicRepository(),
         tracking: FakeTrackingRepository(),
         diary: FakeDiaryRepository(),
         activity: FakeActivityRepository(),
@@ -3773,8 +6041,23 @@ private func fakeRepositories(auth: AuthRepository) -> AppRepositories {
     )
 }
 
+private struct FakeMusicRepository: MusicRepository {
+    func recordingDetail(album _: MediaRef, recordingMbid _: String) async throws -> MusicRecordingDetail {
+        throw FakeMusicRepositoryError.called
+    }
+}
+
+private enum FakeMusicRepositoryError: Error {
+    case called
+}
+
 private struct FakeMediaRepository: MediaRepository {
-    func meta() async throws -> MetaResponse { fatalError("Not used") }
+    var metaResponse: MetaResponse? = nil
+
+    func meta() async throws -> MetaResponse {
+        guard let metaResponse else { fatalError("Not used") }
+        return metaResponse
+    }
     func search(query: String, mediaType: String) async throws -> [MediaSummary] { fatalError("Not used") }
     func detail(ref: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
     func reviews(ref: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
@@ -3782,6 +6065,8 @@ private struct FakeMediaRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private struct LibraryTrackingRequest: Equatable {
@@ -3798,9 +6083,165 @@ private struct LibraryTrackingRequest: Equatable {
     }
 }
 
+private struct DynamicSortLibraryRequest: Equatable {
+    let page: String?
+    let sort: String?
+    let direction: MediaFilterDirection?
+}
+
+private enum DynamicSortTestError: Error {
+    case optionsUnavailable
+}
+
+private struct ScriptedFilterOptionsRepository: FilterOptionsRepository {
+    let response: (MediaFilterScope) throws -> MediaFilterOptionsResponse
+
+    init(response: @escaping (MediaFilterScope) throws -> MediaFilterOptionsResponse) {
+        self.response = response
+    }
+
+    func options(scope: MediaFilterScope, filter _: MediaFilterState) async throws -> MediaFilterOptionsResponse {
+        try response(scope)
+    }
+}
+
+@MainActor
+private final class DynamicSortLibraryTrackingRepository: TrackingRepository {
+    var requests: [DynamicSortLibraryRequest] = []
+
+    func list(
+        mediaType: String,
+        page: String?,
+        status: String?,
+        query: String?
+    ) async throws -> PagedResponse<Spine.LibraryItem> {
+        var filter = MediaFilterState(q: query ?? "")
+        filter.status = status
+        return try await list(mediaType: mediaType, page: page, filter: filter)
+    }
+
+    func list(
+        mediaType _: String,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<Spine.LibraryItem> {
+        requests.append(DynamicSortLibraryRequest(
+            page: page,
+            sort: filter.sort?.rawValue,
+            direction: filter.direction
+        ))
+        if filter.sort == .title, page == "2" {
+            try await Task.sleep(for: .milliseconds(80))
+            return PagedResponse(
+                count: 3,
+                next: nil,
+                previous: "https://spine.test/api/v1/tracking/",
+                results: [libraryItem(id: "3", title: "Stale Previous Sort Page")]
+            )
+        }
+        if filter.sort?.rawValue == "rating:goodreads" {
+            try await Task.sleep(for: .milliseconds(1))
+            return PagedResponse(
+                count: 2,
+                next: nil,
+                previous: nil,
+                results: [
+                    libraryItem(id: "10", title: "Zulu From Server"),
+                    libraryItem(id: "11", title: "Alpha From Server"),
+                ]
+            )
+        }
+        return PagedResponse(
+            count: 3,
+            next: "https://spine.test/api/v1/tracking/?page=2",
+            previous: nil,
+            results: [
+                libraryItem(id: "1", title: "Old First"),
+                libraryItem(id: "2", title: "Old Second"),
+            ]
+        )
+    }
+
+    func detail(ref: MediaRef) async throws -> TrackingState { fatalError("Not used") }
+    func update(ref: MediaRef, request: TrackingWriteRequest) async throws -> TrackingState { fatalError("Not used") }
+    func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState { fatalError("Not used") }
+    func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState { fatalError("Not used") }
+    func updateBookProgress(source: String, mediaId: String, progressType: String, value: Decimal, notes: String) async throws -> TrackingState { fatalError("Not used") }
+    func completeBook(source: String, mediaId: String, completedAt: Date?) async throws -> TrackingState { fatalError("Not used") }
+}
+
 private struct ActivityRequest: Equatable {
     let username: String
     let limit: Int
+}
+
+private struct ActivityPageRequest: Equatable {
+    let username: String
+    let pageSize: Int
+    let cursorLink: String?
+}
+
+private struct CompanyGameRequest: Equatable {
+    let role: CompanyCatalogRole
+    let page: String?
+    let filter: MediaFilterState
+}
+
+@MainActor
+private final class ScriptedCompanyRepository: CompanyRepository {
+    var requests: [CompanyGameRequest] = []
+
+    func detail(ref: CompanyRef) async throws -> CompanyDetail {
+        CompanyDetail(
+            id: ref.companyId,
+            source: ref.source,
+            name: "Space Studio",
+            description: nil,
+            logoUrl: nil,
+            logoWidth: nil,
+            logoHeight: nil,
+            foundedYear: nil,
+            countryCode: nil,
+            status: nil,
+            companySize: nil,
+            parent: nil,
+            igdbUrl: nil,
+            websites: [],
+            catalogs: CompanyCatalogCounts(
+                developed: CompanyCatalogCount(count: 2),
+                published: CompanyCatalogCount(count: 2)
+            )
+        )
+    }
+
+    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
+        .companyFallback
+    }
+
+    func games(
+        ref: CompanyRef,
+        role: CompanyCatalogRole,
+        page: String?,
+        filter: MediaFilterState
+    ) async throws -> PagedResponse<MediaSummary> {
+        requests.append(CompanyGameRequest(role: role, page: page, filter: filter))
+        if filter.sort == .title {
+            try await Task.sleep(for: .milliseconds(80))
+        }
+        let prefix = filter.sort == .releaseDate ? "Fresh" : filter.sort == .title ? "Stale" : "Default"
+        let game = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "igdb",
+                mediaType: "game",
+                mediaId: "\(prefix)-\(role.rawValue)",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "\(prefix) \(role.rawValue)"
+        )
+        return PagedResponse(count: 1, next: nil, previous: nil, results: [game])
+    }
 }
 
 private final class ScriptedLibraryTrackingRepository: TrackingRepository {
@@ -3862,10 +6303,17 @@ private func libraryItem(
 ) -> Spine.LibraryItem {
     Spine.LibraryItem(
         media: MediaSummary(
-            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: mediaType, mediaId: id, seasonNumber: seasonNumber, episodeNumber: nil),
+            ref: MediaRef(
+                itemId: nil,
+                source: mediaType == "music" ? "musicbrainz" : "tmdb",
+                mediaType: mediaType,
+                mediaId: id,
+                seasonNumber: seasonNumber,
+                episodeNumber: nil
+            ),
             title: title,
             posterUrl: nil,
-            posterOrientation: .portrait
+            posterOrientation: mediaType == "music" ? .square : .portrait
         ),
         tracking: TrackingState(
             trackingId: Int(id) ?? 1,
@@ -3879,6 +6327,17 @@ private func libraryItem(
             notes: nil,
             updatedAt: updatedAt
         )
+    )
+}
+
+private func mediaRef(_ mediaID: String) -> MediaRef {
+    MediaRef(
+        itemId: nil,
+        source: "tmdb",
+        mediaType: "movie",
+        mediaId: mediaID,
+        seasonNumber: nil,
+        episodeNumber: nil
     )
 }
 
@@ -3900,7 +6359,8 @@ private func activityItem(
     current: ProgressState? = ProgressState(kind: "percentage", value: Decimal(58), max: Decimal(100), unit: "percent"),
     rating: String? = nil,
     liked: Bool? = nil,
-    hasMedia: Bool = true
+    hasMedia: Bool = true,
+    mediaType: String = "movie"
 ) -> ActivityItem {
     ActivityItem(
         id: id,
@@ -3908,10 +6368,17 @@ private func activityItem(
         createdAt: "2026-06-20T12:00:00Z",
         actor: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
         media: hasMedia ? MediaSummary(
-            ref: MediaRef(itemId: nil, source: "tmdb", mediaType: "movie", mediaId: "\(id)", seasonNumber: nil, episodeNumber: nil),
+            ref: MediaRef(
+                itemId: nil,
+                source: mediaType == "music" ? "musicbrainz" : "tmdb",
+                mediaType: mediaType,
+                mediaId: "\(id)",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
             title: title,
             posterUrl: nil,
-            posterOrientation: .portrait
+            posterOrientation: mediaType == "music" ? .square : .portrait
         ) : nil,
         object: ActivityObject(
             type: type == "progress_updated" ? "progress_change" : "diary",
@@ -4003,6 +6470,27 @@ private final class ScriptedHomeActivityRepository: ActivityRepository {
     }
 }
 
+private final class ScriptedPagedActivityRepository: ActivityRepository {
+    private var results: [Result<ActivityCursorResponse, Error>]
+    var pageRequests: [ActivityPageRequest] = []
+
+    init(results: [Result<ActivityCursorResponse, Error>]) {
+        self.results = results
+    }
+
+    func userActivity(username _: String, limit _: Int) async throws -> [ActivityItem] {
+        fatalError("Use userActivityPage in paged activity tests")
+    }
+
+    func userActivityPage(username: String, pageSize: Int, cursorLink: String?) async throws -> ActivityCursorResponse {
+        pageRequests.append(ActivityPageRequest(username: username, pageSize: pageSize, cursorLink: cursorLink))
+        guard !results.isEmpty else {
+            fatalError("No scripted activity page remains")
+        }
+        return try results.removeFirst().get()
+    }
+}
+
 private struct FakeProfileRepository: ProfileRepository {
     func me() async throws -> UserProfile {
         UserProfile(
@@ -4014,6 +6502,8 @@ private struct FakeProfileRepository: ProfileRepository {
             pronouns: nil,
             location: nil,
             avatarUrl: nil,
+            profileBackdropUrl: nil,
+            profileBackdropItem: nil,
             isPrivate: false,
             viewerRelationship: ViewerRelationship(following: false, followedBy: false, requested: false, blocked: false),
             counts: ProfileCounts(followers: 0, following: 0, diaryEntries: 0, lists: 0, reviews: 0, tags: 0),
@@ -4032,6 +6522,8 @@ private struct FakeProfileRepository: ProfileRepository {
     func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile { fatalError("Not used") }
     func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String? { fatalError("Not used") }
     func deleteAvatar() async throws -> String? { fatalError("Not used") }
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences { fatalError("Not used") }
     func changePassword(_ request: PasswordChangeRequest) async throws { fatalError("Not used") }
     func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?] { fatalError("Not used") }
@@ -4065,6 +6557,8 @@ private final class RecordingProfileRepository: ProfileRepository {
             pronouns: request.pronouns ?? profile.pronouns,
             location: request.location ?? profile.location,
             avatarUrl: profile.avatarUrl,
+            profileBackdropUrl: profile.profileBackdropUrl,
+            profileBackdropItem: profile.profileBackdropItem,
             isPrivate: request.isPrivate ?? profile.isPrivate,
             viewerRelationship: profile.viewerRelationship,
             counts: profile.counts,
@@ -4082,6 +6576,14 @@ private final class RecordingProfileRepository: ProfileRepository {
     func deleteAvatar() async throws -> String? {
         didDeleteAvatar = true
         return nil
+    }
+
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse {
+        ProfileBackdropSaveResponse(profileBackdropUrl: backdropURL, profileBackdropItem: profile.profileBackdropItem)
+    }
+
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse {
+        ProfileBackdropSaveResponse(profileBackdropUrl: nil, profileBackdropItem: nil)
     }
 
     func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences {
@@ -4112,6 +6614,127 @@ private final class RecordingProfileRepository: ProfileRepository {
     }
 }
 
+private enum ListComposerTestError: LocalizedError {
+    case addFailed
+
+    var errorDescription: String? { "Add failed" }
+}
+
+@MainActor
+private final class ScriptedListComposerRepository: ListRepository {
+    var failingMediaIDs: Set<String>
+    var serverItems: [MediaSummary]
+    var createCount = 0
+    var updateCount = 0
+    var addAttempts: [String] = []
+    var removedItemIDs: [Int] = []
+    var reorderedItemIDs: [Int] = []
+    private var nextItemID = 101
+
+    init(failingMediaIDs: Set<String> = [], serverItems: [MediaSummary] = []) {
+        self.failingMediaIDs = failingMediaIDs
+        self.serverItems = serverItems
+    }
+
+    func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary] { [] }
+
+    func detail(id: Int) async throws -> CustomListDetail {
+        composerList(items: serverItems)
+    }
+
+    func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary {
+        createCount += 1
+        return CustomListSummary(
+            id: 77,
+            name: request.name ?? "",
+            slug: "favorites",
+            description: request.description ?? "",
+            visibility: request.visibility ?? "private",
+            isRanked: request.isRanked ?? false,
+            owner: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
+            itemsCount: serverItems.count,
+            likeCount: 0
+        )
+    }
+
+    func update(id: Int, _ request: CustomListWriteRequest) async throws -> CustomListDetail {
+        updateCount += 1
+        return composerList(items: serverItems)
+    }
+
+    func delete(id: Int) async throws {}
+
+    func addItem(listId: Int, ref: MediaRef) async throws -> MediaSummary {
+        addAttempts.append(ref.mediaId)
+        if failingMediaIDs.contains(ref.mediaId) {
+            throw ListComposerTestError.addFailed
+        }
+        let saved = MediaSummary(
+            ref: MediaRef(
+                itemId: nextItemID,
+                source: ref.source,
+                mediaType: ref.mediaType,
+                mediaId: ref.mediaId,
+                seasonNumber: ref.seasonNumber,
+                episodeNumber: ref.episodeNumber
+            ),
+            title: "Media \(ref.mediaId)",
+            posterOrientation: ref.mediaType == "music" ? .square : .portrait
+        )
+        nextItemID += 1
+        serverItems.append(saved)
+        return saved
+    }
+
+    func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary> {
+        PagedResponse(count: serverItems.count, next: nil, previous: nil, results: serverItems)
+    }
+
+    func removeItem(listId: Int, itemId: Int) async throws {
+        removedItemIDs.append(itemId)
+        serverItems.removeAll { $0.ref.itemId == itemId }
+    }
+
+    func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail {
+        reorderedItemIDs = itemIds
+        let byID = Dictionary(uniqueKeysWithValues: serverItems.compactMap { item in
+            item.ref.itemId.map { ($0, item) }
+        })
+        serverItems = itemIds.compactMap { byID[$0] }
+        return composerList(items: serverItems)
+    }
+}
+
+private func composerMedia(_ mediaID: String, itemID: Int? = nil, mediaType: String = "movie") -> MediaSummary {
+    MediaSummary(
+        ref: MediaRef(
+            itemId: itemID,
+            source: mediaType == "music" ? "musicbrainz" : "tmdb",
+            mediaType: mediaType,
+            mediaId: mediaID,
+            seasonNumber: nil,
+            episodeNumber: nil
+        ),
+        title: "Media \(mediaID)",
+        posterOrientation: mediaType == "music" ? .square : .portrait
+    )
+}
+
+private func composerList(items: [MediaSummary]) -> CustomListDetail {
+    CustomListDetail(
+        id: 77,
+        name: "Favorites",
+        slug: "favorites",
+        description: "",
+        visibility: "private",
+        isRanked: false,
+        owner: UserSummary(id: 1, username: "mobile", displayName: "Mobile", avatarUrl: nil),
+        itemsCount: items.count,
+        likeCount: 0,
+        items: items
+    )
+}
+
 private struct FakeListRepository: ListRepository {
     func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary] { fatalError("Not used") }
     func detail(id: Int) async throws -> CustomListDetail { fatalError("Not used") }
@@ -4121,6 +6744,29 @@ private struct FakeListRepository: ListRepository {
     func addItem(listId: Int, ref: MediaRef) async throws -> MediaSummary { fatalError("Not used") }
     func removeItem(listId: Int, itemId: Int) async throws {}
     func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail { fatalError("Not used") }
+}
+
+private final class ScriptedProfileRepository: ProfileRepository {
+    private var results: [Result<UserProfile, Error>]
+
+    init(results: [Result<UserProfile, Error>]) {
+        self.results = results
+    }
+
+    func me() async throws -> UserProfile {
+        guard !results.isEmpty else { fatalError("No scripted profile result remains") }
+        return try results.removeFirst().get()
+    }
+
+    func updateProfile(_ request: ProfileUpdateRequest) async throws -> UserProfile { fatalError("Not used") }
+    func uploadAvatar(imageData: Data, fileName: String, mimeType: String) async throws -> String? { fatalError("Not used") }
+    func deleteAvatar() async throws -> String? { fatalError("Not used") }
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse { fatalError("Not used") }
+    func updatePreferences(_ request: PreferencesUpdateRequest) async throws -> UserPreferences { fatalError("Not used") }
+    func changePassword(_ request: PasswordChangeRequest) async throws { fatalError("Not used") }
+    func setHallOfFameItem(mediaType: String, ref: MediaRef) async throws -> [String: MediaSummary?] { fatalError("Not used") }
+    func clearHallOfFameItem(mediaType: String) async throws -> [String: MediaSummary?] { fatalError("Not used") }
 }
 
 private final class HallOfFameProfileRepository: ProfileRepository {
@@ -4150,6 +6796,14 @@ private final class HallOfFameProfileRepository: ProfileRepository {
     }
 
     func deleteAvatar() async throws -> String? {
+        fatalError("Not used")
+    }
+
+    func saveProfileBackdrop(ref: MediaRef, backdropURL: String) async throws -> ProfileBackdropSaveResponse {
+        fatalError("Not used")
+    }
+
+    func clearProfileBackdrop() async throws -> ProfileBackdropSaveResponse {
         fatalError("Not used")
     }
 
@@ -4196,6 +6850,13 @@ private struct FakeImportRepository: ImportRepository {
         progressHandler: (@MainActor @Sendable (Double) -> Void)?
     ) async throws -> ImportQueueResponse { fatalError("Not used") }
 
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse { fatalError("Not used") }
+
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus { fatalError("Not used") }
 }
 
@@ -4223,6 +6884,15 @@ private final class ScriptedLetterboxdImportRepository: ImportRepository {
     }
 
     func queueStoryGraphImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueGoodreadsImport(
         fileData: Data,
         fileName: String,
         mode: ImportMode,
@@ -4271,6 +6941,66 @@ private final class ScriptedStoryGraphImportRepository: ImportRepository {
         progressHandler?(1)
         try await Task.sleep(for: .milliseconds(40))
         return ImportQueueResponse(taskId: statuses.first?.taskId ?? "storygraph-task-2", status: "queued")
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
+        statusRequests.append(taskId)
+        try await Task.sleep(for: .milliseconds(40))
+        if statuses.count > 1 {
+            return statuses.removeFirst()
+        }
+        return statuses.first ?? ImportTaskStatus(taskId: taskId, taskName: nil, status: "PENDING", dateCreated: nil, dateDone: nil, result: nil)
+    }
+}
+
+private final class ScriptedGoodreadsImportRepository: ImportRepository {
+    private(set) var queuedFileName: String?
+    private(set) var queuedMode: ImportMode?
+    private(set) var statusRequests: [String] = []
+    private var statuses: [ImportTaskStatus]
+
+    init(statuses: [ImportTaskStatus]) {
+        self.statuses = statuses
+    }
+
+    func queueLetterboxdImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueStoryGraphImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        queuedFileName = fileName
+        queuedMode = mode
+        progressHandler?(1)
+        try await Task.sleep(for: .milliseconds(40))
+        return ImportQueueResponse(taskId: statuses.first?.taskId ?? "goodreads-task-2", status: "queued")
     }
 
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {
@@ -4324,6 +7054,14 @@ private func makeTemporaryCSV() throws -> URL {
     return url
 }
 
+private func makeTemporaryGoodreadsCSV() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("goodreads-\(UUID().uuidString)")
+        .appendingPathExtension("csv")
+    try Data("Book Id,Title,Author\n123,Book,Author\n".utf8).write(to: url)
+    return url
+}
+
 @MainActor
 private func waitUntil(timeout: TimeInterval = 1, predicate: @escaping () -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeout)
@@ -4337,9 +7075,20 @@ private func waitUntil(timeout: TimeInterval = 1, predicate: @escaping () -> Boo
 }
 
 private struct MediaDetailFixtureRepository: MediaRepository {
+    var detailError: Error?
+
+    init(detailError: Error? = nil) {
+        self.detailError = detailError
+    }
+
     func meta() async throws -> MetaResponse { fatalError("Not used") }
     func search(query: String, mediaType: String) async throws -> [MediaSummary] { fatalError("Not used") }
-    func detail(ref: MediaRef) async throws -> MediaDetail { TestFixtures.movieDetail }
+    func detail(ref: MediaRef) async throws -> MediaDetail {
+        if let detailError {
+            throw detailError
+        }
+        return TestFixtures.movieDetail
+    }
 
     func reviews(ref: MediaRef) async throws -> [MediaReview] {
         try JSONDecoder.api.decode(PagedResponse<MediaReview>.self, from: TestFixtures.reviewsJSON.data(using: .utf8)!).results
@@ -4349,6 +7098,8 @@ private struct MediaDetailFixtureRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private struct LikeFixtureDiaryRepository: DiaryRepository {
@@ -4400,10 +7151,13 @@ private final class DiaryLogFixtureMediaRepository: MediaRepository {
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse { fatalError("Not used") }
     func backdrops(ref: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse { fatalError("Not used") }
 }
 
 private final class RecordingDiaryRepository: DiaryRepository {
     var createdRequests: [DiaryEntryWriteRequest] = []
+    var tagQueries: [String] = []
     let error: Error?
 
     init(error: Error? = nil) {
@@ -4424,21 +7178,50 @@ private final class RecordingDiaryRepository: DiaryRepository {
     func setLike(entryId: Int, liked: Bool) async throws -> LikeState { fatalError("Not used") }
 
     func tags(query: String) async throws -> [DiaryTagSuggestion] {
-        [DiaryTagSuggestion(name: "netflix", usageCount: 12)]
+        tagQueries.append(query)
+        return [DiaryTagSuggestion(name: "netflix", usageCount: 12)]
     }
 }
 
 private final class TaggedDiaryFixtureRepository: DiaryRepository {
     let result: Result<[DiaryEntry], Error>
+    let pages: [PagedResponse<DiaryEntry>]
     var requestedTags: [String?] = []
+    var requestedPages: [String?] = []
 
     init(result: Result<[DiaryEntry], Error>) {
         self.result = result
+        self.pages = []
+    }
+
+    init(pages: [PagedResponse<DiaryEntry>]) {
+        self.result = .success([])
+        self.pages = pages
     }
 
     func list(tag: String?) async throws -> [DiaryEntry] {
         requestedTags.append(tag)
         return try result.get()
+    }
+
+    func list(filter: MediaFilterState) async throws -> [DiaryEntry] {
+        guard !pages.isEmpty else {
+            return try await list(tag: filter.tag)
+        }
+
+        var page: String?
+        var entries: [DiaryEntry] = []
+        repeat {
+            let response = try await self.page(filter: filter, page: page)
+            entries += response.results
+            page = APIPageCursor.nextPage(from: response.next)
+        } while page != nil
+        return entries
+    }
+
+    func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
+        requestedPages.append(page)
+        return pages[requestedPages.count - 1]
     }
 
     func detail(id: Int) async throws -> DiaryEntry { fatalError("Not used") }
@@ -4451,8 +7234,10 @@ private final class RecordingTrackingRepository: TrackingRepository {
     var detailRequests: [MediaRef] = []
     var detailResponse = TestFixtures.trackingState
     var updateRequests: [(ref: MediaRef, request: TrackingWriteRequest)] = []
+    var deletedRefs: [MediaRef] = []
     var consumedRefs: [(ref: MediaRef, consumedAt: Date?)] = []
     var watchedSeasons: [(source: String, mediaId: String, seasonNumber: Int)] = []
+    var watchedEpisodes: [(source: String, mediaId: String, seasonNumber: Int, episodeNumber: Int, watchedAt: Date?)] = []
     var bookProgressRequests: [(source: String, mediaId: String, progressType: String, value: Decimal, notes: String)] = []
     var completedBooks: [(source: String, mediaId: String, completedAt: Date?)] = []
 
@@ -4468,6 +7253,10 @@ private final class RecordingTrackingRepository: TrackingRepository {
         return TestFixtures.trackingState
     }
 
+    func delete(ref: MediaRef) async throws {
+        deletedRefs.append(ref)
+    }
+
     func consume(ref: MediaRef, consumedAt: Date?) async throws -> TrackingState {
         consumedRefs.append((ref, consumedAt))
         return TestFixtures.trackingState
@@ -4475,6 +7264,17 @@ private final class RecordingTrackingRepository: TrackingRepository {
 
     func watchSeason(source: String, mediaId: String, seasonNumber: Int) async throws -> TrackingState {
         watchedSeasons.append((source, mediaId, seasonNumber))
+        return TestFixtures.trackingState
+    }
+
+    func watchEpisode(
+        source: String,
+        mediaId: String,
+        seasonNumber: Int,
+        episodeNumber: Int,
+        watchedAt: Date?
+    ) async throws -> TrackingState {
+        watchedEpisodes.append((source, mediaId, seasonNumber, episodeNumber, watchedAt))
         return TestFixtures.trackingState
     }
 
@@ -4498,18 +7298,6 @@ private struct PosterFixtureRepository: MediaRepository {
     func posters(ref: MediaRef) async throws -> [PosterOption] {
         [
             PosterOption(
-                url: "https://example.com/en.jpg",
-                thumbnailUrl: nil,
-                width: 1000,
-                height: 1500,
-                aspectRatio: 0.667,
-                voteAverage: 8,
-                voteCount: 10,
-                language: "en",
-                isOriginal: false,
-                isSelected: true
-            ),
-            PosterOption(
                 url: "https://example.com/fr.jpg",
                 thumbnailUrl: nil,
                 width: 1000,
@@ -4520,6 +7308,18 @@ private struct PosterFixtureRepository: MediaRepository {
                 language: "fr",
                 isOriginal: false,
                 isSelected: false
+            ),
+            PosterOption(
+                url: "https://example.com/en.jpg",
+                thumbnailUrl: nil,
+                width: 1000,
+                height: 1500,
+                aspectRatio: 0.667,
+                voteAverage: 8,
+                voteCount: 10,
+                language: "en",
+                isOriginal: false,
+                isSelected: true
             ),
             PosterOption(
                 url: "https://example.com/no-language.jpg",
@@ -4584,6 +7384,60 @@ private struct PosterFixtureRepository: MediaRepository {
     func saveBackdrop(ref: MediaRef, backdropURL: String) async throws -> BackdropSaveResponse {
         BackdropSaveResponse(backdropUrl: backdropURL, customBackdropUrl: backdropURL)
     }
+
+    func logos(ref: MediaRef) async throws -> [LogoOption] {
+        [
+            LogoOption(
+                url: "https://example.com/logo-fr.png",
+                thumbnailUrl: nil,
+                width: 500,
+                height: 180,
+                aspectRatio: 2.778,
+                voteAverage: 7,
+                voteCount: 5,
+                language: "fr",
+                style: nil,
+                isOriginal: false,
+                isSelected: false
+            ),
+            LogoOption(
+                url: "https://example.com/logo-en.png",
+                thumbnailUrl: nil,
+                width: 500,
+                height: 150,
+                aspectRatio: 3.333,
+                voteAverage: 8,
+                voteCount: 10,
+                language: "en",
+                style: "official",
+                isOriginal: true,
+                isSelected: true
+            ),
+            LogoOption(
+                url: "https://example.com/logo-neutral.png",
+                thumbnailUrl: nil,
+                width: 0,
+                height: 0,
+                aspectRatio: nil,
+                voteAverage: 0,
+                voteCount: 0,
+                language: nil,
+                style: "white",
+                isOriginal: false,
+                isSelected: false
+            ),
+        ]
+    }
+
+    func saveLogo(ref: MediaRef, logoURL: String) async throws -> LogoSaveResponse {
+        LogoSaveResponse(
+            logoUrl: logoURL,
+            customLogoUrl: logoURL,
+            logoWidth: 500,
+            logoHeight: 150,
+            logoAspectRatio: 3.333
+        )
+    }
 }
 
 private enum TestFixtures {
@@ -4595,6 +7449,22 @@ private enum TestFixtures {
     static let tvDetail: MediaDetail = try! JSONDecoder.api.decode(
         MediaDetail.self,
         from: tvDetailJSON.data(using: .utf8)!
+    )
+
+    static let episodeDetail = MediaDetail(
+        ref: MediaRef(
+            itemId: 912,
+            source: "tmdb",
+            mediaType: "episode",
+            mediaId: "1399",
+            seasonNumber: 3,
+            episodeNumber: 2
+        ),
+        title: "Dark Wings, Dark Words",
+        subtitle: "Game of Thrones",
+        releaseDate: "2013-04-07",
+        userState: UserMediaState(isTracked: false),
+        backdropUrl: "https://example.com/episode.jpg"
     )
 
     static let trackingState = TrackingState(
@@ -4675,7 +7545,14 @@ private enum TestFixtures {
         """.data(using: .utf8)!
     )
 
-    static func diaryEntryJSON(id: Int, mediaId: String, title: String, tags: [String]) -> String {
+    static func diaryEntryJSON(
+        id: Int,
+        mediaId: String,
+        title: String,
+        tags: [String],
+        source: String = "tmdb",
+        mediaType: String = "movie"
+    ) -> String {
         let encodedTags = tags
             .map { #""\#($0)""# }
             .joined(separator: ",")
@@ -4684,11 +7561,11 @@ private enum TestFixtures {
           "id": \(id),
           "user": { "id": 1, "username": "mobile", "display_name": "Mobile", "avatar_url": null },
           "media": {
-            "ref": { "item_id": \(100 + id), "source": "tmdb", "media_type": "movie", "media_id": "\(mediaId)", "season_number": null, "episode_number": null },
+            "ref": { "item_id": \(100 + id), "source": "\(source)", "media_type": "\(mediaType)", "media_id": "\(mediaId)", "season_number": null, "episode_number": null },
             "title": "\(title)",
             "image_url": null,
             "poster_url": null,
-            "poster_orientation": "portrait"
+            "poster_orientation": "\(mediaType == "music" ? "square" : "portrait")"
           },
           "consumed_at": "2026-06-20T12:00:00Z",
           "rating": "9.0",
@@ -4784,6 +7661,12 @@ private enum TestFixtures {
       "backdrop_url": "https://image.tmdb.org/t/p/original/rr7E0NoGKxvbkb89eR1GwfoYjpA.jpg",
       "details": {
         "director": "The Alchemist",
+        "director_id": "c1",
+        "directors": [
+          { "id": "c1", "name": "The Alchemist" },
+          { "id": "c2", "name": "Mica Levi" },
+          { "id": "c3", "name": "Jordan Peele" }
+        ],
         "runtime": "2h 7m",
         "rating": "R",
         "release_date": "2026-06-19",
@@ -4849,6 +7732,14 @@ private enum TestFixtures {
       "backdrop_url": "https://image.tmdb.org/t/p/original/9xxLWtnFxkpJ2h1uthpvCRK6vta.jpg",
       "details": {
         "creator": "Lena Okafor",
+        "creator_id": "creator-1",
+        "creators": [
+          { "id": "creator-1", "name": "Lena Okafor" },
+          { "id": "creator-2", "name": "Ravi Shah" },
+          { "id": "creator-3", "name": "Mina Park" },
+          { "id": "creator-4", "name": "Noah King" },
+          { "id": "creator-5", "name": "Ana Torres" }
+        ],
         "format": "TV",
         "first_air_date": "2024-01-14",
         "last_air_date": "2025-03-02",
@@ -4964,7 +7855,7 @@ private enum TestFixtures {
       "providers": null,
       "community": { "average_rating": "9.0", "rating_count": 1800, "diary_count": 721, "review_count": 84, "liked_count": 1133, "rating_distribution": [] },
       "external_ratings": [
-        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10" }
+        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10", "url": "https://myanimelist.net/anime/1" }
       ],
       "reviews": null,
       "cast": [],

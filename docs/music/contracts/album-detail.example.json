@@ -1,0 +1,523 @@
+{
+  "ref": {
+    "item_id": 812,
+    "source": "musicbrainz",
+    "media_type": "music",
+    "media_id": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+    "season_number": null,
+    "episode_number": null
+  },
+  "title": "Year Zero",
+  "subtitle": "Nine Inch Nails",
+  "overview": null,
+  "synopsis": null,
+  "image_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+  "poster_url": "https://coverartarchive.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e/front-500",
+  "custom_poster_url": null,
+  "poster_orientation": "square",
+  "poster_aspect_ratio": 1.0,
+  "poster_width": 500,
+  "poster_height": 500,
+  "poster_accent_color": null,
+  "backdrop_url": null,
+  "custom_backdrop_url": null,
+  "logo_url": null,
+  "custom_logo_url": null,
+  "logo_width": null,
+  "logo_height": null,
+  "logo_aspect_ratio": null,
+  "release_date": "2007-04-13",
+  "genres": [],
+  "languages": [
+    "eng"
+  ],
+  "roles": [],
+  "credit_roles": [],
+  "default_source": "musicbrainz",
+  "user_state": {
+    "is_tracked": true,
+    "tracking_id": 410,
+    "status": "Completed",
+    "rating": "8.5",
+    "diary_entry_id": 1702,
+    "diary_count": 2,
+    "diary_rating": "9.0",
+    "diary_consumed_at": "2026-07-11",
+    "in_lists": [
+      15
+    ],
+    "has_liked": true
+  },
+  "details": {
+    "artist": "Nine Inch Nails",
+    "primary_type": "Album",
+    "secondary_types": [],
+    "first_release_date": "2007-04-13",
+    "representative_release_date": "2016-09-02",
+    "representative_release_country": "XW",
+    "media_count": 1,
+    "track_count": 16
+  },
+  "parent": null,
+  "external_links": {
+    "musicbrainz": "https://musicbrainz.org/release-group/3bd76d40-7f0e-36b7-9348-91a33afee20e"
+  },
+  "cast": [],
+  "crew": [],
+  "seasons": [],
+  "episodes": [],
+  "related": {},
+  "related_sections": [],
+  "providers": null,
+  "community": {
+    "average_rating": "8.74",
+    "rating_count": 31,
+    "diary_count": 44,
+    "review_count": 7,
+    "liked_count": 19,
+    "rating_distribution": [
+      {
+        "rating": "8.0",
+        "count": 9
+      },
+      {
+        "rating": "9.0",
+        "count": 14
+      },
+      {
+        "rating": "10.0",
+        "count": 8
+      }
+    ]
+  },
+  "external_ratings": [],
+  "music": {
+    "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+    "primary_type": "Album",
+    "secondary_types": [],
+    "disambiguation": null,
+    "annotation": null,
+    "first_release_date": "2007-04-13",
+    "release_count": 13,
+    "artist_credit": [
+      {
+        "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+        "name": "Nine Inch Nails",
+        "join_phrase": ""
+      }
+    ],
+    "cover_art": {
+      "source": "cover_art_archive",
+      "release_group_mbid": "3bd76d40-7f0e-36b7-9348-91a33afee20e",
+      "fallback_used": false
+    },
+    "representative_release": {
+      "release_mbid": "2d0bad69-f735-484b-bc0b-2ea54c76225e",
+      "title": "Year Zero",
+      "status": "Official",
+      "date": "2016-09-02",
+      "country": "XW",
+      "barcode": "00602547582812",
+      "selection_basis": "streaming_standard_edition",
+      "format": "Digital Media",
+      "is_deluxe_or_remastered": false,
+      "streaming_links": [
+        {
+          "service": "music.apple.com",
+          "url": "https://music.apple.com/album/year-zero/1440766015"
+        }
+      ],
+      "disc_count": 1,
+      "track_count": 16,
+      "labels": [
+        {
+          "label_mbid": "4b5cba06-6a79-454c-91f5-3fe220d4950d",
+          "name": "Nothing Records",
+          "catalog_number": null
+        }
+      ],
+      "media": [
+        {
+          "medium_mbid": "b05740f0-cf72-3ea2-aabf-e00c85065525",
+          "position": 1,
+          "title": null,
+          "format": "Digital Media",
+          "track_count": 16,
+          "tracks": [
+            {
+              "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f",
+              "disc_number": 1,
+              "position": 1,
+              "number": "1",
+              "title": "HYPERPOWER!",
+              "length_ms": 101790,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+                "title": "HYPERPOWER!",
+                "length_ms": 102000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false,
+                "isrcs": [
+                  "USUM70727128"
+                ]
+              }
+            },
+            {
+              "track_mbid": "116fa306-e9ea-4280-9dca-6301c0067a2d",
+              "disc_number": 1,
+              "position": 2,
+              "number": "2",
+              "title": "The Beginning of the End",
+              "length_ms": 167397,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "52aac264-b3e7-4879-9a8a-eb152e838337",
+                "title": "The Beginning of the End",
+                "length_ms": 167000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "5fdd1732-da03-4928-82c3-6984d161022b",
+              "disc_number": 1,
+              "position": 3,
+              "number": "3",
+              "title": "Survivalism",
+              "length_ms": 263945,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "97d09e1b-8812-45fd-830f-0200a3c0e3b8",
+                "title": "Survivalism",
+                "length_ms": 264000,
+                "disambiguation": null,
+                "first_release_date": "2007-03-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "d3f67dc3-08a7-4821-a5c4-b82631301ad9",
+              "disc_number": 1,
+              "position": 4,
+              "number": "4",
+              "title": "The Good Soldier",
+              "length_ms": 203177,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "d576e2d8-9e25-4686-b4a5-c96663e6f2ef",
+                "title": "The Good Soldier",
+                "length_ms": 203000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "b388975e-66d4-463b-b812-1e980fdd2fc9",
+              "disc_number": 1,
+              "position": 5,
+              "number": "5",
+              "title": "Vessel",
+              "length_ms": 292637,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "80e502a8-27eb-4ad5-80e6-6de2fc21c027",
+                "title": "Vessel",
+                "length_ms": 293000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "a835de40-da5c-4999-81e2-a890638594ae",
+              "disc_number": 1,
+              "position": 6,
+              "number": "6",
+              "title": "Me, I’m Not",
+              "length_ms": 291864,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "872ef730-6718-4d38-9c71-a52f32879d7f",
+                "title": "Me, I’m Not",
+                "length_ms": 292000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "ef4a4e9c-6df1-420a-b367-149e71470e4c",
+              "disc_number": 1,
+              "position": 7,
+              "number": "7",
+              "title": "Capital G",
+              "length_ms": 230381,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "24f6297b-8afa-44a9-8ab7-e18c496ae752",
+                "title": "Capital G",
+                "length_ms": 230000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "4cf265a1-eef5-45bc-8d7c-048186dbf1e6",
+              "disc_number": 1,
+              "position": 8,
+              "number": "8",
+              "title": "My Violent Heart",
+              "length_ms": 253587,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "482864df-6b9d-441b-8d36-9fbc4c36522d",
+                "title": "My Violent Heart",
+                "length_ms": 254000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "1aa5b090-e37c-4032-8551-bff3c776e6b8",
+              "disc_number": 1,
+              "position": 9,
+              "number": "9",
+              "title": "The Warning",
+              "length_ms": 218681,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "67bcde07-bfb1-4b30-88ba-6b995ec04123",
+                "title": "The Warning",
+                "length_ms": 219000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "80f39b7d-db4b-4fc7-964b-8ff45ee6681c",
+              "disc_number": 1,
+              "position": 10,
+              "number": "10",
+              "title": "God Given",
+              "length_ms": 230937,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "06c5617a-ca0b-4dfc-ac45-0fda38845135",
+                "title": "God Given",
+                "length_ms": 231000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "0773ec20-0d3a-4336-9c4a-ea33f08e9d14",
+              "disc_number": 1,
+              "position": 11,
+              "number": "11",
+              "title": "Meet Your Master",
+              "length_ms": 248665,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "f0186207-2706-4be5-a5ec-16a08b5abc59",
+                "title": "Meet Your Master",
+                "length_ms": 249000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "cc9a51f6-6dbf-44c8-bb34-db9af820811b",
+              "disc_number": 1,
+              "position": 12,
+              "number": "12",
+              "title": "The Greater Good",
+              "length_ms": 292024,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "962ad5f0-bb94-42a1-868d-271e3c6d2ef7",
+                "title": "The Greater Good",
+                "length_ms": 292000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "c74b7ddd-37db-4e8f-9006-9cf996dd66a0",
+              "disc_number": 1,
+              "position": 13,
+              "number": "13",
+              "title": "The Great Destroyer",
+              "length_ms": 198713,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "eb575db3-983f-4484-8388-98a5c52d8c0a",
+                "title": "The Great Destroyer",
+                "length_ms": 197000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "65cbc9a8-7b68-4081-8e45-38cab1b7540e",
+              "disc_number": 1,
+              "position": 14,
+              "number": "14",
+              "title": "Another Version of the Truth",
+              "length_ms": 247981,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "c9b82865-1d4b-424e-9493-5b66f974ec65",
+                "title": "Another Version of the Truth",
+                "length_ms": 249000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "a737f550-ab0a-4a60-bfdb-2422ee697555",
+              "disc_number": 1,
+              "position": 15,
+              "number": "15",
+              "title": "In This Twilight",
+              "length_ms": 213827,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "fc4bcb1c-7bee-4a49-8277-66777cc087f2",
+                "title": "In This Twilight",
+                "length_ms": 214000,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            },
+            {
+              "track_mbid": "45d97bb2-1721-4283-85f7-75d0a4616db4",
+              "disc_number": 1,
+              "position": 16,
+              "number": "16",
+              "title": "Zero‐Sum",
+              "length_ms": 374287,
+              "artist_credit": [
+                {
+                  "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+                  "name": "Nine Inch Nails",
+                  "join_phrase": ""
+                }
+              ],
+              "recording": {
+                "recording_mbid": "b0fbf9f3-9d77-46dc-ad94-7182324b6b77",
+                "title": "Zero‐Sum",
+                "length_ms": 374866,
+                "disambiguation": null,
+                "first_release_date": "2007-04-13",
+                "is_video": false
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

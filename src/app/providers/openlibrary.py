@@ -31,10 +31,11 @@ def handle_error(error):
     )
 
 
-def search(query, page):
+def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     """Search for books on Open Library."""
+    match_suffix = "_match" if preserve_ranking_fields else ""
     cache_key = (
-        f"search_{Sources.OPENLIBRARY.value}_{MediaTypes.BOOK.value}_{query}_{page}"
+        f"search_{Sources.OPENLIBRARY.value}_{MediaTypes.BOOK.value}_{query}_{page}{match_suffix}"
     )
     data = cache.get(cache_key)
 
@@ -57,6 +58,7 @@ def search(query, page):
                 search_url,
                 params=params,
                 headers=headers,
+                timeout=timeout,
             )
         except requests.RequestException as e:
             handle_error(e)
@@ -64,7 +66,12 @@ def search(query, page):
         results = [result for doc in response.get("docs", []) if (result := _search_result(doc))]
 
         total_results = response["numFound"]
-        results = rank_results(query, results, MediaTypes.BOOK.value)
+        results = rank_results(
+            query,
+            results,
+            MediaTypes.BOOK.value,
+            preserve_ranking_fields=preserve_ranking_fields,
+        )
         data = helpers.format_search_response(
             page,
             settings.PER_PAGE,
@@ -74,6 +81,63 @@ def search(query, page):
 
         cache.set(cache_key, data)
     return data
+
+
+def lookup_book_by_isbn(isbn):
+    """Return the exact Open Library edition identified by an ISBN."""
+    normalized = str(isbn or "").strip().upper()
+    if not normalized:
+        return None
+
+    cache_key = f"isbn_{Sources.OPENLIBRARY.value}_{normalized}"
+    cached = cache.get(cache_key)
+    if cached is False:
+        return None
+    if cached is not None:
+        return cached
+
+    try:
+        response = services.api_request(
+            Sources.OPENLIBRARY.value,
+            "GET",
+            f"https://openlibrary.org/isbn/{quote(normalized, safe='')}.json",
+            headers=headers,
+        )
+    except requests.RequestException as error:
+        if (
+            error.response is not None
+            and error.response.status_code == requests.codes.not_found
+        ):
+            cache.set(cache_key, False, timeout=24 * 60 * 60)
+            return None
+        handle_error(error)
+
+    media_id = extract_openlibrary_id(response.get("key"))
+    if not media_id:
+        cache.set(cache_key, False, timeout=24 * 60 * 60)
+        return None
+
+    covers = response.get("covers") or []
+    image = (
+        f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
+        if covers
+        else settings.IMG_NONE
+    )
+    # `pagination` is free-form bibliographic text (for example, "x, 356 p.")
+    # and cannot be persisted in Spine's integer page-count field.
+    total_pages = response.get("number_of_pages")
+    result = {
+        "media_id": media_id,
+        "source": Sources.OPENLIBRARY.value,
+        "media_type": MediaTypes.BOOK.value,
+        "title": response.get("title") or normalized,
+        "image": image,
+        "max_progress": total_pages,
+        "total_pages": total_pages,
+        "matched_isbn": normalized,
+    }
+    cache.set(cache_key, result)
+    return result
 
 
 def discover(*, page=1, page_size=None, genre=None, year=None):

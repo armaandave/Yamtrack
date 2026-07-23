@@ -1,4 +1,5 @@
 import math
+from decimal import Decimal
 
 from django import forms
 from django.conf import settings
@@ -14,6 +15,7 @@ from app.models import (
     Item,
     Manga,
     MediaTypes,
+    Music,
     Movie,
     Season,
     Sources,
@@ -124,6 +126,7 @@ class ManualItemForm(forms.ModelForm):
         """Initialize the form."""
         self.user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
+
         if self.user:
             self.fields["parent_tv"].queryset = TV.objects.filter(
                 user=self.user,
@@ -233,6 +236,31 @@ class MediaForm(forms.ModelForm):
             ),
         }
 
+    def __init__(self, *args, **kwargs):
+        """Expose the public half-star scale for single-weight media only."""
+        self.public_rating_scale = kwargs.pop("public_rating_scale", False)
+        super().__init__(*args, **kwargs)
+        if not self.public_rating_scale or self._meta.model not in {Movie, Music}:
+            return
+        self.fields["score"].min_value = Decimal("0")
+        self.fields["score"].max_value = Decimal("5")
+        self.fields["score"].widget.attrs.update(
+            {"min": 0, "max": 5, "step": 0.5, "placeholder": "0.5-5"},
+        )
+        if not self.is_bound and self.initial.get("score") is not None:
+            self.initial["score"] = self.initial["score"] / 2
+
+    def clean_score(self):
+        """Validate half-star values for movie and music forms."""
+        score = self.cleaned_data.get("score")
+        if self.public_rating_scale and self._meta.model in {Movie, Music} and score not in {
+            None,
+            Decimal("0"),
+            *(Decimal(step) / 2 for step in range(1, 11)),
+        }:
+            raise forms.ValidationError("Choose a half-star rating from 0.5 to 5.0.")
+        return score
+
 
 class MangaForm(MediaForm):
     """Form for manga."""
@@ -315,6 +343,30 @@ class ComicForm(MediaForm):
                 f"Progress ({config.get_unit(MediaTypes.COMIC.value, short=False)}s)"
             ),
         }
+
+
+class MusicForm(MediaForm):
+    """Form for music releases."""
+
+    class Meta(MediaForm.Meta):
+        """Bind form to model."""
+
+        model = Music
+        fields = ["score", "status", "start_date", "end_date", "notes"]
+
+    def __init__(self, *args, **kwargs):
+        """Use album-specific labels without changing stored status values."""
+        super().__init__(*args, **kwargs)
+        self.fields["status"].choices = [
+            (
+                value,
+                {"In progress": "Listening", "Completed": "Listened"}.get(
+                    value,
+                    label,
+                ),
+            )
+            for value, label in self.fields["status"].choices
+        ]
 
 
 class TvForm(MediaForm):
@@ -423,6 +475,11 @@ class DiaryEntryForm(forms.ModelForm):
         self.user = kwargs.pop("user", None)
         self.item = kwargs.pop("item", None)
         super().__init__(*args, **kwargs)
+
+        if self.item and self.item.media_type in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}:
+            self.fields["rating"].widget.attrs.update(
+                {"min": 0.5, "max": 5, "step": 0.5, "placeholder": "0.5-5"},
+            )
         
         if not settings.TRACK_TIME and "consumed_at" in self.initial:
             # If not tracking time, only show the date part
@@ -480,7 +537,10 @@ class DiaryEntryForm(forms.ModelForm):
             if self.instance:
                 existing = existing.exclude(pk=self.instance.pk)
                 
-            if existing.exists():
+            if (
+                self.item.media_type not in {MediaTypes.MOVIE.value, MediaTypes.MUSIC.value}
+                and existing.exists()
+            ):
                 self.add_error(
                     "consumed_at",
                     "You already have a diary entry for this item on this date."

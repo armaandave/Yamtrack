@@ -61,12 +61,21 @@ class StoryGraphImporter:
             created = True
             self.counts[MediaTypes.BOOK.value] += 1
 
-        latest_entry = self._import_diary_entries(item, row)
+        latest_entry = self._import_diary_entries(
+            item,
+            row,
+            update_current=created,
+        )
         if row.rating is not None and (created or latest_entry):
             self.counts["ratings"] += 1
         if row.review and (created or latest_entry):
             self.counts["reviews"] += 1
-        if created and latest_entry:
+        book.refresh_from_db()
+        if (
+            created
+            and latest_entry
+            and book.completion_diary_entry_id != latest_entry.id
+        ):
             book.completion_diary_entry = latest_entry
             book.save(update_fields=["completion_diary_entry"])
 
@@ -100,7 +109,7 @@ class StoryGraphImporter:
             completed_manually=False,
         )
 
-    def _import_diary_entries(self, item, row):
+    def _import_diary_entries(self, item, row, *, update_current):
         if not row.can_create_diary:
             return None
 
@@ -118,6 +127,7 @@ class StoryGraphImporter:
                 review=row.review if is_latest else "",
                 is_rewatch=index > 0,
                 tags=row.tags if is_latest else [],
+                update_current=update_current and is_latest,
             )
             self.counts["diary"] += 1
             if is_latest:

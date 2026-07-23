@@ -13,6 +13,7 @@ final class MediaDiscoverViewModel {
     private let onUnauthorized: () -> Void
     private var request: MediaDiscoverRequest
     private var nextPage: String?
+    private var hasAttemptedInitialLoad = false
 
     init(request: MediaDiscoverRequest, mediaRepository: MediaRepository, onUnauthorized: @escaping () -> Void) {
         self.request = request
@@ -22,6 +23,10 @@ final class MediaDiscoverViewModel {
 
     var hasMorePages: Bool {
         nextPage != nil
+    }
+
+    var isLoadingInitial: Bool {
+        !hasAttemptedInitialLoad || isLoading
     }
 
     func loadNextPageIfNeeded(currentItem: MediaSummary) async {
@@ -41,10 +46,11 @@ final class MediaDiscoverViewModel {
             results = response.results
             totalCount = response.count
             nextPage = Self.page(from: response.next)
+            hasAttemptedInitialLoad = true
+        } catch is CancellationError {
+            return
         } catch {
-            results = []
-            totalCount = 0
-            nextPage = nil
+            hasAttemptedInitialLoad = true
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -64,6 +70,8 @@ final class MediaDiscoverViewModel {
             results += response.results.filter { !existing.contains($0.id) }
             totalCount = response.count
             self.nextPage = Self.page(from: response.next)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -90,7 +98,7 @@ final class MediaDiscoverViewModel {
 struct MediaDiscoverView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaDiscoverViewModel
-    @State private var selectedRef: MediaRef?
+    @State private var selectedMedia: MediaBrowsingSelection?
     @State private var edgeDragOffset: CGFloat = 0
 
     private let request: MediaDiscoverRequest
@@ -135,42 +143,48 @@ struct MediaDiscoverView: View {
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
 
-                if viewModel.isLoading {
-                    ProgressView()
-                        .tint(.white)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error = viewModel.errorMessage, viewModel.results.isEmpty {
-                    ContentUnavailableView("Could not load media", systemImage: "exclamationmark.triangle", description: Text(error))
-                } else if viewModel.results.isEmpty {
-                    ContentUnavailableView("No results", systemImage: "square.grid.2x2", description: Text("Try another media detail pill."))
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-                            ForEach(viewModel.results) { media in
-                                Button {
-                                    selectedRef = media.ref
-                                } label: {
-                                    MediaArtwork(
-                                        url: media.displayPosterURL,
-                                        title: media.title,
-                                        slot: .tagGrid,
-                                        mediaType: media.ref.mediaType,
-                                        orientation: media.posterOrientation
-                                    )
-                                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("View \(media.title)")
-                                .task {
-                                    await viewModel.loadNextPageIfNeeded(currentItem: media)
+                Group {
+                    if viewModel.isLoadingInitial, viewModel.results.isEmpty {
+                        ProgressView()
+                            .tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let error = viewModel.errorMessage, viewModel.results.isEmpty {
+                        ContentUnavailableView("Could not load media", systemImage: "exclamationmark.triangle", description: Text(error))
+                    } else if viewModel.results.isEmpty {
+                        ContentUnavailableView("No results", systemImage: "square.grid.2x2", description: Text("Try another media detail pill."))
+                    } else {
+                        ScrollView {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
+                                ForEach(viewModel.results) { media in
+                                    Button {
+                                        selectedMedia = MediaBrowsingSelection(
+                                            ref: media.ref,
+                                            within: viewModel.results.map(\.ref)
+                                        )
+                                    } label: {
+                                        MediaArtwork(
+                                            url: media.displayPosterURL,
+                                            title: media.title,
+                                            slot: .tagGrid,
+                                            mediaType: media.ref.mediaType,
+                                            orientation: media.posterOrientation
+                                        )
+                                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("View \(media.title)")
+                                    .task {
+                                        await viewModel.loadNextPageIfNeeded(currentItem: media)
+                                    }
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 14)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
             .navigationTitle(request.title)
             .navigationBarTitleDisplayMode(.inline)
@@ -197,9 +211,10 @@ struct MediaDiscoverView: View {
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
         }
-        .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
+        .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
-                ref: ref,
+                ref: selection.ref,
+                browsingContext: selection.context,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -210,6 +225,14 @@ struct MediaDiscoverView: View {
                 onUnauthorized: onUnauthorized
             )
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingInitial,
+            hasContent: !viewModel.results.isEmpty,
+            hasError: viewModel.errorMessage != nil
+        )
     }
 
     private var edgeSwipeBackGesture: some Gesture {

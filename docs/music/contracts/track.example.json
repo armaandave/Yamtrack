@@ -1,0 +1,26 @@
+{
+  "track_mbid": "5e10ea28-e7fe-4eeb-a7aa-f61ee36e822f",
+  "disc_number": 1,
+  "position": 1,
+  "number": "1",
+  "title": "HYPERPOWER!",
+  "length_ms": 101790,
+  "artist_credit": [
+    {
+      "artist_mbid": "b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+      "name": "Nine Inch Nails",
+      "join_phrase": ""
+    }
+  ],
+  "recording": {
+    "recording_mbid": "35518724-a25a-4627-a2cc-0786dd1d2272",
+    "title": "HYPERPOWER!",
+    "length_ms": 102000,
+    "disambiguation": null,
+    "first_release_date": "2007-04-13",
+    "is_video": false,
+    "isrcs": [
+      "USUM70727128"
+    ]
+  }
+}

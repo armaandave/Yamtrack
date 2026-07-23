@@ -8,8 +8,9 @@ final class ProfileViewModel {
     var profile: UserProfile?
     var recentActivityItems: [ActivityItem] = []
     var inProgressItems: [LibraryItem] = []
-    var isLoading = false
+    var isLoading = true
     var isLoadingInProgress = false
+    var isLoadingActivity = false
     var errorMessage: String?
     var activityErrorMessage: String?
     var inProgressErrorMessage: String?
@@ -20,30 +21,53 @@ final class ProfileViewModel {
     private let trackingRepository: TrackingRepository
     private let activityRepository: ActivityRepository
     private let onUnauthorized: () -> Void
+    private let username: String?
+    private var requestGeneration = 0
 
     init(
         profileRepository: ProfileRepository,
         trackingRepository: TrackingRepository,
         activityRepository: ActivityRepository,
+        username: String? = nil,
         onUnauthorized: @escaping () -> Void
     ) {
         self.profileRepository = profileRepository
         self.trackingRepository = trackingRepository
         self.activityRepository = activityRepository
+        self.username = username
         self.onUnauthorized = onUnauthorized
     }
 
     func load() async {
-        isLoading = true
+        requestGeneration += 1
+        let generation = requestGeneration
+        isLoading = profile == nil
         errorMessage = nil
-        activityErrorMessage = nil
-        inProgressErrorMessage = nil
-        inProgressItems = []
-        defer { isLoading = false }
+        isLoadingInProgress = false
+        isLoadingActivity = false
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
-            profile = try await profileRepository.me()
+            let loadedProfile: UserProfile
+            if let username {
+                loadedProfile = try await profileRepository.profile(username: username)
+            } else {
+                loadedProfile = try await profileRepository.me()
+            }
+            guard generation == requestGeneration else { return }
+            profile = loadedProfile
+            if username == nil {
+                isLoadingInProgress = inProgressItems.isEmpty
+            }
+            isLoadingActivity = recentActivityItems.isEmpty
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == requestGeneration else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -51,8 +75,10 @@ final class ProfileViewModel {
             return
         }
 
-        await loadInProgressItems()
-        await loadRecentActivity()
+        if username == nil {
+            await loadInProgressItems(generation: generation)
+        }
+        await loadRecentActivity(generation: generation)
     }
 
     func reload() async {
@@ -63,39 +89,64 @@ final class ProfileViewModel {
         savingHallOfFameSlots.contains(mediaType)
     }
 
-    private func loadRecentActivity() async {
+    private func loadRecentActivity(generation: Int) async {
         guard let username = profile?.username else {
             recentActivityItems = []
+            activityErrorMessage = nil
+            isLoadingActivity = false
             return
         }
 
+        isLoadingActivity = true
+        activityErrorMessage = nil
+        defer {
+            if generation == requestGeneration {
+                isLoadingActivity = false
+            }
+        }
+
         do {
-            recentActivityItems = try await activityRepository.userActivity(username: username, limit: 6)
+            let activity = try await activityRepository.userActivity(username: username, limit: 6)
+            guard generation == requestGeneration else { return }
+            recentActivityItems = activity
+        } catch is CancellationError {
+            return
         } catch {
-            recentActivityItems = []
+            guard generation == requestGeneration else { return }
             activityErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
     }
 
-    private func loadInProgressItems() async {
+    private func loadInProgressItems(generation: Int) async {
         let mediaTypes = InProgressLibraryLoader.mediaTypes(from: profile)
         guard !mediaTypes.isEmpty else {
             inProgressItems = []
+            inProgressErrorMessage = nil
+            isLoadingInProgress = false
             return
         }
 
         isLoadingInProgress = true
-        defer { isLoadingInProgress = false }
+        inProgressErrorMessage = nil
+        defer {
+            if generation == requestGeneration {
+                isLoadingInProgress = false
+            }
+        }
 
         do {
-            inProgressItems = try await InProgressLibraryLoader.load(
+            let items = try await InProgressLibraryLoader.load(
                 mediaTypes: mediaTypes,
                 trackingRepository: trackingRepository,
                 limit: 8
             )
+            guard generation == requestGeneration else { return }
+            inProgressItems = items
+        } catch is CancellationError {
+            return
         } catch {
-            inProgressItems = []
+            guard generation == requestGeneration else { return }
             inProgressErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
@@ -427,7 +478,16 @@ enum APIValidationMessages {
     }
 }
 
+private struct ProfileTopSafeAreaInsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct ProfileView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var viewModel: ProfileViewModel
@@ -435,14 +495,18 @@ struct ProfileView: View {
     @State private var isSettingsPresented = false
     @State private var hofPickerSlot: FavoriteSlot?
     @State private var heroCollapseProgress: CGFloat = 0
+    @State private var topSafeAreaInset: CGFloat = 0
+    @State private var isProfileBackdropSearchPresented = false
 
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
+    private let activityRepository: ActivityRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
-    private let importCoordinator: LetterboxdImportCoordinator
-    private let storygraphImportCoordinator: StoryGraphImportCoordinator
+    private let importCoordinator: LetterboxdImportCoordinator?
+    private let storygraphImportCoordinator: StoryGraphImportCoordinator?
+    private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
     private let currentUserId: Int?
     private let onLogout: () -> Void
     private let onOpenDiary: () -> Void
@@ -450,6 +514,12 @@ struct ProfileView: View {
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
     private let onUnauthorized: () -> Void
+    private let username: String?
+    private let isPushedProfile: Bool
+
+    private var isOwnProfile: Bool {
+        username == nil
+    }
 
     init(
         profileRepository: ProfileRepository,
@@ -458,29 +528,35 @@ struct ProfileView: View {
         trackingRepository: TrackingRepository,
         activityRepository: ActivityRepository,
         listRepository: ListRepository,
-        importCoordinator: LetterboxdImportCoordinator,
-        storygraphImportCoordinator: StoryGraphImportCoordinator,
+        importCoordinator: LetterboxdImportCoordinator? = nil,
+        storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
         currentUserId: Int? = nil,
         onLogout: @escaping () -> Void,
         onOpenDiary: @escaping () -> Void,
         onOpenLibrary: @escaping (LibraryShelf) -> Void,
         selectedTab: AppTab = .profile,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
+        username: String? = nil,
+        isPushedProfile: Bool = false,
         onUnauthorized: @escaping () -> Void = {}
     ) {
         _viewModel = State(initialValue: ProfileViewModel(
             profileRepository: profileRepository,
             trackingRepository: trackingRepository,
             activityRepository: activityRepository,
+            username: username,
             onUnauthorized: onUnauthorized
         ))
         self.profileRepository = profileRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
+        self.activityRepository = activityRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.currentUserId = currentUserId
         self.onLogout = onLogout
         self.onOpenDiary = onOpenDiary
@@ -488,11 +564,22 @@ struct ProfileView: View {
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
+        self.username = username
+        self.isPushedProfile = isPushedProfile
     }
 
     var body: some View {
-        NavigationStack {
-            profileContent
+        if isOwnProfile && !isPushedProfile {
+            NavigationStack {
+                profileScreen
+            }
+        } else {
+            profileScreen
+        }
+    }
+
+    private var profileScreen: some View {
+        profileContent
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -505,6 +592,12 @@ struct ProfileView: View {
                 Swift.Task<Void, Never> { await viewModel.reload() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
+                Swift.Task<Void, Never> { await viewModel.reload() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goodreadsImportDidSucceed)) { _ in
+                Swift.Task<Void, Never> { await viewModel.reload() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
                 Swift.Task<Void, Never> { await viewModel.reload() }
             }
             .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
@@ -521,19 +614,22 @@ struct ProfileView: View {
                 )
             }
             .sheet(isPresented: $isSettingsPresented) {
-                ProfileSettingsSheet(
-                    profile: viewModel.profile,
-                    profileRepository: profileRepository,
-                    mediaRepository: mediaRepository,
-                    onProfileUpdated: { updated in
-                        viewModel.profile = updated
-                        Swift.Task<Void, Never> { await viewModel.reload() }
-                    },
-                    onUnauthorized: onUnauthorized,
-                    importCoordinator: importCoordinator,
-                    storygraphImportCoordinator: storygraphImportCoordinator,
-                    onLogout: onLogout
-                )
+                if let importCoordinator, let storygraphImportCoordinator, let goodreadsImportCoordinator {
+                    ProfileSettingsSheet(
+                        profile: viewModel.profile,
+                        profileRepository: profileRepository,
+                        mediaRepository: mediaRepository,
+                        onProfileUpdated: { updated in
+                            viewModel.profile = updated
+                            Swift.Task<Void, Never> { await viewModel.reload() }
+                        },
+                        onUnauthorized: onUnauthorized,
+                        importCoordinator: importCoordinator,
+                        storygraphImportCoordinator: storygraphImportCoordinator,
+                        goodreadsImportCoordinator: goodreadsImportCoordinator,
+                        onLogout: onLogout
+                    )
+                }
             }
             .sheet(item: $hofPickerSlot) { slot in
                 HallOfFamePickerSheet(
@@ -548,6 +644,16 @@ struct ProfileView: View {
                     onUnauthorized: onUnauthorized
                 )
             }
+            .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
+                ProfileBackdropSearchView(
+                    mediaRepository: mediaRepository,
+                    profileRepository: profileRepository,
+                    currentBackdropURL: viewModel.profile?.profileBackdropUrl,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    applyProfileBackdrop(response)
+                }
+            }
             .alert("Hall of Fame Update Failed", isPresented: hofErrorBinding) {
                 Button("OK") {
                     viewModel.hofErrorMessage = nil
@@ -555,7 +661,6 @@ struct ProfileView: View {
             } message: {
                 Text(viewModel.hofErrorMessage ?? "")
             }
-        }
     }
 
     private var profileContent: some View {
@@ -564,27 +669,35 @@ struct ProfileView: View {
 
             ScrollView(showsIndicators: false) {
                 Group {
-                    if viewModel.isLoading {
+                    if viewModel.isLoading, viewModel.profile == nil {
                         ProgressView()
                             .tint(.white)
                             .frame(maxWidth: .infinity, minHeight: 520)
-                    } else if let error = viewModel.errorMessage {
+                    } else if let error = viewModel.errorMessage, viewModel.profile == nil {
                         ContentUnavailableView("Could not load profile", systemImage: "exclamationmark.triangle", description: Text(error))
                             .foregroundStyle(.white)
                             .padding(.top, 120)
                     } else if let profile = viewModel.profile {
                         VStack(alignment: .leading, spacing: 24) {
                             hero(profile, collapseProgress: reduceMotion ? 0 : heroCollapseProgress)
-                            inProgressSection
+                            if isOwnProfile {
+                                inProgressSection
+                                    .padding(.horizontal, 16)
+                            }
                             activitySection
-                            profileMenuSection(profile.counts)
+                                .padding(.horizontal, 16)
+                            if isOwnProfile {
+                                profileMenuSection(profile.counts)
+                                    .padding(.horizontal, 16)
+                            }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 28)
                         .padding(.bottom, 100)
                     }
                 }
+                .spineContentTransition(value: contentPhase)
             }
+            .scrollContentBackground(.hidden)
+            .ignoresSafeArea(edges: .top)
             .refreshable {
                 await viewModel.reload()
             }
@@ -594,11 +707,38 @@ struct ProfileView: View {
                 heroCollapseProgress = ProfileHeroCollapse.progress(for: offset)
             }
 
-            settingsButton
-                .padding(.top, 16)
-                .padding(.trailing, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            if isPushedProfile {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .background(.black.opacity(0.34), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
+                .padding(.top, topSafeAreaInset + 6)
+                .padding(.leading, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+
+            if isOwnProfile {
+                settingsButton
+                    .padding(.top, topSafeAreaInset + 6)
+                    .padding(.trailing, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else if !isPushedProfile {
+                EmptyView()
+            }
         }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: ProfileTopSafeAreaInsetKey.self, value: proxy.safeAreaInsets.top)
+            }
+        }
+        .onPreferenceChange(ProfileTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
     }
 
     private func clearHallOfFameAction(for slot: FavoriteSlot) -> (() async -> Bool)? {
@@ -631,84 +771,128 @@ struct ProfileView: View {
 
     private func hero(_ profile: UserProfile, collapseProgress: CGFloat) -> some View {
         let allSlots = favoriteSlots(from: profile)
-        let crownHeight = 210 - 74 * collapseProgress
+        let backdropURL = profileBackdropURL(from: profile)
+        let musicClearance = HallOfFameCrownLayout.aboveMusicClearance(
+            for: allSlots,
+            collapseProgress: collapseProgress
+        )
+        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress) + musicClearance
+        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress) + musicClearance
+        let crownNameSpacing = ProfileHeroBackdropLayout.crownNameSpacing(for: collapseProgress)
+        let backdropContentOffset = backdropURL == nil ? 0 : ProfileHeroBackdropLayout.contentTopOffset
 
-        return VStack(spacing: 6) {
-            VStack(spacing: 8) {
-                ZStack(alignment: .bottom) {
-                    HallOfFameCrownView(
-                        slots: allSlots,
-                        savingSlotIDs: viewModel.savingHallOfFameSlots,
-                        collapseProgress: collapseProgress
-                    ) { slot in
-                        if let item = slot.item {
-                            selectedRef = item.ref
+        return ZStack(alignment: .top) {
+            if let backdropURL {
+                ProfileBackdropArtwork(urlString: backdropURL)
+                    .frame(height: topSafeAreaInset + ProfileHeroBackdropLayout.backdropHeight)
+                    .onLongPressGesture {
+                        guard isOwnProfile else { return }
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        isProfileBackdropSearchPresented = true
+                    }
+            }
+
+            VStack(spacing: ProfileHeroBackdropLayout.heroContentSpacing) {
+                VStack(spacing: 8) {
+                    ZStack(alignment: .top) {
+                        HallOfFameCrownView(
+                            slots: allSlots,
+                            savingSlotIDs: viewModel.savingHallOfFameSlots,
+                            collapseProgress: collapseProgress
+                        ) { slot in
+                            if let item = slot.item {
+                                selectedRef = item.ref
+                            }
+                        } onEmptyTap: { slot in
+                            if isOwnProfile {
+                                hofPickerSlot = slot
+                            }
+                        } onFilledLongPress: { slot in
+                            if isOwnProfile {
+                                hofPickerSlot = slot
+                            }
                         }
-                    } onEmptyTap: { slot in
-                        hofPickerSlot = slot
-                    } onFilledLongPress: { slot in
-                        hofPickerSlot = slot
+                        .offset(y: -21 * collapseProgress)
+                        .zIndex(0)
+
+                        avatar(profile)
+                            .zIndex(1)
                     }
-                    .offset(y: 27 * collapseProgress)
-                    .zIndex(0)
+                    .padding(.top, musicClearance)
+                    .frame(height: crownHeight)
 
-                    avatar(profile)
-                        .offset(y: -14)
-                        .zIndex(1)
+                    if allSlots.isEmpty {
+                        Text("No favorites yet")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
                 }
-                .frame(height: crownHeight)
-                .padding(.top, 8)
 
-                if allSlots.isEmpty {
-                    Text("No favorites yet")
+                VStack(spacing: 6) {
+                    Text(profile.displayName)
+                        .font(.system(size: 34, weight: .black))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.32), radius: 12, y: 6)
+
+                    HStack(spacing: 8) {
+                        Text("@\(profile.username)")
+                        if profile.isPrivate {
+                            Label("Private", systemImage: "lock.fill")
+                                .labelStyle(.titleAndIcon)
+                        }
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.26), radius: 8, y: 4)
+                }
+                .padding(.top, crownNameSpacing - ProfileHeroBackdropLayout.heroContentSpacing)
+
+                if let bio = profile.bio?.trimmedNonEmpty {
+                    Text(bio)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .padding(.horizontal, 10)
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.22), radius: 8, y: 4)
+                }
+
+                if let location = profile.location?.trimmedNonEmpty {
+                    Label(location, systemImage: "mappin.and.ellipse")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(.white.opacity(0.56))
+                        .shadow(color: .black.opacity(backdropURL == nil ? 0 : 0.22), radius: 8, y: 4)
                 }
+
+                statsGrid(profile.counts)
             }
-
-            VStack(spacing: 6) {
-                Text(profile.displayName)
-                    .font(.system(size: 34, weight: .black))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.72)
-
-                HStack(spacing: 8) {
-                    Text("@\(profile.username)")
-                    if profile.isPrivate {
-                        Label("Private", systemImage: "lock.fill")
-                            .labelStyle(.titleAndIcon)
-                    }
-                }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.62))
-            }
-
-            if let bio = profile.bio?.trimmedNonEmpty {
-                Text(bio)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(4)
-                    .padding(.horizontal, 10)
-            }
-
-            if let location = profile.location?.trimmedNonEmpty {
-                Label(location, systemImage: "mappin.and.ellipse")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.56))
-            }
-
-            statsGrid(profile.counts)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.top, backdropURL == nil ? topSafeAreaInset + 28 : topSafeAreaInset + 74 + backdropContentOffset)
+            .padding(.bottom, backdropURL == nil ? 12 : 22)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 12)
+        .frame(minHeight: backdropURL == nil ? nil : topSafeAreaInset + heroMinHeight + backdropContentOffset, alignment: .top)
+    }
+
+    private func profileBackdropURL(from profile: UserProfile) -> String? {
+        if let profileBackdropUrl = profile.profileBackdropUrl?.trimmedNonEmpty {
+            return profileBackdropUrl
+        }
+        guard let movie = profile.hof["movie"] ?? nil else { return nil }
+        return movie.displayBackdropURL
+    }
+
+    private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
+        guard let updated = viewModel.profile?.replacingProfileBackdrop(response) else { return }
+        viewModel.profile = updated
     }
 
     private func avatar(_ profile: UserProfile) -> some View {
-        AsyncImage(url: URL(string: profile.avatarUrl ?? "")) { phase in
+        SpineAsyncImage(url: URL(string: profile.avatarUrl ?? "")) { phase in
             if case let .success(image) = phase {
                 image
                     .resizable()
@@ -731,39 +915,144 @@ struct ProfileView: View {
         .accessibilityLabel(profile.displayName)
     }
 
-    private func statsGrid(_ counts: ProfileCounts) -> some View {
-        HStack(spacing: 8) {
-            ProfileStatChip(value: counts.diaryEntries, title: "Logs", systemName: "calendar")
-            ProfileStatChip(value: counts.followers, title: "Followers", systemName: "person.2")
-            ProfileStatChip(value: counts.following, title: "Following", systemName: "person.crop.circle.badge.checkmark")
-            NavigationLink {
-                ProfileListsView(
-                    listRepository: listRepository,
-                    mediaRepository: mediaRepository,
-                    trackingRepository: trackingRepository,
-                    diaryRepository: diaryRepository,
-                    selectedTab: selectedTab,
-                    onSelectTab: onSelectTab,
-                    onUnauthorized: onUnauthorized
+    private struct ProfileBackdropArtwork: View {
+        let urlString: String
+
+        var body: some View {
+            GeometryReader { proxy in
+                ZStack {
+                    SpineAsyncImage(url: URL(string: urlString)) { phase in
+                        switch phase {
+                        case let .success(image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .clipped()
+                        default:
+                            Color.clear
+                        }
+                    }
+
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.42), location: 0),
+                            .init(color: .black.opacity(0.18), location: 0.36),
+                            .init(color: .clear, location: 0.72),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: 0),
+                            .init(color: .white, location: 0.52),
+                            .init(color: .white.opacity(0.35), location: 0.78),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 )
-            } label: {
-                ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
             }
-            .buttonStyle(.plain)
+            .clipped()
+        }
+    }
+
+    private enum ProfileHeroBackdropLayout {
+        static let backdropHeight: CGFloat = 352.34375
+        static let contentTopOffset: CGFloat = 44
+        static let heroContentSpacing: CGFloat = 12
+
+        static func crownHeight(for collapseProgress: CGFloat) -> CGFloat {
+            286 - 178 * collapseProgress
+        }
+
+        static func crownNameSpacing(for collapseProgress: CGFloat) -> CGFloat {
+            14 - 26 * collapseProgress
+        }
+
+        static func heroMinHeight(for collapseProgress: CGFloat) -> CGFloat {
+            520 - 156 * collapseProgress
+        }
+    }
+
+    private func statsGrid(_ counts: ProfileCounts) -> some View {
+        GlassEffectContainer(spacing: 3.5) {
+            HStack(spacing: 7) {
+                if isOwnProfile {
+                    Button(action: onOpenDiary) {
+                        ProfileStatChip(
+                            value: counts.diaryEntries,
+                            title: "Logs",
+                            systemName: "calendar",
+                            isInteractive: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("profile.logs")
+                    .accessibilityHint("Opens Diary")
+                } else {
+                    ProfileStatChip(value: counts.diaryEntries, title: "Logs", systemName: "calendar")
+                }
+
+                ProfileStatChip(value: counts.followers, title: "Followers", systemName: "person.2")
+                ProfileStatChip(value: counts.following, title: "Following", systemName: "person.crop.circle.badge.checkmark")
+
+                if isOwnProfile {
+                    NavigationLink {
+                        ProfileListsView(
+                            profileRepository: profileRepository,
+                            listRepository: listRepository,
+                            mediaRepository: mediaRepository,
+                            trackingRepository: trackingRepository,
+                            diaryRepository: diaryRepository,
+                            activityRepository: activityRepository,
+                            importCoordinator: importCoordinator,
+                            storygraphImportCoordinator: storygraphImportCoordinator,
+                            goodreadsImportCoordinator: goodreadsImportCoordinator,
+                            currentUserId: currentUserId ?? viewModel.profile?.id,
+                            onLogout: onLogout,
+                            onOpenDiary: onOpenDiary,
+                            onOpenLibrary: onOpenLibrary,
+                            selectedTab: selectedTab,
+                            onSelectTab: onSelectTab,
+                            onUnauthorized: onUnauthorized
+                        )
+                    } label: {
+                        ProfileStatChip(
+                            value: counts.lists,
+                            title: "Lists",
+                            systemName: "list.bullet.rectangle",
+                            isInteractive: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    ProfileStatChip(value: counts.lists, title: "Lists", systemName: "list.bullet.rectangle")
+                }
+            }
         }
     }
 
     private var activitySection: some View {
         ProfileSection(title: "Recent Activity") {
-            if let activityError = viewModel.activityErrorMessage {
-                EmptyProfileCard(title: activityError, systemName: "exclamationmark.triangle")
-            } else if ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).isEmpty {
-                EmptyProfileCard(title: "No activity yet", systemName: "bolt")
-            } else {
-                RecentActivityRail(items: viewModel.recentActivityItems) { item in
-                    selectedRef = item.media.ref
+            Group {
+                if viewModel.isLoadingActivity, viewModel.recentActivityItems.isEmpty {
+                    ProfileRailLoadingView()
+                } else if let activityError = viewModel.activityErrorMessage, viewModel.recentActivityItems.isEmpty {
+                    EmptyProfileCard(title: activityError, systemName: "exclamationmark.triangle")
+                } else if ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).isEmpty {
+                    EmptyProfileCard(title: "No activity yet", systemName: "bolt")
+                } else {
+                    RecentActivityRail(items: viewModel.recentActivityItems) { item in
+                        selectedRef = item.media.ref
+                    }
                 }
             }
+            .spineContentTransition(value: activityPhase)
         }
     }
 
@@ -785,7 +1074,7 @@ struct ProfileView: View {
     }
 
     @ViewBuilder
-    private func profileMenuLink(_ destination: ProfileMenuDestination, count: Int, showsDivider: Bool) -> some View {
+    private func profileMenuLink(_ destination: ProfileMenuDestination, count: Int?, showsDivider: Bool) -> some View {
         switch destination {
         case .library:
             Button {
@@ -799,6 +1088,23 @@ struct ProfileView: View {
                 onOpenDiary()
             } label: {
                 ProfileMenuRow(title: destination.title, count: count, showsDivider: showsDivider)
+            }
+            .buttonStyle(.plain)
+        case .stats:
+            NavigationLink {
+                StatsView(
+                    profileRepository: profileRepository,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    diaryRepository: diaryRepository,
+                    listRepository: listRepository,
+                    currentUserId: currentUserId ?? viewModel.profile?.id,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    onUnauthorized: onUnauthorized
+                )
+            } label: {
+                ProfileMenuRow(title: destination.title, count: nil, showsDivider: showsDivider)
             }
             .buttonStyle(.plain)
         case .reviews:
@@ -819,10 +1125,19 @@ struct ProfileView: View {
         case .lists:
             NavigationLink {
                 ProfileListsView(
+                    profileRepository: profileRepository,
                     listRepository: listRepository,
                     mediaRepository: mediaRepository,
                     trackingRepository: trackingRepository,
                     diaryRepository: diaryRepository,
+                    activityRepository: activityRepository,
+                    importCoordinator: importCoordinator,
+                    storygraphImportCoordinator: storygraphImportCoordinator,
+                    goodreadsImportCoordinator: goodreadsImportCoordinator,
+                    currentUserId: currentUserId ?? viewModel.profile?.id,
+                    onLogout: onLogout,
+                    onOpenDiary: onOpenDiary,
+                    onOpenLibrary: onOpenLibrary,
                     selectedTab: selectedTab,
                     onSelectTab: onSelectTab,
                     onUnauthorized: onUnauthorized
@@ -874,18 +1189,45 @@ struct ProfileView: View {
 
     private var inProgressSection: some View {
         ProfileSection(title: "In Progress") {
-            if viewModel.isLoadingInProgress {
-                ProfileRailLoadingView()
-            } else if let inProgressError = viewModel.inProgressErrorMessage {
-                EmptyProfileCard(title: inProgressError, systemName: "exclamationmark.triangle")
-            } else if viewModel.inProgressItems.isEmpty {
-                EmptyProfileCard(title: "Nothing in progress yet", systemName: "play.circle")
-            } else {
-                InProgressRail(items: viewModel.inProgressItems) { item in
-                    selectedRef = item.media.ref
+            Group {
+                if viewModel.isLoadingInProgress, viewModel.inProgressItems.isEmpty {
+                    ProfileRailLoadingView()
+                } else if let inProgressError = viewModel.inProgressErrorMessage, viewModel.inProgressItems.isEmpty {
+                    EmptyProfileCard(title: inProgressError, systemName: "exclamationmark.triangle")
+                } else if viewModel.inProgressItems.isEmpty {
+                    EmptyProfileCard(title: "Nothing in progress yet", systemName: "play.circle")
+                } else {
+                    InProgressRail(items: viewModel.inProgressItems) { item in
+                        selectedRef = item.media.ref
+                    }
                 }
             }
+            .spineContentTransition(value: inProgressPhase)
         }
+    }
+
+    private var contentPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoading,
+            hasContent: viewModel.profile != nil,
+            hasError: viewModel.errorMessage != nil
+        )
+    }
+
+    private var activityPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingActivity,
+            hasContent: !viewModel.recentActivityItems.isEmpty,
+            hasError: viewModel.activityErrorMessage != nil
+        )
+    }
+
+    private var inProgressPhase: SpineContentPhase {
+        .resolve(
+            isLoading: viewModel.isLoadingInProgress,
+            hasContent: !viewModel.inProgressItems.isEmpty,
+            hasError: viewModel.inProgressErrorMessage != nil
+        )
     }
 
     private func favoriteSlots(from profile: UserProfile) -> [FavoriteSlot] {
@@ -898,7 +1240,7 @@ struct ProfileView: View {
 }
 
 struct ProfileFavorites {
-    private static let defaultSlotKeys = ["movie", "tv", "anime", "manga", "game", "book", "comic"]
+    private static let defaultSlotKeys = ["movie", "tv", "anime", "manga", "game", "book", "comic", "music"]
 
     static func slots(from hof: [String: MediaSummary?], enabledMediaTypes: [String] = []) -> [FavoriteSlot] {
         let enabled = enabledMediaTypes.filter { defaultSlotKeys.contains($0) }
@@ -914,7 +1256,7 @@ struct ProfileFavorites {
 
     static func rank(_ key: String) -> Int {
         let normalized = key.lowercased()
-        let order = ["movie", "tv", "anime", "manga", "game", "book", "comic", "boardgame"]
+        let order = ["movie", "tv", "anime", "manga", "game", "book", "comic", "music", "boardgame"]
         return order.firstIndex { normalized.contains($0) } ?? order.count
     }
 }
@@ -940,32 +1282,51 @@ private final class HallOfFamePickerViewModel {
     var results: [MediaSummary] = []
     var isLoading = false
     var errorMessage: String?
+    var resultRevision = 0
 
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
+    private var requestGeneration = 0
 
     init(mediaRepository: MediaRepository, onUnauthorized: @escaping () -> Void) {
         self.mediaRepository = mediaRepository
         self.onUnauthorized = onUnauthorized
     }
 
+    func invalidateSearch() {
+        requestGeneration += 1
+        isLoading = false
+    }
+
     func search(mediaType: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        requestGeneration += 1
+        let generation = requestGeneration
         guard !trimmed.isEmpty else {
             results = []
             errorMessage = nil
+            isLoading = false
             return
         }
 
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
-            results = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+            let found = try await mediaRepository.search(query: trimmed, mediaType: mediaType)
+            guard generation == requestGeneration,
+                  trimmed == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            results = found
+            resultRevision += 1
         } catch is CancellationError {
             return
         } catch {
+            guard generation == requestGeneration else { return }
             results = []
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -1036,19 +1397,7 @@ private struct HallOfFamePickerSheet: View {
                     if viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ContentUnavailableView("Search \(slot.title)", systemImage: "magnifyingglass")
                             .listRowBackground(Color.clear)
-                    } else if viewModel.isLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                    } else if let error = viewModel.errorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                    } else if viewModel.results.isEmpty {
-                        ContentUnavailableView("No Results", systemImage: "magnifyingglass")
-                            .listRowBackground(Color.clear)
-                    } else {
+                    } else if !viewModel.results.isEmpty {
                         ForEach(viewModel.results) { media in
                             Button {
                                 Swift.Task<Void, Never> { await select(media) }
@@ -1063,8 +1412,21 @@ private struct HallOfFamePickerSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isSaving || savingMediaID != nil)
                         }
+                    } else if viewModel.isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    } else if let error = viewModel.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    } else if viewModel.results.isEmpty {
+                        ContentUnavailableView("No Results", systemImage: "magnifyingglass")
+                            .listRowBackground(Color.clear)
                     }
                 }
+                .spineContentTransition(value: resultsTransitionKey)
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
@@ -1073,6 +1435,7 @@ private struct HallOfFamePickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search \(slot.title)")
             .task(id: viewModel.query) {
+                viewModel.invalidateSearch()
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
                 await viewModel.search(mediaType: slot.id)
@@ -1085,6 +1448,24 @@ private struct HallOfFamePickerSheet: View {
                 }
             }
         }
+    }
+
+    private var resultsPhase: SpineContentPhase {
+        let hasQuery = !viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return .resolve(
+            isLoading: hasQuery && viewModel.isLoading,
+            hasContent: hasQuery && !viewModel.results.isEmpty,
+            hasError: hasQuery && viewModel.errorMessage != nil
+        )
+    }
+
+    private var resultsTransitionKey: ResultsTransitionKey {
+        ResultsTransitionKey(phase: resultsPhase, revision: viewModel.resultRevision)
+    }
+
+    private struct ResultsTransitionKey: Hashable {
+        let phase: SpineContentPhase
+        let revision: Int
     }
 
     private func select(_ media: MediaSummary) async {
@@ -1126,7 +1507,7 @@ private struct HallOfFamePickerRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                if let subtitle {
+                if let subtitle = media.searchResultSubtitle {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -1140,41 +1521,72 @@ private struct HallOfFamePickerRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var subtitle: String? {
-        let text = [media.subtitle, media.releaseDate]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-        return text.isEmpty ? nil : text
-    }
 }
 
 private struct ProfileStatChip: View {
+    private static let cornerRadius: CGFloat = 10.5
+
     let value: Int
     let title: String
     let systemName: String
+    var isInteractive = false
 
     var body: some View {
-        VStack(spacing: 5) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white.opacity(0.62))
+        glassSurface
+            .overlay {
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 3.5, y: 1.75)
+            .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(value.formatted()) \(title)")
+    }
 
-            Text(value.formatted())
-                .font(.system(size: 18, weight: .black))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+    @ViewBuilder
+    private var glassSurface: some View {
+        if isInteractive {
+            content
+                .glassEffect(
+                    .regular.tint(.white.opacity(0.06)).interactive(),
+                    in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                )
+        } else {
+            content
+                .glassEffect(
+                    .regular.tint(.white.opacity(0.06)),
+                    in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                )
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: 2.5) {
+            HStack(spacing: 3.5) {
+                Image(systemName: systemName)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+
+                Text(value.formatted())
+                    .font(.system(size: 15.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .contentTransition(.numericText())
+            }
 
             Text(title)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.52))
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
                 .lineLimit(1)
-                .minimumScaleFactor(0.68)
+                .minimumScaleFactor(0.72)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 70)
-        .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(width: 67, height: 50)
+        .background(
+            .white.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+        )
     }
 }
 
@@ -1186,11 +1598,13 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
     case planned
     case likes
     case tags
+    case stats
 
     var title: String {
         switch self {
         case .library: "Library"
         case .diary: "Diary"
+        case .stats: "Stats"
         case .reviews: "Reviews"
         case .lists: "Lists"
         case .planned: "Planned"
@@ -1199,10 +1613,11 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
         }
     }
 
-    func count(from counts: ProfileCounts) -> Int {
+    func count(from counts: ProfileCounts) -> Int? {
         switch self {
         case .library: counts.libraryItems
         case .diary: counts.diaryEntries
+        case .stats: nil
         case .reviews: counts.reviews
         case .lists: counts.lists
         case .planned: counts.plannedItems
@@ -1214,7 +1629,7 @@ enum ProfileMenuDestination: CaseIterable, Hashable {
 
 struct ProfileMenuRow: View {
     let title: String
-    let count: Int
+    let count: Int?
     var showsDivider = true
 
     var body: some View {
@@ -1227,11 +1642,13 @@ struct ProfileMenuRow: View {
 
             Spacer(minLength: 12)
 
-            Text(count.formatted())
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white.opacity(0.42))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
+            if let count {
+                Text(count.formatted())
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .bold))
@@ -1249,7 +1666,7 @@ struct ProfileMenuRow: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(count)")
+        .accessibilityLabel(count.map { "\(title), \($0)" } ?? title)
     }
 }
 
@@ -1373,7 +1790,7 @@ private struct RecentActivityRail: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let itemWidth = PosterSlot.diaryRow.size.width
+            let itemWidth = PosterSlot.profileRail.size.width
             let minimumSpacing: CGFloat = 4
             let maximumVisibleCount = min(6, visibleItems.count)
             let visibleCount = max(1, min(maximumVisibleCount, Int((proxy.size.width + minimumSpacing) / (itemWidth + minimumSpacing))))
@@ -1390,7 +1807,7 @@ private struct RecentActivityRail: View {
                 Spacer(minLength: 0)
             }
         }
-        .frame(height: 104)
+        .frame(height: 125)
     }
 }
 
@@ -1401,7 +1818,7 @@ private struct InProgressRail: View {
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 10
-            let itemWidth: CGFloat = 62
+            let itemWidth = PosterSlot.profileRail.size.width
             let visibleCount = max(3, min(5, Int((proxy.size.width + spacing) / (itemWidth + spacing))))
             HStack(alignment: .top, spacing: spacing) {
                 ForEach(Array(items.prefix(visibleCount))) { item in
@@ -1413,7 +1830,7 @@ private struct InProgressRail: View {
                 Spacer(minLength: 0)
             }
         }
-        .frame(height: 104)
+        .frame(height: 125)
     }
 }
 
@@ -1426,7 +1843,7 @@ private struct InProgressPoster: View {
             MediaArtwork(
                 url: item.media.displayPosterURL,
                 title: item.media.title,
-                slot: .diaryRow,
+                slot: .profileRail,
                 mediaType: item.media.ref.mediaType,
                 orientation: item.media.posterOrientation
             )
@@ -1442,7 +1859,7 @@ private struct ProfileRailLoadingView: View {
             ForEach(0..<5, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(.white.opacity(0.08))
-                    .frame(width: 62, height: 94)
+                    .frame(width: PosterSlot.profileRail.size.width, height: PosterSlot.profileRail.size.height)
             }
             Spacer(minLength: 0)
         }
@@ -1460,7 +1877,7 @@ private struct RecentActivityPoster: View {
                 MediaArtwork(
                     url: item.media.displayPosterURL,
                     title: item.media.title,
-                    slot: .diaryRow,
+                    slot: .profileRail,
                     mediaType: item.media.ref.mediaType,
                     orientation: item.media.posterOrientation
                 )
@@ -1476,33 +1893,37 @@ private struct RecentActivityPoster: View {
     private var metadataLine: some View {
         if let progressDeltaText = ProfileRecentActivityRailModel.progressDeltaText(for: item.activity, media: item.media) {
             Text(progressDeltaText)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: 12.5, weight: .bold))
                 .foregroundStyle(.white.opacity(0.54))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+                .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         } else if ProfileRecentActivityRailModel.isDiary(item.activity),
                   ProfileRecentActivityRailModel.rating(for: item.activity) != nil || ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
             HStack(spacing: 5) {
                 if let rating = ProfileRecentActivityRailModel.rating(for: item.activity) {
-                    ProfileStarRating(rating: rating, reservesWidth: !ProfileRecentActivityRailModel.isLikedDiary(item.activity))
+                    ProfileStarRating(
+                        rating: rating,
+                        reservesWidth: !ProfileRecentActivityRailModel.isLikedDiary(item.activity),
+                        mediaType: item.activity.media?.ref.mediaType
+                    )
                 }
 
                 if ProfileRecentActivityRailModel.isLikedDiary(item.activity) {
                     Image(systemName: "heart.fill")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 11.25, weight: .bold))
                         .foregroundStyle(.pink)
                         .accessibilityLabel("Liked")
                 }
             }
-            .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+            .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         } else if let label = ProfileRecentActivityRailModel.fallbackLabel(for: item.activity) {
             Text(label)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(size: 12.5, weight: .bold))
                 .foregroundStyle(.white.opacity(0.54))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: PosterSlot.diaryRow.size.width, height: 10, alignment: .leading)
+                .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
         }
     }
 }
@@ -1510,23 +1931,24 @@ private struct RecentActivityPoster: View {
 private struct ProfileStarRating: View {
     let rating: String?
     var reservesWidth = true
+    var mediaType: String?
 
     var body: some View {
         HStack(spacing: 1) {
             ForEach(Array(symbolNames.enumerated()), id: \.offset) { _, symbolName in
                 Image(systemName: symbolName)
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.yellow.opacity(0.92))
             }
         }
-        .frame(width: reservesWidth ? 56 : nil, height: 10, alignment: .leading)
+        .frame(width: reservesWidth ? PosterSlot.profileRail.size.width : nil, height: 12.5, alignment: .leading)
         .accessibilityHidden(value == nil)
         .accessibilityLabel(value.map { "Rating \($0) out of 5 stars" } ?? "")
     }
 
     private var value: Double? {
         guard let rating, let raw = Double(rating) else { return nil }
-        return raw / 2
+        return ["movie", "music", "book"].contains(mediaType) ? raw : raw / 2
     }
 
     private var symbolNames: [String] {
@@ -1560,6 +1982,7 @@ private struct EmptyProfileCard: View {
 private enum ImportStatusSource: Hashable, Identifiable {
     case letterboxd
     case storygraph
+    case goodreads
 
     var id: Self { self }
 }
@@ -1569,12 +1992,17 @@ private struct ProfileSettingsSheet: View {
     @State private var viewModel: ProfileSettingsViewModel
     @State private var importStatusSource: ImportStatusSource?
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isProfileBackdropSearchPresented = false
 
     let profile: UserProfile?
     let onProfileUpdated: (UserProfile) -> Void
     let importCoordinator: LetterboxdImportCoordinator
     let storygraphImportCoordinator: StoryGraphImportCoordinator
+    let goodreadsImportCoordinator: GoodreadsImportCoordinator
     let onLogout: () -> Void
+    private let profileRepository: ProfileRepository
+    private let mediaRepository: MediaRepository
+    private let onUnauthorized: () -> Void
 
     init(
         profile: UserProfile?,
@@ -1584,13 +2012,18 @@ private struct ProfileSettingsSheet: View {
         onUnauthorized: @escaping () -> Void,
         importCoordinator: LetterboxdImportCoordinator,
         storygraphImportCoordinator: StoryGraphImportCoordinator,
+        goodreadsImportCoordinator: GoodreadsImportCoordinator,
         onLogout: @escaping () -> Void
     ) {
         self.profile = profile
         self.onProfileUpdated = onProfileUpdated
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
+        self.goodreadsImportCoordinator = goodreadsImportCoordinator
         self.onLogout = onLogout
+        self.profileRepository = profileRepository
+        self.mediaRepository = mediaRepository
+        self.onUnauthorized = onUnauthorized
         _viewModel = State(initialValue: ProfileSettingsViewModel(
             profileRepository: profileRepository,
             mediaRepository: mediaRepository,
@@ -1604,6 +2037,7 @@ private struct ProfileSettingsSheet: View {
                 if let profile {
                     accountSection(profile)
                     profileSaveSection
+                    enabledMediaSection
                 }
 
                 Section("Import") {
@@ -1613,6 +2047,11 @@ private struct ProfileSettingsSheet: View {
                 Section("App") {
                     LabeledContent("API Base URL", value: AppConfig.apiBaseURL.absoluteString)
                     LabeledContent("API Prefix", value: AppConfig.apiPrefix)
+                }
+
+                Section("Data Sources") {
+                    Link("Music metadata provided by MusicBrainz", destination: URL(string: "https://musicbrainz.org/")!)
+                    Link("Cover art provided by the Cover Art Archive", destination: URL(string: "https://coverartarchive.org/")!)
                 }
 
                 Section {
@@ -1628,6 +2067,7 @@ private struct ProfileSettingsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 viewModel.load(profile: profile)
+                await viewModel.loadOptions()
             }
             .onChange(of: selectedPhotoItem) { _, newItem in
                 Swift.Task<Void, Never> {
@@ -1656,6 +2096,21 @@ private struct ProfileSettingsSheet: View {
                         coordinator: storygraphImportCoordinator,
                         onDone: { importStatusSource = nil }
                     )
+                case .goodreads:
+                    GoodreadsImportUploadView(
+                        coordinator: goodreadsImportCoordinator,
+                        onDone: { importStatusSource = nil }
+                    )
+                }
+            }
+            .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
+                ProfileBackdropSearchView(
+                    mediaRepository: mediaRepository,
+                    profileRepository: profileRepository,
+                    currentBackdropURL: viewModel.profile?.profileBackdropUrl ?? profile?.profileBackdropUrl,
+                    onUnauthorized: onUnauthorized
+                ) { response in
+                    applyProfileBackdrop(response)
                 }
             }
         }
@@ -1667,7 +2122,7 @@ private struct ProfileSettingsSheet: View {
 
         return Section("Account") {
             HStack(spacing: 14) {
-                AsyncImage(url: URL(string: avatarUrl ?? "")) { phase in
+                SpineAsyncImage(url: URL(string: avatarUrl ?? "")) { phase in
                     if case let .success(image) = phase {
                         image.resizable().scaledToFill()
                     } else {
@@ -1688,15 +2143,34 @@ private struct ProfileSettingsSheet: View {
 
                 Spacer()
 
-                if avatarUrl != nil {
-                    Button("Remove", role: .destructive) {
-                        Swift.Task<Void, Never> {
+            if avatarUrl != nil {
+                Button("Remove", role: .destructive) {
+                    Swift.Task<Void, Never> {
                             if let updated = await viewModel.removeAvatar() {
                                 onProfileUpdated(updated)
                             }
                         }
                     }
                     .disabled(isSavingAvatar)
+                }
+            }
+
+            Button {
+                isProfileBackdropSearchPresented = true
+            } label: {
+                Label("Choose Profile Backdrop", systemImage: "photo.on.rectangle")
+            }
+
+            if (viewModel.profile?.profileBackdropUrl ?? profile.profileBackdropUrl) != nil {
+                Button("Remove Profile Backdrop", role: .destructive) {
+                    Swift.Task<Void, Never> {
+                        do {
+                            let response = try await profileRepository.clearProfileBackdrop()
+                            applyProfileBackdrop(response)
+                        } catch {
+                            viewModel.errorMessage = error.localizedDescription
+                        }
+                    }
                 }
             }
 
@@ -1721,6 +2195,13 @@ private struct ProfileSettingsSheet: View {
         }
     }
 
+    private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
+        guard let base = viewModel.profile ?? profile else { return }
+        let updated = base.replacingProfileBackdrop(response)
+        viewModel.load(profile: updated)
+        onProfileUpdated(updated)
+    }
+
     private var profileSaveSection: some View {
         Section {
             saveButton("Save Changes", isSaving: viewModel.isSavingProfile, isDisabled: !viewModel.hasProfileChanges) {
@@ -1732,6 +2213,46 @@ private struct ProfileSettingsSheet: View {
 
             statusMessages
         }
+    }
+
+    private var enabledMediaSection: some View {
+        Section("Enabled Media") {
+            if viewModel.isLoadingOptions {
+                ProgressView()
+            } else {
+                ForEach(viewModel.mediaTypes, id: \.self) { mediaType in
+                    Toggle(
+                        MediaTypeTheme.theme(for: mediaType).displayName,
+                        isOn: enabledMediaBinding(mediaType)
+                    )
+                }
+            }
+
+            fieldError("enabled_media_types")
+
+            saveButton(
+                "Save Enabled Media",
+                isSaving: viewModel.isSavingPreferences,
+                isDisabled: !viewModel.hasPreferenceChanges
+            ) {
+                if let updated = await viewModel.savePreferences() {
+                    onProfileUpdated(updated)
+                }
+            }
+        }
+    }
+
+    private func enabledMediaBinding(_ mediaType: String) -> Binding<Bool> {
+        Binding(
+            get: { viewModel.enabledMediaTypes.contains(mediaType) },
+            set: { isEnabled in
+                if isEnabled {
+                    viewModel.enabledMediaTypes.insert(mediaType)
+                } else {
+                    viewModel.enabledMediaTypes.remove(mediaType)
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -1752,11 +2273,16 @@ private struct ProfileSettingsSheet: View {
             Swift.Task<Void, Never> { await action() }
         } label: {
             HStack {
-                Text(isSaving ? "Saving..." : title)
-                if isSaving {
-                    Spacer()
-                    ProgressView()
+                Group {
+                    if isSaving {
+                        Text("Saving...")
+                        Spacer()
+                        ProgressView()
+                    } else {
+                        Text(title)
+                    }
                 }
+                .spineContentTransition(value: isSaving)
             }
         }
         .disabled(isDisabled || isSaving)
@@ -1782,7 +2308,9 @@ private struct ProfileSettingsSheet: View {
 
     @ViewBuilder
     private var importSectionContent: some View {
-        if importCoordinator.phase == .idle && storygraphImportCoordinator.phase == .idle {
+        if importCoordinator.phase == .idle &&
+            storygraphImportCoordinator.phase == .idle &&
+            goodreadsImportCoordinator.phase == .idle {
             NavigationLink {
                 LetterboxdImportView(coordinator: importCoordinator)
             } label: {
@@ -1793,10 +2321,17 @@ private struct ProfileSettingsSheet: View {
             } label: {
                 Label("Import from StoryGraph", systemImage: "doc.text")
             }
+            NavigationLink {
+                GoodreadsImportView(coordinator: goodreadsImportCoordinator)
+            } label: {
+                Label("Import from Goodreads", systemImage: "doc.text")
+            }
         } else if importCoordinator.phase != .idle {
             letterboxdImportStatus
-        } else {
+        } else if storygraphImportCoordinator.phase != .idle {
             storygraphImportStatus
+        } else {
+            goodreadsImportStatus
         }
     }
 
@@ -1912,6 +2447,62 @@ private struct ProfileSettingsSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var goodreadsImportStatus: some View {
+        switch goodreadsImportCoordinator.phase {
+        case .idle:
+            EmptyView()
+        case let .uploading(_, progress):
+            Button {
+                importStatusSource = .goodreads
+            } label: {
+                HStack(spacing: 12) {
+                    ProgressView(value: progress)
+                        .frame(width: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Uploading...")
+                        Text("Tap for details")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        case let .processing(_, statusLabel, _):
+            Button {
+                importStatusSource = .goodreads
+            } label: {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(statusLabel)
+                        Text("Tap for details")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            goodreadsCheckStatusButton
+        case let .succeeded(message):
+            importResultRow(systemName: "checkmark.circle.fill", tint: .green, message: message)
+            Button("Dismiss") {
+                goodreadsImportCoordinator.clearFinishedJob()
+            }
+        case let .failed(message):
+            importResultRow(systemName: "exclamationmark.triangle.fill", tint: .red, message: message)
+            if goodreadsImportCoordinator.canCheckStatus {
+                goodreadsCheckStatusButton
+            }
+            NavigationLink {
+                GoodreadsImportView(coordinator: goodreadsImportCoordinator)
+            } label: {
+                Label("Try Again", systemImage: "arrow.clockwise")
+            }
+            Button("Dismiss") {
+                goodreadsImportCoordinator.clearFinishedJob()
+            }
+        }
+    }
+
     private var letterboxdCheckStatusButton: some View {
         Button {
             importCoordinator.checkStatusOnce()
@@ -1936,6 +2527,19 @@ private struct ProfileSettingsSheet: View {
             }
         }
         .disabled(storygraphImportCoordinator.isCheckingStatus)
+    }
+
+    private var goodreadsCheckStatusButton: some View {
+        Button {
+            goodreadsImportCoordinator.checkStatusOnce()
+        } label: {
+            if goodreadsImportCoordinator.isCheckingStatus {
+                Label("Checking Status", systemImage: "clock.arrow.circlepath")
+            } else {
+                Label("Check Status", systemImage: "arrow.clockwise")
+            }
+        }
+        .disabled(goodreadsImportCoordinator.isCheckingStatus)
     }
 
     private func importResultRow(systemName: String, tint: Color, message: String) -> some View {

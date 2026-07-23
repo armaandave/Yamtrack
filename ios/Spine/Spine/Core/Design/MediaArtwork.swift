@@ -9,16 +9,10 @@ struct MediaArtwork: View {
     var contentMode: PosterContentMode = .fill
 
     var body: some View {
-        Group {
-            if let imageURL {
-                AsyncImage(url: imageURL) { phase in
-                    artwork(for: phase)
-                }
-            } else {
-                placeholder
-            }
+        SpineAsyncImage(url: imageURL) { phase in
+            artwork(for: phase)
         }
-        .frame(width: slot.size.width, height: slot.size.height)
+        .frame(width: artworkSize.width, height: artworkSize.height)
         .clipShape(RoundedRectangle(cornerRadius: slot.cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: slot.cornerRadius, style: .continuous))
         .accessibilityLabel(title)
@@ -31,10 +25,10 @@ struct MediaArtwork: View {
             image
                 .resizable()
                 .modifier(ArtworkScaleModifier(contentMode: contentMode))
-                .frame(width: slot.size.width, height: slot.size.height)
+                .frame(width: artworkSize.width, height: artworkSize.height)
                 .clipped()
         case .empty:
-            ProgressView()
+            placeholder
         default:
             placeholder
         }
@@ -47,6 +41,10 @@ struct MediaArtwork: View {
         return URL(string: url)
     }
 
+    private var artworkSize: CGSize {
+        slot.artworkSize(mediaType: mediaType, orientation: orientation)
+    }
+
     private var placeholder: some View {
         let theme = MediaTypeTheme.theme(for: mediaType ?? "unknown")
         return ZStack {
@@ -57,10 +55,10 @@ struct MediaArtwork: View {
             )
             .overlay(.quaternary.opacity(0.28))
 
-            MediaTypeGlyph(theme: theme, size: slot.glyphSize)
+            MediaTypeGlyph(theme: theme, size: min(artworkSize.width, artworkSize.height) * 0.36)
                 .opacity(0.8)
         }
-        .frame(width: slot.size.width, height: slot.size.height)
+        .frame(width: artworkSize.width, height: artworkSize.height)
     }
 }
 

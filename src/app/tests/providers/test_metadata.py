@@ -1,14 +1,14 @@
 import json
 import os
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from app.models import Episode, Item, MediaTypes, Sources
 from app.providers import (
@@ -20,6 +20,8 @@ from app.providers import (
     manual,
     openlibrary,
     services,
+    steam,
+    steamgriddb,
     tmdb,
 )
 
@@ -98,6 +100,46 @@ class Metadata(TestCase):
 
         self.assertEqual(crew[0]["image"], "https://image.tmdb.org/t/p/w500/denis.jpg")
 
+    def test_tmdb_directors_and_creators_preserve_order_and_deduplicate(self):
+        credits = {
+            "crew": [
+                {"id": 1, "name": " First Director ", "job": "Director"},
+                {"id": 2, "name": "Second Director", "job": "Director"},
+                {"id": 1, "name": "First Director", "job": "Director"},
+                {"id": 3, "name": "Writer", "job": "Writer"},
+                {"id": 4, "name": "", "job": "Director"},
+            ]
+        }
+        creators = [
+            {"id": 10, "name": "Creator One"},
+            {"id": 11, "name": "Creator Two"},
+            {"id": 12, "name": "Creator Three"},
+            {"id": 13, "name": "Creator Four"},
+            {"id": 14, "name": "Creator Five"},
+            {"id": 10, "name": "Creator One"},
+            {"id": 15, "name": ""},
+        ]
+
+        self.assertEqual(
+            tmdb.get_directors(credits),
+            [{"name": "First Director", "id": "1"}, {"name": "Second Director", "id": "2"}],
+        )
+        self.assertEqual(
+            tmdb.get_creators(creators),
+            [
+                {"name": "Creator One", "id": "10"},
+                {"name": "Creator Two", "id": "11"},
+                {"name": "Creator Three", "id": "12"},
+                {"name": "Creator Four", "id": "13"},
+                {"name": "Creator Five", "id": "14"},
+            ],
+        )
+
+    def test_tmdb_person_credit_role_groups_common_jobs(self):
+        self.assertEqual(tmdb._person_credit_role("Screenplay", "Writing"), "Writer")
+        self.assertEqual(tmdb._person_credit_role("Executive Producer", "Production"), "Producer")
+        self.assertEqual(tmdb._person_credit_role("Director", "Directing"), "Director")
+
     @patch("app.providers.tmdb.tv_with_seasons")
     @patch("app.providers.tmdb.services.api_request")
     def test_tmdb_season_backdrops_use_episode_stills(self, mock_api_request, mock_tv_with_seasons):
@@ -143,6 +185,46 @@ class Metadata(TestCase):
         self.assertEqual(backdrops[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w780/still-1.jpg")
         self.assertEqual(backdrops[0]["episode_number"], 1)
         self.assertEqual(backdrops[1]["episode_number"], 2)
+
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_backdrops_use_only_selected_episode_stills(self, mock_api_request):
+        cache.clear()
+        mock_api_request.return_value = {
+            "stills": [
+                {
+                    "file_path": "/alternate.jpg",
+                    "width": 1280,
+                    "height": 720,
+                    "aspect_ratio": 1.778,
+                    "vote_average": 7,
+                    "vote_count": 3,
+                },
+                {
+                    "file_path": "/preferred.jpg",
+                    "width": 1920,
+                    "height": 1080,
+                    "aspect_ratio": 1.778,
+                    "vote_average": 9,
+                    "vote_count": 12,
+                    "iso_639_1": None,
+                },
+            ],
+        }
+
+        backdrops = tmdb.get_episode_backdrop_images("1399", 1, 2)
+
+        self.assertEqual(
+            [backdrop["url"] for backdrop in backdrops],
+            [
+                "https://image.tmdb.org/t/p/original/preferred.jpg",
+                "https://image.tmdb.org/t/p/original/alternate.jpg",
+            ],
+        )
+        self.assertEqual(backdrops[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w780/preferred.jpg")
+        self.assertEqual(backdrops[0]["episode_number"], 2)
+        request_url = mock_api_request.call_args.args[2]
+        self.assertTrue(request_url.endswith("/tv/1399/season/1/episode/2/images"))
+        self.assertNotIn("language", mock_api_request.call_args.kwargs["params"])
 
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
@@ -231,6 +313,51 @@ class Metadata(TestCase):
             },
         )
         self.assertEqual(mock_api_request.call_count, 1)
+
+    @patch("app.providers.tmdb.services.api_request")
+    def test_title_logos_return_all_languages_sorted_and_cached(self, mock_api_request):
+        """Test TMDB title logo option normalization, ordering, and caching."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "logos": [
+                {
+                    "file_path": "/smaller.png",
+                    "width": 1000,
+                    "height": 400,
+                    "aspect_ratio": 2.5,
+                    "vote_average": 8,
+                    "vote_count": 4,
+                    "iso_639_1": "fr",
+                },
+                {
+                    "file_path": "/best.png",
+                    "width": 1600,
+                    "height": 500,
+                    "aspect_ratio": 3.2,
+                    "vote_average": 8,
+                    "vote_count": 4,
+                    "iso_639_1": "en",
+                },
+                {
+                    "file_path": "/neutral.png",
+                    "width": 1200,
+                    "height": 400,
+                    "aspect_ratio": 3,
+                    "vote_average": 7,
+                    "vote_count": 10,
+                    "iso_639_1": None,
+                },
+            ],
+        }
+
+        logos = tmdb.get_title_logos("550", MediaTypes.MOVIE.value)
+        cached = tmdb.get_title_logos("550", MediaTypes.MOVIE.value)
+
+        self.assertEqual([logo["language"] for logo in logos], ["en", "fr", None])
+        self.assertEqual(logos[0]["url"], "https://image.tmdb.org/t/p/w500/best.png")
+        self.assertEqual(logos[0]["thumbnail_url"], "https://image.tmdb.org/t/p/w300/best.png")
+        self.assertEqual(cached, logos)
+        mock_api_request.assert_called_once()
 
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
@@ -374,8 +501,42 @@ class Metadata(TestCase):
         self.assertFalse(result[2]["history"], [])
 
     @patch("app.providers.tmdb.tv_with_seasons")
-    def test_tmdb_episode(self, mock_tv_with_seasons):
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode(self, mock_api_request, mock_tv_with_seasons):
         """Test the episode method for TMDB episodes."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "id": 62085,
+            "name": "Pilot",
+            "overview": "A chemistry teacher receives life-changing news.",
+            "air_date": "2008-01-20",
+            "runtime": 58,
+            "production_code": "101",
+            "still_path": "/path/to/still1.jpg",
+            "vote_average": 8.9,
+            "vote_count": 421,
+            "guest_stars": [
+                {
+                    "id": 1,
+                    "name": "Guest Actor",
+                    "character": "Guest",
+                    "profile_path": "/guest.jpg",
+                    "order": 0,
+                },
+            ],
+            "crew": [
+                {
+                    "id": 2,
+                    "name": "Episode Director",
+                    "job": "Director",
+                    "profile_path": "/director.jpg",
+                },
+            ],
+            "external_ids": {
+                "imdb_id": "tt0959621",
+                "tvdb_id": 349232,
+            },
+        }
         mock_tv_with_seasons.return_value = {
             "title": "Breaking Bad",
             "season/1": {
@@ -398,18 +559,90 @@ class Metadata(TestCase):
 
         result = tmdb.episode("1396", "1", "1")
 
-        self.assertEqual(result["title"], "Breaking Bad")
+        self.assertEqual(result["title"], "Pilot")
+        self.assertEqual(result["subtitle"], "Breaking Bad • S1 E1")
+        self.assertEqual(result["series_title"], "Breaking Bad")
         self.assertEqual(result["season_title"], "Season 1")
         self.assertEqual(result["episode_title"], "Pilot")
         self.assertEqual(result["image"], tmdb.get_image_url("/path/to/still1.jpg"))
+        self.assertEqual(result["backdrop_path"], "/path/to/still1.jpg")
+        self.assertEqual(result["synopsis"], "A chemistry teacher receives life-changing news.")
+        self.assertEqual(result["release_date"], "2008-01-20")
+        self.assertEqual(result["score"], 8.9)
+        self.assertEqual(result["score_count"], 421)
+        self.assertEqual(result["details"]["runtime"], "58m")
+        self.assertEqual(result["details"]["production_code"], "101")
+        self.assertEqual(result["cast"][0]["name"], "Guest Actor")
+        self.assertEqual(result["crew"][0]["name"], "Episode Director")
+        self.assertEqual(
+            result["external_links"]["IMDb"],
+            "https://www.imdb.com/title/tt0959621/",
+        )
+        self.assertEqual(result["imdb_id"], "tt0959621")
+        self.assertNotIn("TVDB", result["external_links"])
+        self.assertIsNone(result["external_ratings"]["imdb"]["value"])
+        self.assertEqual(result["parent"]["show"]["ref"]["media_type"], "tv")
+        self.assertEqual(result["parent"]["season"]["ref"]["season_number"], 1)
+
+        request_args, request_kwargs = mock_api_request.call_args
+        self.assertEqual(request_args[:3], (Sources.TMDB.value, "GET", "https://api.themoviedb.org/3/tv/1396/season/1/episode/1"))
+        self.assertEqual(request_kwargs["params"]["append_to_response"], "external_ids")
+        mock_tv_with_seasons.assert_called_once_with("1396", [1])
+
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_not_found(self, mock_api_request, mock_tv_with_seasons):
+        """TMDB episode 404s retain useful season and episode context."""
+        cache.clear()
+        response = requests.Response()
+        response.status_code = 404
+        response._content = b'{"status_message":"Not found"}'
+        mock_api_request.side_effect = requests.exceptions.HTTPError(response=response)
 
         with self.assertRaises(services.ProviderAPIError) as cm:
             tmdb.episode("1396", "1", "3")
 
+        self.assertEqual(cm.exception.status_code, 404)
         self.assertIn("Episode 3 not found in season 1", str(cm.exception))
         self.assertIn("The Movie Database with ID 1396", str(cm.exception))
+        mock_tv_with_seasons.assert_not_called()
 
-        mock_tv_with_seasons.assert_called_with("1396", ["1"])
+    @patch("app.providers.tmdb.tv_with_seasons")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_episode_without_still_keeps_persistence_placeholder(
+        self,
+        mock_api_request,
+        mock_tv_with_seasons,
+    ):
+        """Provider metadata distinguishes missing stills from stored placeholders."""
+        cache.clear()
+        mock_api_request.return_value = {
+            "name": "No Still",
+            "overview": "",
+            "air_date": "2025-01-01",
+            "runtime": 42,
+            "still_path": None,
+            "vote_average": 0,
+            "vote_count": 0,
+            "guest_stars": [],
+            "crew": [],
+            "external_ids": {},
+        }
+        mock_tv_with_seasons.return_value = {
+            "title": "Example Show",
+            "season/1": {
+                "title": "Example Show",
+                "season_title": "Season 1",
+                "episodes": [],
+            },
+        }
+
+        result = tmdb.episode("123", 1, 1)
+
+        self.assertEqual(result["image"], settings.IMG_NONE)
+        self.assertIsNone(result["backdrop_path"])
+        self.assertIsNone(result["score"])
+        self.assertEqual(result["score_count"], 0)
 
     def test_tmdb_find_next_episode(self):
         """Test the find_next_episode function."""
@@ -473,6 +706,130 @@ class Metadata(TestCase):
             ["hastily", "normally", "completely"],
         )
 
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb.services.api_request")
+    def test_game_metadata_keeps_artwork_age_rating_and_franchise(self, mock_api_request, _token_mock):
+        cache.clear()
+        mock_api_request.return_value = [
+            {
+                "name": "GameData",
+                "result": [
+                    {
+                        "id": 1020,
+                        "name": "Space Game",
+                        "url": "https://www.igdb.com/games/space-game",
+                        "cover": {"image_id": "cover"},
+                        "artworks": [{"image_id": "wide-art", "width": 1920, "height": 1080}],
+                        "summary": "Fly through space.",
+                        "game_type": 0,
+                        "first_release_date": int(datetime(2020, 9, 17, 12, tzinfo=UTC).timestamp()),
+                        "total_rating": 92.68,
+                        "total_rating_count": 5000,
+                        "genres": [{"name": "Adventure"}],
+                        "themes": [{"name": "Sci-Fi"}],
+                        "platforms": [{"name": "PC"}],
+                        "age_ratings": [{"category": 1, "rating": 11}],
+                        "franchises": [{"name": "Space Franchise"}],
+                        "collections": [
+                            {
+                                "name": "Space Collection",
+                                "games": [
+                                    {
+                                        "id": 1021,
+                                        "name": "Space Game 2",
+                                        "cover": {"image_id": "cover-2"},
+                                        "game_type": 0,
+                                        "first_release_date": int(datetime(2022, 5, 6, tzinfo=UTC).timestamp()),
+                                    },
+                                    {
+                                        "id": 1022,
+                                        "name": "Space Game DLC",
+                                        "cover": {"image_id": "cover-dlc"},
+                                        "game_type": 1,
+                                    },
+                                    {
+                                        "id": 1020,
+                                        "name": "Space Game",
+                                        "cover": {"image_id": "cover"},
+                                        "game_type": 0,
+                                        "first_release_date": int(datetime(2020, 9, 17, tzinfo=UTC).timestamp()),
+                                    },
+                                ],
+                            },
+                        ],
+                        "involved_companies": [
+                            {"developer": True, "company": {"id": 77, "name": "Space Studio"}},
+                            {"publisher": True, "company": {"id": 77, "name": "Space Studio"}},
+                            {"developer": True, "company": {"id": 88, "name": "Orbit Works"}},
+                        ],
+                    },
+                ],
+            },
+            {"name": "TTBData", "result": [{"id": 1, "normally": 3600}]},
+        ]
+
+        response = igdb.game("1020")
+
+        self.assertEqual(response["artworks"], [{"image_id": "wide-art", "width": 1920, "height": 1080}])
+        self.assertEqual(response["details"]["release_date"], "2020-09-17")
+        self.assertEqual(response["details"]["age_rating"], "ESRB M")
+        self.assertEqual(response["details"]["age_ratings"], ["ESRB M"])
+        self.assertEqual(response["details"]["franchise"], "Space Franchise")
+        self.assertEqual(response["details"]["franchises"], ["Space Franchise"])
+        self.assertEqual(response["details"]["collection"], "Space Collection")
+        self.assertEqual(
+            [game["title"] for game in response["related"]["collection"]],
+            ["Space Game", "Space Game 2"],
+        )
+        self.assertEqual(
+            response["details"]["company_credits"],
+            [
+                {"id": "77", "source": "igdb", "name": "Space Studio", "roles": ["Developer", "Publisher"]},
+                {"id": "88", "source": "igdb", "name": "Orbit Works", "roles": ["Developer"]},
+            ],
+        )
+
+    @patch("app.providers.igdb.get_access_token", return_value="token")
+    @patch("app.providers.igdb._post_igdb")
+    def test_company_catalog_keeps_roles_and_omits_missing_games(self, post_igdb, _token_mock):
+        cache.clear()
+        post_igdb.side_effect = [
+            [
+                {
+                    "id": 77,
+                    "name": "Space Studio",
+                    "developed": [10, 11, 10],
+                    "published": [12],
+                },
+            ],
+            [
+                {
+                    "id": 11,
+                    "name": "Newer Game",
+                    "cover": {"image_id": "newer"},
+                    "first_release_date": int(datetime(2024, 1, 1, tzinfo=UTC).timestamp()),
+                    "platforms": [{"name": "PlayStation 5"}],
+                    "game_type": 0,
+                },
+                {
+                    "id": 10,
+                    "name": "Older Game",
+                    "cover": {"image_id": "older"},
+                    "first_release_date": int(datetime(2020, 1, 1, tzinfo=UTC).timestamp()),
+                    "game_type": 0,
+                },
+            ],
+        ]
+
+        catalog = igdb.company_catalog("77", "developed")
+
+        self.assertEqual([game["media_id"] for game in catalog], [10, 11])
+        self.assertTrue(all(game["roles"] == ["Developer"] for game in catalog))
+        self.assertEqual(catalog[1]["platforms"], ["PlayStation 5"])
+        self.assertIn("platforms.name", post_igdb.call_args_list[1].args[1])
+        self.assertEqual(igdb.company_catalog_count(igdb.company("77"), "developed"), 2)
+        self.assertEqual(post_igdb.call_count, 2)
+
     @requires_provider_network
     def test_external_game_steam(self):
         """Test the external_game method for Steam games."""
@@ -486,6 +843,192 @@ class Metadata(TestCase):
         igdb_game_id = igdb.external_game("999999999", igdb.ExternalGameSource.STEAM)
 
         self.assertIsNone(igdb_game_id)
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_posters_use_steam_external_id(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB poster normalization."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {
+                    "id": 207777,
+                    "score": 12,
+                    "style": "alternate",
+                    "width": 600,
+                    "height": 900,
+                    "url": "https://cdn2.steamgriddb.com/grid/poster.png",
+                    "thumb": "https://cdn2.steamgriddb.com/thumb/poster.jpg",
+                },
+            ],
+        }
+
+        posters = steamgriddb.get_game_posters("1020")
+
+        self.assertEqual(posters[0]["url"], "https://cdn2.steamgriddb.com/grid/poster.png")
+        self.assertEqual(posters[0]["thumbnail_url"], "https://cdn2.steamgriddb.com/thumb/poster.jpg")
+        self.assertEqual(posters[0]["width"], 600)
+        self.assertEqual(posters[0]["height"], 900)
+        self.assertEqual(posters[0]["aspect_ratio"], 0.667)
+        self.assertEqual(posters[0]["source"], "steamgriddb")
+        api_request_mock.assert_called_once()
+        self.assertIn("/grids/steam/1245620", api_request_mock.call_args.args[2])
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_logo_prefers_official(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB logo selection."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {
+                    "id": 2,
+                    "score": 100,
+                    "style": "white",
+                    "width": 1000,
+                    "height": 250,
+                    "url": "https://cdn2.steamgriddb.com/logo/plain.png",
+                },
+                {
+                    "id": 1,
+                    "score": 1,
+                    "style": "official",
+                    "width": 600,
+                    "height": 215,
+                    "url": "https://cdn2.steamgriddb.com/logo/official.png",
+                },
+            ],
+        }
+
+        logo = steamgriddb.get_game_logo("1020")
+
+        self.assertEqual(logo["url"], "https://cdn2.steamgriddb.com/logo/official.png")
+        self.assertEqual(logo["aspect_ratio"], 2.791)
+        api_request_mock.assert_called_once()
+        self.assertIn("/logos/steam/1245620", api_request_mock.call_args.args[2])
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_game_logos_return_style_then_score_order(self, api_request_mock, _steam_id_mock):
+        """Test SteamGridDB logo options use stable style and score ordering."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": True,
+            "data": [
+                {"id": 1, "score": 100, "style": "white", "url": "https://example.com/white.png"},
+                {"id": 2, "score": 5, "style": "official", "url": "https://example.com/official-low.png"},
+                {"id": 3, "score": 10, "style": "official", "url": "https://example.com/official-high.png"},
+                {"id": 4, "score": 50, "style": "custom", "url": "https://example.com/custom.png"},
+            ],
+        }
+
+        logos = steamgriddb.get_game_logos("1020")
+
+        self.assertEqual(
+            [logo["url"] for logo in logos],
+            [
+                "https://example.com/official-high.png",
+                "https://example.com/official-low.png",
+                "https://example.com/custom.png",
+                "https://example.com/white.png",
+            ],
+        )
+
+    @override_settings(STEAMGRIDDB_API_KEY="")
+    @patch("app.providers.steamgriddb.igdb.steam_app_id")
+    def test_steamgriddb_game_logos_without_credentials_are_empty(self, steam_id_mock):
+        """Test logo options degrade cleanly when SteamGridDB is not configured."""
+        cache.clear()
+
+        self.assertEqual(steamgriddb.get_game_logos("1020"), [])
+        self.assertIsNone(steamgriddb.get_game_logo("1020"))
+        steam_id_mock.assert_not_called()
+
+    @override_settings(STEAMGRIDDB_API_KEY="test-key")
+    @patch("app.providers.steamgriddb.igdb.game", return_value={"title": "Ghost of Tsushima"})
+    @patch("app.providers.steamgriddb.igdb.steam_app_id", return_value=None)
+    @patch("app.providers.steamgriddb.services.api_request")
+    def test_steamgriddb_backdrops_fallback_to_exact_title_search(
+        self,
+        api_request_mock,
+        _steam_id_mock,
+        _game_mock,
+    ):
+        """Test SteamGridDB title search fallback for games without Steam IDs."""
+        cache.clear()
+
+        def api_request_side_effect(_provider, _method, url, **_kwargs):
+            if "/search/autocomplete/Ghost%20of%20Tsushima" in url:
+                return {
+                    "success": True,
+                    "data": [
+                        {"id": 111, "name": "Ghost of a Tale"},
+                        {"id": 222, "name": "Ghost of Tsushima"},
+                    ],
+                }
+            if "/heroes/game/222" in url:
+                return {
+                    "success": True,
+                    "data": [
+                        {
+                            "id": 333,
+                            "score": 42,
+                            "width": 3840,
+                            "height": 1240,
+                            "url": "https://cdn2.steamgriddb.com/hero/ghost.jpg",
+                        },
+                    ],
+                }
+            return {"success": True, "data": []}
+
+        api_request_mock.side_effect = api_request_side_effect
+
+        backdrops = steamgriddb.get_game_backdrops("75235")
+
+        self.assertEqual(backdrops[0]["url"], "https://cdn2.steamgriddb.com/hero/ghost.jpg")
+        self.assertEqual(backdrops[0]["aspect_ratio"], 3.097)
+        requested_urls = [call.args[2] for call in api_request_mock.call_args_list]
+        self.assertIn("https://www.steamgriddb.com/api/v2/search/autocomplete/Ghost%20of%20Tsushima", requested_urls)
+        self.assertIn("https://www.steamgriddb.com/api/v2/heroes/game/222", requested_urls)
+
+    @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steam.services.api_request")
+    def test_steam_metacritic_rating_uses_steam_external_id(self, api_request_mock, _steam_id_mock):
+        """Test Steam Metacritic rating normalization."""
+        cache.clear()
+        api_request_mock.return_value = {
+            "1245620": {
+                "success": True,
+                "data": {
+                    "metacritic": {
+                        "score": 94,
+                        "url": "https://www.metacritic.com/game/pc/elden-ring",
+                    },
+                },
+            },
+        }
+
+        rating = steam.get_metacritic_rating("119133")
+
+        self.assertEqual(rating["value"], 94)
+        self.assertEqual(rating["url"], "https://www.metacritic.com/game/pc/elden-ring")
+        api_request_mock.assert_called_once()
+        self.assertIn("/appdetails", api_request_mock.call_args.args[2])
+        self.assertEqual(api_request_mock.call_args.kwargs["params"]["appids"], "1245620")
+
+    @patch("app.providers.steam.igdb.steam_app_id")
+    def test_steam_metacritic_failure_can_be_raised(self, steam_id_mock):
+        cache.clear()
+        steam_id_mock.side_effect = requests.ConnectionError("temporary outage")
+
+        self.assertIsNone(steam.get_metacritic_rating("119133"))
+        with self.assertRaisesRegex(RuntimeError, "Cached Steam Metacritic lookup failure"):
+            steam.get_metacritic_rating("119133", raise_errors=True)
 
     @requires_provider_network
     def test_book(self):

@@ -26,6 +26,8 @@ ENV PYTHONUNBUFFERED=1
 ARG VERSION=dev
 # Set it as an environment variable
 ENV VERSION=$VERSION
+ARG SPINE_COMMIT_SHA=unknown
+ENV SPINE_COMMIT_SHA=$SPINE_COMMIT_SHA
 # Put the virtualenv on PATH so python/gunicorn/celery/supervisord resolve directly
 ENV PATH="/yamtrack/.venv/bin:$PATH"
 

@@ -14,6 +14,7 @@ from django.template.defaultfilters import pluralize
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
 
+from app import exposure
 from app.models import DiaryEntry, Item, MediaTypes
 from app.providers import tmdb
 from users.forms import (
@@ -255,7 +256,7 @@ def test_notification(request):
 @require_http_methods(["GET", "POST"])
 def preferences(request):
     """Render the preferences settings page."""
-    media_types = MediaTypes.values
+    media_types = exposure.media_types()
     media_types.remove(MediaTypes.EPISODE.value)
     watch_provider_regions = tmdb.watch_provider_regions()
 

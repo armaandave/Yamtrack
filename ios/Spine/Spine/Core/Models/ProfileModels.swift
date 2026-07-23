@@ -16,6 +16,8 @@ struct UserProfile: Codable, Identifiable {
     let pronouns: String?
     let location: String?
     let avatarUrl: String?
+    let profileBackdropUrl: String?
+    let profileBackdropItem: MediaSummary?
     let isPrivate: Bool
     let viewerRelationship: ViewerRelationship
     let counts: ProfileCounts
@@ -34,6 +36,8 @@ extension UserProfile {
             pronouns: pronouns,
             location: location,
             avatarUrl: avatarUrl,
+            profileBackdropUrl: profileBackdropUrl,
+            profileBackdropItem: profileBackdropItem,
             isPrivate: isPrivate,
             viewerRelationship: viewerRelationship,
             counts: counts,
@@ -52,6 +56,8 @@ extension UserProfile {
             pronouns: pronouns,
             location: location,
             avatarUrl: avatarUrl,
+            profileBackdropUrl: profileBackdropUrl,
+            profileBackdropItem: profileBackdropItem,
             isPrivate: isPrivate,
             viewerRelationship: viewerRelationship,
             counts: counts,
@@ -70,6 +76,28 @@ extension UserProfile {
             pronouns: pronouns,
             location: location,
             avatarUrl: avatarUrl,
+            profileBackdropUrl: profileBackdropUrl,
+            profileBackdropItem: profileBackdropItem,
+            isPrivate: isPrivate,
+            viewerRelationship: viewerRelationship,
+            counts: counts,
+            hof: hof,
+            preferences: preferences
+        )
+    }
+
+    func replacingProfileBackdrop(_ response: ProfileBackdropSaveResponse) -> UserProfile {
+        UserProfile(
+            id: id,
+            username: username,
+            displayName: displayName,
+            email: email,
+            bio: bio,
+            pronouns: pronouns,
+            location: location,
+            avatarUrl: avatarUrl,
+            profileBackdropUrl: response.profileBackdropUrl,
+            profileBackdropItem: response.profileBackdropItem,
             isPrivate: isPrivate,
             viewerRelationship: viewerRelationship,
             counts: counts,
@@ -176,6 +204,16 @@ struct PreferencesUpdateRequest: Encodable, Equatable {
 
 struct AvatarUploadResponse: Decodable {
     let avatarUrl: String?
+}
+
+struct ProfileBackdropSaveRequest: Codable, Equatable {
+    let ref: MediaRef
+    let backdropUrl: String
+}
+
+struct ProfileBackdropSaveResponse: Codable, Equatable {
+    let profileBackdropUrl: String?
+    let profileBackdropItem: MediaSummary?
 }
 
 struct PasswordChangeRequest: Encodable, Equatable {

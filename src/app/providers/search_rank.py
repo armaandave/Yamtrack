@@ -13,11 +13,14 @@ RANKING_KEYS = {
     "game_type",
     "num_scoring_users",
     "popularity",
+    "provider_rank_boost",
     "rating",
     "ratings_average",
     "ratings_count",
     "total_rating",
     "total_rating_count",
+    "total_listen_count",
+    "total_user_count",
     "vote_count",
 }
 STOP_WORDS = {
@@ -45,14 +48,31 @@ def normalize_search_text(value):
     return " ".join("".join(chars).split())
 
 
-def rank_results(query, results, media_type=None):
+def rank_results(query, results, media_type=None, *, preserve_ranking_fields=False):
     """Return results ordered by relevance, popularity, and metadata quality."""
     ranked = [
         (_score(query, result, media_type), -index, result)
         for index, result in enumerate(results)
     ]
     ranked.sort(reverse=True)
+    if preserve_ranking_fields:
+        return [result for _, _, result in ranked]
     return [_without_ranking_fields(result) for _, _, result in ranked]
+
+
+def rank_mixed_results(query, candidates, *, limit):
+    """Rank provider-ranked candidates together with the shared search score."""
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -_score(query, candidate[1], candidate[1].get("media_type")),
+            candidate[0],
+            str(candidate[1].get("media_type") or ""),
+            str(candidate[1].get("source") or ""),
+            str(candidate[1].get("media_id") or candidate[1].get("id") or ""),
+        ),
+    )
+    return [_without_ranking_fields(result) for _, result in ranked[:limit]]
 
 
 def _score(query, result, media_type):
@@ -75,6 +95,7 @@ def _score(query, result, media_type):
     score += popularity
     score += _metadata_score(result)
     score += _media_type_score(result, media_type)
+    score += _first_number(result, ("provider_rank_boost",))
     score -= _junk_penalty(normalized_query, normalized_title, result, popularity)
     return score
 
@@ -127,6 +148,7 @@ def _popularity_score(result):
         result,
         (
             "total_rating_count",
+            "total_user_count",
             "ratings_count",
             "score_count",
             "num_scoring_users",
@@ -134,7 +156,7 @@ def _popularity_score(result):
             "edition_count",
         ),
     )
-    popularity = _first_number(result, ("popularity",))
+    popularity = _first_number(result, ("total_listen_count", "popularity"))
     count_score = min(45, math.log10(count + 1) * 11) if count else 0
     popularity_score = min(25, math.log10(popularity + 1) * 8) if popularity else 0
     return count_score + popularity_score

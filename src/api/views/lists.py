@@ -6,11 +6,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.pagination import StandardResultsSetPagination
 from api.serializers.common import (
     find_item,
     get_or_create_item_from_metadata,
     image_url,
     media_summary_from_item,
+    prime_collection_items,
     user_summary,
 )
 from api.serializers.lists import (
@@ -19,7 +21,9 @@ from api.serializers.lists import (
     ListItemsReorderSerializer,
     ListItemWriteSerializer,
 )
+from api.services import filters as filter_service
 from api.services.social import set_like
+from app import exposure
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
 from social.models import Activity, ContentLike
@@ -34,6 +38,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
         "name": custom_list.name,
         "slug": custom_list.slug,
         "description": custom_list.description,
+        "tags": custom_list.tags,
         "visibility": custom_list.visibility,
         "is_ranked": custom_list.is_ranked,
         "owner": user_summary(custom_list.owner, request=request),
@@ -41,7 +46,9 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             user_summary(user, request=request) for user in custom_list.collaborators.all()
         ],
         "image_url": image_url(request, custom_list.image),
-        "items_count": custom_list.items.count(),
+        "items_count": custom_list.items.filter(
+            media_type__in=exposure.media_types(),
+        ).count(),
         "updated_at": custom_list.updated_at,
         "like_count": ContentLike.objects.filter(
             target_type=ContentLike.CUSTOM_LIST,
@@ -50,7 +57,9 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
     }
     if include_preview_items or include_items:
         items = []
-        list_items = custom_list.customlistitem_set.select_related("item").all()
+        list_items = custom_list.customlistitem_set.select_related("item").filter(
+            item__media_type__in=exposure.media_types(),
+        )
         if include_preview_items and not include_items:
             list_items = list_items[:LIST_PREVIEW_ITEM_LIMIT]
         for list_item in list_items:
@@ -58,7 +67,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
                 list_item.item,
                 request=request,
                 user=request.user,
-                include_resolved_backdrop=include_items,
+                include_user_state=False,
             )
             item["position"] = list_item.position
             items.append(item)
@@ -77,6 +86,7 @@ def _renumber_list_items(custom_list):
 
 
 def _item_from_ref(ref):
+    exposure.require_media_type(ref["media_type"])
     item = find_item(ref)
     if item is not None:
         return item
@@ -120,7 +130,12 @@ class ListsView(APIView):
                 _item_from_ref(serializer.validated_data["ref"]),
             )
         else:
-            lists = CustomList.objects.get_user_lists(request.user)
+            lists = (
+                CustomList.objects.filter(Q(owner=request.user) | Q(collaborators=request.user))
+                .select_related("owner")
+                .prefetch_related("collaborators")
+                .distinct()
+            )
         query = request.query_params.get("q", "")
         if query:
             lists = lists.filter(Q(name__icontains=query) | Q(description__icontains=query))
@@ -170,12 +185,12 @@ class ListDetailView(APIView):
 
     permission_classes = [IsAuthenticated]
 
-    def get_object(self, request, list_id):
+    def get_object(self, request, list_id, *, include_items=True):
+        queryset = CustomList.objects.select_related("owner").prefetch_related("collaborators")
+        if include_items:
+            queryset = queryset.prefetch_related("customlistitem_set__item")
         custom_list = get_object_or_404(
-            CustomList.objects.select_related("owner").prefetch_related(
-                "collaborators",
-                "customlistitem_set__item",
-            ),
+            queryset,
             id=list_id,
         )
         if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
@@ -183,10 +198,11 @@ class ListDetailView(APIView):
         return custom_list
 
     def get(self, request, list_id):
-        custom_list = self.get_object(request, list_id)
+        include_items = request.query_params.get("include_items") != "false"
+        custom_list = self.get_object(request, list_id, include_items=include_items)
         if custom_list is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        return Response(list_payload(custom_list, request=request, include_items=True))
+        return Response(list_payload(custom_list, request=request, include_items=include_items))
 
     def patch(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)
@@ -203,6 +219,11 @@ class ListDetailView(APIView):
         if "is_ranked" in data:
             custom_list.is_ranked = data["is_ranked"]
         custom_list.save()
+        if "visibility" in data:
+            Activity.objects.filter(
+                target_type=ContentLike.CUSTOM_LIST,
+                target_id=custom_list.id,
+            ).update(visibility=custom_list.visibility)
         if "collaborator_usernames" in data:
             users = get_user_model().objects.filter(username__in=data["collaborator_usernames"])
             custom_list.collaborators.set(users)
@@ -212,14 +233,79 @@ class ListDetailView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_delete(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        Activity.objects.filter(
+            target_type=ContentLike.CUSTOM_LIST,
+            target_id=custom_list.id,
+        ).delete()
         custom_list.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ListItemsView(APIView):
-    """Add an item to a list."""
+    """List or add items in a custom list."""
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, list_id):
+        custom_list = get_object_or_404(
+            CustomList.objects.select_related("owner").prefetch_related("collaborators"),
+            id=list_id,
+        )
+        if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        list_items = CustomListItem.objects.filter(
+            custom_list=custom_list,
+            item__media_type__in=exposure.media_types(),
+        ).select_related("item")
+        rating_scope_queryset = list_items
+        filter_service.ensure_filter_metadata(list_items, request.query_params)
+        list_items = filter_service.apply_item_filters(list_items, request.query_params)
+        list_items = filter_service.apply_user_status_filter(
+            list_items,
+            request.user,
+            request.query_params.get("status"),
+        )
+        list_items = filter_service.annotate_user_rating(list_items, request.user)
+        list_items = filter_service.apply_rating_range(
+            list_items,
+            request.query_params,
+            "user_rating",
+        )
+        if request.query_params.get("sort") or request.query_params.get("ordering"):
+            list_items = filter_service.order_queryset(
+                list_items,
+                request.query_params,
+                your_rating_field="user_rating",
+                default_sort="date_added",
+                extra_sorts={
+                    "date_added": "date_added",
+                    "position": "position",
+                },
+                rating_scope_queryset=rating_scope_queryset,
+            )
+
+        paginator = StandardResultsSetPagination()
+        page = list(paginator.paginate_queryset(list_items, request, view=self))
+        prime_collection_items([list_item.item for list_item in page], request.user)
+        return paginator.get_paginated_response(
+            [
+                {
+                    **media_summary_from_item(
+                        list_item.item,
+                        request=request,
+                        user=request.user,
+                        include_user_state=False,
+                    ),
+                    "position": list_item.position,
+                    "date_added": list_item.date_added,
+                    "your_rating": f"{list_item.user_rating:.1f}"
+                    if list_item.user_rating is not None
+                    else None,
+                }
+                for list_item in page
+            ],
+        )
 
     def post(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)
@@ -257,6 +343,8 @@ class ListItemDetailView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_edit(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        item = get_object_or_404(custom_list.items, id=item_id)
+        exposure.require_media_type(item.media_type)
         deleted, _ = CustomListItem.objects.filter(custom_list=custom_list, item_id=item_id).delete()
         if deleted and custom_list.is_ranked:
             _renumber_list_items(custom_list)

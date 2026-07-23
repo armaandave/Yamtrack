@@ -2,6 +2,14 @@ import SwiftUI
 import UIKit
 
 struct StoryGraphImportUploadView: View {
+    private enum ContentPhase: Hashable {
+        case idle
+        case uploading
+        case processing
+        case succeeded
+        case failed
+    }
+
     let coordinator: StoryGraphImportCoordinator
     let onDone: () -> Void
 
@@ -14,6 +22,7 @@ struct StoryGraphImportUploadView: View {
 
                 content
                     .frame(maxWidth: 420)
+                    .spineContentTransition(value: contentPhase)
                     .padding(.horizontal, 24)
 
                 Spacer(minLength: 24)
@@ -52,6 +61,16 @@ struct StoryGraphImportUploadView: View {
                 title: "StoryGraph Import",
                 message: "Choose a StoryGraph export to start."
             )
+        }
+    }
+
+    private var contentPhase: ContentPhase {
+        switch coordinator.phase {
+        case .idle: .idle
+        case .uploading: .uploading
+        case .processing: .processing
+        case .succeeded: .succeeded
+        case .failed: .failed
         }
     }
 
@@ -225,6 +244,15 @@ private struct MockUploadImportRepository: ImportRepository {
     ) async throws -> ImportQueueResponse {
         progressHandler?(1)
         return ImportQueueResponse(taskId: "preview-task", status: "queued")
+    }
+
+    func queueGoodreadsImport(
+        fileData: Data,
+        fileName: String,
+        mode: ImportMode,
+        progressHandler: (@MainActor @Sendable (Double) -> Void)?
+    ) async throws -> ImportQueueResponse {
+        fatalError("Not used")
     }
 
     func importTaskStatus(taskId: String) async throws -> ImportTaskStatus {

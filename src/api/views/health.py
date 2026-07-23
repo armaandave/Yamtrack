@@ -4,8 +4,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from app import config
-from app.models import MediaTypes, Sources, Status
+from app import exposure
+from app.models import Status
 from users.models import (
     DateFormatChoices,
     QuickWatchDateChoices,
@@ -40,19 +40,22 @@ class MetaView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        return Response(
-            {
-                "version": "v1",
-                "media_types": list(MediaTypes.values),
-                "sources": {
-                    media_type: [source.value for source in config.get_sources(media_type)]
-                    for media_type in config.MEDIA_TYPE_CONFIG
-                },
-                "status_choices": list(Status.values),
-                "source_choices": list(Sources.values),
-                "date_formats": choice_payload(DateFormatChoices.choices),
-                "time_formats": choice_payload(TimeFormatChoices.choices),
-                "week_start_days": choice_payload(WeekStartDayChoices.choices),
-                "quick_watch_dates": choice_payload(QuickWatchDateChoices.choices),
-            },
-        )
+        payload = {
+            "version": "v1",
+            "media_types": exposure.media_types(),
+            "sources": exposure.source_map(),
+            "status_choices": list(Status.values),
+            "source_choices": exposure.source_values(),
+            "date_formats": choice_payload(DateFormatChoices.choices),
+            "time_formats": choice_payload(TimeFormatChoices.choices),
+            "week_start_days": choice_payload(WeekStartDayChoices.choices),
+            "quick_watch_dates": choice_payload(QuickWatchDateChoices.choices),
+        }
+        if request.user.is_authenticated:
+            enabled = set(request.user.get_enabled_media_types())
+            payload["enabled_media_types"] = [
+                media_type
+                for media_type in exposure.primary_media_types()
+                if media_type in enabled
+            ]
+        return Response(payload)
