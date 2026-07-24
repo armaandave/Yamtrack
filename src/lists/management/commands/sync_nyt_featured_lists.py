@@ -1,5 +1,3 @@
-import math
-
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
@@ -10,7 +8,6 @@ from app.models import Item, MediaTypes
 from app.providers import hardcover, nytbooks, openlibrary
 from lists.models import CustomList, CustomListItem
 
-MIN_RESOLUTION_RATIO = 0.8
 LIST_TAGS = ["NYT Best Sellers", "Books"]
 
 
@@ -70,11 +67,9 @@ def _sync_chart(owner, definition, chart):
         seen.add(identity)
         resolved.append((book, result))
 
-    required = math.ceil(len(chart["books"]) * MIN_RESOLUTION_RATIO)
-    if resolved_count < required:
+    if not resolved:
         raise CommandError(
-            f"{chart['name']}: resolved {resolved_count}/{len(chart['books'])} "
-            f"books; at least {required} are required. Existing contents were preserved.",
+            f"{chart['name']}: no books resolved. Existing contents were preserved.",
         )
 
     with transaction.atomic():
@@ -87,11 +82,11 @@ def _sync_chart(owner, definition, chart):
             import_source="nyt",
             import_source_id=definition["slug"],
             defaults={
-                "name": chart["name"],
+                "name": definition["display_name"],
                 "slug": f"nyt-{definition['slug']}",
             },
         )
-        custom_list.name = chart["name"]
+        custom_list.name = definition["display_name"]
         custom_list.slug = f"nyt-{definition['slug']}"
         custom_list.description = (
             f"The New York Times Best Sellers list published {chart['published_date']}."

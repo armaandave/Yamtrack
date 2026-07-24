@@ -89,6 +89,10 @@ class SyncNYTFeaturedListsTests(TestCase):
         )
         self.assertEqual(len(lists), 5)
         self.assertEqual([item.featured_position for item in lists], [2, 3, 4, 5, 6])
+        self.assertEqual(
+            [item.name for item in lists],
+            [definition["display_name"] for definition in nytbooks.FEATURED_CHARTS],
+        )
         self.assertTrue(all(item.visibility == CustomList.Visibility.PUBLIC for item in lists))
         self.assertTrue(all(item.is_ranked and item.is_featured for item in lists))
         self.assertTrue(all(item.tags == ["NYT Best Sellers", "Books"] for item in lists))
@@ -103,7 +107,34 @@ class SyncNYTFeaturedListsTests(TestCase):
         )
         self.assertEqual(get_chart.call_count, 5)
 
-    def test_sync_preserves_existing_list_below_resolution_threshold(self):
+    def test_sync_keeps_resolved_subset_when_some_books_are_unavailable(self):
+        definition = nytbooks.FEATURED_CHARTS[0]
+        chart = chart_payload(definition, count=5)
+
+        with patch(
+            "lists.management.commands.sync_nyt_featured_lists._resolve_book",
+            side_effect=[
+                hardcover_result("one"),
+                hardcover_result("two"),
+                hardcover_result("three"),
+                None,
+                None,
+            ],
+        ):
+            custom_list, stored_count, resolved_count = _sync_chart(
+                self.owner,
+                definition,
+                chart,
+            )
+
+        self.assertEqual(stored_count, 3)
+        self.assertEqual(resolved_count, 3)
+        self.assertEqual(
+            list(custom_list.customlistitem_set.values_list("position", flat=True)),
+            [1, 2, 3],
+        )
+
+    def test_sync_preserves_existing_list_when_nothing_resolves(self):
         definition = nytbooks.FEATURED_CHARTS[0]
         existing_item = Item.objects.create(
             source=Sources.HARDCOVER.value,
@@ -123,20 +154,17 @@ class SyncNYTFeaturedListsTests(TestCase):
             item=existing_item,
             position=1,
         )
-        chart = chart_payload(definition, count=5)
 
         with patch(
             "lists.management.commands.sync_nyt_featured_lists._resolve_book",
-            side_effect=[
-                hardcover_result("one"),
-                hardcover_result("two"),
-                hardcover_result("three"),
-                None,
-                None,
-            ],
+            return_value=None,
         ):
-            with self.assertRaisesMessage(CommandError, "at least 4 are required"):
-                _sync_chart(self.owner, definition, chart)
+            with self.assertRaisesMessage(CommandError, "no books resolved"):
+                _sync_chart(
+                    self.owner,
+                    definition,
+                    chart_payload(definition, count=2),
+                )
 
         self.assertEqual(
             list(existing_list.items.values_list("media_id", flat=True)),

@@ -1235,7 +1235,13 @@ struct ProfileListDetailView: View {
                                 .padding(.top, 12)
                         } else if let list = viewModel.list {
                             listHeader(list)
-                                .padding(.top, -(topSafeAreaInset + 32))
+                                .padding(
+                                    .top,
+                                    CustomListHeaderLayout.topPadding(
+                                        hasBackdrop: CustomListBackdropSelection.artworkURL(from: list.items) != nil,
+                                        topSafeAreaInset: topSafeAreaInset
+                                    )
+                                )
                             if viewModel.displayedItems.isEmpty {
                                 DiaryStateCard(
                                     title: viewModel.filter.isActive ? "No matching items" : "No items yet",
@@ -1570,6 +1576,12 @@ enum CustomListBackdropSelection {
             guard item.ref.mediaType == "movie" || item.ref.mediaType == "tv" else { return nil }
             return item.displayBackdropURL
         }.first
+    }
+}
+
+enum CustomListHeaderLayout {
+    static func topPadding(hasBackdrop: Bool, topSafeAreaInset: CGFloat) -> CGFloat {
+        hasBackdrop ? -(topSafeAreaInset + 32) : 32
     }
 }
 

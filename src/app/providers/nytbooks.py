@@ -10,26 +10,31 @@ FEATURED_CHARTS = (
     {
         "slug": "combined-print-and-e-book-fiction",
         "fallback_name": "Combined Print & E-Book Fiction",
+        "display_name": "NYT Fiction Bestsellers",
         "featured_position": 2,
     },
     {
         "slug": "combined-print-and-e-book-nonfiction",
         "fallback_name": "Combined Print & E-Book Nonfiction",
+        "display_name": "NYT Nonfiction Bestsellers",
         "featured_position": 3,
     },
     {
         "slug": "advice-how-to-and-miscellaneous",
         "fallback_name": "Advice, How-To & Miscellaneous",
+        "display_name": "NYT Advice Bestsellers",
         "featured_position": 4,
     },
     {
         "slug": "business-books",
         "fallback_name": "Business Books",
+        "display_name": "NYT Business Bestsellers",
         "featured_position": 5,
     },
     {
         "slug": "graphic-books-and-manga",
         "fallback_name": "Graphic Books and Manga",
+        "display_name": "NYT Graphic & Manga Bestsellers",
         "featured_position": 6,
     },
 )

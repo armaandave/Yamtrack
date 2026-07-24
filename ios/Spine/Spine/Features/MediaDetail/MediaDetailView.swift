@@ -4289,9 +4289,12 @@ struct BackdropArtwork: View {
                     case let .success(image):
                         image
                             .resizable()
-                            .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                            .clipped()
+                            .scaledToFit()
+                            .frame(
+                                width: proxy.size.width,
+                                height: proxy.size.height,
+                                alignment: .top
+                            )
                     default:
                         Color.clear
                     }

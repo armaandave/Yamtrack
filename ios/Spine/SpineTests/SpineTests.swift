@@ -97,6 +97,17 @@ final class SpineTests: XCTestCase {
         )
     }
 
+    func testCustomListHeaderOnlyPullsUpWhenBackdropExists() {
+        XCTAssertEqual(
+            CustomListHeaderLayout.topPadding(hasBackdrop: false, topSafeAreaInset: 59),
+            32
+        )
+        XCTAssertEqual(
+            CustomListHeaderLayout.topPadding(hasBackdrop: true, topSafeAreaInset: 59),
+            -91
+        )
+    }
+
     func testHomeAtmosphereUsesAlbumCoverWithoutInventingBackdrop() {
         let album = MediaSummary(
             ref: MediaRef(

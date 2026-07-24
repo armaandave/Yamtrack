@@ -11,15 +11,35 @@ class NYTBooksProviderTests(SimpleTestCase):
     def test_featured_chart_allowlist_and_positions_are_stable(self):
         self.assertEqual(
             [
-                (chart["slug"], chart["featured_position"])
+                (
+                    chart["slug"],
+                    chart["display_name"],
+                    chart["featured_position"],
+                )
                 for chart in nytbooks.FEATURED_CHARTS
             ],
             [
-                ("combined-print-and-e-book-fiction", 2),
-                ("combined-print-and-e-book-nonfiction", 3),
-                ("advice-how-to-and-miscellaneous", 4),
-                ("business-books", 5),
-                ("graphic-books-and-manga", 6),
+                (
+                    "combined-print-and-e-book-fiction",
+                    "NYT Fiction Bestsellers",
+                    2,
+                ),
+                (
+                    "combined-print-and-e-book-nonfiction",
+                    "NYT Nonfiction Bestsellers",
+                    3,
+                ),
+                (
+                    "advice-how-to-and-miscellaneous",
+                    "NYT Advice Bestsellers",
+                    4,
+                ),
+                ("business-books", "NYT Business Bestsellers", 5),
+                (
+                    "graphic-books-and-manga",
+                    "NYT Graphic & Manga Bestsellers",
+                    6,
+                ),
             ],
         )
 
