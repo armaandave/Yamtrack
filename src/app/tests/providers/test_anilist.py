@@ -1,0 +1,470 @@
+from unittest.mock import patch
+
+import requests
+from django.core.cache import cache
+from django.test import TestCase
+
+from app.providers import anilist, mal
+
+
+class AniListProviderTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_anime_normalizes_artwork_relations_rating_and_japanese_cast(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Media": {
+                    "id": 16498,
+                    "idMal": 16498,
+                    "siteUrl": "https://anilist.co/anime/16498",
+                    "title": {
+                        "english": "Attack on Titan",
+                        "romaji": "Shingeki no Kyojin",
+                        "native": "進撃の巨人",
+                    },
+                    "coverImage": {
+                        "extraLarge": "https://img.example/cover-xl.jpg",
+                        "large": "https://img.example/cover.jpg",
+                        "medium": "https://img.example/cover-thumb.jpg",
+                        "color": "#4a5b6c",
+                    },
+                    "bannerImage": "https://img.example/banner.jpg",
+                    "averageScore": 84,
+                    "stats": {
+                        "scoreDistribution": [
+                            {"score": 80, "amount": 120},
+                            {"score": 90, "amount": 80},
+                        ],
+                    },
+                    "relations": {
+                        "edges": [
+                            {
+                                "relationType": "PREQUEL",
+                                "node": {
+                                    "id": 100,
+                                    "idMal": 100,
+                                    "type": "ANIME",
+                                    "format": "TV",
+                                    "siteUrl": "https://anilist.co/anime/100",
+                                    "title": {
+                                        "english": "The Prequel",
+                                        "romaji": "Prequel",
+                                        "native": None,
+                                    },
+                                    "coverImage": {
+                                        "extraLarge": None,
+                                        "large": "https://img.example/prequel.jpg",
+                                        "medium": None,
+                                    },
+                                    "startDate": {"year": 2012},
+                                },
+                            },
+                            {
+                                "relationType": "SOURCE",
+                                "node": {
+                                    "id": 200,
+                                    "idMal": 200,
+                                    "type": "MANGA",
+                                    "format": "MANGA",
+                                    "siteUrl": "https://anilist.co/manga/200",
+                                    "title": {
+                                        "english": "Attack on Titan",
+                                        "romaji": "Shingeki no Kyojin",
+                                        "native": None,
+                                    },
+                                    "coverImage": {
+                                        "extraLarge": None,
+                                        "large": "https://img.example/manga.jpg",
+                                        "medium": None,
+                                    },
+                                    "startDate": {"year": 2009},
+                                },
+                            },
+                        ],
+                    },
+                    "characters": {
+                        "edges": [
+                            {
+                                "role": "MAIN",
+                                "node": {
+                                    "id": 1,
+                                    "name": {"full": "Eren Yeager", "native": None},
+                                    "image": {
+                                        "large": "https://img.example/eren.jpg",
+                                        "medium": None,
+                                    },
+                                },
+                                "voiceActors": [
+                                    {
+                                        "id": 10,
+                                        "languageV2": "English",
+                                        "name": {"full": "English Actor", "native": None},
+                                        "image": {"large": None, "medium": None},
+                                    },
+                                    {
+                                        "id": 11,
+                                        "languageV2": "Japanese",
+                                        "name": {"full": "Yuki Kaji", "native": None},
+                                        "image": {
+                                            "large": "https://img.example/kaji.jpg",
+                                            "medium": None,
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        result = anilist.anime("16498")
+
+        self.assertEqual(result["display_title"], "Attack on Titan")
+        self.assertEqual(result["backdrop"], "https://img.example/banner.jpg")
+        self.assertEqual(result["rating"]["value"], 84)
+        self.assertEqual(result["rating"]["vote_count"], 200)
+        self.assertEqual(result["relations"][0]["media_type"], "anime")
+        self.assertEqual(result["relations"][1]["media_type"], "manga")
+        self.assertEqual(result["characters"][0]["role"], "Main")
+        self.assertEqual(result["cast"][0]["name"], "Yuki Kaji")
+        self.assertEqual(result["cast"][0]["character"], "Eren Yeager")
+        request_mock.assert_called_once()
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_anime_uses_stale_success_when_request_fails(self, request_mock):
+        stale = {"display_title": "Cached Anime"}
+        cache.set("anilist:v1:anime:1:stale", stale, anilist.STALE_TTL)
+        request_mock.side_effect = requests.Timeout("down")
+
+        self.assertEqual(anilist.anime("1"), stale)
+        self.assertEqual(anilist.anime("1"), stale)
+        request_mock.assert_called_once()
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_anime_strict_mode_raises_without_stale_data(self, request_mock):
+        request_mock.side_effect = requests.Timeout("down")
+
+        with self.assertRaises(requests.Timeout):
+            anilist.anime("1", raise_errors=True)
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_anime_ignores_malformed_payload_without_breaking_detail(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Media": {
+                    "id": 1,
+                    "title": {},
+                    "characters": {"edges": [None]},
+                },
+            },
+        }
+
+        self.assertEqual(anilist.anime("1"), {})
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_manga_normalizes_banner_characters_staff_relations_and_rating(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Media": {
+                    "id": 30013,
+                    "idMal": 23390,
+                    "siteUrl": "https://anilist.co/manga/30013",
+                    "title": {
+                        "english": "Attack on Titan",
+                        "romaji": "Shingeki no Kyojin",
+                        "native": "進撃の巨人",
+                    },
+                    "coverImage": {
+                        "extraLarge": "https://img.example/manga-cover.jpg",
+                        "medium": "https://img.example/manga-thumb.jpg",
+                    },
+                    "bannerImage": "https://img.example/manga-banner.jpg",
+                    "averageScore": 85,
+                    "stats": {
+                        "scoreDistribution": [
+                            {"score": 80, "amount": 70},
+                            {"score": 90, "amount": 30},
+                        ],
+                    },
+                    "relations": {
+                        "edges": [
+                            {
+                                "relationType": "ADAPTATION",
+                                "node": {
+                                    "id": 16498,
+                                    "idMal": 16498,
+                                    "type": "ANIME",
+                                    "siteUrl": "https://anilist.co/anime/16498",
+                                    "title": {
+                                        "english": "Attack on Titan",
+                                        "romaji": "Shingeki no Kyojin",
+                                    },
+                                    "coverImage": {
+                                        "large": "https://img.example/anime.jpg",
+                                    },
+                                    "startDate": {"year": 2013},
+                                },
+                            },
+                        ],
+                    },
+                    "characters": {
+                        "edges": [
+                            {
+                                "role": "MAIN",
+                                "node": {
+                                    "id": 1,
+                                    "name": {"full": "Eren Yeager"},
+                                    "image": {
+                                        "large": "https://img.example/eren.jpg",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                    "staff": {
+                        "edges": [
+                            {
+                                "role": "Story & Art",
+                                "node": {
+                                    "id": 2,
+                                    "name": {"full": "Hajime Isayama"},
+                                    "image": {
+                                        "large": "https://img.example/isayama.jpg",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                    "recommendations": {"nodes": []},
+                },
+            },
+        }
+
+        result = anilist.manga("23390")
+
+        self.assertEqual(result["display_title"], "Attack on Titan")
+        self.assertEqual(result["backdrop"], "https://img.example/manga-banner.jpg")
+        self.assertEqual(result["rating"]["value"], 85)
+        self.assertEqual(result["rating"]["vote_count"], 100)
+        self.assertEqual(result["characters"][0]["role"], "Main")
+        self.assertEqual(result["creators"][0]["role"], "Story & Art")
+        self.assertEqual(result["relations"][0]["media_type"], "anime")
+        self.assertEqual(result["relations"][0]["relation"], "Adaptation")
+
+
+class MALAnimeMetadataTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.mal.services.api_request")
+    def test_anime_keeps_english_title_pictures_and_relation_type(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "id": 16498,
+            "title": "Shingeki no Kyojin",
+            "alternative_titles": {"en": "Attack on Titan"},
+            "main_picture": {
+                "large": "https://img.example/main.jpg",
+                "medium": "https://img.example/main-thumb.jpg",
+            },
+            "pictures": [
+                {
+                    "large": "https://img.example/alternate.jpg",
+                    "medium": "https://img.example/alternate-thumb.jpg",
+                },
+            ],
+            "media_type": "tv",
+            "start_date": "2013-04-07",
+            "end_date": "2013-09-29",
+            "synopsis": "MAL synopsis",
+            "status": "finished_airing",
+            "genres": [{"id": 1, "name": "Action"}],
+            "mean": 8.5,
+            "num_scoring_users": 100,
+            "num_episodes": 25,
+            "average_episode_duration": 1440,
+            "studios": [{"id": 1, "name": "Wit Studio"}],
+            "start_season": {"year": 2013, "season": "spring"},
+            "source": "manga",
+            "related_anime": [
+                {
+                    "node": {
+                        "id": 100,
+                        "title": "The Prequel",
+                        "main_picture": {
+                            "large": "https://img.example/prequel.jpg",
+                        },
+                    },
+                    "relation_type": "prequel",
+                    "relation_type_formatted": "Prequel",
+                },
+            ],
+            "recommendations": [],
+        }
+
+        result = mal.anime("16498")
+
+        self.assertEqual(result["title"], "Shingeki no Kyojin")
+        self.assertEqual(result["display_title"], "Attack on Titan")
+        self.assertEqual(len(result["posters"]), 2)
+        self.assertEqual(result["related"]["relations"][0]["relation"], "Prequel")
+        fields = request_mock.call_args.kwargs["params"]["fields"]
+        self.assertIn("alternative_titles", fields)
+        self.assertIn("pictures", fields)
+
+    @patch("app.providers.mal.services.api_request")
+    def test_manga_keeps_english_title_pictures_creators_and_mixed_relations(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "id": 23390,
+            "title": "Shingeki no Kyojin",
+            "alternative_titles": {"en": "Attack on Titan"},
+            "main_picture": {"large": "https://img.example/main.jpg"},
+            "pictures": [{"large": "https://img.example/alternate.jpg"}],
+            "media_type": "manga",
+            "start_date": "2009-09-09",
+            "end_date": "2021-04-09",
+            "synopsis": "MAL synopsis",
+            "status": "finished",
+            "genres": [{"name": "Action"}],
+            "mean": 8.6,
+            "num_scoring_users": 1000,
+            "num_chapters": 141,
+            "num_volumes": 34,
+            "authors": [
+                {
+                    "node": {
+                        "id": 11705,
+                        "first_name": "Hajime",
+                        "last_name": "Isayama",
+                    },
+                    "role": "Story & Art",
+                },
+            ],
+            "serialization": [{"node": {"name": "Bessatsu Shounen Magazine"}}],
+            "related_manga": [],
+            "related_anime": [
+                {
+                    "node": {
+                        "id": 16498,
+                        "title": "Shingeki no Kyojin",
+                        "main_picture": {"large": "https://img.example/anime.jpg"},
+                    },
+                    "relation_type_formatted": "Adaptation",
+                },
+            ],
+            "recommendations": [],
+        }
+
+        result = mal.manga("23390")
+
+        self.assertEqual(result["display_title"], "Attack on Titan")
+        self.assertEqual(result["details"]["number_of_volumes"], 34)
+        self.assertEqual(result["creators"][0]["name"], "Hajime Isayama")
+        self.assertEqual(result["related"]["relations"][0]["media_type"], "anime")
+        self.assertEqual(result["related"]["relations"][0]["relation"], "Adaptation")
+        self.assertEqual(len(result["posters"]), 2)
+        fields = request_mock.call_args.kwargs["params"]["fields"]
+        for field in ("num_volumes", "authors", "related_anime", "related_manga"):
+            self.assertIn(field, fields)
+
+
+class MALMangaMatchingTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.mal.services.api_request")
+    def test_match_requires_one_exact_title_without_known_conflicts(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": [
+                {
+                    "node": {
+                        "id": 23390,
+                        "title": "Shingeki no Kyojin",
+                        "alternative_titles": {"en": "Attack on Titan"},
+                        "media_type": "manga",
+                        "start_date": "2009-09-09",
+                    },
+                },
+            ],
+        }
+        metadata = {
+            "title": "Attack on Titan",
+            "details": {
+                "alternative_titles": ["Shingeki no Kyojin"],
+                "year": "2009",
+                "format": "Manga",
+            },
+        }
+
+        self.assertEqual(mal.match_manga("mu-1", metadata), "23390")
+        self.assertEqual(mal.cached_manga_match("mu-1"), "23390")
+
+    @patch("app.providers.mal.services.api_request")
+    def test_match_rejects_ambiguous_or_conflicting_results(self, request_mock):
+        request_mock.return_value = {
+            "data": [
+                {
+                    "node": {
+                        "id": 1,
+                        "title": "Monster",
+                        "media_type": "manga",
+                        "start_date": "1994-01-01",
+                    },
+                },
+                {
+                    "node": {
+                        "id": 2,
+                        "title": "Monster",
+                        "media_type": "manga",
+                        "start_date": "1994-02-01",
+                    },
+                },
+            ],
+        }
+
+        self.assertIsNone(
+            mal.match_manga(
+                "mu-2",
+                {"title": "Monster", "details": {"year": "1994", "format": "Manga"}},
+            ),
+        )
+
+        cache.clear()
+        request_mock.return_value = {
+            "data": [
+                {
+                    "node": {
+                        "id": 3,
+                        "title": "Monster",
+                        "media_type": "novel",
+                        "start_date": "1994-01-01",
+                    },
+                },
+            ],
+        }
+        self.assertIsNone(
+            mal.match_manga(
+                "mu-3",
+                {"title": "Monster", "details": {"year": "1994", "format": "Manga"}},
+            ),
+        )

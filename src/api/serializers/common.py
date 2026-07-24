@@ -400,6 +400,12 @@ def media_summary_from_provider(
             "episode_number": episode_number,
         },
         "title": payload.get("title") or payload.get("name") or "",
+        **(
+            {"display_title": payload["display_title"]}
+            if payload.get("display_title")
+            else {}
+        ),
+        **({"relation": payload["relation"]} if payload.get("relation") else {}),
         "subtitle": payload.get("year") or payload.get("subtitle"),
         "overview": synopsis_from_payload(payload),
         **artwork_from_payload(payload, media_type, request=request),
@@ -457,7 +463,7 @@ def cast_from_metadata(metadata, request=None):
         {
             "id": _credit_id(person),
             "name": person.get("name"),
-            "role": None,
+            "role": person.get("role"),
             "character": person.get("character"),
             "image_url": _credit_image(request, person),
         }
@@ -589,7 +595,14 @@ def related_sections_from_payload(related, media_type, source, request=None, use
         ]
     else:
         candidates = [
-            ("collection" if media_type == MediaTypes.MOVIE.value and key not in {"recommendations", "similar"} else key, key.replace("_", " ").title(), values)
+            (
+                "collection"
+                if media_type == MediaTypes.MOVIE.value
+                and key not in {"recommendations", "similar"}
+                else key,
+                "Related" if key == "relations" else key.replace("_", " ").title(),
+                values,
+            )
             for key, values in related.items()
             if key not in {"seasons", "all_related"} and values
         ]
@@ -597,7 +610,8 @@ def related_sections_from_payload(related, media_type, source, request=None, use
     sections = []
     for key, title, values in candidates:
         items = []
-        for value in values[:7]:
+        section_values = values if key == "relations" else values[:7]
+        for value in section_values:
             payload = value.get("item", value) if isinstance(value, dict) else value
             if not isinstance(payload, dict):
                 continue

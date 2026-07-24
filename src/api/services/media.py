@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -13,6 +14,7 @@ from functools import partial
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+import requests
 from aiohttp import ClientError
 from django.conf import settings
 from django.core.cache import cache
@@ -76,7 +78,7 @@ from app.models import (
     MediaTypes,
     Sources,
 )
-from app.providers import googlebooks, musicbrainz
+from app.providers import anilist, googlebooks, mal, musicbrainz
 from app.providers import services as provider_services
 from app.providers.search_rank import rank_mixed_results
 from app.utils.color import build_accent_palette, compute_and_store_poster_accent
@@ -94,6 +96,8 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
+ANIME_DETAIL_CACHE_VERSION = "v1"
+MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
 PERSON_SORT_OPTIONS = [
@@ -110,10 +114,10 @@ COMPANY_GAME_SORT_OPTIONS = [
 ]
 COMPANY_GAME_OPTIONS_CACHE_VERSION = "v1"
 POSTER_UNSUPPORTED_MESSAGE = (
-    "Poster customization is only available for TMDB movies/TV shows/seasons, Open Library/Hardcover books, IGDB games, and MusicBrainz music."
+    "Poster customization is only available for TMDB movies/TV shows/seasons, MAL anime, MAL/MangaUpdates manga, Open Library/Hardcover books, IGDB games, and MusicBrainz music."
 )
 BACKDROP_UNSUPPORTED_MESSAGE = (
-    "Backdrop customization is only available for TMDB movies/TV shows/seasons/episodes and IGDB games."
+    "Backdrop customization is only available for TMDB movies/TV shows/seasons/episodes, MAL anime, and IGDB games."
 )
 LOGO_UNSUPPORTED_MESSAGE = "Logo customization is only available for TMDB movies/TV shows and IGDB games."
 logger = logging.getLogger(__name__)
@@ -651,7 +655,7 @@ def _external_rating_item(ref, metadata):
     return get_or_create_item_from_metadata(ref, metadata)
 
 
-def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):
+def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):  # noqa: C901, PLR0912
     """Fetch provider metadata and normalize it for the API."""
     if media_type == MediaTypes.EPISODE.value and (
         season_number in (None, "") or episode_number in (None, "")
@@ -668,6 +672,10 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         cache_version = f"{cache_version}:movie-{MOVIE_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.MUSIC.value:
         cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}"
+    elif media_type == MediaTypes.ANIME.value:
+        cache_version = f"{cache_version}:anime-{ANIME_DETAIL_CACHE_VERSION}"
+    elif media_type == MediaTypes.MANGA.value:
+        cache_version = f"{cache_version}:manga-{MANGA_DETAIL_CACHE_VERSION}"
     cache_key = (
         f"api:{cache_version}:detail:{source}:{media_type}:{media_id}:"
         f"s{season_number}:e{episode_number}:u{getattr(settings, 'TMDB_LANG', 'en')}"
@@ -685,7 +693,11 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         cache.set(cache_key, metadata, DETAIL_TTL)
 
     primary_metadata = metadata
-    if media_type == MediaTypes.BOOK.value:
+    if media_type == MediaTypes.ANIME.value:
+        metadata = _enrich_anime_metadata(metadata, source)
+    elif media_type == MediaTypes.MANGA.value:
+        metadata = _enrich_manga_metadata(metadata, source)
+    elif media_type == MediaTypes.BOOK.value:
         metadata = _enrich_book_metadata(metadata, source)
 
     summary = media_summary_from_provider(
@@ -754,6 +766,16 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         "parent": metadata.get("parent"),
         "external_links": metadata.get("external_links", {}),
         "cast": cast_from_metadata(metadata, request=request),
+        **(
+            {
+                "characters": cast_from_metadata(
+                    {"cast": metadata.get("characters") or []},
+                    request=request,
+                ),
+            }
+            if media_type in {MediaTypes.ANIME.value, MediaTypes.MANGA.value}
+            else {}
+        ),
         "crew": crew_from_metadata(metadata, request=request),
         "seasons": seasons_from_metadata(metadata, request=request) if media_type == MediaTypes.TV.value else [],
         "episodes": episodes_from_metadata(enrich_episodes(metadata, source, user), request=request)
@@ -779,6 +801,377 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         ),
         **rating_payload,
     }
+
+
+ANIME_RELATION_ORDER = {
+    "Source": 0,
+    "Adaptation": 1,
+    "Prequel": 2,
+    "Sequel": 3,
+    "Parent Story": 4,
+    "Side Story": 5,
+    "Spin-off": 6,
+    "Alternative": 7,
+    "Summary": 8,
+    "Compilation": 9,
+    "Contains": 10,
+    "Character": 11,
+    "Other": 12,
+}
+ANIME_RELATION_LABELS = {
+    "parent": "Parent Story",
+    "parent story": "Parent Story",
+    "side story": "Side Story",
+    "spin off": "Spin-off",
+    "spin-off": "Spin-off",
+    "alternative setting": "Alternative",
+    "alternative version": "Alternative",
+    "full story": "Other",
+}
+
+
+def _enrich_anime_metadata(metadata, source):
+    """Merge optional AniList fields into MAL anime metadata."""
+    if source != Sources.MAL.value:
+        return metadata
+    enrichment = anilist.anime(metadata.get("media_id"))
+    if not enrichment:
+        return metadata
+
+    enriched = deepcopy(metadata)
+    if not enriched.get("display_title"):
+        enriched["display_title"] = enrichment.get("display_title")
+    if not backdrop_url(enriched):
+        enriched["backdrop"] = enrichment.get("backdrop")
+    enriched["posters"] = _dedupe_artwork(
+        [*(enriched.get("posters") or []), *(enrichment.get("posters") or [])],
+    )
+    enriched["backdrops"] = _dedupe_artwork(
+        [*(enriched.get("backdrops") or []), *(enrichment.get("backdrops") or [])],
+    )
+    enriched["characters"] = enrichment.get("characters") or []
+    enriched["cast"] = enrichment.get("cast") or []
+    enriched["_anilist"] = enrichment
+
+    external_links = dict(enriched.get("external_links") or {})
+    if enrichment.get("source_url"):
+        external_links["anilist"] = enrichment["source_url"]
+    enriched["external_links"] = external_links
+
+    related = dict(enriched.get("related") or {})
+    related["relations"] = _merge_anime_relations(
+        related.get("relations") or [],
+        enrichment.get("relations") or [],
+        media_id=metadata.get("media_id"),
+    )
+    enriched["related"] = related
+    return enriched
+
+
+def _enrich_manga_metadata(metadata, source):  # noqa: C901, PLR0912, PLR0915
+    """Merge MAL-first manga metadata with optional AniList enrichment."""
+    if source not in {Sources.MAL.value, Sources.MANGAUPDATES.value}:
+        return metadata
+
+    original = deepcopy(metadata)
+    mal_id = str(metadata.get("media_id") or "")
+    primary = metadata
+    if source == Sources.MANGAUPDATES.value:
+        mal_id = mal.match_manga(mal_id, metadata) or ""
+        if not mal_id:
+            original["score"] = None
+            original["crew"] = (original.get("creators") or [])[:12]
+            original["related"] = _manga_fallback_related(
+                original.get("related") or {},
+                source=source,
+                media_id=metadata.get("media_id"),
+            )
+            original["_matched_mal_id"] = None
+            return original
+        try:
+            primary = mal.manga(mal_id)
+        except (
+            requests.RequestException,
+            provider_services.ProviderAPIError,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logger.warning(
+                "MAL manga enrichment unavailable for MangaUpdates %s: %s",
+                metadata.get("media_id"),
+                error,
+            )
+            original["score"] = None
+            original["crew"] = (original.get("creators") or [])[:12]
+            original["related"] = _manga_fallback_related(
+                original.get("related") or {},
+                source=source,
+                media_id=metadata.get("media_id"),
+            )
+            original["_matched_mal_id"] = None
+            return original
+
+    enriched = _merge_manga_primary(primary, original) if source == Sources.MANGAUPDATES.value else deepcopy(primary)
+    enrichment = anilist.manga(mal_id)
+    enriched["_matched_mal_id"] = mal_id
+    enriched["_anilist"] = enrichment
+
+    if not enriched.get("display_title"):
+        enriched["display_title"] = enrichment.get("display_title")
+    if not backdrop_url(enriched):
+        enriched["backdrop"] = enrichment.get("backdrop")
+    enriched["posters"] = _dedupe_artwork(
+        [
+            *(primary.get("posters") or []),
+            *(enrichment.get("posters") or []),
+            *(
+                (original.get("posters") or [])
+                if source == Sources.MANGAUPDATES.value
+                else []
+            ),
+        ],
+    )
+    enriched["backdrops"] = _dedupe_artwork(
+        [*(enriched.get("backdrops") or []), *(enrichment.get("backdrops") or [])],
+    )
+    enriched["characters"] = (enrichment.get("characters") or [])[:12]
+    enriched["creators"] = _merge_manga_creators(
+        enriched.get("creators") or [],
+        enrichment.get("creators") or [],
+    )
+    enriched["crew"] = enriched["creators"]
+
+    external_links = dict(enriched.get("external_links") or {})
+    external_links["mal"] = f"https://myanimelist.net/manga/{mal_id}"
+    if enrichment.get("source_url"):
+        external_links["anilist"] = enrichment["source_url"]
+    if source == Sources.MANGAUPDATES.value and original.get("source_url"):
+        external_links["mangaupdates"] = original["source_url"]
+    enriched["external_links"] = external_links
+
+    related = dict(enriched.get("related") or {})
+    related["relations"] = _merge_manga_relations(
+        related.get("relations") or [],
+        enrichment.get("relations") or [],
+        media_id=mal_id,
+    )
+    if not related["relations"] and source == Sources.MANGAUPDATES.value:
+        related["relations"] = _manga_fallback_related(
+            original.get("related") or {},
+            source=source,
+            media_id=original.get("media_id"),
+        ).get("relations", [])
+    if not related.get("recommendations"):
+        related["recommendations"] = (
+            enrichment.get("recommendations")
+            or (
+                (original.get("related") or {}).get("recommendations")
+                if source == Sources.MANGAUPDATES.value
+                else []
+            )
+            or []
+        )
+    enriched["related"] = related
+
+    anilist_rating = enrichment.get("rating")
+    external_ratings = dict(enriched.get("external_ratings") or {})
+    if anilist_rating and anilist_rating.get("value") is not None:
+        external_ratings["anilist"] = anilist_rating
+    if source == Sources.MANGAUPDATES.value:
+        if primary.get("score") is not None:
+            external_ratings["mal"] = {
+                "value": primary["score"],
+                "vote_count": primary.get("score_count"),
+                "url": primary.get("source_url")
+                or f"https://myanimelist.net/manga/{mal_id}",
+            }
+        enriched["score"] = None
+        enriched["score_count"] = None
+    enriched["external_ratings"] = external_ratings
+    return enriched
+
+
+def _merge_manga_primary(primary, fallback):
+    """Return MAL metadata with MangaUpdates values filling only gaps."""
+    merged = deepcopy(primary)
+    for field in ("display_title", "image", "synopsis", "max_progress", "genres"):
+        if _empty_manga_value(merged.get(field)) and not _empty_manga_value(
+            fallback.get(field),
+        ):
+            merged[field] = deepcopy(fallback[field])
+
+    merged["posters"] = _dedupe_artwork(
+        [*(primary.get("posters") or []), *(fallback.get("posters") or [])],
+    )
+    merged_details = deepcopy(fallback.get("details") or {})
+    merged_details.update(
+        {
+            key: value
+            for key, value in (primary.get("details") or {}).items()
+            if not _empty_manga_value(value)
+        },
+    )
+    merged["details"] = merged_details
+    if not (primary.get("creators") or []):
+        merged["creators"] = deepcopy(fallback.get("creators") or [])
+    return merged
+
+
+def _empty_manga_value(value):
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _merge_manga_creators(primary, enrichment):
+    creators = []
+    positions = {}
+    for creator in [*primary, *enrichment]:
+        if not isinstance(creator, dict) or not creator.get("name"):
+            continue
+        key = re.sub(r"[\W_]+", "", creator["name"].casefold())
+        if key in positions:
+            current = creators[positions[key]]
+            for field in ("image", "image_url", "role", "person_id"):
+                if not current.get(field) and creator.get(field):
+                    current[field] = creator[field]
+            continue
+        positions[key] = len(creators)
+        creators.append(dict(creator))
+    return creators[:12]
+
+
+def _manga_fallback_related(related, *, source, media_id):
+    result = dict(related)
+    result["relations"] = _merge_manga_relations(
+        result.get("relations") or result.get("related_manga") or [],
+        [],
+        media_id=media_id,
+        source=source,
+    )
+    result.pop("related_manga", None)
+    return result
+
+
+def _dedupe_artwork(candidates):
+    results = []
+    seen = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        url = candidate.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        results.append(candidate)
+    return results
+
+
+def _merge_anime_relations(primary, enrichment, *, media_id):
+    merged = {}
+    order = []
+    for candidate in [*primary, *enrichment]:
+        if not isinstance(candidate, dict):
+            continue
+        relation = dict(candidate)
+        relation["relation"] = _normalize_anime_relation(relation.get("relation"))
+        key = (
+            relation.get("source") or Sources.MAL.value,
+            relation.get("media_type") or MediaTypes.ANIME.value,
+            str(relation.get("media_id") or relation.get("id") or ""),
+        )
+        if not key[2] or (
+            key[0] == Sources.MAL.value
+            and key[1] == MediaTypes.ANIME.value
+            and key[2] == str(media_id)
+        ):
+            continue
+        if key not in merged:
+            merged[key] = relation
+            order.append(key)
+            continue
+        current = merged[key]
+        for field in ("display_title", "image", "release_date", "source_url"):
+            if not current.get(field) and relation.get(field):
+                current[field] = relation[field]
+    position = {key: index for index, key in enumerate(order)}
+    return sorted(
+        merged.values(),
+        key=lambda relation: (
+            ANIME_RELATION_ORDER.get(relation["relation"], 99),
+            position[
+                (
+                    relation.get("source") or Sources.MAL.value,
+                    relation.get("media_type") or MediaTypes.ANIME.value,
+                    str(relation.get("media_id") or relation.get("id") or ""),
+                )
+            ],
+        ),
+    )
+
+
+def _normalize_anime_relation(value):
+    label = str(value or "Other").replace("_", " ").strip()
+    normalized = ANIME_RELATION_LABELS.get(label.lower(), label.title())
+    return normalized if normalized in ANIME_RELATION_ORDER else "Other"
+
+
+def _merge_manga_relations(
+    primary,
+    enrichment,
+    *,
+    media_id,
+    source=Sources.MAL.value,
+):
+    merged = {}
+    order = []
+    for candidate in [*primary, *enrichment]:
+        if not isinstance(candidate, dict):
+            continue
+        relation = dict(candidate)
+        relation_source = relation.get("source") or source
+        relation_type = relation.get("media_type") or MediaTypes.MANGA.value
+        relation_id = str(relation.get("media_id") or relation.get("id") or "")
+        if not relation_id or (
+            relation_source == source
+            and relation_type == MediaTypes.MANGA.value
+            and relation_id == str(media_id)
+        ):
+            continue
+        relation["relation"] = _normalize_manga_relation(
+            relation.get("relation"),
+            default="Related" if source == Sources.MANGAUPDATES.value else "Other",
+        )
+        key = (relation_source, relation_type, relation_id)
+        if key not in merged:
+            merged[key] = relation
+            order.append(key)
+            continue
+        current = merged[key]
+        for field in ("display_title", "image", "release_date", "source_url"):
+            if not current.get(field) and relation.get(field):
+                current[field] = relation[field]
+    position = {key: index for index, key in enumerate(order)}
+    return sorted(
+        merged.values(),
+        key=lambda relation: (
+            ANIME_RELATION_ORDER.get(relation["relation"], 99),
+            position[
+                (
+                    relation.get("source") or source,
+                    relation.get("media_type") or MediaTypes.MANGA.value,
+                    str(relation.get("media_id") or relation.get("id") or ""),
+                )
+            ],
+        ),
+    )
+
+
+def _normalize_manga_relation(value, *, default):
+    label = str(value or default).replace("_", " ").strip()
+    normalized = ANIME_RELATION_LABELS.get(label.lower(), label.title())
+    allowed = {*ANIME_RELATION_ORDER, "Related"}
+    return normalized if normalized in allowed else default
 
 
 def _google_books_volume(metadata):
@@ -1768,6 +2161,20 @@ def _company_release_date(value):
 
 def poster_options(*, source, media_type, media_id, season_number=None, request=None, user=None):
     """Return selectable posters for supported media."""
+    if _supports_anime_artwork(source, media_type):
+        return anime_poster_options(
+            source=source,
+            media_id=media_id,
+            request=request,
+            user=user,
+        )
+    if _supports_manga_posters(source, media_type):
+        return manga_poster_options(
+            source=source,
+            media_id=media_id,
+            request=request,
+            user=user,
+        )
     if _supports_music_posters(source, media_type):
         options = music_cover_options(
             source=source,
@@ -1832,7 +2239,13 @@ def save_poster_preference(*, source, media_type, media_id, poster_url, user, se
     ) and not _supports_book_posters(source, media_type) and not _supports_game_posters(
         source,
         media_type,
-    ) and not _supports_music_posters(source, media_type):
+    ) and not _supports_music_posters(source, media_type) and not _supports_anime_artwork(
+        source,
+        media_type,
+    ) and not _supports_manga_posters(
+        source,
+        media_type,
+    ):
         raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
     season_number = _required_season_number(media_type, season_number)
     if not poster_url:
@@ -1854,6 +2267,116 @@ def save_poster_preference(*, source, media_type, media_id, poster_url, user, se
         "custom_poster_url": poster_url,
         "poster_accent_color": palette["accent"],
     }
+
+
+def anime_poster_options(*, source, media_id, request=None, user=None):
+    """Return MAL and AniList portrait artwork for anime."""
+    media_type = MediaTypes.ANIME.value
+    if not _supports_anime_artwork(source, media_type):
+        raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    metadata = _enrich_anime_metadata(
+        provider_services.get_media_metadata(media_type, media_id, source),
+        source,
+    )
+    current = CustomPosterPreference.objects.filter(user=user, item=item).first()
+    selected_url = current.custom_image_url if current else item.image
+    selected_absolute = absolute_poster_url(request, selected_url)
+    candidates = list(metadata.get("posters") or [])
+    if item.image and item.image not in {candidate.get("url") for candidate in candidates}:
+        candidates.insert(
+            0,
+            {
+                "url": item.image,
+                "thumbnail_url": item.image,
+                "is_original": not candidates,
+            },
+        )
+
+    posters = []
+    for candidate in _dedupe_artwork(candidates):
+        url = absolute_poster_url(request, candidate["url"])
+        posters.append(
+            {
+                "url": url,
+                "thumbnail_url": absolute_poster_url(
+                    request,
+                    candidate.get("thumbnail_url") or candidate["url"],
+                ),
+                "width": candidate.get("width") or 0,
+                "height": candidate.get("height") or 0,
+                "aspect_ratio": candidate.get("aspect_ratio") or 0.667,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": candidate.get("language"),
+                "provider_name": candidate.get("provider_name"),
+                "provider_url": candidate.get("provider_url"),
+                "is_original": bool(candidate.get("is_original")),
+                "is_selected": url == selected_absolute,
+            },
+        )
+    return {"posters": posters}
+
+
+def manga_poster_options(*, source, media_id, request=None, user=None):
+    """Return MAL, AniList, and native MangaUpdates portrait artwork."""
+    media_type = MediaTypes.MANGA.value
+    if not _supports_manga_posters(source, media_type):
+        raise ValueError(POSTER_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+    )
+    metadata = _enrich_manga_metadata(
+        provider_services.get_media_metadata(media_type, media_id, source),
+        source,
+    )
+    current = CustomPosterPreference.objects.filter(user=user, item=item).first()
+    selected_url = current.custom_image_url if current else metadata.get("image") or item.image
+    selected_absolute = absolute_poster_url(request, selected_url)
+    candidates = list(metadata.get("posters") or [])
+    if item.image and item.image not in {
+        candidate.get("url") for candidate in candidates
+    }:
+        candidates.append(
+            {
+                "url": item.image,
+                "thumbnail_url": item.image,
+                "provider_name": (
+                    "MangaUpdates"
+                    if source == Sources.MANGAUPDATES.value
+                    else "MyAnimeList"
+                ),
+                "is_original": not candidates,
+            },
+        )
+
+    posters = []
+    for candidate in _dedupe_artwork(candidates):
+        url = absolute_poster_url(request, candidate["url"])
+        posters.append(
+            {
+                "url": url,
+                "thumbnail_url": absolute_poster_url(
+                    request,
+                    candidate.get("thumbnail_url") or candidate["url"],
+                ),
+                "width": candidate.get("width") or 0,
+                "height": candidate.get("height") or 0,
+                "aspect_ratio": candidate.get("aspect_ratio") or 0.667,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": candidate.get("language"),
+                "provider_name": candidate.get("provider_name"),
+                "provider_url": candidate.get("provider_url"),
+                "is_original": bool(candidate.get("is_original")),
+                "is_selected": url == selected_absolute,
+            },
+        )
+    return {"posters": posters}
 
 
 def book_cover_options(*, source, media_id, request=None, user=None):
@@ -2040,6 +2563,13 @@ def backdrop_options(
     user=None,
 ):
     """Return selectable backdrops for supported media."""
+    if _supports_anime_artwork(source, media_type):
+        return anime_backdrop_options(
+            source=source,
+            media_id=media_id,
+            request=request,
+            user=user,
+        )
     if _supports_game_backdrops(source, media_type):
         return game_backdrop_options(source=source, media_id=media_id, request=request, user=user)
     if source != Sources.TMDB.value or media_type not in [
@@ -2128,6 +2658,63 @@ def backdrop_options(
     return {"backdrops": backdrops}
 
 
+def anime_backdrop_options(*, source, media_id, request=None, user=None):
+    """Return landscape AniList banners and the active anime backdrop."""
+    media_type = MediaTypes.ANIME.value
+    if not _supports_anime_artwork(source, media_type):
+        raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
+
+    item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
+    metadata = _enrich_anime_metadata(
+        provider_services.get_media_metadata(media_type, media_id, source),
+        source,
+    )
+    default_url, custom_url = resolved_backdrop_urls(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        metadata=metadata,
+        request=request,
+        user=user,
+        item=item,
+    )
+    selected_url = custom_url or default_url
+    candidates = list(metadata.get("backdrops") or [])
+    if selected_url and selected_url not in {candidate.get("url") for candidate in candidates}:
+        candidates.insert(
+            0,
+            {
+                "url": selected_url,
+                "thumbnail_url": selected_url,
+                "is_original": False,
+            },
+        )
+
+    backdrops = []
+    for candidate in _dedupe_artwork(candidates):
+        url = absolute_poster_url(request, candidate["url"])
+        backdrops.append(
+            {
+                "url": url,
+                "thumbnail_url": absolute_poster_url(
+                    request,
+                    candidate.get("thumbnail_url") or candidate["url"],
+                ),
+                "width": candidate.get("width") or 0,
+                "height": candidate.get("height") or 0,
+                "aspect_ratio": candidate.get("aspect_ratio") or 1.778,
+                "vote_average": 0,
+                "vote_count": 0,
+                "language": candidate.get("language"),
+                "provider_name": candidate.get("provider_name"),
+                "provider_url": candidate.get("provider_url"),
+                "is_original": bool(candidate.get("is_original", True)),
+                "is_selected": url == selected_url,
+            },
+        )
+    return {"backdrops": backdrops}
+
+
 def game_backdrop_options(*, source, media_id, request=None, user=None):
     """Return selectable IGDB artwork images for game backdrops."""
     if not _supports_game_backdrops(source, MediaTypes.GAME.value):
@@ -2201,7 +2788,10 @@ def save_backdrop_preference(
             MediaTypes.SEASON.value,
             MediaTypes.EPISODE.value,
         ]
-    ) and not _supports_game_backdrops(source, media_type):
+    ) and not _supports_game_backdrops(source, media_type) and not _supports_anime_artwork(
+        source,
+        media_type,
+    ):
         raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
     season_number, episode_number = _required_backdrop_coordinates(
         media_type,
@@ -2449,6 +3039,17 @@ def _supports_music_posters(source, media_type):
     )
 
 
+def _supports_anime_artwork(source, media_type):
+    return source == Sources.MAL.value and media_type == MediaTypes.ANIME.value
+
+
+def _supports_manga_posters(source, media_type):
+    return media_type == MediaTypes.MANGA.value and source in {
+        Sources.MAL.value,
+        Sources.MANGAUPDATES.value,
+    }
+
+
 def _supports_game_backdrops(source, media_type):
     return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
 
@@ -2529,6 +3130,20 @@ def resolved_backdrop_urls(
     raw_default_url = backdrop_url(metadata)
     if _supports_game_backdrops(source, media_type):
         raw_default_url = _game_default_backdrop_url(media_id, raw_default_url)
+    if _supports_anime_artwork(source, media_type):
+        item = item or Item.objects.filter(
+            source=source,
+            media_type=media_type,
+            media_id=media_id,
+            season_number=None,
+            episode_number=None,
+        ).first()
+        return (
+            _curated_backdrop_url(item, request=request) or raw_default_url,
+            _backdrop_preference_url(user, item, request=request),
+        )
+    if media_type == MediaTypes.MANGA.value:
+        return raw_default_url, None
     if source != Sources.TMDB.value or media_type not in [
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,

@@ -38,6 +38,7 @@ class ExternalRatingServiceTests(TestCase):
                 "letterboxd",
                 "tomatoes",
                 "mal",
+                "anilist",
                 "mangaupdates",
                 "igdb",
                 "metacritic",
@@ -58,6 +59,104 @@ class ExternalRatingServiceTests(TestCase):
         self.assertEqual(RATING_SOURCES["tomatoes"]["wire_max"], "100%")
         self.assertEqual(RATING_SOURCES["steam"]["max_value"], Decimal("100"))
         self.assertEqual(RATING_SOURCES["steam"]["wire_max"], "100%")
+        self.assertEqual(RATING_SOURCES["anilist"]["max_value"], Decimal("100"))
+        self.assertEqual(RATING_SOURCES["anilist"]["wire_max"], "100%")
+
+    @patch("app.providers.anilist.anime")
+    def test_anilist_rating_uses_native_percent_and_distribution_count(
+        self,
+        anime_mock,
+    ):
+        anime = Item.objects.create(
+            media_id="16498",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Shingeki no Kyojin",
+        )
+        anime_mock.return_value = {
+            "rating": {
+                "value": 84,
+                "vote_count": 200,
+                "url": "https://anilist.co/anime/16498",
+            },
+        }
+
+        refresh_external_ratings(anime, ["anilist"], metadata={})
+
+        rating = anime.external_ratings.get(rating_source="anilist")
+        self.assertEqual(rating.value, Decimal("84"))
+        self.assertEqual(rating.max_value, Decimal("100"))
+        self.assertEqual(rating.vote_count, 200)
+        self.assertEqual(rating.canonical_url, "https://anilist.co/anime/16498")
+
+    @patch("app.providers.anilist.manga")
+    @patch("app.providers.mal.manga")
+    @patch("app.providers.mal.match_manga", return_value="23390")
+    @patch("app.providers.mal.cached_manga_match", return_value="23390")
+    def test_matched_mangaupdates_persists_mal_and_anilist_ratings(
+        self,
+        _cached_match_mock,
+        _match_mock,
+        mal_mock,
+        anilist_mock,
+    ):
+        manga = Item.objects.create(
+            media_id="mu-1",
+            source=Sources.MANGAUPDATES.value,
+            media_type=MediaTypes.MANGA.value,
+            title="Attack on Titan",
+        )
+        mal_mock.return_value = {
+            "score": 8.6,
+            "score_count": 1000,
+            "source_url": "https://myanimelist.net/manga/23390",
+        }
+        anilist_mock.return_value = {
+            "rating": {
+                "value": 85,
+                "vote_count": 200,
+                "url": "https://anilist.co/manga/30013",
+            },
+        }
+
+        refresh_external_ratings(
+            manga,
+            ["mal", "anilist"],
+            metadata={
+                "title": "Attack on Titan",
+                "details": {"year": "2009", "format": "Manga"},
+            },
+        )
+
+        self.assertEqual(
+            set(manga.external_ratings.values_list("rating_source", flat=True)),
+            {"mal", "anilist"},
+        )
+        self.assertEqual(
+            manga.external_ratings.get(rating_source="mal").value,
+            Decimal("8.6"),
+        )
+        self.assertEqual(
+            manga.external_ratings.get(rating_source="anilist").value,
+            Decimal("85"),
+        )
+
+    @patch("app.providers.mal.cached_manga_match", return_value=None)
+    def test_unmatched_mangaupdates_has_no_cross_provider_rating_sources(
+        self,
+        _cached_match_mock,
+    ):
+        manga = Item.objects.create(
+            media_id="mu-2",
+            source=Sources.MANGAUPDATES.value,
+            media_type=MediaTypes.MANGA.value,
+            title="Unmatched",
+        )
+
+        self.assertEqual(
+            eligible_rating_sources(manga, ["mal", "anilist"]),
+            [],
+        )
 
     @patch("app.providers.steam.get_review_rating")
     def test_steam_rating_is_game_only_idempotent_and_preserves_on_failure(
@@ -246,8 +345,8 @@ class ExternalRatingServiceTests(TestCase):
             },
         ]
 
-        refresh_external_ratings(item)
-        refresh_external_ratings(item)
+        refresh_external_ratings(item, ["mal"])
+        refresh_external_ratings(item, ["mal"])
 
         rating = item.external_ratings.get(rating_source="mal")
         self.assertEqual(item.external_ratings.count(), 1)
@@ -450,6 +549,7 @@ class ExternalRatingServiceTests(TestCase):
 
         refresh_external_ratings(
             item,
+            ["mal"],
             metadata={"score": "8.7", "score_count": 100},
         )
 

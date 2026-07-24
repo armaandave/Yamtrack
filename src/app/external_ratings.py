@@ -39,6 +39,7 @@ RATING_URL_BASES = {
     "hardcover": "https://hardcover.app/",
     "igdb": "https://www.igdb.com/",
     "imdb": "https://www.imdb.com/",
+    "anilist": "https://anilist.co/",
     "letterboxd": "https://letterboxd.com/",
     "mal": "https://myanimelist.net/",
     "mangaupdates": "https://www.mangaupdates.com/",
@@ -54,6 +55,7 @@ RATING_URL_HOSTS = {
     "hardcover": {"hardcover.app"},
     "igdb": {"igdb.com"},
     "imdb": {"imdb.com"},
+    "anilist": {"anilist.co"},
     "letterboxd": {"boxd.it", "letterboxd.com"},
     "mal": {"myanimelist.net"},
     "mangaupdates": {"mangaupdates.com"},
@@ -125,6 +127,51 @@ def _fetch_steam(item, _get_metadata):
             raise_errors=True,
         ),
     }
+
+
+def _fetch_anilist(item, _get_metadata):
+    from app.providers import anilist, mal
+
+    if item.media_type == MediaTypes.ANIME.value:
+        data = anilist.anime(item.media_id, raise_errors=True)
+    else:
+        mal_id = (
+            item.media_id
+            if item.source == Sources.MAL.value
+            else mal.match_manga(item.media_id, _get_metadata())
+        )
+        data = anilist.manga(mal_id, raise_errors=True) if mal_id else {}
+    return {"anilist": data.get("rating")}
+
+
+def _fetch_mal(item, get_metadata):
+    if item.source == Sources.MAL.value:
+        return _fetch_metadata(item, get_metadata)
+
+    from app.providers import mal
+
+    mal_id = mal.match_manga(item.media_id, get_metadata())
+    metadata = mal.manga(mal_id) if mal_id else {}
+    return {
+        "mal": {
+            "value": metadata.get("score"),
+            "vote_count": metadata.get("score_count"),
+            "url": metadata.get("source_url"),
+        },
+    }
+
+
+def _matched_manga_rating_enabled(item):
+    if item.source == Sources.MAL.value:
+        return True
+    if (
+        item.source != Sources.MANGAUPDATES.value
+        or item.media_type != MediaTypes.MANGA.value
+    ):
+        return False
+    from app.providers import mal
+
+    return bool(mal.cached_manga_match(item.media_id))
 
 
 def _imdb_enabled(item):
@@ -205,14 +252,32 @@ RATING_SOURCES = {
     "mal": {
         "key": "mal",
         "label": "MAL",
-        "item_sources": frozenset({Sources.MAL.value}),
+        "item_sources": frozenset(
+            {Sources.MAL.value, Sources.MANGAUPDATES.value},
+        ),
         "media_types": frozenset(
             {MediaTypes.ANIME.value, MediaTypes.MANGA.value},
         ),
         "max_value": Decimal("10"),
         "wire_max": "10",
         "fresh_for": FRESH_FOR,
-        "fetch": _fetch_metadata,
+        "fetch": _fetch_mal,
+        "enabled": _matched_manga_rating_enabled,
+    },
+    "anilist": {
+        "key": "anilist",
+        "label": "AniList",
+        "item_sources": frozenset(
+            {Sources.MAL.value, Sources.MANGAUPDATES.value},
+        ),
+        "media_types": frozenset(
+            {MediaTypes.ANIME.value, MediaTypes.MANGA.value},
+        ),
+        "max_value": Decimal("100"),
+        "wire_max": "100%",
+        "fresh_for": FRESH_FOR,
+        "fetch": _fetch_anilist,
+        "enabled": _matched_manga_rating_enabled,
     },
     "mangaupdates": {
         "key": "mangaupdates",

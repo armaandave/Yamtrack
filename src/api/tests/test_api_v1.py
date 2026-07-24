@@ -4334,8 +4334,13 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
         metadata_mock.assert_not_called()
 
+    @patch("api.services.media.anilist.anime", return_value={})
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_mal_anime_detail_exposes_genres_related_and_rating(self, metadata_mock):
+    def test_mal_anime_detail_exposes_genres_related_and_rating(
+        self,
+        metadata_mock,
+        _anilist_mock,
+    ):
         metadata_mock.return_value = {
             "media_id": "1",
             "media_type": "anime",
@@ -4346,7 +4351,7 @@ class ApiV1FoundationTests(TestCase):
             "score": "8.75",
             "score_count": 100,
             "related": {
-                "related_anime": [
+                "relations": [
                     {"media_id": "5", "media_type": "anime", "source": "mal", "title": "Movie"},
                 ],
                 "recommendations": [
@@ -4359,7 +4364,7 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["details"]["genres"], ["Action", "Sci-Fi"])
-        self.assertEqual([section["id"] for section in response.data["related_sections"]], ["related_anime", "recommendations"])
+        self.assertEqual([section["id"] for section in response.data["related_sections"]], ["relations", "recommendations"])
         self.assertEqual(response.data["external_ratings"][0]["source"], "MAL")
         self.assertEqual(response.data["external_ratings"][0]["url"], "https://myanimelist.net/anime/1")
 
@@ -4373,8 +4378,9 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(ratings[0]["url"], "https://myanimelist.net/manga/2")
 
+    @patch("app.providers.mal.match_manga", return_value=None)
     @patch("api.services.media.provider_services.get_media_metadata")
-    def test_mangaupdates_rating_uses_provider_source_url(self, metadata_mock):
+    def test_unmatched_mangaupdates_rating_is_hidden(self, metadata_mock, _match_mock):
         metadata_mock.return_value = {
             "media_id": "abc123",
             "media_type": "manga",
@@ -4388,11 +4394,7 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/media/mangaupdates/manga/abc123/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["external_ratings"][0]["source"], "MangaUpdates")
-        self.assertEqual(
-            response.data["external_ratings"][0]["url"],
-            "https://www.mangaupdates.com/series/abc123/example-manga",
-        )
+        self.assertEqual(response.data["external_ratings"], [])
 
     def test_mangaupdates_rating_without_source_url_stays_unlinked(self):
         for source_url in [None, "https://["]:
@@ -5605,7 +5607,7 @@ class ApiV1FoundationTests(TestCase):
         user = get_user_model().objects.create_user(username="poster2", password="strong-password-123")
         self.client.force_authenticate(user)
 
-        response = self.client.get("/api/v1/media/mal/anime/1/posters/")
+        response = self.client.get("/api/v1/media/mal/movie/1/posters/")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -6094,7 +6096,7 @@ class ApiV1FoundationTests(TestCase):
         user = get_user_model().objects.create_user(username="backdrop2", password="strong-password-123")
         self.client.force_authenticate(user)
 
-        response = self.client.get("/api/v1/media/mal/anime/1/backdrops/")
+        response = self.client.get("/api/v1/media/mal/manga/1/backdrops/")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 

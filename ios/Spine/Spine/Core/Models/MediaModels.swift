@@ -155,6 +155,8 @@ struct MediaBrowsingSelection: Hashable, Identifiable {
 struct MediaSummary: Codable, Identifiable, Hashable {
     let ref: MediaRef
     let title: String
+    let preferredTitle: String?
+    let relation: String?
     let subtitle: String?
     let overview: String?
     let imageUrl: String?
@@ -191,12 +193,17 @@ struct MediaSummary: Codable, Identifiable, Hashable {
     }
 
     var displayTitle: String {
-        ref.displayTitle(title)
+        if let preferredTitle, !preferredTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return preferredTitle
+        }
+        return ref.displayTitle(title)
     }
 
     enum CodingKeys: String, CodingKey {
         case ref
         case title
+        case preferredTitle = "displayTitle"
+        case relation
         case subtitle
         case overview
         case imageUrl
@@ -226,6 +233,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
     init(
         ref: MediaRef,
         title: String,
+        preferredTitle: String? = nil,
+        relation: String? = nil,
         subtitle: String? = nil,
         overview: String? = nil,
         imageUrl: String? = nil,
@@ -253,6 +262,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
     ) {
         self.ref = ref
         self.title = title
+        self.preferredTitle = preferredTitle
+        self.relation = relation
         self.subtitle = subtitle
         self.overview = overview
         self.imageUrl = imageUrl
@@ -285,6 +296,8 @@ struct MediaSummary: Codable, Identifiable, Hashable {
         self.init(
             ref: try container.decode(MediaRef.self, forKey: .ref),
             title: try container.decode(String.self, forKey: .title),
+            preferredTitle: try container.decodeIfPresent(String.self, forKey: .preferredTitle),
+            relation: try container.decodeIfPresent(String.self, forKey: .relation),
             subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle),
             overview: try container.decodeIfPresent(String.self, forKey: .overview),
             imageUrl: imageUrl,
@@ -814,6 +827,7 @@ struct MusicRecordingDetail: Decodable {
 struct MediaDetail: Decodable, Identifiable {
     let ref: MediaRef
     let title: String
+    let preferredTitle: String?
     let subtitle: String?
     let overview: String?
     let synopsis: String?
@@ -842,6 +856,7 @@ struct MediaDetail: Decodable, Identifiable {
     let externalRatingsPreparation: MediaExternalRatingsPreparation?
     let reviews: [MediaReview]?
     let cast: [CreditPerson]?
+    let characters: [CreditPerson]?
     let crew: [CreditPerson]?
     let relatedSections: [RelatedMediaSection]?
     let episodes: [EpisodeSummary]?
@@ -865,7 +880,10 @@ struct MediaDetail: Decodable, Identifiable {
     }
 
     var displayTitle: String {
-        ref.displayTitle(title)
+        if let preferredTitle, !preferredTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return preferredTitle
+        }
+        return ref.displayTitle(title)
     }
 
     var episodeStillURL: String? {
@@ -876,6 +894,7 @@ struct MediaDetail: Decodable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case ref
         case title
+        case preferredTitle = "displayTitle"
         case subtitle
         case overview
         case synopsis
@@ -904,6 +923,7 @@ struct MediaDetail: Decodable, Identifiable {
         case externalRatingsPreparation
         case reviews
         case cast
+        case characters
         case crew
         case relatedSections
         case episodes
@@ -916,6 +936,7 @@ struct MediaDetail: Decodable, Identifiable {
     init(
         ref: MediaRef,
         title: String,
+        preferredTitle: String? = nil,
         subtitle: String? = nil,
         overview: String? = nil,
         synopsis: String? = nil,
@@ -944,6 +965,7 @@ struct MediaDetail: Decodable, Identifiable {
         externalRatingsPreparation: MediaExternalRatingsPreparation? = nil,
         reviews: [MediaReview]? = nil,
         cast: [CreditPerson]? = nil,
+        characters: [CreditPerson]? = nil,
         crew: [CreditPerson]? = nil,
         relatedSections: [RelatedMediaSection]? = nil,
         episodes: [EpisodeSummary]? = nil,
@@ -954,6 +976,7 @@ struct MediaDetail: Decodable, Identifiable {
     ) {
         self.ref = ref
         self.title = title
+        self.preferredTitle = preferredTitle
         self.subtitle = subtitle
         self.overview = overview
         self.synopsis = synopsis
@@ -982,6 +1005,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.externalRatingsPreparation = externalRatingsPreparation
         self.reviews = reviews
         self.cast = cast
+        self.characters = characters
         self.crew = crew
         self.relatedSections = relatedSections
         self.episodes = episodes
@@ -997,6 +1021,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.init(
             ref: try container.decode(MediaRef.self, forKey: .ref),
             title: try container.decode(String.self, forKey: .title),
+            preferredTitle: try container.decodeIfPresent(String.self, forKey: .preferredTitle),
             subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle),
             overview: try container.decodeIfPresent(String.self, forKey: .overview),
             synopsis: try container.decodeIfPresent(String.self, forKey: .synopsis),
@@ -1028,6 +1053,7 @@ struct MediaDetail: Decodable, Identifiable {
             ),
             reviews: try container.decodeIfPresent([MediaReview].self, forKey: .reviews),
             cast: try container.decodeIfPresent([CreditPerson].self, forKey: .cast),
+            characters: try container.decodeIfPresent([CreditPerson].self, forKey: .characters),
             crew: try container.decodeIfPresent([CreditPerson].self, forKey: .crew),
             relatedSections: try container.decodeIfPresent([RelatedMediaSection].self, forKey: .relatedSections),
             episodes: try container.decodeIfPresent([EpisodeSummary].self, forKey: .episodes),
@@ -1042,6 +1068,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1070,6 +1097,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,
@@ -1084,6 +1112,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1112,6 +1141,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,
@@ -1126,6 +1156,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1154,6 +1185,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,
@@ -1168,6 +1200,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1196,6 +1229,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,
@@ -1210,6 +1244,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1238,6 +1273,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,
@@ -1252,6 +1288,7 @@ struct MediaDetail: Decodable, Identifiable {
         MediaDetail(
             ref: ref,
             title: title,
+            preferredTitle: preferredTitle,
             subtitle: subtitle,
             overview: overview,
             synopsis: synopsis,
@@ -1284,6 +1321,7 @@ struct MediaDetail: Decodable, Identifiable {
             externalRatingsPreparation: response.externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
+            characters: characters,
             crew: crew,
             relatedSections: relatedSections,
             episodes: episodes,

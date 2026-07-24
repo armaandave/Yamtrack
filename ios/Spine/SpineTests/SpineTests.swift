@@ -728,6 +728,24 @@ final class SpineTests: XCTestCase {
             MediaExternalRatingPresentation.order(for: "Metacritic"),
             MediaExternalRatingPresentation.order(for: "Steam")
         )
+
+        let aniList = ExternalRating(
+            source: "AniList",
+            value: "84",
+            voteCount: 200,
+            maxValue: "100%",
+            url: "https://anilist.co/anime/16498"
+        )
+        XCTAssertEqual(aniList.displayValue, "84%")
+        XCTAssertEqual(aniList.ratingAssetName, "RatingAniList")
+        XCTAssertEqual(aniList.source.ratingAbbreviation, "AL")
+        XCTAssertNotNil(UIImage(named: "RatingAniList"))
+        XCTAssertTrue(MediaExternalRatingPresentation.includes(source: "AniList", mediaType: "manga"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "MangaUpdates", mediaType: "manga"))
+        XCTAssertLessThan(
+            MediaExternalRatingPresentation.order(for: "MAL"),
+            MediaExternalRatingPresentation.order(for: "AniList")
+        )
     }
 
     @MainActor
@@ -2691,17 +2709,65 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "hardcover", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "igdb", mediaType: "game"))
         XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "musicbrainz", mediaType: "music"))
-        XCTAssertFalse(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "anime"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "anime"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "mal", mediaType: "manga"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsPoster(source: "mangaupdates", mediaType: "manga"))
         XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "openlibrary", mediaType: "book"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "episode"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "mal", mediaType: "anime"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "mal", mediaType: "manga"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "mangaupdates", mediaType: "manga"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "tv"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "igdb", mediaType: "game"))
         XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "season"))
         XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "mal", mediaType: "anime"))
+        XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "mal", mediaType: "manga"))
         XCTAssertFalse(MediaArtworkCustomization.supportsLogo(source: "openlibrary", mediaType: "book"))
+    }
+
+    func testMangaYearPresentation() {
+        XCTAssertEqual(
+            MangaYearPresentation.value(
+                startDate: "2009-09-09",
+                endDate: "2021-04-09",
+                status: "Finished"
+            ),
+            "2009–2021"
+        )
+        XCTAssertEqual(
+            MangaYearPresentation.value(
+                startDate: "2020-01-01",
+                endDate: "2020-12-31",
+                status: "Finished"
+            ),
+            "2020"
+        )
+        XCTAssertEqual(
+            MangaYearPresentation.value(
+                startDate: "1989-08-25",
+                endDate: nil,
+                status: "Publishing"
+            ),
+            "1989–"
+        )
+        XCTAssertEqual(
+            MangaYearPresentation.value(
+                startDate: "2010",
+                endDate: nil,
+                status: "12 Volumes (Ongoing)"
+            ),
+            "2010–"
+        )
+        XCTAssertNil(
+            MangaYearPresentation.value(
+                startDate: nil,
+                endDate: nil,
+                status: "Publishing"
+            )
+        )
     }
 
     func testTrackingDiaryAndProfileDecoding() throws {
@@ -3956,10 +4022,59 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(season.episodes?.first?.runtime, "49m")
         XCTAssertEqual(season.episodes?.first?.overview, "Ada finds the first card.")
         XCTAssertEqual(anime.relatedSections?.count, 2)
+        XCTAssertEqual(anime.title, "Shingeki no Kyojin")
+        XCTAssertEqual(anime.displayTitle, "Attack on Titan")
+        XCTAssertEqual(anime.displayBackdropURL, "https://img.example/banner.jpg")
+        XCTAssertEqual(anime.cast?.first?.name, "Yuki Kaji")
+        XCTAssertEqual(anime.characters?.first?.role, "Main")
+        XCTAssertEqual(anime.relatedSections?.first?.items.first?.relation, "Sequel")
+        XCTAssertEqual(anime.relatedSections?.first?.items.first?.displayTitle, "Attack on Titan: The Final Season")
         XCTAssertEqual(anime.externalRatings?.first?.url, "https://myanimelist.net/anime/1")
         XCTAssertEqual(anime.externalRatings?.first?.destinationURL?.absoluteString, "https://myanimelist.net/anime/1")
+        XCTAssertEqual(anime.externalRatings?.last?.source, "AniList")
         XCTAssertEqual(reviews.results.first?.reviewTitle, "A pulse under glass")
         XCTAssertEqual(reviews.results.last?.containsSpoilers, true)
+    }
+
+    func testMangaDetailEnrichmentDecoding() throws {
+        let manga = try JSONDecoder.api.decode(
+            MediaDetail.self,
+            from: """
+            {
+              "ref": {"source": "mal", "media_type": "manga", "media_id": "23390"},
+              "title": "Shingeki no Kyojin",
+              "display_title": "Attack on Titan",
+              "backdrop_url": "https://img.example/banner.jpg",
+              "characters": [
+                {"id": "character:1", "name": "Eren Yeager", "role": "Main", "image_url": "https://img.example/eren.jpg"}
+              ],
+              "crew": [
+                {"id": "mal:11705", "name": "Hajime Isayama", "role": "Story & Art", "image_url": "https://img.example/isayama.jpg"}
+              ],
+              "related_sections": [
+                {
+                  "id": "relations",
+                  "title": "Related",
+                  "items": [
+                    {
+                      "ref": {"source": "mal", "media_type": "anime", "media_id": "16498"},
+                      "title": "Shingeki no Kyojin",
+                      "display_title": "Attack on Titan",
+                      "relation": "Adaptation"
+                    }
+                  ]
+                }
+              ]
+            }
+            """.data(using: .utf8)!
+        )
+
+        XCTAssertEqual(manga.displayTitle, "Attack on Titan")
+        XCTAssertEqual(manga.displayBackdropURL, "https://img.example/banner.jpg")
+        XCTAssertEqual(manga.characters?.first?.role, "Main")
+        XCTAssertEqual(manga.crew?.first?.role, "Story & Art")
+        XCTAssertEqual(manga.relatedSections?.first?.items.first?.ref.mediaType, "anime")
+        XCTAssertEqual(manga.relatedSections?.first?.items.first?.relation, "Adaptation")
     }
 
     func testExternalRatingDestinationURLAcceptsOnlyAbsoluteHTTPURLs() throws {
@@ -8108,24 +8223,25 @@ private enum TestFixtures {
     static let animeDetailJSON = """
     {
       "ref": { "item_id": 404, "source": "mal", "media_type": "anime", "media_id": "1", "season_number": null, "episode_number": null },
-      "title": "Cowboy Bebop",
-      "subtitle": "1998",
-      "overview": "A crew of bounty hunters drifts through space, chasing marks and old ghosts.",
+      "title": "Shingeki no Kyojin",
+      "display_title": "Attack on Titan",
+      "subtitle": "2013",
+      "overview": "Humanity shelters behind walls while giants roam outside.",
       "image_url": "https://cdn.myanimelist.net/images/anime/4/19644.jpg",
       "poster_accent_color": "#6B5D4B",
-      "release_date": "1998-04-03",
+      "release_date": "2013-04-07",
       "default_source": "mal",
       "user_state": null,
-      "backdrop_url": null,
+      "backdrop_url": "https://img.example/banner.jpg",
       "details": {
         "format": "TV",
-        "start_date": "1998-04-03",
-        "end_date": "1999-04-24",
+        "start_date": "2013-04-07",
+        "end_date": "2013-09-29",
         "status": "Finished Airing",
         "episodes": 26,
         "runtime": "24m",
         "studios": ["Sunrise"],
-        "season": "Spring 1998",
+        "season": "Spring 2013",
         "broadcast": "Saturdays at 01:00",
         "source": "Original",
         "genres": ["Action", "Award Winning", "Sci-Fi"]
@@ -8134,17 +8250,23 @@ private enum TestFixtures {
       "providers": null,
       "community": { "average_rating": "9.0", "rating_count": 1800, "diary_count": 721, "review_count": 84, "liked_count": 1133, "rating_distribution": [] },
       "external_ratings": [
-        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10", "url": "https://myanimelist.net/anime/1" }
+        { "source": "MAL", "value": "8.75", "vote_count": 1000000, "max_value": "10", "url": "https://myanimelist.net/anime/1" },
+        { "source": "AniList", "value": "84", "vote_count": 900000, "max_value": "100%", "url": "https://anilist.co/anime/16498" }
       ],
       "reviews": null,
-      "cast": [],
+      "cast": [
+        { "id": "voice:11:1", "name": "Yuki Kaji", "role": null, "character": "Eren Yeager", "image_url": "https://img.example/kaji.jpg" }
+      ],
+      "characters": [
+        { "id": "character:1", "name": "Eren Yeager", "role": "Main", "character": null, "image_url": "https://img.example/eren.jpg" }
+      ],
       "crew": [],
       "related_sections": [
         {
-          "id": "related_anime",
-          "title": "Related Anime",
+          "id": "relations",
+          "title": "Relations",
           "items": [
-            { "ref": { "item_id": null, "source": "mal", "media_type": "anime", "media_id": "5", "season_number": null, "episode_number": null }, "title": "Cowboy Bebop: The Movie", "subtitle": "2001", "overview": null, "image_url": "https://cdn.myanimelist.net/images/anime/1439/93480.jpg", "poster_accent_color": null, "release_date": "2001-09-01", "default_source": "mal", "user_state": null }
+            { "ref": { "item_id": null, "source": "mal", "media_type": "anime", "media_id": "5", "season_number": null, "episode_number": null }, "title": "Shingeki no Kyojin: The Final Season", "display_title": "Attack on Titan: The Final Season", "relation": "Sequel", "subtitle": "2020", "overview": null, "image_url": "https://cdn.myanimelist.net/images/anime/1439/93480.jpg", "poster_accent_color": null, "release_date": "2020-12-07", "default_source": "mal", "user_state": null }
           ]
         },
         {

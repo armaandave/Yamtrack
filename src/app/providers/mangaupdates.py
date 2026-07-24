@@ -143,20 +143,31 @@ async def async_manga(media_id):
             "media_type": MediaTypes.MANGA.value,
             "title": response["title"],
             "image": get_image_url(response),
+            "posters": [
+                {
+                    "url": get_image_url(response),
+                    "thumbnail_url": get_image_url(response),
+                    "provider_name": "MangaUpdates",
+                    "provider_url": response["url"],
+                    "is_original": True,
+                },
+            ],
             "synopsis": response["description"],
             "max_progress": get_max_progress(response),
             "genres": get_genres(response["genres"]),
             "score": get_score(response["bayesian_rating"]),
             "score_count": response["rating_votes"],
+            "creators": get_creators(response.get("authors")),
             "details": {
                 "format": response["type"],
                 "authors": get_authors(response["authors"]),
+                "alternative_titles": get_associated_titles(response),
                 "year": response["year"],
                 "status_in_country_of_origin": get_status(response["status"]),
                 "latest_chapter_translated": response["latest_chapter"],
             },
             "related": {
-                "related_manga": await related_task,
+                "relations": await related_task,
                 "recommendations": await recommendations_task,
             },
         }
@@ -192,6 +203,43 @@ def get_authors(authors):
     if authors:
         return [item["name"] for item in authors]
     return None
+
+
+def get_creators(authors):
+    """Return MangaUpdates creators using the shared credit shape."""
+    creators = []
+    seen = set()
+    for author in authors or []:
+        name = str(author.get("name") or "").strip()
+        role = str(author.get("type") or author.get("role") or "").strip()
+        key = (name.casefold(), role.casefold())
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        creators.append(
+            {
+                "person_id": f"mangaupdates:{author.get('author_id') or name}",
+                "name": name,
+                "role": role or None,
+            },
+        )
+    return creators[:12]
+
+
+def get_associated_titles(response):
+    """Return title aliases from the MangaUpdates series response."""
+    values = response.get("associated") or response.get("associated_titles") or []
+    titles = []
+    seen = set()
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("title") or value.get("name")
+        title = str(value or "").strip()
+        key = title.casefold()
+        if title and key not in seen:
+            seen.add(key)
+            titles.append(title)
+    return titles
 
 
 def get_status(status):
@@ -254,5 +302,21 @@ async def fetch_series_data(session, url, item):
                 "media_type": MediaTypes.MANGA.value,
                 "title": item.get("related_series_name") or item.get("series_name"),
                 "image": image,
+                **(
+                    {"relation": relation}
+                    if (
+                        relation := _relation_label(
+                            item.get("relation_type")
+                            or item.get("relation")
+                            or item.get("type"),
+                        )
+                    )
+                    else {}
+                ),
             }
     return None
+
+
+def _relation_label(value):
+    label = str(value or "").replace("_", " ").strip()
+    return label.title() if label else "Related"

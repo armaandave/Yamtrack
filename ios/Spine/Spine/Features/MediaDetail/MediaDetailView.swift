@@ -694,6 +694,12 @@ private struct MediaDetailChip: Hashable, Identifiable {
 
 enum MediaArtworkCustomization {
     static func supportsPoster(source: String, mediaType: String) -> Bool {
+        if source == "mal", mediaType == "anime" {
+            return true
+        }
+        if mediaType == "manga", ["mal", "mangaupdates"].contains(source) {
+            return true
+        }
         if source == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
             return true
         }
@@ -707,6 +713,9 @@ enum MediaArtworkCustomization {
     }
 
     static func supportsBackdrop(source: String, mediaType: String) -> Bool {
+        if source == "mal", mediaType == "anime" {
+            return true
+        }
         if source == "tmdb", ["movie", "tv", "season", "episode"].contains(mediaType) {
             return true
         }
@@ -727,6 +736,9 @@ enum MediaExternalRatingPresentation {
         if mediaType == "music" || ["spine", "google books", "igdb"].contains(normalizedSource) {
             return false
         }
+        if mediaType == "manga", normalizedSource == "mangaupdates" {
+            return false
+        }
         if normalizedSource == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
             return false
         }
@@ -740,7 +752,9 @@ enum MediaExternalRatingPresentation {
         case "imdb": 2
         case "metacritic": 3
         case "steam": 4
-        default: 5
+        case "mal", "myanimelist": 5
+        case "anilist": 6
+        default: 7
         }
     }
 
@@ -749,6 +763,18 @@ enum MediaExternalRatingPresentation {
         preparation: MediaExternalRatingsPreparation?
     ) -> Bool {
         mediaType != "music" && preparation?.state == .pending
+    }
+}
+
+enum MangaYearPresentation {
+    static func value(startDate: String?, endDate: String?, status: String?) -> String? {
+        guard let startYear = startDate?.yearPrefix else { return nil }
+        let normalizedStatus = status?.lowercased() ?? ""
+        if ["publishing", "hiatus", "releasing", "ongoing"].contains(where: normalizedStatus.contains) {
+            return "\(startYear)–"
+        }
+        guard let endYear = endDate?.yearPrefix else { return startYear }
+        return endYear == startYear ? startYear : "\(startYear)–\(endYear)"
     }
 }
 
@@ -2774,7 +2800,9 @@ private struct MediaDetailPageView: View {
 
     private func primaryChips(_ detail: MediaDetail) -> [MediaDetailChip] {
         var chips = [MediaDetailChip(label: mediaTypeChipLabel(detail.ref.mediaType), discoverRequest: nil)]
-        if let year = year(detail) {
+        if detail.ref.mediaType == "anime", let season = detailString(detail, "season")?.nilIfEmpty {
+            chips.append(MediaDetailChip(label: season, discoverRequest: nil))
+        } else if let year = year(detail) {
             chips.append(MediaDetailChip(label: year, discoverRequest: discoverRequest(detail, filter: .year(String(year.prefix(4))))))
         }
         if let seasonLabel = seasonChipLabel(detail) {
@@ -3113,6 +3141,10 @@ private struct MediaDetailPageView: View {
             "Authors"
         case "comic":
             "People"
+        case "anime":
+            "Cast & Characters"
+        case "manga":
+            "Characters & Creators"
         default:
             "Cast & Crew"
         }
@@ -3121,6 +3153,16 @@ private struct MediaDetailPageView: View {
     private func castCredits(_ detail: MediaDetail) -> [CreditDisplay] {
         if detail.ref.mediaType == "book" {
             return bookAuthorCredits(detail)
+        }
+        if detail.ref.mediaType == "manga" {
+            return (detail.characters ?? []).map {
+                CreditDisplay(
+                    name: $0.name,
+                    subtitle: $0.role,
+                    imageUrl: $0.imageUrl,
+                    personRef: nil
+                )
+            }
         }
         let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv", "episode"].contains(detail.ref.mediaType)
         let credits = (detail.cast ?? []).map {
@@ -3138,6 +3180,16 @@ private struct MediaDetailPageView: View {
     }
 
     private func crewCredits(_ detail: MediaDetail) -> [CreditDisplay] {
+        if detail.ref.mediaType == "anime" {
+            return (detail.characters ?? []).map {
+                CreditDisplay(
+                    name: $0.name,
+                    subtitle: $0.role,
+                    imageUrl: $0.imageUrl,
+                    personRef: nil
+                )
+            }
+        }
         let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv", "episode"].contains(detail.ref.mediaType)
         return (detail.crew ?? []).map {
             CreditDisplay(
@@ -3150,6 +3202,13 @@ private struct MediaDetailPageView: View {
     }
 
     private func year(_ detail: MediaDetail) -> String? {
+        if detail.ref.mediaType == "manga" {
+            return MangaYearPresentation.value(
+                startDate: detailString(detail, "start_date") ?? detail.releaseDate,
+                endDate: detailString(detail, "end_date"),
+                status: detailString(detail, "status") ?? detailString(detail, "status_in_country_of_origin")
+            )
+        }
         if detail.ref.mediaType == "tv" {
             let start = detailString(detail, "first_air_date") ?? detail.releaseDate
             let end = detailString(detail, "last_air_date")
@@ -3318,6 +3377,8 @@ private struct MediaDetailPageView: View {
                 episodeNumber: object["episode_number"]?.intValue
             ),
             title: title,
+            preferredTitle: object["display_title"]?.displayString,
+            relation: object["relation"]?.displayString,
             subtitle: object["year"]?.displayString,
             overview: object["overview"]?.displayString,
             imageUrl: object["image_url"]?.displayString ?? object["image"]?.displayString,
@@ -4726,7 +4787,7 @@ private struct RatingSourceBadge: View {
                 }
             }
             .frame(width: MediaDetailLayout.ratingBadgeSize, height: MediaDetailLayout.ratingBadgeSize)
-            .background(["RatingMAL", "RatingMetacritic", "RatingSteam"].contains(chip.assetName) ? .clear : .white, in: Circle())
+            .background(["RatingMAL", "RatingAniList", "RatingMetacritic", "RatingSteam"].contains(chip.assetName) ? .clear : .white, in: Circle())
             .clipShape(Circle())
         }
     }
@@ -4750,7 +4811,7 @@ private struct RatingSourceBadge: View {
                 .scaleEffect(1.1)
                 .frame(width: 24, height: 24)
                 .clipped()
-        case "RatingMAL":
+        case "RatingMAL", "RatingAniList":
             Image(assetName)
                 .resizable()
                 .scaledToFill()
@@ -5621,7 +5682,7 @@ private struct CreditSection: View {
         Button {
             selectedTab = tab
         } label: {
-            Text(tab.title)
+            Text(tabTitle(tab))
                 .font(.system(size: 11, weight: .heavy))
                 .foregroundStyle(selectedTab == tab ? .white.opacity(0.9) : .white.opacity(0.52))
                 .padding(.horizontal, 10)
@@ -5629,6 +5690,18 @@ private struct CreditSection: View {
                 .background(selectedTab == tab ? .white.opacity(0.13) : .clear, in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(tabTitle(tab))
+        .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+    }
+
+    private func tabTitle(_ tab: CreditTab) -> String {
+        if tab == .crew, title == "Cast & Characters" {
+            return "Characters"
+        }
+        if title == "Characters & Creators" {
+            return tab == .cast ? "Characters" : "Creators"
+        }
+        return tab.title
     }
 
     private func creditRow(_ person: CreditDisplay) -> some View {
@@ -6057,12 +6130,24 @@ private struct RecommendationsSection: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     MediaArtwork(
                                         url: item.displayPosterURL,
-                                        title: item.title,
+                                        title: item.displayTitle,
                                         slot: .carousel,
                                         mediaType: item.ref.mediaType,
                                         orientation: item.posterOrientation
                                     )
-                                    Text(item.title)
+                                    .overlay(alignment: .bottomLeading) {
+                                        if let relation = item.relation?.nilIfEmpty {
+                                            Text(relation)
+                                                .font(.system(size: 9, weight: .heavy))
+                                                .foregroundStyle(.white.opacity(0.92))
+                                                .lineLimit(1)
+                                                .padding(.horizontal, 7)
+                                                .frame(height: 20)
+                                                .background(.black.opacity(0.72), in: Capsule())
+                                                .padding(6)
+                                        }
+                                    }
+                                    Text(item.displayTitle)
                                         .font(.system(size: 12, weight: .heavy))
                                         .foregroundStyle(.white)
                                         .lineLimit(2)
@@ -6071,7 +6156,7 @@ private struct RecommendationsSection: View {
                                 .frame(width: MediaDetailLayout.recommendationPosterSize.width, height: MediaDetailLayout.recommendationCardHeight, alignment: .topLeading)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Open \(item.title)")
+                            .accessibilityLabel("Open \(item.displayTitle)")
                         }
                     }
                 }
@@ -6398,7 +6483,7 @@ private extension String {
 extension ExternalRating {
     var displayValue: String {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if ["rotten tomatoes", "rottentomatoes"].contains(source.lowercased()) {
+        if ["anilist", "rotten tomatoes", "rottentomatoes"].contains(source.lowercased()) {
             return trimmedValue.hasSuffix("%") ? trimmedValue : "\(trimmedValue)%"
         }
         if source.lowercased() == "hardcover" {
@@ -6440,6 +6525,8 @@ extension ExternalRating {
             rottenTomatoesAssetName
         case "mal", "myanimelist":
             "RatingMAL"
+        case "anilist":
+            "RatingAniList"
         case "hardcover":
             "RatingHardcover"
         case "metacritic":
@@ -6501,6 +6588,8 @@ extension String {
             "ST"
         case "mal":
             "MA"
+        case "anilist":
+            "AL"
         case "mangaupdates":
             "MU"
         case "openlibrary":

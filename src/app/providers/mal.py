@@ -1,4 +1,7 @@
 import logging
+import re
+import time
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -13,7 +16,11 @@ from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.myanimelist.net/v2"
-base_fields = "title,main_picture,media_type,start_date,end_date,synopsis,status,genres,mean,num_scoring_users,recommendations"  # noqa: E501
+base_fields = "title,alternative_titles,main_picture,pictures,media_type,start_date,end_date,synopsis,status,genres,mean,num_scoring_users,recommendations"  # noqa: E501
+MANGA_MATCH_VERSION = "v1"
+MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
+MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
+MANGA_MATCH_FAILURE_TTL = 60 * 5
 
 
 def handle_error(error):
@@ -104,7 +111,7 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
 
 def anime(media_id):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}"
+    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v2"
     data = cache.get(cache_key)
 
     if data is None:
@@ -132,8 +139,10 @@ def anime(media_id):
             "source_url": f"https://myanimelist.net/anime/{media_id}",
             "media_type": MediaTypes.ANIME.value,
             "title": response["title"],
+            "display_title": get_english_title(response),
             "max_progress": num_episodes,
             "image": get_image_url(response),
+            "posters": get_pictures(response, media_id, MediaTypes.ANIME.value),
             "synopsis": get_synopsis(response),
             "genres": get_genres(response),
             "score": get_score(response),
@@ -151,7 +160,7 @@ def anime(media_id):
                 "source": get_source(response),
             },
             "related": {
-                "related_anime": get_related(
+                "relations": get_related(
                     response.get("related_anime"),
                     MediaTypes.ANIME.value,
                 ),
@@ -169,13 +178,16 @@ def anime(media_id):
 
 def manga(media_id):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}"
+    cache_key = f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_v2"
     data = cache.get(cache_key)
 
     if data is None:
         url = f"{base_url}/manga/{media_id}"
         params = {
-            "fields": f"{base_fields},num_chapters,related_manga,recommendations",
+            "fields": (
+                f"{base_fields},num_chapters,num_volumes,authors,serialization,"
+                "related_anime,related_manga,recommendations"
+            ),
         }
 
         try:
@@ -197,24 +209,40 @@ def manga(media_id):
             "source_url": f"https://myanimelist.net/manga/{media_id}",
             "media_type": MediaTypes.MANGA.value,
             "title": response["title"],
+            "display_title": get_english_title(response),
             "image": get_image_url(response),
+            "posters": get_pictures(response, media_id, MediaTypes.MANGA.value),
             "synopsis": get_synopsis(response),
             "max_progress": num_chapters,
             "genres": get_genres(response),
             "score": get_score(response),
             "score_count": get_score_count(response),
+            "creators": get_authors(response),
             "details": {
                 "format": get_format(response),
                 "start_date": response.get("start_date"),
                 "end_date": response.get("end_date"),
                 "status": get_readable_status(response),
                 "number_of_chapters": num_chapters,
+                "number_of_volumes": response.get("num_volumes") or None,
+                "authors": [creator["name"] for creator in get_authors(response)],
+                "serialization": [
+                    item["node"]["name"]
+                    for item in response.get("serialization") or []
+                    if isinstance(item, dict) and (item.get("node") or {}).get("name")
+                ],
             },
             "related": {
-                "related_manga": get_related(
-                    response.get("related_manga"),
-                    MediaTypes.MANGA.value,
-                ),
+                "relations": [
+                    *get_related(
+                        response.get("related_manga"),
+                        MediaTypes.MANGA.value,
+                    ),
+                    *get_related(
+                        response.get("related_anime"),
+                        MediaTypes.ANIME.value,
+                    ),
+                ],
                 "recommendations": get_related(
                     response.get("recommendations"),
                     MediaTypes.MANGA.value,
@@ -225,6 +253,109 @@ def manga(media_id):
         cache.set(cache_key, data)
 
     return data
+
+
+def match_manga(mangaupdates_id, metadata, *, timeout=3):
+    """Return a strictly matched MAL manga ID for MangaUpdates metadata."""
+    fresh_key, stale_key, failure_key = _manga_match_keys(mangaupdates_id)
+    cached = cache.get(fresh_key)
+    if cached is not None:
+        return cached.get("mal_id")
+
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        return stale.get("mal_id") if stale else None
+
+    details = metadata.get("details") or {}
+    titles = _match_titles(
+        metadata.get("title"),
+        details.get("alternative_titles"),
+    )
+    if not titles:
+        cache.set(fresh_key, {"mal_id": None}, MANGA_MATCH_FRESH_TTL)
+        return None
+
+    expected_year = _year(details.get("year") or details.get("start_date"))
+    expected_format = _format_family(details.get("format"))
+    deadline = time.monotonic() + timeout
+    candidates = {}
+
+    try:
+        for query in titles[:4]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            response = services.api_request(
+                Sources.MAL.value,
+                "GET",
+                f"{base_url}/manga",
+                params={
+                    "q": query,
+                    "fields": "alternative_titles,media_type,start_date",
+                    "limit": 10,
+                    **({"nsfw": "true"} if settings.MAL_NSFW else {}),
+                },
+                headers={"X-MAL-CLIENT-ID": settings.MAL_API},
+                timeout=remaining,
+            )
+            for result in response.get("data") or []:
+                node = result.get("node") or {}
+                node_titles = _match_titles(
+                    node.get("title"),
+                    (node.get("alternative_titles") or {}).values(),
+                )
+                if not set(titles).intersection(node_titles):
+                    continue
+                node_year = _year(node.get("start_date"))
+                node_format = _format_family(node.get("media_type"))
+                if (
+                    expected_year
+                    and node_year
+                    and expected_year != node_year
+                ) or (
+                    expected_format
+                    and node_format
+                    and expected_format != node_format
+                ):
+                    continue
+                if node.get("id") is not None:
+                    candidates[str(node["id"])] = node
+    except (
+        requests.RequestException,
+        services.ProviderAPIError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.warning(
+            "MAL manga match unavailable for MangaUpdates %s: %s",
+            mangaupdates_id,
+            error,
+        )
+        cache.set(failure_key, True, MANGA_MATCH_FAILURE_TTL)
+        return stale.get("mal_id") if stale else None
+
+    match = next(iter(candidates)) if len(candidates) == 1 else None
+    payload = {"mal_id": match}
+    cache.set(fresh_key, payload, MANGA_MATCH_FRESH_TTL)
+    if match:
+        cache.set(stale_key, payload, MANGA_MATCH_STALE_TTL)
+    cache.delete(failure_key)
+    return match
+
+
+def cached_manga_match(mangaupdates_id):
+    """Return a cached positive MangaUpdates-to-MAL match."""
+    fresh_key, stale_key, _failure_key = _manga_match_keys(mangaupdates_id)
+    payload = cache.get(fresh_key)
+    if payload is None:
+        payload = cache.get(stale_key)
+    return payload.get("mal_id") if payload else None
+
+
+def _manga_match_keys(mangaupdates_id):
+    prefix = f"mal:{MANGA_MATCH_VERSION}:manga-match:{mangaupdates_id}"
+    return f"{prefix}:fresh", f"{prefix}:stale", f"{prefix}:failure"
 
 
 def get_format(response):
@@ -247,6 +378,111 @@ def get_image_url(response):
         return response["main_picture"]["large"]
     except KeyError:
         return settings.IMG_NONE
+
+
+def get_english_title(response):
+    """Return MAL's English title without changing the canonical title."""
+    value = (response.get("alternative_titles") or {}).get("en")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def get_pictures(response, media_id, media_type):
+    """Return deduplicated MAL poster candidates."""
+    source_url = f"https://myanimelist.net/{media_type}/{media_id}"
+    pictures = [response.get("main_picture"), *(response.get("pictures") or [])]
+    results = []
+    seen = set()
+    for index, picture in enumerate(pictures):
+        if not isinstance(picture, dict):
+            continue
+        url = picture.get("large") or picture.get("medium")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        results.append(
+            {
+                "url": url,
+                "thumbnail_url": picture.get("medium") or url,
+                "provider_name": "MyAnimeList",
+                "provider_url": source_url,
+                "is_original": index == 0,
+            },
+        )
+    return results
+
+
+def get_authors(response):
+    """Return MAL manga creators with their credited roles."""
+    creators = []
+    seen = set()
+    for author in response.get("authors") or []:
+        node = author.get("node") or {}
+        name = str(node.get("first_name") or "").strip()
+        last_name = str(node.get("last_name") or "").strip()
+        full_name = " ".join(part for part in (name, last_name) if part)
+        full_name = full_name or str(node.get("name") or "").strip()
+        role = str(author.get("role") or "").replace("_", " ").strip().title()
+        key = (full_name.casefold(), role.casefold())
+        if not full_name or key in seen:
+            continue
+        seen.add(key)
+        creators.append(
+            {
+                "person_id": f"mal:{node.get('id')}",
+                "name": full_name,
+                "role": role or None,
+            },
+        )
+    return creators[:12]
+
+
+def _match_titles(primary, alternatives=None):
+    values = [primary]
+    pending = (
+        list(alternatives.values())
+        if isinstance(alternatives, dict)
+        else list(alternatives or [])
+    )
+    while pending:
+        value = pending.pop(0)
+        if isinstance(value, (list, tuple, set)):
+            pending[:0] = value
+        else:
+            values.append(value)
+    results = []
+    seen = set()
+    for value in values:
+        normalized = _normalize_match_title(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            results.append(normalized)
+    return results
+
+
+def _normalize_match_title(value):
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"[\W_]+", " ", text, flags=re.UNICODE).strip()
+
+
+def _year(value):
+    match = re.search(r"\b(\d{4})\b", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _format_family(value):
+    normalized = str(value or "").casefold().replace("_", " ").strip()
+    if not normalized:
+        return None
+    if "novel" in normalized:
+        return "novel"
+    if "one shot" in normalized or "oneshot" in normalized:
+        return "one-shot"
+    if any(
+        label in normalized
+        for label in ("manga", "manhwa", "manhua", "doujin", "oel", "webtoon", "comic")
+    ):
+        return "comic"
+    return None
 
 
 def get_readable_status(response):
@@ -403,6 +639,11 @@ def get_related(related_medias, media_type):
                 "title": media["node"]["title"],
                 "media_type": media_type,
                 "image": get_image_url(media["node"]),
+                **(
+                    {"relation": media["relation_type_formatted"]}
+                    if media.get("relation_type_formatted")
+                    else {}
+                ),
             }
             for media in related_medias
         ]
