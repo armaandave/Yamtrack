@@ -286,6 +286,7 @@ extension ProfileRepository {
 protocol ListRepository {
     func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary]
     func list() async throws -> [CustomListSummary]
+    func featured() async throws -> [CustomListSummary]
     func detail(id: Int) async throws -> CustomListDetail
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary
     func update(id: Int, _ request: CustomListWriteRequest) async throws -> CustomListDetail
@@ -304,6 +305,10 @@ extension ListRepository {
     func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary> {
         let detail = try await detail(id: listId)
         return PagedResponse(count: detail.items.count, next: nil, previous: nil, results: detail.items)
+    }
+
+    func featured() async throws -> [CustomListSummary] {
+        []
     }
 }
 
@@ -1051,6 +1056,14 @@ struct APIListRepository: ListRepository {
             query: [URLQueryItem(name: "include_items", value: "false")],
             authenticated: true
         )
+    }
+
+    func featured() async throws -> [CustomListSummary] {
+        let response: PagedResponse<CustomListSummary> = try await client.get(
+            "/lists/featured/",
+            authenticated: true
+        )
+        return response.results
     }
 
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary {

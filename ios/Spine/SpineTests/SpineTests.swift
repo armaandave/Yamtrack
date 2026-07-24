@@ -3548,6 +3548,14 @@ final class SpineTests: XCTestCase {
                     TestFixtures.customListDetailJSON(id: 9, name: "Watch").data(using: .utf8)!
                 )
             }
+            if method == "GET", path.hasSuffix("/lists/featured/") || path.hasSuffix("/lists/featured") {
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    """
+                    {"count":1,"next":null,"previous":null,"results":[\(TestFixtures.customListSummaryJSON(id: 8, name: "Featured"))]}
+                    """.data(using: .utf8)!
+                )
+            }
             if method == "GET", path.hasSuffix("/lists/") || path.hasSuffix("/lists") {
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 XCTAssertEqual(query.first { $0.name == "ref[source]" }?.value, "tmdb")
@@ -3598,13 +3606,15 @@ final class SpineTests: XCTestCase {
         }
 
         _ = try await repository.list(membershipFor: ref)
+        let featured = try await repository.featured()
         _ = try await repository.detail(id: 9)
         _ = try await repository.create(CustomListWriteRequest(name: "Watch", description: "", visibility: "private", isRanked: true))
         _ = try await repository.addItem(listId: 9, ref: ref)
         _ = try await repository.reorderItems(listId: 9, itemIds: [42, 17])
         try await repository.delete(id: 9)
 
-        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "POST", "POST", "PATCH", "DELETE"])
+        XCTAssertEqual(featured.first?.name, "Featured")
+        XCTAssertEqual(requests.map(\.method), ["GET", "GET", "GET", "POST", "POST", "PATCH", "DELETE"])
         client.tokenProvider.clear()
     }
 

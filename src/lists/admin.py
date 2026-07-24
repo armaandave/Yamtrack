@@ -7,9 +7,9 @@ from lists.models import CustomList, CustomListItem
 class CustomListAdmin(admin.ModelAdmin):
     """Admin configuration for CustomList model."""
 
-    search_fields = ["name", "description", "owner__username"]
-    list_display = ["name", "owner", "item_count", "get_last_update"]
-    list_filter = ["owner"]
+    search_fields = ["name", "description", "owner__username", "import_source_id"]
+    list_display = ["name", "owner", "is_featured", "item_count", "get_last_update"]
+    list_filter = ["owner", "is_featured", "import_source"]
     raw_id_fields = ["owner"]
     autocomplete_fields = ["collaborators"]
     filter_horizontal = ["collaborators"]

@@ -83,6 +83,11 @@ class CustomList(models.Model):
     )
     is_ranked = models.BooleanField(default=False)
     import_source = models.CharField(max_length=32, blank=True, default="")
+    import_source_id = models.CharField(max_length=255, blank=True, default="")
+    import_source_url = models.URLField(max_length=2048, blank=True, default="")
+    is_featured = models.BooleanField(default=False, db_index=True)
+    featured_position = models.PositiveIntegerField(default=0)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     collaborators = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
@@ -108,6 +113,11 @@ class CustomList(models.Model):
                 fields=["owner", "slug"],
                 condition=~Q(slug=""),
                 name="%(app_label)s_customlist_unique_owner_slug",
+            ),
+            models.UniqueConstraint(
+                fields=["owner", "import_source", "import_source_id"],
+                condition=~Q(import_source_id=""),
+                name="%(app_label)s_customlist_unique_import",
             ),
         ]
 

@@ -71,3 +71,50 @@ def get_media_ratings(tmdb_id, media_type):
         cache.set(cache_key, data, timeout=86400)  # Cache for 24 hours
 
     return data
+
+
+def get_external_list(list_id):
+    """Return one MDBList external-list record."""
+    try:
+        data = services.api_request(
+            "mdblist",
+            "GET",
+            f"{base_url}/external/lists/{list_id}",
+            params={
+                "apikey": settings.MDBLIST_API,
+                "append_to_response": "poster",
+            },
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+    return data[0] if isinstance(data, list) and data else data
+
+
+def get_external_list_items(list_id):
+    """Return every item in one MDBList external list."""
+    items = []
+    cursor = None
+    while True:
+        params = {
+            "apikey": settings.MDBLIST_API,
+            "append_to_response": "poster",
+            "limit": 1000,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            page = services.api_request(
+                "mdblist",
+                "GET",
+                f"{base_url}/external/lists/{list_id}/items",
+                params=params,
+            )
+        except requests.exceptions.HTTPError as error:
+            handle_error(error)
+
+        for media_type, values in (("movie", page.get("movies")), ("tv", page.get("shows"))):
+            items.extend({**item, "spine_media_type": media_type} for item in values or [])
+
+        cursor = page.get("next_cursor") or (page.get("pagination") or {}).get("next_cursor")
+        if not cursor:
+            return items

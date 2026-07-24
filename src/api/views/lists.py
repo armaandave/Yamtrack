@@ -180,6 +180,34 @@ class ListsView(APIView):
         return Response(list_payload(custom_list, request=request), status=status.HTTP_201_CREATED)
 
 
+class FeaturedListsView(APIView):
+    """Return public lists selected for Search discovery."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        lists = (
+            CustomList.objects.filter(
+                is_featured=True,
+                visibility=CustomList.Visibility.PUBLIC,
+            )
+            .select_related("owner")
+            .prefetch_related("collaborators")
+            .order_by("featured_position", "id")
+        )
+        return Response(
+            {
+                "count": lists.count(),
+                "next": None,
+                "previous": None,
+                "results": [
+                    list_payload(custom_list, request=request, include_preview_items=True)
+                    for custom_list in lists
+                ],
+            },
+        )
+
+
 class ListDetailView(APIView):
     """Read/update/delete a custom list."""
 

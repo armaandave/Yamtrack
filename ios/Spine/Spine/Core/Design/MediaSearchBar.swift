@@ -14,6 +14,7 @@ struct MediaSearchBar: View {
     let onLensSelect: (String) -> Void
     let onSearch: (String) -> Void
     let onClear: () -> Void
+    var onFocusChange: (Bool) -> Void = { _ in }
     var focusRequest: Int = 0
 
     var body: some View {
@@ -37,6 +38,9 @@ struct MediaSearchBar: View {
             if isLensExpanded {
                 isFocused = false
             }
+        }
+        .onChange(of: isFocused) { _, focused in
+            onFocusChange(focused)
         }
         .onChange(of: focusRequest) {
             isLensExpanded = false

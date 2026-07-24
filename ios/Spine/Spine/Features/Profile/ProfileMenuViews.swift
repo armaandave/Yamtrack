@@ -826,7 +826,7 @@ private struct ProfileCreatedListDestination: Identifiable, Hashable {
     let id: Int
 }
 
-private struct ProfileListRow: View {
+struct ProfileListRow: View {
     let list: CustomListSummary
 
     var body: some View {
@@ -1152,7 +1152,7 @@ private extension CustomListDetail {
     }
 }
 
-private struct ProfileListDetailView: View {
+struct ProfileListDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: ProfileListDetailViewModel
     @State private var presentedForm: ListComposerMode?

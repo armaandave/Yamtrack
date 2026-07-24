@@ -174,6 +174,7 @@ struct SearchView: View {
 /// Owns detail presentation so neither search typing nor results updates touch `MediaDetailView`.
 private struct SearchViewContainer: View {
     @State private var selectedRef: MediaRef?
+    @State private var selectedFeaturedList: FeaturedListDestination?
 
     let mediaRepository: MediaRepository
     let trackingRepository: TrackingRepository
@@ -189,9 +190,11 @@ private struct SearchViewContainer: View {
     var body: some View {
         SearchViewContent(
             mediaRepository: mediaRepository,
+            listRepository: listRepository,
             mediaLensStore: mediaLensStore,
             focusRequest: focusRequest,
             onUnauthorized: onUnauthorized,
+            onFeaturedList: { selectedFeaturedList = FeaturedListDestination(id: $0) },
             onSelect: { selectedRef = $0.ref }
         )
         .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
@@ -207,7 +210,27 @@ private struct SearchViewContainer: View {
                 onUnauthorized: onUnauthorized
             )
         }
+        .fullScreenCover(item: $selectedFeaturedList, onDismiss: { selectedFeaturedList = nil }) { destination in
+            let repositories = AppRepositories.current()
+            ProfileListDetailView(
+                listId: destination.id,
+                profileRepository: repositories.profile,
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                activityRepository: repositories.activity,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
     }
+}
+
+private struct FeaturedListDestination: Identifiable {
+    let id: Int
 }
 
 /// Thin wrapper so `MediaDetailView` is only constructed when the cover is actually presented.
@@ -295,35 +318,45 @@ struct ProfileBackdropSearchView: View {
 private struct SearchViewContent: View {
     @State private var viewModel: SearchViewModel
     @State private var isMediaLensExpanded = false
+    @State private var isSearchFocused = false
     @State private var draftText = ""
     @State private var recentMedia: [MediaSummary] = []
+    @State private var featuredLists: [CustomListSummary] = []
+    @State private var isFeaturedLoading = false
+    @State private var featuredErrorMessage: String?
     @State private var selectedSearchType: String
     @AppStorage("recentMedia") private var recentMediaData = "[]"
 
+    let listRepository: ListRepository?
     let mediaLensStore: MediaLensStore
     let focusRequest: Int
     let supportedMediaTypes: [String]?
     let title: String
     let onCancel: (() -> Void)?
+    let onFeaturedList: (Int) -> Void
     let onSelect: (MediaSummary) -> Void
 
     init(
         mediaRepository: MediaRepository,
+        listRepository: ListRepository? = nil,
         mediaLensStore: MediaLensStore,
         focusRequest: Int = 0,
         supportedMediaTypes: [String]? = nil,
         title: String = "Search",
         onCancel: (() -> Void)? = nil,
         onUnauthorized: @escaping () -> Void,
+        onFeaturedList: @escaping (Int) -> Void = { _ in },
         onSelect: @escaping (MediaSummary) -> Void
     ) {
         _viewModel = State(initialValue: SearchViewModel(mediaRepository: mediaRepository, onUnauthorized: onUnauthorized))
         _selectedSearchType = State(initialValue: supportedMediaTypes == nil ? APIConstants.allMedia : mediaLensStore.selectedMediaType)
+        self.listRepository = listRepository
         self.mediaLensStore = mediaLensStore
         self.focusRequest = focusRequest
         self.supportedMediaTypes = supportedMediaTypes
         self.title = title
         self.onCancel = onCancel
+        self.onFeaturedList = onFeaturedList
         self.onSelect = onSelect
     }
 
@@ -350,6 +383,7 @@ private struct SearchViewContent: View {
                         onClear: {
                             viewModel.clear()
                         },
+                        onFocusChange: { isSearchFocused = $0 },
                         focusRequest: focusRequest
                     )
 
@@ -362,7 +396,13 @@ private struct SearchViewContent: View {
                         errorMessage: viewModel.errorMessage,
                         unavailableMediaTypes: viewModel.unavailableMediaTypes,
                         showsMediaTypes: selectedSearchType == APIConstants.allMedia,
+                        isSearchFocused: isSearchFocused,
                         recentMedia: recentMedia,
+                        featuredLists: featuredLists,
+                        showsFeaturedDiscovery: listRepository != nil,
+                        isFeaturedLoading: isFeaturedLoading,
+                        featuredErrorMessage: featuredErrorMessage,
+                        onFeaturedList: onFeaturedList,
                         onRecentMedia: { media in
                             saveRecentMedia(media)
                             onSelect(media)
@@ -406,6 +446,7 @@ private struct SearchViewContent: View {
                     validateSelectedMediaType()
                     loadRecentMedia()
                 }
+                .task { await loadFeaturedLists() }
                 .onChange(of: recentMediaData) { _, _ in loadRecentMedia() }
                 .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { notification in
                     guard allowsAllMediaSearch,
@@ -481,6 +522,18 @@ private struct SearchViewContent: View {
         }
     }
 
+    private func loadFeaturedLists() async {
+        guard let listRepository else { return }
+        isFeaturedLoading = true
+        featuredErrorMessage = nil
+        defer { isFeaturedLoading = false }
+        do {
+            featuredLists = try await listRepository.featured()
+        } catch {
+            featuredErrorMessage = error.localizedDescription
+        }
+    }
+
     private func saveRecentMedia(_ media: MediaSummary) {
         var mediaItems = RecentMedia.decodeList(from: recentMediaData).filter { $0.ref != media.ref }
         mediaItems.insert(media, at: 0)
@@ -509,6 +562,7 @@ private struct SearchResultsSection: View {
         case prompt
         case noResults
         case recent
+        case featured(Int)
     }
 
     let query: String
@@ -519,7 +573,13 @@ private struct SearchResultsSection: View {
     let errorMessage: String?
     let unavailableMediaTypes: [String]
     let showsMediaTypes: Bool
+    let isSearchFocused: Bool
     let recentMedia: [MediaSummary]
+    let featuredLists: [CustomListSummary]
+    let showsFeaturedDiscovery: Bool
+    let isFeaturedLoading: Bool
+    let featuredErrorMessage: String?
+    let onFeaturedList: (Int) -> Void
     let onRecentMedia: (MediaSummary) -> Void
     let onSelect: (MediaSummary) -> Void
 
@@ -552,7 +612,13 @@ private struct SearchResultsSection: View {
                 selectedMediaType: selectedMediaType,
                 isLoading: isLoading,
                 showsMediaTypes: showsMediaTypes,
+                isSearchFocused: isSearchFocused,
                 recentMedia: recentMedia,
+                featuredLists: featuredLists,
+                showsFeaturedDiscovery: showsFeaturedDiscovery,
+                isFeaturedLoading: isFeaturedLoading,
+                featuredErrorMessage: featuredErrorMessage,
+                onFeaturedList: onFeaturedList,
                 onRecentMedia: onRecentMedia
             )
         }
@@ -563,6 +629,7 @@ private struct SearchResultsSection: View {
         if !results.isEmpty { return .results(resultRevision) }
         if isLoading { return .loading }
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .noResults }
+        if showsFeaturedDiscovery, !isSearchFocused { return .featured(featuredLists.count) }
         return recentMedia.isEmpty ? .prompt : .recent
     }
 }
@@ -572,12 +639,25 @@ private struct SearchEmptyState: View {
     let selectedMediaType: String
     let isLoading: Bool
     let showsMediaTypes: Bool
+    let isSearchFocused: Bool
     let recentMedia: [MediaSummary]
+    let featuredLists: [CustomListSummary]
+    let showsFeaturedDiscovery: Bool
+    let isFeaturedLoading: Bool
+    let featuredErrorMessage: String?
+    let onFeaturedList: (Int) -> Void
     let onRecentMedia: (MediaSummary) -> Void
 
     var body: some View {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading {
             SearchNoResultsState(query: query, selectedMediaType: selectedMediaType)
+        } else if showsFeaturedDiscovery, !isSearchFocused {
+            FeaturedListsDiscovery(
+                lists: featuredLists,
+                isLoading: isFeaturedLoading,
+                errorMessage: featuredErrorMessage,
+                onSelect: onFeaturedList
+            )
         } else if recentMedia.isEmpty {
             ContentUnavailableView("Search Spine", systemImage: "magnifyingglass", description: Text("Enter a title to find media."))
         } else {
@@ -592,6 +672,54 @@ private struct SearchEmptyState: View {
                                 usesDiarySize: true,
                                 showsMediaType: showsMediaTypes
                             )
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 12))
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.black)
+        }
+    }
+}
+
+private struct FeaturedListsDiscovery: View {
+    let lists: [CustomListSummary]
+    let isLoading: Bool
+    let errorMessage: String?
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        if isLoading, lists.isEmpty {
+            ProgressView("Loading featured lists…")
+                .tint(.white)
+        } else if let errorMessage, lists.isEmpty {
+            ContentUnavailableView(
+                "Could not load featured lists",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
+        } else if lists.isEmpty {
+            ContentUnavailableView(
+                "Search Spine",
+                systemImage: "magnifyingglass",
+                description: Text("Enter a title to find media.")
+            )
+        } else {
+            List {
+                Section("Featured Lists") {
+                    ForEach(lists) { list in
+                        Button {
+                            onSelect(list.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("By \(list.owner.displayName)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                ProfileListRow(list: list)
+                            }
                         }
                         .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 12))

@@ -1,0 +1,103 @@
+name: Sync Featured Lists to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      featured_list:
+        description: "Featured list to synchronize into the Spine account."
+        required: true
+        default: letterboxd_top_500
+        type: choice
+        options:
+          - letterboxd_top_500
+      confirm_production_write:
+        description: "Required because this replaces the production list contents."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spine-production-mutation
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync ${{ inputs.featured_list }}
+    runs-on: [self-hosted, spine-backend]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Synchronize featured list
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          FEATURED_LIST: ${{ inputs.featured_list }}
+          CONFIRM_WRITE: ${{ inputs.confirm_production_write }}
+        run: |
+          set -euo pipefail
+
+          [[ "$CONFIRM_WRITE" == "true" ]] || {
+            echo "Turn on confirm_production_write before running this workflow." >&2
+            exit 1
+          }
+
+          case "$FEATURED_LIST" in
+            letterboxd_top_500)
+              source_url="https://mdblist.com/lists/davearmaan12/external/155837"
+              ;;
+            *)
+              echo "Unsupported featured list: $FEATURED_LIST" >&2
+              exit 1
+              ;;
+          esac
+
+          repo_dir="${SPINE_DEPLOY_DIR:-$HOME/projects/spine-deploy}"
+          env_file="${SPINE_DEPLOY_ENV_FILE:-$HOME/projects/spine/.env.production}"
+          [[ -d "$repo_dir/.git" ]] || {
+            echo "Missing deployed repository: $repo_dir" >&2
+            exit 1
+          }
+          [[ -f "$env_file" ]] || {
+            echo "Missing production environment file: $env_file" >&2
+            exit 1
+          }
+
+          deployed_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+          [[ "$deployed_sha" == "$EXPECTED_SHA" ]] || {
+            echo "Deploy commit $EXPECTED_SHA before synchronizing; production is currently $deployed_sha." >&2
+            exit 1
+          }
+
+          compose=(
+            docker compose
+            --project-name spine
+            --env-file "$env_file"
+            -f "$repo_dir/docker-compose.production.yml"
+          )
+          manage() {
+            "${compose[@]}" exec -T app python manage.py "$@"
+          }
+
+          container_sha="$("${compose[@]}" exec -T app printenv SPINE_COMMIT_SHA)"
+          [[ "$container_sha" == "$deployed_sha" ]] || {
+            echo "Running app container does not match the deployed repository." >&2
+            exit 1
+          }
+          manage showmigrations lists | grep -q '\[X\] 0007_customlist_featured_import'
+          manage sync_mdblist_featured_list "$source_url" --owner Spine
+          curl --fail --silent --show-error http://127.0.0.1:8000/health/ >/dev/null
+
+          {
+            echo "## Featured List Sync"
+            echo
+            echo "- List: \`$FEATURED_LIST\`"
+            echo "- Owner: \`Spine\`"
+            echo "- Deployed commit: \`${deployed_sha:0:12}\`"
+            echo "- Status: completed"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy-backend-desk-mac.yml"
+FEATURED_LIST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sync-featured-lists.yml"
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "codex-mobile-deploy-backend.sh"
 
 
@@ -41,3 +42,15 @@ class DeskMacDeployWorkflowTests(SimpleTestCase):
         self.assertIn("Deploy directory must be separate from source repo", script)
         self.assertIn('git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"', script)
         self.assertIn('git reset --hard "origin/$branch"', script)
+
+    def test_featured_list_sync_is_fixed_and_production_guarded(self):
+        workflow = FEATURED_LIST_WORKFLOW.read_text()
+
+        self.assertIn("group: spine-production-mutation", workflow)
+        self.assertIn("confirm_production_write", workflow)
+        self.assertIn('[[ "$deployed_sha" == "$EXPECTED_SHA" ]]', workflow)
+        self.assertIn(
+            'source_url="https://mdblist.com/lists/davearmaan12/external/155837"',
+            workflow,
+        )
+        self.assertIn("--owner Spine", workflow)

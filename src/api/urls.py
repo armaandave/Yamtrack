@@ -19,6 +19,7 @@ from api.views.imports import (
     ImportTaskView,
 )
 from api.views.lists import (
+    FeaturedListsView,
     ListCollaboratorDetailView,
     ListCollaboratorsView,
     ListDetailView,
@@ -160,6 +161,7 @@ urlpatterns = [
     path("diary/<int:entry_id>/like/", DiaryLikeView.as_view(), name="api-diary-like"),
     path("stats/me/summary/", MyStatsSummaryView.as_view(), name="api-my-stats"),
     path("lists/", ListsView.as_view(), name="api-lists"),
+    path("lists/featured/", FeaturedListsView.as_view(), name="api-featured-lists"),
     path("lists/<int:list_id>/", ListDetailView.as_view(), name="api-list-detail"),
     path("lists/<int:list_id>/items/", ListItemsView.as_view(), name="api-list-items"),
     path("lists/<int:list_id>/items/reorder/", ListItemsReorderView.as_view(), name="api-list-items-reorder"),
