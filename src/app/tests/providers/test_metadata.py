@@ -783,6 +783,7 @@ class Metadata(TestCase):
                         "franchises": [{"name": "Space Franchise"}],
                         "collections": [
                             {
+                                "id": 500,
                                 "name": "Space Collection",
                                 "games": [
                                     {
@@ -804,6 +805,13 @@ class Metadata(TestCase):
                                         "cover": {"image_id": "cover"},
                                         "game_type": 0,
                                         "first_release_date": int(datetime(2020, 9, 17, tzinfo=UTC).timestamp()),
+                                    },
+                                    {
+                                        "id": 1023,
+                                        "name": "Space Game: Deluxe Edition",
+                                        "cover": {"image_id": "cover-deluxe"},
+                                        "game_type": 0,
+                                        "version_parent": 1020,
                                     },
                                 ],
                             },
@@ -828,10 +836,15 @@ class Metadata(TestCase):
         self.assertEqual(response["details"]["franchise"], "Space Franchise")
         self.assertEqual(response["details"]["franchises"], ["Space Franchise"])
         self.assertEqual(response["details"]["collection"], "Space Collection")
+        self.assertEqual(response["details"]["series_id"], "500")
+        self.assertEqual(response["details"]["series_source"], Sources.IGDB.value)
+        self.assertEqual(response["details"]["series_media_type"], MediaTypes.GAME.value)
+        self.assertEqual(response["details"]["series_name"], "Space Collection")
         self.assertEqual(
             [game["title"] for game in response["related"]["collection"]],
             ["Space Game", "Space Game 2"],
         )
+        self.assertIn("collections.games.version_parent", mock_api_request.call_args.kwargs["data"])
         self.assertEqual(
             response["details"]["company_credits"],
             [

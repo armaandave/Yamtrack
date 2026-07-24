@@ -4600,6 +4600,73 @@ class ApiV1FoundationTests(TestCase):
         request_mock.assert_called_once()
         self.assertTrue(request_mock.call_args.args[2].endswith("/collection/10"))
 
+    @patch("app.providers.igdb._api_headers", return_value={})
+    @patch("app.providers.igdb._post_igdb")
+    def test_igdb_series_detail_normalizes_collection_games(
+        self,
+        post_igdb_mock,
+        _headers_mock,
+    ):
+        cache.clear()
+        post_igdb_mock.return_value = [
+            {
+                "id": 500,
+                "name": "Space Collection",
+                "games": [
+                    {"id": 3, "name": "Unknown B", "game_type": 0},
+                    {
+                        "id": 2,
+                        "name": "Second",
+                        "game_type": 0,
+                        "first_release_date": 1577836800,
+                        "cover": {"image_id": "second"},
+                    },
+                    {
+                        "id": 1,
+                        "name": "First",
+                        "game_type": 0,
+                        "first_release_date": 1262304000,
+                    },
+                    {
+                        "id": 2,
+                        "name": "Second Duplicate",
+                        "game_type": 0,
+                        "first_release_date": 1609459200,
+                    },
+                    {"id": 4, "name": "Unknown A", "game_type": 0},
+                    {
+                        "id": 5,
+                        "name": "Second: Deluxe Edition",
+                        "game_type": 0,
+                        "version_parent": 2,
+                    },
+                    {"id": 6, "name": "Expansion", "game_type": 2},
+                ],
+            },
+        ]
+
+        response = self.client.get("/api/v1/series/igdb/500/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["series_id"], "500")
+        self.assertEqual(response.data["source"], Sources.IGDB.value)
+        self.assertEqual(response.data["media_type"], MediaTypes.GAME.value)
+        self.assertEqual(response.data["name"], "Space Collection")
+        self.assertEqual(response.data["item_count"], 4)
+        self.assertEqual(
+            [item["ref"]["media_id"] for item in response.data["items"]],
+            ["1", "2", "4", "3"],
+        )
+        self.assertEqual(
+            [item["title"] for item in response.data["items"]],
+            ["First", "Second Duplicate", "Unknown A", "Unknown B"],
+        )
+        self.assertIsNotNone(response.data["items"][0]["poster_url"])
+        post_igdb_mock.assert_called_once()
+        self.assertTrue(post_igdb_mock.call_args.args[0].endswith("/collections"))
+        self.assertIn("where id = 500", post_igdb_mock.call_args.args[1])
+        self.assertIn("games.version_parent", post_igdb_mock.call_args.args[1])
+
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_hardcover_book_detail_omits_empty_series_section(self, metadata_mock):
         metadata_mock.return_value = {
@@ -4705,6 +4772,10 @@ class ApiV1FoundationTests(TestCase):
                 "franchise": "Space Franchise",
                 "franchises": ["Space Franchise"],
                 "collection": "Space Collection",
+                "series_id": "500",
+                "series_source": "igdb",
+                "series_media_type": "game",
+                "series_name": "Space Collection",
             },
             "related": {
                 "collection": [
@@ -4774,6 +4845,8 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/media/igdb/game/1020/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["details"]["series_id"], "500")
+        self.assertEqual(response.data["details"]["series_name"], "Space Collection")
         self.assertEqual([section["id"] for section in response.data["related_sections"]], ["collection", "dlcs"])
         self.assertEqual(response.data["related_sections"][0]["items"][1]["title"], "Space Game 2")
         self.assertEqual(response.data["external_ratings"][0]["source"], "IGDB")

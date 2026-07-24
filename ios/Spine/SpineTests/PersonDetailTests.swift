@@ -183,6 +183,38 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.items.first?.ref.mediaType, "movie")
     }
 
+    func testSeriesDetailDecodesGamePayload() throws {
+        let json = """
+        {
+          "series_id": "500",
+          "source": "igdb",
+          "media_type": "game",
+          "name": "Space Collection",
+          "item_count": 1,
+          "items": [
+            {
+              "ref": {
+                "item_id": null,
+                "source": "igdb",
+                "media_type": "game",
+                "media_id": "1020",
+                "season_number": null,
+                "episode_number": null
+              },
+              "title": "Space Game"
+            }
+          ]
+        }
+        """
+
+        let detail = try JSONDecoder.api.decode(SeriesDetail.self, from: Data(json.utf8))
+
+        XCTAssertEqual(detail.seriesId, "500")
+        XCTAssertEqual(detail.mediaType, "game")
+        XCTAssertEqual(detail.itemCount, 1)
+        XCTAssertEqual(detail.items.first?.ref.mediaType, "game")
+    }
+
     func testPersonDetailDecodesMusicBrainzArtistReleases() throws {
         let json = """
         {

@@ -504,6 +504,66 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testGameSeriesRepositoryPathAndSelectionMediaType() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        client.tokenProvider.clear()
+        let repository = APIMediaRepository(client: client)
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/series/igdb/500/"
+            )
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                """
+                {
+                  "series_id": "500",
+                  "source": "igdb",
+                  "media_type": "game",
+                  "name": "Space Collection",
+                  "item_count": 1,
+                  "items": [
+                    {
+                      "ref": {
+                        "item_id": null,
+                        "source": "igdb",
+                        "media_type": "game",
+                        "media_id": "1020",
+                        "season_number": null,
+                        "episode_number": null
+                      },
+                      "title": "Space Game"
+                    }
+                  ]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        let viewModel = SeriesDetailViewModel(
+            ref: SeriesRef(source: "igdb", id: "500", mediaType: "game"),
+            mediaRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        let item = try XCTUnwrap(viewModel.detail?.items.first)
+        XCTAssertEqual(viewModel.selection(for: item).ref.mediaType, "game")
+    }
+
+    @MainActor
     func testDynamicExternalRatingSortDecodesAndKeepsBackendLabel() throws {
         let sort = try JSONDecoder.api.decode(
             MediaFilterSort.self,
@@ -587,7 +647,8 @@ final class SpineTests: XCTestCase {
         )
     }
 
-    func testSteamRatingPresentationAndAccessibility() throws {
+    @MainActor
+    func testExternalRatingPresentationAndAccessibility() throws {
         let rating = try JSONDecoder.api.decode(
             ExternalRating.self,
             from: Data(
@@ -622,13 +683,50 @@ final class SpineTests: XCTestCase {
         XCTAssertNotNil(UIImage(named: "RatingSteam"))
         XCTAssertEqual(chip.accessibilityLabel, "Steam rating 92%, 123,456 reviews")
         XCTAssertTrue(MediaExternalRatingPresentation.includes(source: "Steam", mediaType: "game"))
+        XCTAssertFalse(MediaExternalRatingPresentation.includes(source: "IGDB", mediaType: "game"))
+        let pending = MediaExternalRatingsPreparation(state: .pending, retryAfterSeconds: 2)
+        for mediaType in ["movie", "book", "game", "tv", "season", "episode"] {
+            XCTAssertTrue(
+                MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+                    mediaType: mediaType,
+                    preparation: pending
+                ),
+                "Expected a pending placeholder for \(mediaType)"
+            )
+        }
+        XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: "music",
+            preparation: pending
+        ))
+        XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: "movie",
+            preparation: .ready
+        ))
+        XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: "movie",
+            preparation: MediaExternalRatingsPreparation(state: .degraded, retryAfterSeconds: 2)
+        ))
+        let updatedChip = RatingChip(
+            source: rating.source.ratingAbbreviation,
+            value: "93%",
+            assetName: rating.ratingAssetName,
+            providerName: rating.source,
+            voteCount: 130_000,
+            voteCountLabel: rating.source.ratingCountLabel
+        )
+        let loadingChip = RatingChip(
+            source: "",
+            value: "",
+            assetName: nil,
+            providerName: "External ratings",
+            isLoading: true
+        )
+        XCTAssertEqual(chip.id, updatedChip.id)
+        XCTAssertNotEqual(chip.id, loadingChip.id)
+        XCTAssertEqual(loadingChip.id, RatingChip.loadingID)
         XCTAssertLessThan(
             MediaExternalRatingPresentation.order(for: "Metacritic"),
             MediaExternalRatingPresentation.order(for: "Steam")
-        )
-        XCTAssertLessThan(
-            MediaExternalRatingPresentation.order(for: "Steam"),
-            MediaExternalRatingPresentation.order(for: "IGDB")
         )
     }
 

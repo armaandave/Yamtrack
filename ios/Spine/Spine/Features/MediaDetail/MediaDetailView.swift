@@ -724,7 +724,7 @@ enum MediaArtworkCustomization {
 enum MediaExternalRatingPresentation {
     static func includes(source: String, mediaType: String) -> Bool {
         let normalizedSource = source.lowercased()
-        if mediaType == "music" || ["spine", "google books"].contains(normalizedSource) {
+        if mediaType == "music" || ["spine", "google books", "igdb"].contains(normalizedSource) {
             return false
         }
         if normalizedSource == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
@@ -740,9 +740,15 @@ enum MediaExternalRatingPresentation {
         case "imdb": 2
         case "metacritic": 3
         case "steam": 4
-        case "igdb": 5
-        default: 6
+        default: 5
         }
+    }
+
+    static func showsExternalRatingPlaceholder(
+        mediaType: String,
+        preparation: MediaExternalRatingsPreparation?
+    ) -> Bool {
+        mediaType != "music" && preparation?.state == .pending
     }
 }
 
@@ -1922,24 +1928,22 @@ private struct MediaDetailPageView: View {
         } else if detail.ref.mediaType == "episode" {
             episodeHero(detail)
         } else {
-            ZStack(alignment: .top) {
-                HeroArtwork(detail: detail)
-                    .frame(height: heroHeight(for: detail))
-
-                if let backdropURL = backdropURLString(for: detail) {
-                    BackdropArtwork(urlString: backdropURL)
-                        .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
-                        .onLongPressGesture {
-                            openBackdropPicker(for: detail)
+            heroHeader(detail)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+                .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
+                .background {
+                    ZStack(alignment: .top) {
+                        HeroArtwork(detail: detail)
+                        if let backdropURL = backdropURLString(for: detail) {
+                            BackdropArtwork(urlString: backdropURL)
+                                .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
+                                .onLongPressGesture {
+                                    openBackdropPicker(for: detail)
+                                }
                         }
+                    }
                 }
-
-                heroHeader(detail)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                    .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
-                    .frame(minHeight: heroHeight(for: detail), alignment: .top)
-            }
         }
     }
 
@@ -2450,13 +2454,6 @@ private struct MediaDetailPageView: View {
         return detail.displayBackdropURL
     }
 
-    private func heroHeight(for detail: MediaDetail) -> CGFloat {
-        if backdropURLString(for: detail) != nil {
-            return MediaDetailLayout.heroHeight + MediaDetailLayout.backdropTopSpacing
-        }
-        return MediaDetailLayout.legacyHeroHeight
-    }
-
     private func heroPosterTopOffset(for detail: MediaDetail) -> CGFloat {
         MediaDetailLayout.heroPosterTopOffset + (backdropURLString(for: detail) == nil ? 0 : MediaDetailLayout.backdropTopSpacing)
     }
@@ -2878,6 +2875,18 @@ private struct MediaDetailPageView: View {
                 voteCountLabel: rating.source.ratingCountLabel
             ))
         }
+        if MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: detail.ref.mediaType,
+            preparation: detail.externalRatingsPreparation
+        ) {
+            chips.append(RatingChip(
+                source: "",
+                value: "",
+                assetName: nil,
+                providerName: "External ratings",
+                isLoading: true
+            ))
+        }
         return chips
     }
 
@@ -3033,7 +3042,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func seriesRef(_ detail: MediaDetail) -> SeriesRef? {
-        guard (detail.ref.mediaType == "book" || detail.ref.mediaType == "movie"),
+        guard ["book", "movie", "game"].contains(detail.ref.mediaType),
               let id = detailString(detail, "series_id")?.nilIfEmpty
         else { return nil }
         return SeriesRef(
@@ -3325,8 +3334,6 @@ private struct MediaDetailPageView: View {
 
 private enum MediaDetailLayout {
     static let heroPosterWidth: CGFloat = 191
-    static let heroHeight: CGFloat = 455
-    static let legacyHeroHeight: CGFloat = 535
     static let episodeHeroHeight: CGFloat = 520
     static let episodeAccessibilityArtworkHeight: CGFloat = 280
     static let heroPosterTopOffset: CGFloat = 108
@@ -4533,6 +4540,8 @@ private struct SectionLabel: View {
 }
 
 struct RatingChip: Hashable {
+    static let loadingID = "external-rating-loading"
+
     let source: String
     let value: String
     let assetName: String?
@@ -4541,6 +4550,7 @@ struct RatingChip: Hashable {
     let voteCount: Int?
     let voteCountLabel: String?
     let isAttributionOnly: Bool
+    let isLoading: Bool
 
     init(
         source: String,
@@ -4550,7 +4560,8 @@ struct RatingChip: Hashable {
         destination: URL? = nil,
         voteCount: Int? = nil,
         voteCountLabel: String? = nil,
-        isAttributionOnly: Bool = false
+        isAttributionOnly: Bool = false,
+        isLoading: Bool = false
     ) {
         self.source = source
         self.value = value
@@ -4560,6 +4571,11 @@ struct RatingChip: Hashable {
         self.voteCount = voteCount
         self.voteCountLabel = voteCountLabel
         self.isAttributionOnly = isAttributionOnly
+        self.isLoading = isLoading
+    }
+
+    var id: String {
+        isLoading ? Self.loadingID : "rating:\(providerName.lowercased())"
     }
 
     var accessibilityLabel: String {
@@ -4574,24 +4590,38 @@ struct RatingChip: Hashable {
 }
 
 private struct RatingChipRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let chips: [RatingChip]
     let stacked: Bool
+
+    private var chipIDs: [String] {
+        chips.map(\.id)
+    }
+
+    private var chipTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96))
+    }
 
     var body: some View {
         if !chips.isEmpty {
             if stacked {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(chips, id: \.self) { chip in
+                    ForEach(chips, id: \.id) { chip in
                         ratingChip(chip)
+                            .transition(chipTransition)
                     }
                 }
+                .animation(SpineMotion.animation(reduceMotion: reduceMotion), value: chipIDs)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(chips, id: \.self) { chip in
+                        ForEach(chips, id: \.id) { chip in
                             ratingChip(chip)
+                                .transition(chipTransition)
                         }
                     }
+                    .animation(SpineMotion.animation(reduceMotion: reduceMotion), value: chipIDs)
                 }
             }
         }
@@ -4599,7 +4629,9 @@ private struct RatingChipRow: View {
 
     @ViewBuilder
     private func ratingChip(_ chip: RatingChip) -> some View {
-        if let destination = chip.destination {
+        if chip.isLoading {
+            ExternalRatingLoadingChip()
+        } else if let destination = chip.destination {
             Link(destination: destination) {
                 ratingChipContent(chip)
             }
@@ -4632,6 +4664,45 @@ private struct RatingChipRow: View {
         .padding(.horizontal, 9)
         .padding(.vertical, MediaDetailLayout.ratingPillVerticalPadding)
         .background(.white.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct ExternalRatingLoadingChip: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPulsing = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(.white.opacity(isPulsing ? 0.20 : 0.10))
+                .frame(
+                    width: MediaDetailLayout.ratingBadgeSize,
+                    height: MediaDetailLayout.ratingBadgeSize
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                Capsule()
+                    .fill(.white.opacity(isPulsing ? 0.24 : 0.12))
+                    .frame(width: 34, height: 8)
+                Capsule()
+                    .fill(.white.opacity(isPulsing ? 0.16 : 0.08))
+                    .frame(width: 48, height: 6)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, MediaDetailLayout.ratingPillVerticalPadding)
+        .background(.white.opacity(isPulsing ? 0.09 : 0.05), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(.white.opacity(isPulsing ? 0.2 : 0.09), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("External ratings loading")
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                isPulsing = true
+            }
+        }
     }
 }
 
@@ -4685,7 +4756,7 @@ private struct RatingSourceBadge: View {
                 .scaledToFill()
                 .frame(width: 24, height: 24)
                 .clipped()
-        case "RatingMetacritic":
+        case "RatingMetacritic", "RatingSteam":
             Image(assetName)
                 .resizable()
                 .scaledToFill()

@@ -430,7 +430,9 @@ def get_book_series(source, series_id):
         return hardcover.series_page(series_id)
     if source == Sources.TMDB.value:
         return tmdb.collection(series_id)
-    msg = "Series pages are only supported for Hardcover and TMDB in v1."
+    if source == Sources.IGDB.value:
+        return igdb.collection(series_id)
+    msg = "Series pages are only supported for Hardcover, TMDB, and IGDB in v1."
     raise NotImplementedError(msg)
 
 

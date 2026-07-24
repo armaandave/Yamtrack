@@ -152,8 +152,8 @@ struct SeriesDetailView: View {
             )
         } else if let detail = viewModel.detail, detail.items.isEmpty {
             ContentUnavailableView(
-                detail.mediaType == "movie" ? "No movies" : "No books",
-                systemImage: detail.mediaType == "movie" ? "film" : "books.vertical"
+                detail.mediaType == "movie" ? "No movies" : detail.mediaType == "game" ? "No games" : "No books",
+                systemImage: detail.mediaType == "movie" ? "film" : detail.mediaType == "game" ? "gamecontroller" : "books.vertical"
             )
         } else if let detail = viewModel.detail {
             ScrollView {

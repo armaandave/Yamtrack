@@ -18,6 +18,7 @@ base_url = "https://api.igdb.com/v4"
 COMPANY_CACHE_TTL = 60 * 60 * 24
 COMPANY_CATALOG_CACHE_TTL = 60 * 60 * 24
 IGDB_BATCH_SIZE = 500
+COLLECTION_CACHE_VERSION = "v1"
 
 
 class ExternalGameSource(IntEnum):
@@ -426,7 +427,7 @@ def discover(*, page=1, page_size=None, genre=None, year=None, platform=None):
 
 def game(media_id):
     """Return the metadata for the selected game from IGDB."""
-    cache_key = f"{Sources.IGDB.value}_{MediaTypes.GAME.value}_{media_id}_v3"
+    cache_key = f"{Sources.IGDB.value}_{MediaTypes.GAME.value}_{media_id}_v4"
     data = cache.get(cache_key)
     if data is None:
         access_token = get_access_token()
@@ -439,6 +440,7 @@ def game(media_id):
             "franchises.name,collection.name,collections.name,"
             "collections.games.name,collections.games.cover.image_id,"
             "collections.games.game_type,collections.games.first_release_date,"
+            "collections.games.version_parent,"
             "involved_companies.company.id,involved_companies.company.name,"
             "involved_companies.developer,involved_companies.publisher,"
             "parent_game.name,parent_game.cover.image_id,"
@@ -511,8 +513,16 @@ def game(media_id):
         )
         expanded_games = get_related(game_response.get("expanded_games"))
         recommendations = get_related(game_response.get("similar_games"))
-        collection_games = get_collection_games(game_response.get("collections"))
-        collection_name = get_list(game_response, "collections", first=True) or get_name(game_response.get("collection"))
+        collections = game_response.get("collections") or []
+        primary_collection = next(
+            (collection for collection in collections if collection.get("id") is not None),
+            game_response.get("collection"),
+        )
+        collection_games = get_collection_games(
+            [primary_collection] if primary_collection else [],
+        )
+        collection_id = primary_collection.get("id") if primary_collection else None
+        collection_name = get_name(primary_collection)
 
         data = {
             "media_id": game_response["id"],
@@ -535,6 +545,16 @@ def game(media_id):
                 "franchise": get_list(game_response, "franchises", first=True),
                 "franchises": get_list(game_response, "franchises"),
                 "collection": collection_name,
+                **(
+                    {
+                        "series_id": str(collection_id),
+                        "series_source": Sources.IGDB.value,
+                        "series_media_type": MediaTypes.GAME.value,
+                        "series_name": collection_name,
+                    }
+                    if collection_id and collection_name
+                    else {}
+                ),
                 "themes": get_list(game_response, "themes"),
                 "platforms": get_list(game_response, "platforms"),
                 "companies": get_companies(game_response),
@@ -966,7 +986,7 @@ def get_collection_games(collections):
     games = {}
     for collection in collections or []:
         for game in collection.get("games") or []:
-            if game.get("game_type") != 0:
+            if game.get("game_type") != 0 or game.get("version_parent") is not None:
                 continue
             games[game["id"]] = {
                 "source": Sources.IGDB.value,
@@ -976,4 +996,60 @@ def get_collection_games(collections):
                 "image": get_image_url(game),
                 "release_date": get_start_date(game),
             }
-    return sorted(games.values(), key=lambda game: game.get("release_date") or "")
+    return sorted(
+        games.values(),
+        key=lambda game: (
+            not bool(game.get("release_date")),
+            game.get("release_date") or "",
+            game["title"].casefold(),
+            int(game["media_id"]),
+        ),
+    )
+
+
+def collection(series_id):
+    """Return one IGDB game collection without alternate editions."""
+    cache_key = (
+        f"{Sources.IGDB.value}_collection_{series_id}_{COLLECTION_CACHE_VERSION}"
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        collection_id = int(series_id)
+    except (TypeError, ValueError):
+        services.raise_not_found_error(
+            Sources.IGDB.value,
+            series_id,
+            "collection",
+        )
+
+    response = _post_igdb(
+        f"{base_url}/collections",
+        (
+            "fields name,games.name,games.cover.image_id,games.game_type,"
+            "games.first_release_date,games.version_parent;"
+            f"where id = {collection_id}; limit 1;"
+        ),
+        _api_headers(),
+    )
+    if not response:
+        services.raise_not_found_error(
+            Sources.IGDB.value,
+            series_id,
+            "collection",
+        )
+
+    raw_collection = response[0]
+    items = get_collection_games([raw_collection])
+    data = {
+        "series_id": str(raw_collection.get("id") or collection_id),
+        "source": Sources.IGDB.value,
+        "media_type": MediaTypes.GAME.value,
+        "name": raw_collection.get("name") or "",
+        "item_count": len(items),
+        "items": items,
+    }
+    cache.set(cache_key, data)
+    return data
