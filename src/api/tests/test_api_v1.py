@@ -2864,6 +2864,10 @@ class ApiV1FoundationTests(TestCase):
                 "runtime": "2h 19m",
                 "director": "David Fincher",
                 "director_id": 7467,
+                "series_id": "9687",
+                "series_source": "tmdb",
+                "series_media_type": "movie",
+                "series_name": "Fight Club Collection",
                 "directors": [
                     {"id": "7467", "name": "David Fincher"},
                     {"id": "9123", "name": "Jane Director"},
@@ -2975,6 +2979,11 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["details"]["genres"], ["Drama", "Thriller"])
         self.assertEqual(response.data["details"]["director"], "David Fincher")
         self.assertEqual(response.data["details"]["director_id"], 7467)
+        self.assertEqual(response.data["details"]["series_id"], "9687")
+        self.assertEqual(
+            response.data["details"]["series_name"],
+            "Fight Club Collection",
+        )
         self.assertEqual(
             response.data["details"]["directors"],
             [
@@ -4502,11 +4511,94 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/series/hardcover/1185/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["series_id"], "1185")
+        self.assertEqual(response.data["media_type"], MediaTypes.BOOK.value)
+        self.assertEqual(response.data["item_count"], 2)
         self.assertEqual(response.data["name"], "Harry Potter")
+        self.assertEqual(response.data["items"], response.data["books"])
         self.assertEqual(
             [(book["position"], book["title"]) for book in response.data["books"]],
             [(1, "Book One"), (2, "Book Two")],
         )
+
+    @patch("app.providers.tmdb.services.api_request")
+    def test_tmdb_series_detail_normalizes_collection_movies(self, request_mock):
+        cache.clear()
+        request_mock.return_value = {
+            "id": 10,
+            "name": "The Example Collection",
+            "parts": [
+                {
+                    "id": 3,
+                    "title": "Unknown B",
+                    "release_date": "",
+                    "poster_path": None,
+                },
+                {
+                    "id": 2,
+                    "title": "Second",
+                    "release_date": "2020-01-01",
+                    "poster_path": "/second.jpg",
+                },
+                {
+                    "id": 1,
+                    "title": "First",
+                    "release_date": "2010-01-01",
+                    "poster_path": "/first.jpg",
+                },
+                {
+                    "id": 2,
+                    "title": "Second Duplicate",
+                    "release_date": "2021-01-01",
+                    "poster_path": "/duplicate.jpg",
+                },
+                {
+                    "id": 4,
+                    "title": "Unknown A",
+                    "release_date": None,
+                    "poster_path": None,
+                },
+                {
+                    "id": 10,
+                    "title": "Unknown C",
+                    "release_date": None,
+                    "poster_path": None,
+                },
+                {
+                    "id": 5,
+                    "title": "Unknown C",
+                    "release_date": None,
+                    "poster_path": None,
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/series/tmdb/10/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["series_id"], "10")
+        self.assertEqual(response.data["source"], Sources.TMDB.value)
+        self.assertEqual(response.data["media_type"], MediaTypes.MOVIE.value)
+        self.assertEqual(response.data["name"], "The Example Collection")
+        self.assertEqual(response.data["item_count"], 6)
+        self.assertEqual(
+            [item["ref"]["media_id"] for item in response.data["items"]],
+            ["1", "2", "4", "3", "5", "10"],
+        )
+        self.assertEqual(
+            [item["title"] for item in response.data["items"]],
+            [
+                "First",
+                "Second",
+                "Unknown A",
+                "Unknown B",
+                "Unknown C",
+                "Unknown C",
+            ],
+        )
+        self.assertIsNotNone(response.data["items"][2]["poster_url"])
+        request_mock.assert_called_once()
+        self.assertTrue(request_mock.call_args.args[2].endswith("/collection/10"))
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_hardcover_book_detail_omits_empty_series_section(self, metadata_mock):

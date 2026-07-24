@@ -641,7 +641,7 @@ AUTHOR_BOOK_LIMIT = 500
 
 def person_page(person_id):
     """Return Hardcover author details and book credits for the person page."""
-    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v4"
+    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v5"
     data = cache.get(cache_key)
 
     if data is None:
@@ -935,7 +935,13 @@ def get_author_series(credits):
         series["book_count"] = series["book_count"] or len(series["books"])
         if series["book_count"] > 1:
             result.append(series)
-    return sorted(result, key=lambda series: series["name"].casefold())
+    return sorted(
+        result,
+        key=lambda series: (
+            -sum(float(book.get("users_count") or 0) for book in series["books"]),
+            series["name"].casefold(),
+        ),
+    )
 
 
 def get_series_books(series_id):

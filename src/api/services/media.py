@@ -36,6 +36,7 @@ from api.serializers.common import (
     details_for_api,
     episodes_from_metadata,
     find_item,
+    get_or_create_item_from_metadata,
     media_summary_from_provider,
     related_sections_from_payload,
     seasons_from_metadata,
@@ -90,6 +91,7 @@ DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
 BOOK_DETAIL_CACHE_VERSION = "v1"
+MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
@@ -634,6 +636,21 @@ def discover_media(
     }
 
 
+def _external_rating_item(ref, metadata):
+    item = find_item(ref)
+    if item is not None:
+        update_item_filter_metadata(item, metadata)
+        return item
+    candidate = Item(
+        source=ref["source"],
+        media_type=ref["media_type"],
+        media_id=ref["media_id"],
+    )
+    if not eligible_rating_sources(candidate):
+        return None
+    return get_or_create_item_from_metadata(ref, metadata)
+
+
 def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):
     """Fetch provider metadata and normalize it for the API."""
     if media_type == MediaTypes.EPISODE.value and (
@@ -647,6 +664,8 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         cache_version = f"{cache_version}:episode-{EPISODE_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.BOOK.value:
         cache_version = f"{cache_version}:book-{BOOK_DETAIL_CACHE_VERSION}"
+    elif media_type == MediaTypes.MOVIE.value:
+        cache_version = f"{cache_version}:movie-{MOVIE_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.MUSIC.value:
         cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}"
     cache_key = (
@@ -669,15 +688,6 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     if media_type == MediaTypes.BOOK.value:
         metadata = _enrich_book_metadata(metadata, source)
 
-    item = Item.objects.filter(
-        source=source,
-        media_type=media_type,
-        media_id=media_id,
-        season_number=season_number,
-        episode_number=episode_number,
-    ).first()
-    update_item_filter_metadata(item, primary_metadata)
-
     summary = media_summary_from_provider(
         {
             **metadata,
@@ -696,6 +706,7 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     if synopsis:
         summary["overview"] = synopsis
     ref = summary["ref"]
+    item = _external_rating_item(ref, primary_metadata)
     if summary.get("poster_accent_color") is None:
         summary["poster_accent_color"] = poster_accent_color(metadata, ref)
     logo, custom_logo_url = resolved_logo(
@@ -1429,26 +1440,50 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
     }
 
 
-def book_series_detail(*, source, series_id, request=None, user=None):
-    """Return a provider-backed book series as iOS-ready media summaries."""
+def series_detail(*, source, series_id, request=None, user=None):
+    """Return a provider-backed series as iOS-ready media summaries."""
     series = provider_services.get_book_series(source, series_id)
-    books = series.get("books") or []
-    return {
+    media_type = series.get("media_type") or MediaTypes.BOOK.value
+    raw_items = series.get("items")
+    if raw_items is None:
+        raw_items = series.get("books") or []
+    items = [
+        media_summary_from_provider(
+            item,
+            item.get("media_type", media_type),
+            item.get("source", source),
+            request=request,
+            user=user,
+        )
+        for item in raw_items
+    ]
+    item_count = series.get("item_count")
+    if item_count is None:
+        item_count = series.get("book_count")
+    if item_count is None:
+        item_count = len(items)
+    payload = {
+        "series_id": str(series.get("series_id") or series_id),
         "id": str(series.get("series_id") or series_id),
-        "source": source,
+        "source": series.get("source") or source,
+        "media_type": media_type,
         "name": series.get("name") or "",
-        "book_count": series.get("book_count") or len(books),
-        "books": [
-            media_summary_from_provider(
-                book,
-                MediaTypes.BOOK.value,
-                source,
-                request=request,
-                user=user,
-            )
-            for book in books
-        ],
+        "item_count": item_count,
+        "items": items,
     }
+    if media_type == MediaTypes.BOOK.value:
+        payload.update({"book_count": item_count, "books": items})
+    return payload
+
+
+def book_series_detail(*, source, series_id, request=None, user=None):
+    """Compatibility wrapper for the original book-only service name."""
+    return series_detail(
+        source=source,
+        series_id=series_id,
+        request=request,
+        user=user,
+    )
 
 
 def company_detail(*, source, company_id):

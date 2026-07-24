@@ -14,7 +14,7 @@ protocol MediaRepository {
     func searchAll(query: String) async throws -> MediaSearchResponse
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary>
     func detail(ref: MediaRef) async throws -> MediaDetail
-    func bookSeries(ref: BookSeriesRef) async throws -> BookSeriesDetail
+    func series(ref: SeriesRef) async throws -> SeriesDetail
     func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
     func reviews(ref: MediaRef) async throws -> [MediaReview]
@@ -75,7 +75,7 @@ extension MediaRepository {
         )
     }
 
-    func bookSeries(ref _: BookSeriesRef) async throws -> BookSeriesDetail {
+    func series(ref _: SeriesRef) async throws -> SeriesDetail {
         fatalError("Not implemented")
     }
 
@@ -482,7 +482,7 @@ struct APIMediaRepository: MediaRepository {
         )
     }
 
-    func bookSeries(ref: BookSeriesRef) async throws -> BookSeriesDetail {
+    func series(ref: SeriesRef) async throws -> SeriesDetail {
         try await client.get(
             "/series/\(ref.source)/\(ref.id)/",
             authenticated: client.tokenProvider.accessToken != nil

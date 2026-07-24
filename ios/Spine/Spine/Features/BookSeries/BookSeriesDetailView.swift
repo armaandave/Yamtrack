@@ -2,17 +2,17 @@ import SwiftUI
 
 @MainActor
 @Observable
-final class BookSeriesDetailViewModel {
-    var detail: BookSeriesDetail?
+final class SeriesDetailViewModel {
+    var detail: SeriesDetail?
     var isLoading = true
     var errorMessage: String?
 
-    private let ref: BookSeriesRef
+    private let ref: SeriesRef
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
 
     init(
-        ref: BookSeriesRef,
+        ref: SeriesRef,
         mediaRepository: MediaRepository,
         onUnauthorized: @escaping () -> Void
     ) {
@@ -27,7 +27,7 @@ final class BookSeriesDetailViewModel {
         defer { isLoading = false }
 
         do {
-            detail = try await mediaRepository.bookSeries(ref: ref)
+            detail = try await mediaRepository.series(ref: ref)
         } catch is CancellationError {
             return
         } catch {
@@ -37,11 +37,18 @@ final class BookSeriesDetailViewModel {
             }
         }
     }
+
+    func selection(for item: MediaSummary) -> MediaBrowsingSelection {
+        MediaBrowsingSelection(
+            ref: item.ref,
+            within: detail?.items.map(\.ref) ?? [item.ref]
+        )
+    }
 }
 
-struct BookSeriesDetailView: View {
+struct SeriesDetailView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var viewModel: BookSeriesDetailViewModel
+    @State private var viewModel: SeriesDetailViewModel
     @State private var selectedMedia: MediaBrowsingSelection?
     @State private var edgeDragOffset: CGFloat = 0
 
@@ -56,7 +63,7 @@ struct BookSeriesDetailView: View {
     private let onUnauthorized: () -> Void
 
     init(
-        ref: BookSeriesRef,
+        ref: SeriesRef,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
@@ -76,7 +83,7 @@ struct BookSeriesDetailView: View {
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
-        _viewModel = State(initialValue: BookSeriesDetailViewModel(
+        _viewModel = State(initialValue: SeriesDetailViewModel(
             ref: ref,
             mediaRepository: mediaRepository,
             onUnauthorized: onUnauthorized
@@ -143,32 +150,32 @@ struct BookSeriesDetailView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text(error)
             )
-        } else if let detail = viewModel.detail, detail.books.isEmpty {
-            ContentUnavailableView("No books", systemImage: "books.vertical")
+        } else if let detail = viewModel.detail, detail.items.isEmpty {
+            ContentUnavailableView(
+                detail.mediaType == "movie" ? "No movies" : "No books",
+                systemImage: detail.mediaType == "movie" ? "film" : "books.vertical"
+            )
         } else if let detail = viewModel.detail {
             ScrollView {
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
                     spacing: 10
                 ) {
-                    ForEach(detail.books) { book in
+                    ForEach(detail.items) { item in
                         Button {
-                            selectedMedia = MediaBrowsingSelection(
-                                ref: book.ref,
-                                within: detail.books.map(\.ref)
-                            )
+                            selectedMedia = viewModel.selection(for: item)
                         } label: {
                             MediaArtwork(
-                                url: book.displayPosterURL,
-                                title: book.title,
+                                url: item.displayPosterURL,
+                                title: item.title,
                                 slot: .tagGrid,
-                                mediaType: book.ref.mediaType,
-                                orientation: book.posterOrientation
+                                mediaType: item.ref.mediaType,
+                                orientation: item.posterOrientation
                             )
                             .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("View \(book.title)")
+                        .accessibilityLabel("View \(item.title)")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

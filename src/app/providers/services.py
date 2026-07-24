@@ -425,10 +425,12 @@ def get_person_page(source, person_id):
 
 
 def get_book_series(source, series_id):
-    """Return a provider-backed book series."""
+    """Return a provider-backed media series."""
     if source == Sources.HARDCOVER.value:
         return hardcover.series_page(series_id)
-    msg = "Book series pages are only supported for Hardcover in v1."
+    if source == Sources.TMDB.value:
+        return tmdb.collection(series_id)
+    msg = "Series pages are only supported for Hardcover and TMDB in v1."
     raise NotImplementedError(msg)
 
 

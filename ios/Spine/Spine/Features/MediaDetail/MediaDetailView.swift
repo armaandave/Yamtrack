@@ -1010,7 +1010,7 @@ private struct MediaDetailPageView: View {
     @State private var presentedDiaryEntry: PresentedDiaryEntry?
     @State private var presentedMediaDiary: PresentedMediaDiary?
     @State private var presentedDiscover: MediaDiscoverRequest?
-    @State private var presentedSeries: BookSeriesRef?
+    @State private var presentedSeries: SeriesRef?
     @State private var presentedPerson: PersonRef?
     @State private var presentedCompany: CompanyRef?
     @State private var presentedSong: MusicSongSelection?
@@ -1445,7 +1445,7 @@ private struct MediaDetailPageView: View {
             )
         }
         .fullScreenCover(item: $presentedSeries) { series in
-            BookSeriesDetailView(
+            SeriesDetailView(
                 ref: series,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
@@ -1936,7 +1936,7 @@ private struct MediaDetailPageView: View {
 
                 heroHeader(detail)
                     .padding(.horizontal, 14)
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 8)
                     .padding(.top, resolvedTopSafeAreaInset + heroPosterTopOffset(for: detail))
                     .frame(minHeight: heroHeight(for: detail), alignment: .top)
             }
@@ -2529,8 +2529,8 @@ private struct MediaDetailPageView: View {
                 RecommendationsSection(
                     sections: relatedSections(detail),
                     onSelectSection: { section in
-                        if section.id == "series" {
-                            presentedSeries = bookSeriesRef(detail)
+                        if section.id == "series" || section.id == "collection" {
+                            presentedSeries = seriesRef(detail)
                         }
                     }
                 ) { item in
@@ -3032,11 +3032,15 @@ private struct MediaDetailPageView: View {
         return "\(name) · Book \(position)"
     }
 
-    private func bookSeriesRef(_ detail: MediaDetail) -> BookSeriesRef? {
-        guard detail.ref.mediaType == "book",
+    private func seriesRef(_ detail: MediaDetail) -> SeriesRef? {
+        guard (detail.ref.mediaType == "book" || detail.ref.mediaType == "movie"),
               let id = detailString(detail, "series_id")?.nilIfEmpty
         else { return nil }
-        return BookSeriesRef(source: detail.ref.source, id: id)
+        return SeriesRef(
+            source: detailString(detail, "series_source")?.nilIfEmpty ?? detail.ref.source,
+            id: id,
+            mediaType: detailString(detail, "series_media_type")?.nilIfEmpty ?? detail.ref.mediaType
+        )
     }
 
     private func googleBooksPrice(_ detail: MediaDetail) -> String? {
@@ -4640,12 +4644,6 @@ private struct RatingSourceBadge: View {
                 .font(.system(size: 10, weight: .heavy))
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
-        } else if chip.assetName == "RatingSteam" {
-            Image("RatingSteam")
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                .frame(width: 44, height: MediaDetailLayout.ratingBadgeSize)
         } else {
             Group {
                 if let assetName = chip.assetName {
@@ -4657,7 +4655,7 @@ private struct RatingSourceBadge: View {
                 }
             }
             .frame(width: MediaDetailLayout.ratingBadgeSize, height: MediaDetailLayout.ratingBadgeSize)
-            .background(["RatingMAL", "RatingMetacritic"].contains(chip.assetName) ? .clear : .white, in: Circle())
+            .background(["RatingMAL", "RatingMetacritic", "RatingSteam"].contains(chip.assetName) ? .clear : .white, in: Circle())
             .clipShape(Circle())
         }
     }
@@ -5961,7 +5959,8 @@ private struct RecommendationsSection: View {
     var body: some View {
         ForEach(sections.filter { !$0.items.isEmpty }) { section in
             VStack(alignment: .leading, spacing: 18) {
-                if section.id == "series", let onSelectSection {
+                if (section.id == "series" || section.id == "collection"),
+                   let onSelectSection {
                     Button {
                         onSelectSection(section)
                     } label: {

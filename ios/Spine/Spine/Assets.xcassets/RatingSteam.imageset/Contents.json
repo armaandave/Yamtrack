@@ -1,15 +1,12 @@
 {
   "images" : [
     {
-      "filename" : "steam.svg",
+      "filename" : "steam.svg.png",
       "idiom" : "universal"
     }
   ],
   "info" : {
     "author" : "xcode",
     "version" : 1
-  },
-  "properties" : {
-    "preserves-vector-representation" : true
   }
 }

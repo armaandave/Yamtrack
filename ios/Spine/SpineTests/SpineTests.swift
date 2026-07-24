@@ -444,6 +444,66 @@ final class SpineTests: XCTestCase {
     }
 
     @MainActor
+    func testMovieSeriesRepositoryPathAndSelectionMediaType() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        client.tokenProvider.clear()
+        let repository = APIMediaRepository(client: client)
+        RequestCaptureURLProtocol.handler = { request in
+            XCTAssertEqual(
+                request.url?.absoluteString,
+                "https://example.com/api/v1/series/tmdb/10/"
+            )
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                """
+                {
+                  "series_id": "10",
+                  "source": "tmdb",
+                  "media_type": "movie",
+                  "name": "The Example Collection",
+                  "item_count": 1,
+                  "items": [
+                    {
+                      "ref": {
+                        "item_id": null,
+                        "source": "tmdb",
+                        "media_type": "movie",
+                        "media_id": "11",
+                        "season_number": null,
+                        "episode_number": null
+                      },
+                      "title": "Movie One"
+                    }
+                  ]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        let viewModel = SeriesDetailViewModel(
+            ref: SeriesRef(source: "tmdb", id: "10", mediaType: "movie"),
+            mediaRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        let item = try XCTUnwrap(viewModel.detail?.items.first)
+        XCTAssertEqual(viewModel.selection(for: item).ref.mediaType, "movie")
+    }
+
+    @MainActor
     func testDynamicExternalRatingSortDecodesAndKeepsBackendLabel() throws {
         let sort = try JSONDecoder.api.decode(
             MediaFilterSort.self,

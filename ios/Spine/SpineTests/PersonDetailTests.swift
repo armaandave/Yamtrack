@@ -105,7 +105,7 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.knownForDepartment, "Author")
         XCTAssertEqual(detail.filmography.first?.ref.mediaType, "book")
         XCTAssertEqual(detail.filmography.first?.title, "I Am Not a Serial Killer")
-        XCTAssertEqual(detail.bookSeries.first?.ref, BookSeriesRef(source: "hardcover", id: "1185"))
+        XCTAssertEqual(detail.bookSeries.first?.ref, SeriesRef(source: "hardcover", id: "1185"))
         XCTAssertEqual(detail.bookSeries.first?.posterUrls.count, 2)
     }
 
@@ -145,10 +145,42 @@ final class PersonDetailTests: XCTestCase {
         }
         """
 
-        let detail = try JSONDecoder.api.decode(BookSeriesDetail.self, from: Data(json.utf8))
+        let detail = try JSONDecoder.api.decode(SeriesDetail.self, from: Data(json.utf8))
 
         XCTAssertEqual(detail.name, "Harry Potter")
         XCTAssertEqual(detail.books.map(\.position), [1, 2])
+    }
+
+    func testSeriesDetailDecodesMoviePayload() throws {
+        let json = """
+        {
+          "series_id": "10",
+          "source": "tmdb",
+          "media_type": "movie",
+          "name": "The Example Collection",
+          "item_count": 1,
+          "items": [
+            {
+              "ref": {
+                "item_id": null,
+                "source": "tmdb",
+                "media_type": "movie",
+                "media_id": "11",
+                "season_number": null,
+                "episode_number": null
+              },
+              "title": "Movie One"
+            }
+          ]
+        }
+        """
+
+        let detail = try JSONDecoder.api.decode(SeriesDetail.self, from: Data(json.utf8))
+
+        XCTAssertEqual(detail.seriesId, "10")
+        XCTAssertEqual(detail.mediaType, "movie")
+        XCTAssertEqual(detail.itemCount, 1)
+        XCTAssertEqual(detail.items.first?.ref.mediaType, "movie")
     }
 
     func testPersonDetailDecodesMusicBrainzArtistReleases() throws {

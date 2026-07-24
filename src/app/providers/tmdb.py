@@ -17,6 +17,8 @@ from app.providers.search_rank import rank_results
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
 DETAIL_CACHE_VERSION = "v3"
+MOVIE_DETAIL_CACHE_VERSION = "v4"
+COLLECTION_CACHE_VERSION = "v1"
 base_params = {
     "api_key": settings.TMDB_API,
     "language": settings.TMDB_LANG,
@@ -441,7 +443,10 @@ def get_creator_id(created_by):
 
 def movie(media_id):
     """Return the metadata for the selected movie from The Movie Database."""
-    cache_key = f"{Sources.TMDB.value}_{DETAIL_CACHE_VERSION}_{MediaTypes.MOVIE.value}_{media_id}"
+    cache_key = (
+        f"{Sources.TMDB.value}_{MOVIE_DETAIL_CACHE_VERSION}_"
+        f"{MediaTypes.MOVIE.value}_{media_id}"
+    )
     data = cache.get(cache_key)
 
     if data is None:
@@ -460,9 +465,9 @@ def movie(media_id):
                 url,
                 params=params,
             )
-            if response.get("belongs_to_collection", {}) is not None and (
-                collection_id := response.get("belongs_to_collection", {}).get("id")
-            ):
+            collection = response.get("belongs_to_collection") or {}
+            collection_id = collection.get("id")
+            if collection_id:
                 try:
                     collection_response = services.api_request(
                         Sources.TMDB.value,
@@ -479,6 +484,7 @@ def movie(media_id):
             handle_error(error)
 
         collection_items = get_collection(collection_response)
+        collection_name = collection_response.get("name") or collection.get("name")
         collection_ids = [item["media_id"] for item in collection_items]
         recommended_items = response.get("recommendations", {}).get("results", [])
         filtered_recommendations = [
@@ -512,11 +518,21 @@ def movie(media_id):
                 "director": get_director(response.get("credits")),
                 "director_id": get_director_id(response.get("credits")),
                 "directors": get_directors(response.get("credits")),
+                **(
+                    {
+                        "series_id": str(collection_id),
+                        "series_source": Sources.TMDB.value,
+                        "series_media_type": MediaTypes.MOVIE.value,
+                        "series_name": collection_name,
+                    }
+                    if collection_id
+                    else {}
+                ),
             },
             "cast": get_cast(response.get("credits")),
             "crew": get_crew(response.get("credits")),
             "related": {
-                collection_response.get("name", "collection"): collection_items,
+                collection_name or "collection": collection_items,
                 "recommendations": get_related(
                     filtered_recommendations[:15],
                     MediaTypes.MOVIE.value,
@@ -934,7 +950,7 @@ def get_related(related_medias, media_type, parent_response=None):
         data = {
             "source": Sources.TMDB.value,
             "media_type": media_type,
-            "image": get_image_url(media["poster_path"]),
+            "image": get_image_url(media.get("poster_path")),
         }
         if media_type == MediaTypes.SEASON.value:
             data["media_id"] = parent_response["id"]
@@ -946,8 +962,41 @@ def get_related(related_medias, media_type, parent_response=None):
         else:
             data["media_id"] = media["id"]
             data["title"] = get_title(media)
+            data["release_date"] = media.get("release_date")
         related.append(data)
     return related
+
+
+def collection(series_id):
+    """Return one TMDB movie collection."""
+    cache_key = (
+        f"{Sources.TMDB.value}_collection_{series_id}_{COLLECTION_CACHE_VERSION}"
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        response = services.api_request(
+            Sources.TMDB.value,
+            "GET",
+            f"{base_url}/collection/{series_id}",
+            params={**base_params},
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+
+    items = get_collection(response)
+    data = {
+        "series_id": str(response.get("id") or series_id),
+        "source": Sources.TMDB.value,
+        "media_type": MediaTypes.MOVIE.value,
+        "name": response.get("name") or "",
+        "item_count": len(items),
+        "items": items,
+    }
+    cache.set(cache_key, data)
+    return data
 
 
 def get_collection(collection_response):
@@ -955,10 +1004,30 @@ def get_collection(collection_response):
     if not collection_response:
         return []
 
-    def date_key(item):
-        return item.get("release_date") or ""
+    seen = set()
+    parts = []
+    for item in collection_response.get("parts") or []:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        try:
+            movie_id = int(item["id"])
+        except (TypeError, ValueError):
+            continue
+        title = item.get("title") or item.get("name")
+        key = str(movie_id)
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        parts.append(item)
 
-    parts = sorted(collection_response.get("parts", []), key=date_key)
+    parts.sort(
+        key=lambda item: (
+            not bool(item.get("release_date")),
+            item.get("release_date") or "",
+            (item.get("title") or item.get("name") or "").casefold(),
+            int(item["id"]),
+        ),
+    )
     return get_related(parts, MediaTypes.MOVIE.value)
 
 

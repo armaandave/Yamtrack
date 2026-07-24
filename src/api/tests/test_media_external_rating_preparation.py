@@ -202,3 +202,44 @@ class MediaExternalRatingPreparationTests(TestCase):
         )
         self.assertEqual(ready.data["external_ratings"][2]["value"], "92%")
         self.assertEqual(ready.data["external_ratings"][2]["vote_count"], 123456)
+
+    @patch("app.providers.steam.get_review_rating")
+    @patch("app.providers.steam.get_metacritic_rating")
+    @patch("app.tasks.enrich_external_ratings.delay")
+    @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
+    @patch("api.services.media._game_default_backdrop_url", return_value=None)
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_untracked_game_detail_materializes_item_and_queues_steam(
+        self,
+        metadata_mock,
+        _backdrop_mock,
+        _logo_mock,
+        enqueue_mock,
+        metacritic_mock,
+        steam_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "386",
+            "media_type": "game",
+            "source": "igdb",
+            "title": "Battlefield 4",
+            "image": "https://example.com/battlefield-4.jpg",
+            "score": "78",
+            "score_count": 908,
+        }
+
+        response = self.client.get("/api/v1/media/igdb/game/386/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["external_ratings_preparation"],
+            {"state": "pending", "retry_after_seconds": 2},
+        )
+        game = Item.objects.get(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="386",
+        )
+        enqueue_mock.assert_called_once_with(game.pk, ["metacritic", "steam"])
+        metacritic_mock.assert_not_called()
+        steam_mock.assert_not_called()

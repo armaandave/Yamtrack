@@ -669,6 +669,57 @@ class Metadata(TestCase):
         self.assertEqual(response["details"]["release_date"], "1998-02-28")
         self.assertEqual(response["details"]["status"], "Released")
 
+    @patch("app.providers.tmdb.services.api_request")
+    def test_movie_exposes_collection_series_reference(self, mock_api_request):
+        cache.clear()
+        mock_api_request.side_effect = [
+            {
+                "id": 11,
+                "title": "Movie One",
+                "poster_path": None,
+                "backdrop_path": None,
+                "overview": "",
+                "genres": [],
+                "vote_average": 0,
+                "vote_count": 0,
+                "revenue": 0,
+                "popularity": 0,
+                "release_date": "2020-01-01",
+                "status": "Released",
+                "runtime": 90,
+                "release_dates": {},
+                "production_companies": [],
+                "production_countries": [],
+                "spoken_languages": [],
+                "credits": {"cast": [], "crew": []},
+                "recommendations": {"results": []},
+                "external_ids": {},
+                "watch/providers": {"results": {}},
+                "belongs_to_collection": {
+                    "id": 1234,
+                    "name": "Exact Collection Name",
+                },
+            },
+            {
+                "id": 1234,
+                "name": "Exact Collection Name",
+                "parts": [],
+            },
+        ]
+
+        response = tmdb.movie("11")
+
+        self.assertEqual(response["details"]["series_id"], "1234")
+        self.assertEqual(response["details"]["series_source"], Sources.TMDB.value)
+        self.assertEqual(
+            response["details"]["series_media_type"],
+            MediaTypes.MOVIE.value,
+        )
+        self.assertEqual(
+            response["details"]["series_name"],
+            "Exact Collection Name",
+        )
+
     @patch("requests.Session.get")
     def test_movie_unknown(self, mock_data):
         """Test the metadata method for movies with mostly unknown data."""
@@ -1584,6 +1635,33 @@ class Metadata(TestCase):
         self.assertEqual(
             [book["media_id"] for book in result[0]["books"]],
             ["one", "two"],
+        )
+
+    def test_hardcover_author_series_sorts_by_total_readership(self):
+        credits = [
+            {
+                "is_author_role": True,
+                "users_count": readers,
+                "series": {
+                    "id": series_id,
+                    "name": name,
+                    "position": position,
+                    "primary_books_count": 2,
+                },
+            }
+            for series_id, name, position, readers in [
+                (1, "Niche Series", 1, 10),
+                (1, "Niche Series", 2, 20),
+                (2, "Popular Series", 1, 100),
+                (2, "Popular Series", 2, 200),
+            ]
+        ]
+
+        result = hardcover.get_author_series(credits)
+
+        self.assertEqual(
+            [series["name"] for series in result],
+            ["Popular Series", "Niche Series"],
         )
 
     def test_igdb_get_score(self):

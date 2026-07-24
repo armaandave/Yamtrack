@@ -171,7 +171,7 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PersonDetailViewModel
     @State private var selectedMedia: MediaBrowsingSelection?
-    @State private var selectedSeries: BookSeriesRef?
+    @State private var selectedSeries: SeriesRef?
     @State private var selectedFilmographyType: FilmographyType = .movie
     @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
@@ -265,7 +265,7 @@ struct PersonDetailView: View {
             )
         }
         .fullScreenCover(item: $selectedSeries, onDismiss: { selectedSeries = nil }) { series in
-            BookSeriesDetailView(
+            SeriesDetailView(
                 ref: series,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
@@ -703,6 +703,7 @@ private struct BookSeriesCard: View {
                     .rotationEffect(.degrees(rotation(index)))
                     .offset(x: offset(index))
                     .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
+                    .zIndex(Double(posters.count - index))
                 }
             }
             .frame(width: 80, height: 120)

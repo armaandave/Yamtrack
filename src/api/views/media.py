@@ -334,7 +334,7 @@ class PersonDetailView(APIView):
 
 
 class BookSeriesDetailView(APIView):
-    """Provider-backed primary book series for native clients."""
+    """Provider-backed media series for native clients."""
 
     permission_classes = [AllowAny]
     throttle_classes = [SearchRateThrottle]
@@ -342,7 +342,7 @@ class BookSeriesDetailView(APIView):
     def get(self, request, source, series_id):
         try:
             return Response(
-                media_service.book_series_detail(
+                media_service.series_detail(
                     source=source,
                     series_id=series_id,
                     request=request,
@@ -351,6 +351,13 @@ class BookSeriesDetailView(APIView):
             )
         except NotImplementedError as error:
             return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response(
+                    {"detail": "Series not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            raise
 
 
 class CompanyDetailView(APIView):
