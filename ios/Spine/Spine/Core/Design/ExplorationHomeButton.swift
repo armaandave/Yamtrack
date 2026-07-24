@@ -1,0 +1,63 @@
+import SwiftUI
+
+@Observable
+final class AppNavigationState {
+    private(set) var returnHomeRequest = 0
+
+    func returnHome() {
+        returnHomeRequest += 1
+    }
+}
+
+private struct AppNavigationStateKey: EnvironmentKey {
+    static let defaultValue: AppNavigationState? = nil
+}
+
+extension EnvironmentValues {
+    var appNavigationState: AppNavigationState? {
+        get { self[AppNavigationStateKey.self] }
+        set { self[AppNavigationStateKey.self] = newValue }
+    }
+}
+
+struct ExplorationHomeButton: View {
+    @Environment(\.appNavigationState) private var appNavigationState
+
+    var body: some View {
+        if let appNavigationState {
+            Button {
+                appNavigationState.returnHome()
+            } label: {
+                Image(systemName: "house.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.84))
+                    .frame(width: 58, height: 58)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Circle())
+            .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .circle)
+            .accessibilityLabel("Go to Home")
+            .accessibilityHint("Closes media browsing and returns to Home")
+            .accessibilityIdentifier("exploration.home")
+        }
+    }
+}
+
+private struct DismissExplorationOnReturnHome: ViewModifier {
+    @Environment(\.appNavigationState) private var appNavigationState
+    @Environment(\.dismiss) private var dismiss
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: appNavigationState?.returnHomeRequest) { _, request in
+                guard request != nil else { return }
+                dismiss()
+            }
+    }
+}
+
+extension View {
+    func dismissExplorationOnReturnHome() -> some View {
+        modifier(DismissExplorationOnReturnHome())
+    }
+}

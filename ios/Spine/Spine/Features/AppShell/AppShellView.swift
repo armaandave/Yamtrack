@@ -1,11 +1,14 @@
 import SwiftUI
 
 struct AppShellView: View {
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: AppTab
     @State private var searchFocusRequest = 0
     @State private var requestedLibraryShelf: LibraryShelf?
     @State private var mediaLensStore = MediaLensStore()
+    @State private var profileTabImage: UIImage?
+    @State private var appNavigationState = AppNavigationState()
 
     let session: AppSession
 
@@ -20,6 +23,13 @@ struct AppShellView: View {
             return user?.id
         }
         return nil
+    }
+
+    private var currentUserAvatarURL: URL? {
+        guard case let .signedIn(user?) = session.state,
+              let avatarUrl = user.avatarUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !avatarUrl.isEmpty else { return nil }
+        return URL(string: avatarUrl)
     }
 
     var body: some View {
@@ -39,6 +49,7 @@ struct AppShellView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
                 Image(systemName: "house")
+                    .environment(\.symbolVariants, selectedTab == .home ? .fill : .none)
                     .accessibilityLabel("Home")
             }
             .tag(AppTab.home)
@@ -59,8 +70,15 @@ struct AppShellView: View {
             }
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Image(systemName: "magnifyingglass")
-                    .accessibilityLabel("Search")
+                Group {
+                    if selectedTab == .search {
+                        Image("TabSearchFilled")
+                            .renderingMode(.template)
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
+                .accessibilityLabel("Search")
             }
             .tag(AppTab.search)
 
@@ -81,6 +99,7 @@ struct AppShellView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
                 Image(systemName: "books.vertical")
+                    .environment(\.symbolVariants, selectedTab == .library ? .fill : .none)
                     .accessibilityLabel("Library")
             }
             .tag(AppTab.library)
@@ -98,8 +117,15 @@ struct AppShellView: View {
             }
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Image(systemName: "calendar")
-                    .accessibilityLabel("Diary")
+                Group {
+                    if selectedTab == .diary {
+                        Image("TabDiaryHollow")
+                            .renderingMode(.template)
+                    } else {
+                        Image(systemName: "calendar")
+                    }
+                }
+                .accessibilityLabel("Diary")
             }
             .tag(AppTab.diary)
 
@@ -132,14 +158,26 @@ struct AppShellView: View {
             }
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Image(systemName: "person.crop.circle")
-                    .accessibilityLabel("Profile")
+                Group {
+                    if let profileTabImage {
+                        Image(uiImage: profileTabImage)
+                            .renderingMode(.original)
+                    } else {
+                        Image(systemName: selectedTab == .profile ? "circle" : "person.crop.circle")
+                            .environment(\.symbolVariants, .none)
+                    }
+                }
+                .accessibilityLabel("Profile")
             }
             .tag(AppTab.profile)
         }
         .tint(.white)
         .scrollEdgeEffectStyle(.soft, for: .bottom)
         .tabBarMinimizeBehavior(.never)
+        .environment(\.appNavigationState, appNavigationState)
+        .onChange(of: appNavigationState.returnHomeRequest) {
+            selectedTab = .home
+        }
         .background {
             TabBarSelectionObserver { index in
                 guard AppTab(tabBarIndex: index) == .search,
@@ -159,6 +197,26 @@ struct AppShellView: View {
             await Task.yield()
             searchFocusRequest += 1
         }
+        .task(id: currentUserAvatarURL) {
+            await loadProfileTabImage(from: currentUserAvatarURL)
+        }
+    }
+
+    private func loadProfileTabImage(from url: URL?) async {
+        profileTabImage = nil
+        guard let url,
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let image = UIImage(data: data) else { return }
+
+        let renderer = ImageRenderer(content:
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 30, height: 30)
+                .clipShape(Circle())
+        )
+        renderer.scale = displayScale
+        profileTabImage = renderer.uiImage?.withRenderingMode(.alwaysOriginal)
     }
 
     private func unauthorized() {

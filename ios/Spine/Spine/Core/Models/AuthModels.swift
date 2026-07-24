@@ -5,6 +5,7 @@ struct AuthUser: Codable, Identifiable {
     let username: String
     let displayName: String
     let isPrivate: Bool
+    let avatarUrl: String?
 }
 
 struct AuthTokenResponse: Decodable {

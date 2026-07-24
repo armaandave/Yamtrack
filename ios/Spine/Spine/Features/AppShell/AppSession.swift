@@ -110,6 +110,12 @@ final class AppSession {
 
 private extension AuthUser {
     init(profile: UserProfile) {
-        self.init(id: profile.id, username: profile.username, displayName: profile.displayName, isPrivate: profile.isPrivate)
+        self.init(
+            id: profile.id,
+            username: profile.username,
+            displayName: profile.displayName,
+            isPrivate: profile.isPrivate,
+            avatarUrl: profile.avatarUrl
+        )
     }
 }

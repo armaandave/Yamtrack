@@ -1071,7 +1071,10 @@ class Metadata(TestCase):
             }
         )
 
-        self.assertEqual(series, {"id": 981, "name": "A Song of Ice and Fire"})
+        self.assertEqual(
+            series,
+            {"id": 981, "name": "A Song of Ice and Fire", "position": 2.0},
+        )
 
     @patch("app.providers.hardcover.services.api_request")
     def test_hardcover_series_books_dedupe_uses_nested_book_read_count(self, api_request_mock):

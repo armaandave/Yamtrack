@@ -251,14 +251,15 @@ private struct PosterOptionCell: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .topLeading) {
-                MediaArtwork(
-                    url: poster.thumbnailUrl ?? poster.url,
-                    title: "Poster option",
-                    slot: .pickerGrid,
-                    contentMode: contentMode
-                )
+        VStack(spacing: 6) {
+            Button(action: action) {
+                ZStack(alignment: .topLeading) {
+                    MediaArtwork(
+                        url: poster.thumbnailUrl ?? poster.url,
+                        title: "Poster option",
+                        slot: .pickerGrid,
+                        contentMode: contentMode
+                    )
                     .overlay {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(isSelected ? .white : .clear, lineWidth: 3)
@@ -273,20 +274,34 @@ private struct PosterOptionCell: View {
                         }
                     }
 
-                if poster.isSelected {
-                    Text("Current")
-                        .font(.caption2.weight(.heavy))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(.green, in: Capsule())
-                        .padding(6)
-                }
+                    if poster.isSelected {
+                        Text("Current")
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                            .background(.green, in: Capsule())
+                            .padding(6)
+                    }
 
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(poster.isSelected ? "Current poster" : "Poster option")
+
+            if let providerName = poster.providerName {
+                if let providerURL = poster.providerUrl.flatMap(URL.init(string:)) {
+                    Link(providerName, destination: providerURL)
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                } else {
+                    Text(providerName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(poster.isSelected ? "Current poster" : "Poster option")
     }
 }
 
