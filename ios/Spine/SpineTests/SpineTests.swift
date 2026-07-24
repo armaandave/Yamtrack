@@ -2717,8 +2717,8 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "tmdb", mediaType: "episode"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "igdb", mediaType: "game"))
         XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "mal", mediaType: "anime"))
-        XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "mal", mediaType: "manga"))
-        XCTAssertFalse(MediaArtworkCustomization.supportsBackdrop(source: "mangaupdates", mediaType: "manga"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "mal", mediaType: "manga"))
+        XCTAssertTrue(MediaArtworkCustomization.supportsBackdrop(source: "mangaupdates", mediaType: "manga"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "movie"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "tmdb", mediaType: "tv"))
         XCTAssertTrue(MediaArtworkCustomization.supportsLogo(source: "igdb", mediaType: "game"))
@@ -4045,6 +4045,7 @@ final class SpineTests: XCTestCase {
               "title": "Shingeki no Kyojin",
               "display_title": "Attack on Titan",
               "backdrop_url": "https://img.example/banner.jpg",
+              "details": {"number_of_chapters": 141},
               "characters": [
                 {"id": "character:1", "name": "Eren Yeager", "role": "Main", "image_url": "https://img.example/eren.jpg"}
               ],
@@ -4073,6 +4074,12 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(manga.displayBackdropURL, "https://img.example/banner.jpg")
         XCTAssertEqual(manga.characters?.first?.role, "Main")
         XCTAssertEqual(manga.crew?.first?.role, "Story & Art")
+        if case let .number(chapters)? = manga.details?["number_of_chapters"] {
+            XCTAssertEqual(chapters, 141)
+        } else {
+            XCTFail("Expected manga chapter count")
+        }
+        XCTAssertEqual(MediaCreditPresentation.make(for: manga)?.people.map(\.name), ["Hajime Isayama"])
         XCTAssertEqual(manga.relatedSections?.first?.items.first?.ref.mediaType, "anime")
         XCTAssertEqual(manga.relatedSections?.first?.items.first?.relation, "Adaptation")
     }
@@ -5736,6 +5743,28 @@ final class SpineTests: XCTestCase {
         await viewModel.save()
 
         XCTAssertEqual(savedResponse?.customBackdropUrl, "https://example.com/backdrop-no-language.jpg")
+
+        let mangaBackdrop = "https://example.com/manga-banner.jpg"
+        let mangaViewModel = BackdropPickerViewModel(
+            ref: MediaRef(
+                itemId: nil,
+                source: "mal",
+                mediaType: "manga",
+                mediaId: "1",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            mediaRepository: PosterFixtureRepository(),
+            initialBackdropURL: mangaBackdrop,
+            onUnauthorized: {},
+            saveAction: { _, _ in }
+        )
+
+        await mangaViewModel.load()
+
+        XCTAssertEqual(mangaViewModel.backdrops.map(\.url), [mangaBackdrop])
+        XCTAssertEqual(mangaViewModel.selectedBackdropURL, mangaBackdrop)
+        XCTAssertTrue(mangaViewModel.backdrops[0].isSelected)
     }
 
     @MainActor

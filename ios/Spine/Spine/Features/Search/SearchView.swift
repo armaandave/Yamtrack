@@ -714,15 +714,12 @@ private struct FeaturedListsDiscovery: View {
                         Button {
                             onSelect(list.id)
                         } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("By \(list.owner.displayName)")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                ProfileListRow(list: list)
-                            }
+                            ProfileListRow(list: list)
                         }
                         .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 12))
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 }
             }

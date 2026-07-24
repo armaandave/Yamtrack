@@ -33,6 +33,7 @@ private extension EnvironmentValues {
 
 struct ExplorationHomeButton: View {
     @Environment(\.appNavigationState) private var appNavigationState
+    var glass: Glass = .regular.tint(.white.opacity(0.1)).interactive()
 
     var body: some View {
         if let appNavigationState {
@@ -46,7 +47,7 @@ struct ExplorationHomeButton: View {
             }
             .buttonStyle(.plain)
             .contentShape(Circle())
-            .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: .circle)
+            .glassEffect(glass, in: .circle)
             .accessibilityLabel("Go to Home")
             .accessibilityHint("Closes media browsing and returns to Home")
             .accessibilityIdentifier("exploration.home")

@@ -6096,7 +6096,7 @@ class ApiV1FoundationTests(TestCase):
         user = get_user_model().objects.create_user(username="backdrop2", password="strong-password-123")
         self.client.force_authenticate(user)
 
-        response = self.client.get("/api/v1/media/mal/manga/1/backdrops/")
+        response = self.client.get("/api/v1/media/mal/movie/1/backdrops/")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 

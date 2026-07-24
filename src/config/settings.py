@@ -484,6 +484,11 @@ GOOGLE_BOOKS_API_KEY = config(
     default=secret("GOOGLE_BOOKS_API_KEY_FILE", ""),
 ).strip()
 
+NYT_BOOKS_API_KEY = config(
+    "NYT_BOOKS_API_KEY",
+    default=secret("NYT_BOOKS_API_KEY_FILE", ""),
+).strip()
+
 COMICVINE_API = config(
     "COMICVINE_API",
     default=secret(
@@ -693,6 +698,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "queue_stale_external_ratings": {
         "task": "Queue stale external ratings",
+        "schedule": 60 * 60 * 24,  # every 24 hours
+    },
+    "sync_nyt_featured_lists": {
+        "task": "Sync NYT featured lists",
         "schedule": 60 * 60 * 24,  # every 24 hours
     },
 }

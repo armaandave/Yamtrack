@@ -601,6 +601,21 @@ struct MediaCreditPresentation: Hashable {
         if detail.ref.source == "musicbrainz", detail.ref.mediaType == "music" {
             return musicArtists(detail.music?.artistCredit ?? [])
         }
+        if detail.ref.mediaType == "manga" {
+            var seen = Set<String>()
+            let authors = detail.details?["authors"]?.displayStrings ?? []
+            let names = authors.isEmpty ? (detail.crew ?? []).prefix(1).map(\.name) : authors
+            let people = names.compactMap { name -> MediaPersonCredit? in
+                let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { return nil }
+                return MediaPersonCredit(name: name, personRef: nil)
+            }
+            guard !people.isEmpty else { return nil }
+            return MediaCreditPresentation(
+                label: people.count == 1 ? "Author" : "Authors",
+                people: people
+            )
+        }
         guard detail.ref.source == "tmdb" else { return nil }
 
         let configuration: (pluralKey: String, singularKey: String, singularIDKey: String, singularLabel: String, pluralLabel: String)
@@ -714,6 +729,9 @@ enum MediaArtworkCustomization {
 
     static func supportsBackdrop(source: String, mediaType: String) -> Bool {
         if source == "mal", mediaType == "anime" {
+            return true
+        }
+        if mediaType == "manga", ["mal", "mangaupdates"].contains(source) {
             return true
         }
         if source == "tmdb", ["movie", "tv", "season", "episode"].contains(mediaType) {
@@ -1158,7 +1176,7 @@ private struct MediaDetailPageView: View {
             }
 
             if progressUpdateDetail == nil {
-                ExplorationHomeButton()
+                ExplorationHomeButton(glass: .clear.interactive())
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -1317,6 +1335,9 @@ private struct MediaDetailPageView: View {
                 BackdropPickerView(
                     ref: detail.ref,
                     mediaRepository: mediaRepository,
+                    initialBackdropURL: detail.ref.mediaType == "manga"
+                        ? detail.displayBackdropURL
+                        : nil,
                     onUnauthorized: onUnauthorized
                 ) { response in
                     pendingBackdropSave = response
@@ -2294,7 +2315,10 @@ private struct MediaDetailPageView: View {
                     if let credits = gameDeveloperCredits(detail) {
                         companyCreditBylineView(credits)
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
-                        creditBylineView(credits)
+                        creditBylineView(
+                            credits,
+                            textAlignment: detail.ref.mediaType == "manga" ? .leading : nil
+                        )
                     } else if let byline = byline(detail) {
                         bylineView(byline, detail: detail, lineLimit: 2)
                     }
@@ -2328,7 +2352,10 @@ private struct MediaDetailPageView: View {
                     if let credits = gameDeveloperCredits(detail) {
                         companyCreditBylineView(credits)
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
-                        creditBylineView(credits)
+                        creditBylineView(
+                            credits,
+                            textAlignment: detail.ref.mediaType == "manga" ? .leading : nil
+                        )
                     } else if let byline = byline(detail) {
                         bylineView(byline, detail: detail, lineLimit: 1)
                     }
@@ -2356,9 +2383,6 @@ private struct MediaDetailPageView: View {
             orientation: detail.posterOrientation
         )
         .shadow(color: .black.opacity(0.48), radius: 22, y: 12)
-        .onLongPressGesture {
-            openPosterPicker(for: detail)
-        }
 
         if presentedPosterID == detail.ref.id {
             Color.clear
@@ -2373,6 +2397,9 @@ private struct MediaDetailPageView: View {
                 .onTapGesture {
                     onOpenPoster(poster)
                 }
+                .onLongPressGesture {
+                    openPosterPicker(for: detail)
+                }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("View poster for \(detail.displayTitle)")
                 .accessibilityHint("Opens the poster full screen")
@@ -2383,6 +2410,9 @@ private struct MediaDetailPageView: View {
                 .accessibilityIdentifier("media-detail.poster")
         } else {
             artwork
+                .onLongPressGesture {
+                    openPosterPicker(for: detail)
+                }
         }
     }
 
@@ -2703,6 +2733,7 @@ private struct MediaDetailPageView: View {
 
     private func genreChips(_ detail: MediaDetail, wrapsAfterThird: Bool) -> some View {
         let chips = primaryChips(detail)
+        let wrapsAfterThird = wrapsAfterThird || detail.ref.mediaType == "manga"
 
         if !wrapsAfterThird {
             return AnyView(
@@ -2820,6 +2851,9 @@ private struct MediaDetailPageView: View {
         if detail.ref.mediaType == "book", let pages = detailString(detail, "number_of_pages") ?? detailString(detail, "pages") {
             chips.append(MediaDetailChip(label: "\(pages) pages", discoverRequest: nil))
         }
+        if detail.ref.mediaType == "manga", let chapters = detailString(detail, "number_of_chapters") {
+            chips.append(MediaDetailChip(label: "\(chapters) chapters", discoverRequest: nil))
+        }
         if detail.ref.mediaType == "anime", let format = detailString(detail, "format") {
             chips.append(MediaDetailChip(label: format, discoverRequest: nil))
         }
@@ -2929,6 +2963,9 @@ private struct MediaDetailPageView: View {
     }
 
     private func byline(_ detail: MediaDetail) -> String? {
+        if detail.ref.mediaType == "anime", let studio = detailArray(detail, "studios").first {
+            return studio
+        }
         if let author = authors(detail).first {
             return author
         }
@@ -4372,7 +4409,7 @@ private struct ActionRail: View {
             )
         }
         .padding(5)
-        .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
+        .glassEffect(.clear.interactive(), in: glassShape)
         .glassEffectID("media-actions", in: glassNamespace)
         .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
         .simultaneousGesture(
@@ -4391,7 +4428,7 @@ private struct ActionRail: View {
     private var ratingComposer: some View {
         ZStack {
             StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
-                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
+                .glassEffect(.clear.interactive(), in: glassShape)
                 .glassEffectID("media-rating", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
                 .glassEffectTransition(.matchedGeometry)
@@ -4405,7 +4442,7 @@ private struct ActionRail: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isEyeLoading || isLikeLoading)
-                .glassEffect(.regular.tint(.white.opacity(0.1)).interactive(), in: glassShape)
+                .glassEffect(.clear.interactive(), in: glassShape)
                 .offset(x: 71.25)
                 .glassEffectID("media-rating-confirm", in: glassNamespace)
                 .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
@@ -5638,7 +5675,20 @@ private struct CreditSection: View {
     let cast: [CreditDisplay]
     let crew: [CreditDisplay]
     let onSelect: (PersonRef) -> Void
-    @State private var selectedTab = CreditTab.cast
+    @State private var selectedTab: CreditTab
+
+    init(
+        title: String,
+        cast: [CreditDisplay],
+        crew: [CreditDisplay],
+        onSelect: @escaping (PersonRef) -> Void
+    ) {
+        self.title = title
+        self.cast = cast
+        self.crew = crew
+        self.onSelect = onSelect
+        _selectedTab = State(initialValue: title == "Characters & Creators" ? .crew : .cast)
+    }
 
     private var visiblePeople: [CreditDisplay] {
         switch selectedTab {
@@ -5671,8 +5721,13 @@ private struct CreditSection: View {
 
     private var creditTabs: some View {
         HStack(spacing: 4) {
-            creditTab(.cast)
-            creditTab(.crew)
+            if title == "Characters & Creators" {
+                creditTab(.crew)
+                creditTab(.cast)
+            } else {
+                creditTab(.cast)
+                creditTab(.crew)
+            }
         }
         .padding(3)
         .background(.white.opacity(0.055), in: Capsule())

@@ -27,6 +27,11 @@ if ! grep -q '^STEAMGRIDDB_API_KEY=' "$env_file"; then
   exit 1
 fi
 
+if ! grep -Eq '^NYT_BOOKS_API_KEY=.+$' "$env_file"; then
+  echo "Missing or empty NYT_BOOKS_API_KEY in production env file: $env_file" >&2
+  exit 1
+fi
+
 if [[ -z "$repo_url" ]]; then
   if [[ -d "$source_repo_dir/.git" ]]; then
     repo_url="$(git -C "$source_repo_dir" remote get-url origin)"
@@ -72,3 +77,20 @@ fi
 
 docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml up -d --build
 docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml exec app python manage.py shell -c "from django.core.cache import cache; cache.clear()"
+
+sync_queued=false
+for attempt in 1 2 3; do
+  if docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml exec app \
+    python manage.py shell -c \
+    "from lists.tasks import sync_nyt_featured_lists; print(sync_nyt_featured_lists.delay().id)"; then
+    sync_queued=true
+    break
+  fi
+  echo "NYT featured-list enqueue attempt $attempt failed; retrying..." >&2
+  sleep 5
+done
+
+if [[ "$sync_queued" != "true" ]]; then
+  echo "Could not enqueue the initial NYT featured-list synchronization." >&2
+  exit 1
+fi

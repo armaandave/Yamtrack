@@ -2563,9 +2563,13 @@ def backdrop_options(
     user=None,
 ):
     """Return selectable backdrops for supported media."""
-    if _supports_anime_artwork(source, media_type):
-        return anime_backdrop_options(
+    if _supports_anime_artwork(source, media_type) or _supports_manga_backdrops(
+        source,
+        media_type,
+    ):
+        return enriched_backdrop_options(
             source=source,
+            media_type=media_type,
             media_id=media_id,
             request=request,
             user=user,
@@ -2658,16 +2662,27 @@ def backdrop_options(
     return {"backdrops": backdrops}
 
 
-def anime_backdrop_options(*, source, media_id, request=None, user=None):
-    """Return landscape AniList banners and the active anime backdrop."""
-    media_type = MediaTypes.ANIME.value
-    if not _supports_anime_artwork(source, media_type):
+def enriched_backdrop_options(
+    *,
+    source,
+    media_type,
+    media_id,
+    request=None,
+    user=None,
+):
+    """Return enriched landscape artwork and the active backdrop."""
+    if not (
+        _supports_anime_artwork(source, media_type)
+        or _supports_manga_backdrops(source, media_type)
+    ):
         raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
 
     item = _customizable_item(source=source, media_type=media_type, media_id=media_id)
-    metadata = _enrich_anime_metadata(
-        provider_services.get_media_metadata(media_type, media_id, source),
-        source,
+    metadata = provider_services.get_media_metadata(media_type, media_id, source)
+    metadata = (
+        _enrich_anime_metadata(metadata, source)
+        if media_type == MediaTypes.ANIME.value
+        else _enrich_manga_metadata(metadata, source)
     )
     default_url, custom_url = resolved_backdrop_urls(
         source=source,
@@ -2788,10 +2803,13 @@ def save_backdrop_preference(
             MediaTypes.SEASON.value,
             MediaTypes.EPISODE.value,
         ]
-    ) and not _supports_game_backdrops(source, media_type) and not _supports_anime_artwork(
+    ) and not _supports_game_backdrops(
         source,
         media_type,
-    ):
+    ) and not _supports_anime_artwork(
+        source,
+        media_type,
+    ) and not _supports_manga_backdrops(source, media_type):
         raise ValueError(BACKDROP_UNSUPPORTED_MESSAGE)
     season_number, episode_number = _required_backdrop_coordinates(
         media_type,
@@ -3050,6 +3068,10 @@ def _supports_manga_posters(source, media_type):
     }
 
 
+def _supports_manga_backdrops(source, media_type):
+    return _supports_manga_posters(source, media_type)
+
+
 def _supports_game_backdrops(source, media_type):
     return media_type == MediaTypes.GAME.value and source == Sources.IGDB.value
 
@@ -3130,7 +3152,10 @@ def resolved_backdrop_urls(
     raw_default_url = backdrop_url(metadata)
     if _supports_game_backdrops(source, media_type):
         raw_default_url = _game_default_backdrop_url(media_id, raw_default_url)
-    if _supports_anime_artwork(source, media_type):
+    if _supports_anime_artwork(source, media_type) or _supports_manga_backdrops(
+        source,
+        media_type,
+    ):
         item = item or Item.objects.filter(
             source=source,
             media_type=media_type,
@@ -3142,8 +3167,6 @@ def resolved_backdrop_urls(
             _curated_backdrop_url(item, request=request) or raw_default_url,
             _backdrop_preference_url(user, item, request=request),
         )
-    if media_type == MediaTypes.MANGA.value:
-        return raw_default_url, None
     if source != Sources.TMDB.value or media_type not in [
         MediaTypes.MOVIE.value,
         MediaTypes.TV.value,

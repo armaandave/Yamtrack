@@ -19,6 +19,7 @@ final class BackdropPickerViewModel {
     init(
         ref: MediaRef,
         mediaRepository: MediaRepository,
+        initialBackdropURL: String? = nil,
         currentBackdropURL: String? = nil,
         onUnauthorized: @escaping () -> Void,
         saveAction: @escaping (MediaRef, String) async throws -> Void
@@ -28,6 +29,25 @@ final class BackdropPickerViewModel {
         self.currentBackdropURL = currentBackdropURL
         self.onUnauthorized = onUnauthorized
         self.saveAction = saveAction
+        if let initialBackdropURL {
+            backdrops = [
+                PosterOption(
+                    url: initialBackdropURL,
+                    thumbnailUrl: initialBackdropURL,
+                    width: 0,
+                    height: 0,
+                    aspectRatio: 16.0 / 9.0,
+                    voteAverage: 0,
+                    voteCount: 0,
+                    language: nil,
+                    isOriginal: true,
+                    isSelected: true
+                ),
+            ]
+            selectedBackdropURL = initialBackdropURL
+            selectedLanguage = "none"
+            isLoading = false
+        }
     }
 
     var languageOptions: [PosterLanguageOption] {
@@ -125,12 +145,14 @@ struct BackdropPickerView: View {
     init(
         ref: MediaRef,
         mediaRepository: MediaRepository,
+        initialBackdropURL: String? = nil,
         onUnauthorized: @escaping () -> Void,
         onSaved: @escaping (BackdropSaveResponse) -> Void
     ) {
         _viewModel = State(initialValue: BackdropPickerViewModel(
             ref: ref,
             mediaRepository: mediaRepository,
+            initialBackdropURL: initialBackdropURL,
             onUnauthorized: onUnauthorized,
             saveAction: { ref, backdropURL in
                 let response = try await mediaRepository.saveBackdrop(ref: ref, backdropURL: backdropURL)

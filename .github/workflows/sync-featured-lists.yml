@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - letterboxd_top_500
+          - nyt_bestsellers
       confirm_production_write:
         description: "Required because this replaces the production list contents."
         required: true
@@ -50,6 +51,10 @@ jobs:
           case "$FEATURED_LIST" in
             letterboxd_top_500)
               source_url="https://mdblist.com/lists/davearmaan12/external/155837"
+              sync_command=(sync_mdblist_featured_list "$source_url" --owner Spine)
+              ;;
+            nyt_bestsellers)
+              sync_command=(sync_nyt_featured_lists --owner Spine)
               ;;
             *)
               echo "Unsupported featured list: $FEATURED_LIST" >&2
@@ -90,7 +95,11 @@ jobs:
             exit 1
           }
           manage showmigrations lists | grep -q '\[X\] 0007_customlist_featured_import'
-          manage sync_mdblist_featured_list "$source_url" --owner Spine
+          if [[ "$FEATURED_LIST" == "nyt_bestsellers" ]]; then
+            manage shell -c \
+              "from django.conf import settings; raise SystemExit(0 if settings.NYT_BOOKS_API_KEY else 1)"
+          fi
+          manage "${sync_command[@]}"
           curl --fail --silent --show-error http://127.0.0.1:8000/health/ >/dev/null
 
           {

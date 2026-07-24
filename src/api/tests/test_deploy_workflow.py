@@ -54,3 +54,13 @@ class DeskMacDeployWorkflowTests(SimpleTestCase):
             workflow,
         )
         self.assertIn("--owner Spine", workflow)
+        self.assertIn("nyt_bestsellers", workflow)
+        self.assertIn("sync_nyt_featured_lists", workflow)
+        self.assertNotIn("source_url: ${{", workflow)
+
+    def test_deploy_requires_nyt_key_and_queues_background_sync(self):
+        script = DEPLOY_SCRIPT.read_text()
+
+        self.assertIn("Missing or empty NYT_BOOKS_API_KEY", script)
+        self.assertIn("sync_nyt_featured_lists.delay()", script)
+        self.assertIn("for attempt in 1 2 3", script)

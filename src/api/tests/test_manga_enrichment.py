@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from api.services import media
-from app.models import Item, MediaTypes, Sources
+from app.models import CustomBackdropPreference, Item, MediaTypes, Sources
 
 READY_RATINGS = {
     "external_ratings": [],
@@ -316,3 +316,56 @@ class MangaPosterTests(TestCase):
             ["MyAnimeList", "AniList", "MangaUpdates"],
         )
         self.assertTrue(posters[0]["is_selected"])
+
+    @patch("api.services.media.anilist.manga")
+    @patch("api.services.media.mal.manga")
+    @patch("api.services.media.mal.match_manga", return_value="23390")
+    @patch("api.services.media.provider_services.get_media_metadata")
+    def test_single_manga_backdrop_can_be_opened_and_saved(
+        self,
+        metadata_mock,
+        _match_mock,
+        mal_mock,
+        anilist_mock,
+    ):
+        metadata_mock.return_value = {
+            "media_id": "mu-1",
+            "source": "mangaupdates",
+            "media_type": "manga",
+            "title": "Attack on Titan",
+            "image": self.item.image,
+            "details": {"year": "2009", "format": "Manga"},
+        }
+        mal_mock.return_value = {
+            "media_id": "23390",
+            "title": "Shingeki no Kyojin",
+            "details": {},
+        }
+        anilist_mock.return_value = {
+            "backdrop": "https://img.example/banner.jpg",
+            "backdrops": [{"url": "https://img.example/banner.jpg"}],
+        }
+
+        backdrops = media.backdrop_options(
+            source=Sources.MANGAUPDATES.value,
+            media_type=MediaTypes.MANGA.value,
+            media_id="mu-1",
+            user=self.user,
+        )["backdrops"]
+        media.save_backdrop_preference(
+            source=Sources.MANGAUPDATES.value,
+            media_type=MediaTypes.MANGA.value,
+            media_id="mu-1",
+            backdrop_url=backdrops[0]["url"],
+            user=self.user,
+        )
+
+        self.assertEqual(len(backdrops), 1)
+        self.assertTrue(backdrops[0]["is_selected"])
+        self.assertEqual(
+            CustomBackdropPreference.objects.get(
+                user=self.user,
+                item=self.item,
+            ).custom_image_url,
+            "https://img.example/banner.jpg",
+        )
