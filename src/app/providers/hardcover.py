@@ -632,7 +632,7 @@ AUTHOR_BOOK_LIMIT = 500
 
 def person_page(person_id):
     """Return Hardcover author details and book credits for the person page."""
-    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v2"
+    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v3"
     data = cache.get(cache_key)
 
     if data is None:
@@ -649,11 +649,26 @@ def person_page(person_id):
             slug
             books_count
             cached_image(path: "url")
-            contributions(where: {contributable_type: {_eq: "Book"}}, limit: 100) {
+            contributions(
+              where: {
+                contributable_type: {_eq: "Book"},
+                book: {
+                  book_status_id: {_eq: 1},
+                  canonical_id: {_is_null: true},
+                  compilation: {_eq: false},
+                  is_partial_book: {_eq: false}
+                }
+              },
+              limit: 100
+            ) {
               contribution
               book {
                 id
                 title
+                book_status_id
+                canonical_id
+                compilation
+                is_partial_book
                 cached_image(path: "url")
                 release_year
                 release_date
@@ -702,7 +717,7 @@ def person_page(person_id):
 
 
 def get_author_books(author):
-    """Return deduped Hardcover books for an author, resilient to split author records."""
+    """Return active canonical Hardcover books for an author."""
     books = []
     try:
         books = fetch_author_books(author)
@@ -730,16 +745,26 @@ def get_author_books(author):
 
 
 def fetch_author_books(author):
-    """Fetch books through top-level books queries by id and exact name."""
+    """Fetch an author's active canonical books by stable author id."""
     query = """
-    query GetAuthorBooks($author_id: Int!, $author_name: String!, $limit: Int!) {
-      by_id: books(
-        where: {contributions: {author: {id: {_eq: $author_id}}}},
+    query GetAuthorBooks($author_id: Int!, $limit: Int!) {
+      books(
+        where: {
+          book_status_id: {_eq: 1},
+          canonical_id: {_is_null: true},
+          compilation: {_eq: false},
+          is_partial_book: {_eq: false},
+          contributions: {author: {id: {_eq: $author_id}}}
+        },
         limit: $limit,
         order_by: [{users_count: desc}, {ratings_count: desc}, {reviews_count: desc}, {title: asc}]
       ) {
         id
         title
+        book_status_id
+        canonical_id
+        compilation
+        is_partial_book
         cached_image(path: "url")
         release_year
         release_date
@@ -748,28 +773,6 @@ def fetch_author_books(author):
         reviews_count
         users_count
         contributions(where: {author: {id: {_eq: $author_id}}}) {
-          contribution
-          author {
-            id
-            name
-          }
-        }
-      }
-      by_name: books(
-        where: {contributions: {author: {name: {_eq: $author_name}}}},
-        limit: $limit,
-        order_by: [{users_count: desc}, {ratings_count: desc}, {reviews_count: desc}, {title: asc}]
-      ) {
-        id
-        title
-        cached_image(path: "url")
-        release_year
-        release_date
-        rating
-        ratings_count
-        reviews_count
-        users_count
-        contributions(where: {author: {name: {_eq: $author_name}}}) {
           contribution
           author {
             id
@@ -787,20 +790,25 @@ def fetch_author_books(author):
             "query": query,
             "variables": {
                 "author_id": int(author["id"]),
-                "author_name": author.get("name") or "",
                 "limit": AUTHOR_BOOK_LIMIT,
             },
         },
         headers={"Authorization": settings.HARDCOVER_API},
     )
     data = response.get("data") or {}
-    return [*(data.get("by_id") or []), *(data.get("by_name") or [])]
+    return data.get("books") or []
 
 
 def author_book_credit(book_data, author):
     """Format one Hardcover book as an iOS-ready person credit."""
     book_id = book_data.get("id")
-    if not book_id:
+    if (
+        not book_id
+        or book_data.get("book_status_id", 1) != 1
+        or book_data.get("canonical_id")
+        or book_data.get("compilation")
+        or book_data.get("is_partial_book")
+    ):
         return None
     roles = author_book_roles(book_data, author)
     year = book_data.get("release_year")

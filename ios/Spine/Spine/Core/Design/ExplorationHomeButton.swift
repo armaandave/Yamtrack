@@ -51,7 +51,9 @@ private struct DismissExplorationOnReturnHome: ViewModifier {
         content
             .onChange(of: appNavigationState?.returnHomeRequest) { _, request in
                 guard request != nil else { return }
-                dismiss()
+                withTransaction(\.disablesAnimations, true) {
+                    dismiss()
+                }
             }
     }
 }

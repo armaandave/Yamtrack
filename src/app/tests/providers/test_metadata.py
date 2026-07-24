@@ -1378,6 +1378,41 @@ class Metadata(TestCase):
 
         self.assertIsNone(hardcover.get_ratings(None))
 
+    @patch("app.providers.hardcover.services.api_request")
+    def test_hardcover_author_books_exclude_catalog_clutter(self, mock_request):
+        book = {
+            "title": "Book",
+            "book_status_id": 1,
+            "canonical_id": None,
+            "compilation": False,
+            "is_partial_book": False,
+            "contributions": [],
+        }
+        mock_request.return_value = {
+            "data": {
+                "books": [
+                    {**book, "id": 1},
+                    {**book, "id": 2, "book_status_id": 4, "canonical_id": 1},
+                    {**book, "id": 3, "compilation": True},
+                    {**book, "id": 4, "is_partial_book": True},
+                ],
+            },
+        }
+
+        credits = hardcover.get_author_books({"id": 80626, "name": "J.K. Rowling"})
+
+        self.assertEqual([credit["media_id"] for credit in credits], ["1"])
+        request = mock_request.call_args.kwargs["params"]
+        self.assertNotIn("by_name", request["query"])
+        self.assertNotIn("author_name", request["variables"])
+        for constraint in (
+            "book_status_id: {_eq: 1}",
+            "canonical_id: {_is_null: true}",
+            "compilation: {_eq: false}",
+            "is_partial_book: {_eq: false}",
+        ):
+            self.assertIn(constraint, request["query"])
+
     def test_igdb_get_score(self):
         """Test the get_score function from IGDB provider."""
         self.assertEqual(igdb.get_score({"total_rating": 92.70730625238252}), 92.7)

@@ -173,6 +173,7 @@ class PersonExternalRatingSortTests(TestCase):
         response = self.client.get("/api/v1/people/hardcover/person-1/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNone(response.data["rating_preparation"])
+        self.assertEqual(Item.objects.count(), 0)
         self.assertEqual(
             [choice["value"] for choice in response.data["filter_options"]["sorts"]],
             ["title", "release_date", "average_rating", "rating:hardcover"],

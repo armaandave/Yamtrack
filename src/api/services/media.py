@@ -1107,6 +1107,20 @@ def _materialize_person_credits(person_credits, rating_source=None):
         }
 
 
+def _existing_person_credit_items(person_credits):
+    identities = {
+        identity
+        for credit in person_credits
+        if (identity := _person_credit_identity(credit)) is not None
+    }
+    if not identities:
+        return {}
+    return {
+        (item.source, item.media_type, item.media_id, item.season_number, item.episode_number): item
+        for item in Item.objects.filter(_person_item_query(identities))
+    }
+
+
 def _person_filter_options(person_credits):
     identities = {
         (credit.get("source"), credit.get("media_type"))
@@ -1280,7 +1294,11 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         for credit in person.get("credits") or []
     ]
     rating_source = person_rating_source(raw_credits, params)
-    items = _materialize_person_credits(raw_credits, rating_source)
+    items = (
+        _materialize_person_credits(raw_credits, rating_source)
+        if rating_source
+        else _existing_person_credit_items(raw_credits)
+    )
     enriched_credits = []
     for credit in raw_credits:
         item = items.get(_person_credit_identity(credit))

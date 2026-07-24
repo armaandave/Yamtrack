@@ -674,7 +674,7 @@ private struct CenteredFlowLayout: Layout {
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? subviews.reduce(0) { $0 + $1.sizeThatFits(.unspecified).width }
+        let width = proposal.width ?? 0
         let rows = rows(for: width, subviews: subviews)
         let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * spacing
         return CGSize(width: width, height: height)

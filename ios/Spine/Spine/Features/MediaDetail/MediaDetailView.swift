@@ -724,7 +724,7 @@ enum MediaArtworkCustomization {
 enum MediaExternalRatingPresentation {
     static func includes(source: String, mediaType: String) -> Bool {
         let normalizedSource = source.lowercased()
-        if mediaType == "music" || normalizedSource == "spine" {
+        if mediaType == "music" || ["spine", "google books"].contains(normalizedSource) {
             return false
         }
         if normalizedSource == "tmdb", ["movie", "tv", "season"].contains(mediaType) {
@@ -2842,18 +2842,6 @@ private struct MediaDetailPageView: View {
                 destination: rating.destinationURL,
                 voteCount: rating.voteCount,
                 voteCountLabel: rating.source.ratingCountLabel
-            ))
-        }
-        if detail.ref.mediaType == "book",
-           !chips.contains(where: { $0.providerName.caseInsensitiveCompare("Google Books") == .orderedSame }),
-           let destination = detail.externalLinks["google_books"].flatMap(URL.init(string:)) {
-            chips.append(RatingChip(
-                source: "Google Books",
-                value: "Book page",
-                assetName: nil,
-                providerName: "Google Books",
-                destination: destination,
-                isAttributionOnly: true
             ))
         }
         return chips
@@ -5035,7 +5023,6 @@ struct SynopsisText: View {
         .buttonStyle(.plain)
         .accessibilityLabel(isExpanded ? "Collapse synopsis" : "Expand synopsis")
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: isExpanded)
     }
 
