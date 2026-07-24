@@ -732,6 +732,18 @@ enum MediaExternalRatingPresentation {
         }
         return true
     }
+
+    static func order(for source: String) -> Int {
+        switch source.lowercased() {
+        case "letterboxd": 0
+        case "rotten tomatoes": 1
+        case "imdb": 2
+        case "metacritic": 3
+        case "steam": 4
+        case "igdb": 5
+        default: 6
+        }
+    }
 }
 
 struct MusicStreamingDestination: Hashable, Identifiable {
@@ -998,6 +1010,7 @@ private struct MediaDetailPageView: View {
     @State private var presentedDiaryEntry: PresentedDiaryEntry?
     @State private var presentedMediaDiary: PresentedMediaDiary?
     @State private var presentedDiscover: MediaDiscoverRequest?
+    @State private var presentedSeries: BookSeriesRef?
     @State private var presentedPerson: PersonRef?
     @State private var presentedCompany: CompanyRef?
     @State private var presentedSong: MusicSongSelection?
@@ -1425,6 +1438,20 @@ private struct MediaDetailPageView: View {
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $presentedSeries) { series in
+            BookSeriesDetailView(
+                ref: series,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -2499,7 +2526,14 @@ private struct MediaDetailPageView: View {
                     error: viewModel.reviewsErrorMessage,
                     mediaType: detail.ref.mediaType
                 )
-                RecommendationsSection(sections: relatedSections(detail)) { item in
+                RecommendationsSection(
+                    sections: relatedSections(detail),
+                    onSelectSection: { section in
+                        if section.id == "series" {
+                            presentedSeries = bookSeriesRef(detail)
+                        }
+                    }
+                ) { item in
                     presentedRef = item.ref
                 }
             }
@@ -2849,22 +2883,11 @@ private struct MediaDetailPageView: View {
 
     private func sortedExternalRatings(_ ratings: [ExternalRating]) -> [ExternalRating] {
         ratings.enumerated().sorted { lhs, rhs in
-            let lhsOrder = externalRatingOrder(lhs.element.source)
-            let rhsOrder = externalRatingOrder(rhs.element.source)
+            let lhsOrder = MediaExternalRatingPresentation.order(for: lhs.element.source)
+            let rhsOrder = MediaExternalRatingPresentation.order(for: rhs.element.source)
             return lhsOrder == rhsOrder ? lhs.offset < rhs.offset : lhsOrder < rhsOrder
         }.map {
             $0.element
-        }
-    }
-
-    private func externalRatingOrder(_ source: String) -> Int {
-        switch source.lowercased() {
-        case "letterboxd": 0
-        case "rotten tomatoes": 1
-        case "imdb": 2
-        case "metacritic": 3
-        case "igdb": 4
-        default: 5
         }
     }
 
@@ -3007,6 +3030,13 @@ private struct MediaDetailPageView: View {
         guard let name = detailString(detail, "series_name")?.nilIfEmpty else { return nil }
         guard let position = detailString(detail, "series_position")?.nilIfEmpty else { return name }
         return "\(name) · Book \(position)"
+    }
+
+    private func bookSeriesRef(_ detail: MediaDetail) -> BookSeriesRef? {
+        guard detail.ref.mediaType == "book",
+              let id = detailString(detail, "series_id")?.nilIfEmpty
+        else { return nil }
+        return BookSeriesRef(source: detail.ref.source, id: id)
     }
 
     private func googleBooksPrice(_ detail: MediaDetail) -> String? {
@@ -4498,7 +4528,7 @@ private struct SectionLabel: View {
     }
 }
 
-private struct RatingChip: Hashable {
+struct RatingChip: Hashable {
     let source: String
     let value: String
     let assetName: String?
@@ -4610,6 +4640,12 @@ private struct RatingSourceBadge: View {
                 .font(.system(size: 10, weight: .heavy))
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
+        } else if chip.assetName == "RatingSteam" {
+            Image("RatingSteam")
+                .resizable()
+                .renderingMode(.original)
+                .scaledToFit()
+                .frame(width: 44, height: MediaDetailLayout.ratingBadgeSize)
         } else {
             Group {
                 if let assetName = chip.assetName {
@@ -5909,12 +5945,38 @@ private struct ReviewsSection: View {
 
 private struct RecommendationsSection: View {
     let sections: [RelatedMediaSection]
+    let onSelectSection: ((RelatedMediaSection) -> Void)?
     let onSelect: (MediaSummary) -> Void
+
+    init(
+        sections: [RelatedMediaSection],
+        onSelectSection: ((RelatedMediaSection) -> Void)? = nil,
+        onSelect: @escaping (MediaSummary) -> Void
+    ) {
+        self.sections = sections
+        self.onSelectSection = onSelectSection
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         ForEach(sections.filter { !$0.items.isEmpty }) { section in
             VStack(alignment: .leading, spacing: 18) {
-                SectionLabel(title: section.title)
+                if section.id == "series", let onSelectSection {
+                    Button {
+                        onSelectSection(section)
+                    } label: {
+                        HStack(spacing: 6) {
+                            SectionLabel(title: section.title)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .heavy))
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("View \(section.title) series")
+                } else {
+                    SectionLabel(title: section.title)
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 10) {
@@ -6263,7 +6325,7 @@ private extension String {
     }
 }
 
-private extension ExternalRating {
+extension ExternalRating {
     var displayValue: String {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if ["rotten tomatoes", "rottentomatoes"].contains(source.lowercased()) {
@@ -6312,6 +6374,8 @@ private extension ExternalRating {
             "RatingHardcover"
         case "metacritic":
             "RatingMetacritic"
+        case "steam":
+            "RatingSteam"
         case "igdb":
             "RatingIGDB"
         default:
@@ -6334,13 +6398,13 @@ private extension ExternalRating {
     }
 }
 
-private extension String {
+extension String {
 
     var ratingCountLabel: String {
         switch lowercased() {
         case "letterboxd", "google books":
             "ratings"
-        case "rotten tomatoes", "rottentomatoes":
+        case "rotten tomatoes", "rottentomatoes", "steam":
             "reviews"
         default:
             "votes"
@@ -6363,6 +6427,8 @@ private extension String {
             "IG"
         case "metacritic":
             "MC"
+        case "steam":
+            "ST"
         case "mal":
             "MA"
         case "mangaupdates":

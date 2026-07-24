@@ -66,6 +66,7 @@ from app.external_ratings import (
     third_party_rating_url as _third_party_rating_url,
 )
 from app.models import (
+    BookCreditOverride,
     CustomBackdropPreference,
     CustomLogoPreference,
     CustomPosterPreference,
@@ -88,6 +89,7 @@ ALL_MEDIA_REFRESH_SCHEDULE_TTL = 60
 DISCOVER_TTL = 60 * 60 * 6
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
+BOOK_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
@@ -643,6 +645,8 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     cache_version = DETAIL_CACHE_VERSION
     if media_type == MediaTypes.EPISODE.value:
         cache_version = f"{cache_version}:episode-{EPISODE_DETAIL_CACHE_VERSION}"
+    elif media_type == MediaTypes.BOOK.value:
+        cache_version = f"{cache_version}:book-{BOOK_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.MUSIC.value:
         cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}"
     cache_key = (
@@ -1121,6 +1125,54 @@ def _existing_person_credit_items(person_credits):
     }
 
 
+def _curate_person_credits(person_source, person_id, credit_list):
+    """Apply explicit curator decisions without discarding unverified provider data."""
+    overrides = list(
+        BookCreditOverride.objects.filter(
+            author_source=person_source,
+            author_id=str(person_id),
+        ),
+    )
+    if not overrides:
+        return credit_list
+
+    dispositions = {
+        (row.book_source, row.book_id): row.disposition
+        for row in overrides
+    }
+    curated_mode = any(
+        disposition
+        in {
+            BookCreditOverride.Disposition.PRIMARY,
+            BookCreditOverride.Disposition.ADDITIONAL,
+        }
+        for disposition in dispositions.values()
+    )
+    curated = []
+    for credit in credit_list:
+        identity = (
+            credit.get("source"),
+            str(credit.get("media_id") or ""),
+        )
+        disposition = dispositions.get(identity)
+        if disposition == BookCreditOverride.Disposition.HIDDEN:
+            continue
+
+        curated_credit = dict(credit)
+        if disposition == BookCreditOverride.Disposition.PRIMARY:
+            curated_credit["roles"] = ["Author"]
+        elif disposition == BookCreditOverride.Disposition.ADDITIONAL:
+            curated_credit["roles"] = ["Additional writing"]
+        elif (
+            curated_mode
+            and credit.get("media_type") == MediaTypes.BOOK.value
+            and credit.get("is_author_role")
+        ):
+            curated_credit["roles"] = ["Unverified catalog"]
+        curated.append(curated_credit)
+    return curated
+
+
 def _person_filter_options(person_credits):
     identities = {
         (credit.get("source"), credit.get("media_type"))
@@ -1293,6 +1345,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         {**credit, "source": credit.get("source") or source}
         for credit in person.get("credits") or []
     ]
+    raw_credits = _curate_person_credits(source, person_id, raw_credits)
     rating_source = person_rating_source(raw_credits, params)
     items = (
         _materialize_person_credits(raw_credits, rating_source)
@@ -1338,6 +1391,21 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         "popularity": person.get("popularity"),
         "filter_options": _person_filter_options(raw_credits),
         "rating_preparation": rating_preparation,
+        "series": [
+            {
+                "id": str(series.get("series_id") or ""),
+                "source": series.get("source") or source,
+                "name": series.get("name") or "",
+                "book_count": series.get("book_count") or len(series.get("books") or []),
+                "poster_urls": [
+                    absolute_url(request, book.get("image"))
+                    for book in (series.get("books") or [])[:3]
+                    if book.get("image")
+                ],
+            }
+            for series in person.get("series") or []
+            if series.get("series_id") and series.get("name")
+        ],
         "credits": {
             "cast": [
                 media_summary_from_provider(
@@ -1358,6 +1426,28 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
                 }
             ],
         },
+    }
+
+
+def book_series_detail(*, source, series_id, request=None, user=None):
+    """Return a provider-backed book series as iOS-ready media summaries."""
+    series = provider_services.get_book_series(source, series_id)
+    books = series.get("books") or []
+    return {
+        "id": str(series.get("series_id") or series_id),
+        "source": source,
+        "name": series.get("name") or "",
+        "book_count": series.get("book_count") or len(books),
+        "books": [
+            media_summary_from_provider(
+                book,
+                MediaTypes.BOOK.value,
+                source,
+                request=request,
+                user=user,
+            )
+            for book in books
+        ],
     }
 
 
@@ -2652,7 +2742,7 @@ def _stored_external_ratings(item, metadata):
         if rating.rating_source == item.source and metadata.get("score") is not None:
             continue
         value = _compact_decimal(rating.value)
-        if rating.rating_source == "tomatoes":
+        if rating.rating_source in {"steam", "tomatoes"}:
             value = f"{value}%"
         max_value = (
             max_rating_value(rating.rating_source)

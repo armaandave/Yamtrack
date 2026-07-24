@@ -124,3 +124,81 @@ class MediaExternalRatingPreparationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["external_ratings_preparation"]["state"], "degraded")
+
+    @patch("app.providers.steam.get_review_rating")
+    @patch("app.providers.steam.get_metacritic_rating")
+    @patch("app.tasks.enrich_external_ratings.delay")
+    def test_game_polling_adds_steam_without_fetching_or_dropping_cached_ratings(
+        self,
+        enqueue_mock,
+        metacritic_mock,
+        steam_mock,
+    ):
+        game = Item.objects.create(
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            media_id="119133",
+            title="Elden Ring",
+        )
+        now = timezone.now()
+        for source, value, maximum, url in (
+            ("igdb", "96", 100, "https://www.igdb.com/games/elden-ring"),
+            (
+                "metacritic",
+                "94",
+                100,
+                "https://www.metacritic.com/game/elden-ring/",
+            ),
+        ):
+            ExternalRating.objects.create(
+                item=game,
+                rating_source=source,
+                value=value,
+                max_value=maximum,
+                canonical_url=url,
+                status=ExternalRating.Status.AVAILABLE,
+                last_attempted_at=now,
+                last_success_at=now,
+            )
+
+        pending = self.client.get(
+            "/api/v1/media/igdb/game/119133/external-ratings/",
+        )
+
+        self.assertEqual(
+            pending.data["external_ratings_preparation"]["state"],
+            "pending",
+        )
+        self.assertEqual(
+            [rating["source"] for rating in pending.data["external_ratings"]],
+            ["IGDB", "Metacritic"],
+        )
+        enqueue_mock.assert_called_once_with(game.pk, ["steam"])
+        metacritic_mock.assert_not_called()
+        steam_mock.assert_not_called()
+
+        ExternalRating.objects.create(
+            item=game,
+            rating_source="steam",
+            value=92,
+            max_value=100,
+            vote_count=123456,
+            canonical_url="https://store.steampowered.com/app/1245620/",
+            status=ExternalRating.Status.AVAILABLE,
+            last_attempted_at=now,
+            last_success_at=now,
+        )
+        ready = self.client.get(
+            "/api/v1/media/igdb/game/119133/external-ratings/",
+        )
+
+        self.assertEqual(
+            ready.data["external_ratings_preparation"]["state"],
+            "ready",
+        )
+        self.assertEqual(
+            [rating["source"] for rating in ready.data["external_ratings"]],
+            ["IGDB", "Metacritic", "Steam"],
+        )
+        self.assertEqual(ready.data["external_ratings"][2]["value"], "92%")
+        self.assertEqual(ready.data["external_ratings"][2]["vote_count"], 123456)

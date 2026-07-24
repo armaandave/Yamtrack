@@ -171,6 +171,7 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PersonDetailViewModel
     @State private var selectedMedia: MediaBrowsingSelection?
+    @State private var selectedSeries: BookSeriesRef?
     @State private var selectedFilmographyType: FilmographyType = .movie
     @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
@@ -252,6 +253,20 @@ struct PersonDetailView: View {
             MediaDetailView(
                 ref: selection.ref,
                 browsingContext: selection.context,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $selectedSeries, onDismiss: { selectedSeries = nil }) { series in
+            BookSeriesDetailView(
+                ref: series,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -461,6 +476,12 @@ struct PersonDetailView: View {
                     .frame(maxWidth: .infinity, minHeight: 220)
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
+                        if selectedType == .book,
+                           let series = viewModel.detail?.bookSeries,
+                           !series.isEmpty {
+                            seriesDisclosureRow(series)
+                        }
+
                         ForEach(groups) { group in
                             roleDisclosureRow(group, type: selectedType)
                         }
@@ -562,6 +583,54 @@ struct PersonDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func seriesDisclosureRow(_ series: [BookSeriesSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedCreditRoles.contains(Self.seriesRoleID) {
+                        expandedCreditRoles.remove(Self.seriesRoleID)
+                    } else {
+                        expandedCreditRoles.insert(Self.seriesRoleID)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text("Series · \(series.count)")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.74))
+
+                    Spacer()
+
+                    Image(systemName: expandedCreditRoles.contains(Self.seriesRoleID) ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 42)
+                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            if expandedCreditRoles.contains(Self.seriesRoleID) {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                    spacing: 14
+                ) {
+                    ForEach(series) { item in
+                        Button {
+                            selectedSeries = item.ref
+                        } label: {
+                            BookSeriesCard(series: item)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(item.name) series")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     private func metadataChips(_ detail: PersonDetail) -> [String] {
         var chips: [String] = []
         if let department = clean(detail.knownForDepartment) {
@@ -598,6 +667,9 @@ struct PersonDetailView: View {
         } else {
             expandedCreditRoles = []
         }
+        if selectedType == .book, !(viewModel.detail?.bookSeries.isEmpty ?? true) {
+            expandedCreditRoles.insert(Self.seriesRoleID)
+        }
     }
 
     private func clean(_ value: String?) -> String? {
@@ -609,6 +681,64 @@ struct PersonDetailView: View {
 
     private func yearOrDate(_ value: String) -> String {
         value.count >= 4 ? String(value.prefix(4)) : value
+    }
+
+    private static let seriesRoleID = "book-series"
+}
+
+private struct BookSeriesCard: View {
+    let series: BookSeriesSummary
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                ForEach(Array(posters.enumerated()), id: \.offset) { index, url in
+                    MediaArtwork(
+                        url: url,
+                        title: series.name,
+                        slot: .profileRail,
+                        mediaType: "book"
+                    )
+                    .scaleEffect(scale(index))
+                    .rotationEffect(.degrees(rotation(index)))
+                    .offset(x: offset(index))
+                    .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
+                }
+            }
+            .frame(width: 80, height: 120)
+
+            Text(series.name)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.82))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .frame(width: 80, height: 28, alignment: .top)
+        }
+    }
+
+    private func offset(_ index: Int) -> CGFloat {
+        switch posters.count {
+        case 2: index == 0 ? -6 : 6
+        case 3: CGFloat(index - 1) * 10
+        default: 0
+        }
+    }
+
+    private func rotation(_ index: Int) -> Double {
+        switch posters.count {
+        case 2: index == 0 ? -3 : 3
+        case 3: Double(index - 1) * 4
+        default: 0
+        }
+    }
+
+    private func scale(_ index: Int) -> CGFloat {
+        posters.count == 3 && index == 1 ? 0.94 : 0.88
+    }
+
+    private var posters: [String?] {
+        let urls = Array(series.posterUrls.prefix(3)).map(Optional.some)
+        return urls.isEmpty ? [nil] : urls
     }
 }
 

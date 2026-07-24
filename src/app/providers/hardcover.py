@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -297,7 +298,7 @@ def _discover_where(*, genre=None, year=None):
 
 def book(media_id):
     """Get metadata for a book from Hardcover."""
-    cache_key = f"{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{media_id}_v6"
+    cache_key = f"{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_{media_id}_v7"
     data = cache.get(cache_key)
 
     if data is None:
@@ -563,6 +564,7 @@ def book(media_id):
                 "authors": authors_for_details,
                 "publishers": publishers,
                 "isbn": isbns,
+                "series_id": featured_series.get("id") if featured_series else None,
                 "series_name": featured_series.get("name") if featured_series else None,
                 "series_position": featured_series.get("position") if featured_series else None,
             },
@@ -590,7 +592,14 @@ def get_featured_series(series_data):
     if not name:
         return None
 
-    return {"id": series["id"], "name": name, "position": position}
+    result = {
+        "id": series["id"],
+        "name": name,
+        "position": position,
+    }
+    if series.get("primary_books_count") is not None:
+        result["primary_books_count"] = series["primary_books_count"]
+    return result
 
 
 def get_authors(book_data):
@@ -632,7 +641,7 @@ AUTHOR_BOOK_LIMIT = 500
 
 def person_page(person_id):
     """Return Hardcover author details and book credits for the person page."""
-    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v3"
+    cache_key = f"{Sources.HARDCOVER.value}_person_{person_id}_v4"
     data = cache.get(cache_key)
 
     if data is None:
@@ -647,6 +656,7 @@ def person_page(person_id):
             death_date
             death_year
             slug
+            alias_id
             books_count
             cached_image(path: "url")
             contributions(
@@ -676,8 +686,13 @@ def person_page(person_id):
                 ratings_count
                 reviews_count
                 users_count
+                cached_featured_series
               }
             }
+          }
+          aliases: authors(where: {alias_id: {_eq: $author_id}}, limit: 50) {
+            id
+            name
           }
         }
         """
@@ -696,6 +711,7 @@ def person_page(person_id):
         if not author:
             services.raise_not_found_error(Sources.HARDCOVER.value, person_id, "person")
 
+        author["aliases"] = response.get("data", {}).get("aliases") or []
         credits = get_author_books(author)
         data = {
             "source": Sources.HARDCOVER.value,
@@ -708,6 +724,7 @@ def person_page(person_id):
             "death_date": author.get("death_date") or (str(author["death_year"]) if author.get("death_year") else None),
             "place_of_birth": None,
             "popularity": author.get("books_count"),
+            "series": get_author_series(credits),
             "credits": credits,
         }
 
@@ -746,15 +763,23 @@ def get_author_books(author):
 
 def fetch_author_books(author):
     """Fetch an author's active canonical books by stable author id."""
+    author_ids = [
+        int(author_id)
+        for author_id in [
+            author.get("id"),
+            *(alias.get("id") for alias in author.get("aliases") or []),
+        ]
+        if author_id
+    ]
     query = """
-    query GetAuthorBooks($author_id: Int!, $limit: Int!) {
+    query GetAuthorBooks($author_ids: [Int!]!, $limit: Int!) {
       books(
         where: {
           book_status_id: {_eq: 1},
           canonical_id: {_is_null: true},
           compilation: {_eq: false},
           is_partial_book: {_eq: false},
-          contributions: {author: {id: {_eq: $author_id}}}
+          contributions: {author: {id: {_in: $author_ids}}}
         },
         limit: $limit,
         order_by: [{users_count: desc}, {ratings_count: desc}, {reviews_count: desc}, {title: asc}]
@@ -772,7 +797,8 @@ def fetch_author_books(author):
         ratings_count
         reviews_count
         users_count
-        contributions(where: {author: {id: {_eq: $author_id}}}) {
+        cached_featured_series
+        contributions(where: {author: {id: {_in: $author_ids}}}) {
           contribution
           author {
             id
@@ -789,7 +815,7 @@ def fetch_author_books(author):
         params={
             "query": query,
             "variables": {
-                "author_id": int(author["id"]),
+                "author_ids": author_ids,
                 "limit": AUTHOR_BOOK_LIMIT,
             },
         },
@@ -826,17 +852,35 @@ def author_book_credit(book_data, author):
         "reviews_count": book_data.get("reviews_count") or 0,
         "users_count": book_data.get("users_count") or 0,
         "is_author_role": "Author" in roles or not roles,
+        "series": get_featured_series(book_data.get("cached_featured_series")),
     }
 
 
 def author_book_roles(book_data, author):
-    """Return roles matching this author id or exact author name."""
-    author_id = str(author.get("id") or "")
-    author_name = author.get("name") or ""
+    """Return roles matching this author or one of their aliases."""
+    author_ids = {
+        str(author_id)
+        for author_id in [
+            author.get("id"),
+            *(alias.get("id") for alias in author.get("aliases") or []),
+        ]
+        if author_id
+    }
+    author_names = {
+        name
+        for name in [
+            author.get("name"),
+            *(alias.get("name") for alias in author.get("aliases") or []),
+        ]
+        if name
+    }
     roles = []
     for contribution in book_data.get("matched_contributions") or book_data.get("contributions") or []:
         contributor = contribution.get("author") or {}
-        if str(contributor.get("id") or "") != author_id and contributor.get("name") != author_name:
+        if (
+            str(contributor.get("id") or "") not in author_ids
+            and contributor.get("name") not in author_names
+        ):
             continue
         role = contribution.get("contribution") or "Author"
         if role not in roles:
@@ -855,13 +899,66 @@ def author_book_sort_key(item):
     )
 
 
+def get_author_series(credits):
+    """Group an author's canonical books into their primary Hardcover series."""
+    grouped = {}
+    for credit in credits:
+        if not credit.get("is_author_role"):
+            continue
+        series = credit.get("series") or {}
+        position = _primary_series_position(
+            series.get("position"),
+            series.get("primary_books_count"),
+        )
+        series_id = series.get("id")
+        if position is None or not series_id:
+            continue
+        group = grouped.setdefault(
+            str(series_id),
+            {
+                "series_id": str(series_id),
+                "name": series.get("name") or "",
+                "book_count": series.get("primary_books_count"),
+                "books": [],
+            },
+        )
+        group["books"].append({**credit, "position": position})
+
+    result = []
+    for series in grouped.values():
+        best_by_position = {}
+        for book in series["books"]:
+            current = best_by_position.get(book["position"])
+            if current is None or book.get("users_count", 0) > current.get("users_count", 0):
+                best_by_position[book["position"]] = book
+        series["books"] = sorted(best_by_position.values(), key=lambda book: book["position"])
+        series["book_count"] = series["book_count"] or len(series["books"])
+        if series["book_count"] > 1:
+            result.append(series)
+    return sorted(result, key=lambda series: series["name"].casefold())
+
+
 def get_series_books(series_id):
     """Fetch and format Hardcover series books for related carousels."""
+    return series_page(series_id)["books"]
+
+
+def series_page(series_id):
+    """Return one Hardcover series with only its primary numbered books."""
+    cache_key = f"{Sources.HARDCOVER.value}_series_{series_id}_v1"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     query = """
     query GetSeriesBooks($series_id: Int!) {
       series_by_pk(id: $series_id) {
+        id
+        name
+        primary_books_count
         book_series(order_by: {position: asc}) {
           position
+          compilation
           book {
             id
             title
@@ -884,33 +981,47 @@ def get_series_books(series_id):
         )
     except Exception as e:
         logger.warning("Series books failed: %s", e)
-        return []
+        return {
+            "series_id": str(series_id),
+            "source": Sources.HARDCOVER.value,
+            "name": "",
+            "book_count": 0,
+            "books": [],
+        }
 
-    rows = (response.get("data", {}).get("series_by_pk") or {}).get("book_series") or []
+    series = response.get("data", {}).get("series_by_pk") or {}
+    books = _primary_series_books(
+        series.get("book_series") or [],
+        series.get("primary_books_count"),
+    )
+    data = {
+        "series_id": str(series.get("id") or series_id),
+        "source": Sources.HARDCOVER.value,
+        "name": series.get("name") or "",
+        "book_count": series.get("primary_books_count") or len(books),
+        "books": books,
+    }
+    cache.set(cache_key, data)
+    return data
+
+
+def _primary_series_books(rows, primary_books_count):
+    """Choose the most-read canonical book for each primary series position."""
     best_by_position = {}
-    no_position = []
-    for index, row in enumerate(rows):
+    for row in rows:
         book_data = row.get("book")
-        if not book_data:
+        position = _primary_series_position(row.get("position"), primary_books_count)
+        if not book_data or position is None or row.get("compilation"):
             continue
-        position = row.get("position")
         item = {
             "position": position,
             "users_read_count": book_data.get("users_read_count") or 0,
-            "index": index,
             "book": book_data,
         }
-        if position is None:
-            no_position.append(item)
-            continue
         current = best_by_position.get(position)
         if not current or item["users_read_count"] > current["users_read_count"]:
             best_by_position[position] = item
 
-    series_books = sorted(
-        [*best_by_position.values(), *no_position],
-        key=lambda item: (item["position"] is None, item["position"] or 0, item["index"]),
-    )
     return [
         {
             "media_id": row["book"]["id"],
@@ -918,9 +1029,26 @@ def get_series_books(series_id):
             "media_type": MediaTypes.BOOK.value,
             "title": row["book"]["title"],
             "image": row["book"].get("cached_image") or settings.IMG_NONE,
+            "position": row["position"],
         }
-        for row in series_books
+        for row in sorted(best_by_position.values(), key=lambda item: item["position"])
     ]
+
+
+def _primary_series_position(position, primary_books_count):
+    try:
+        value = Decimal(str(position))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if value != value.to_integral_value() or value < 1:
+        return None
+    if primary_books_count is not None:
+        try:
+            if value > int(primary_books_count):
+                return None
+        except (TypeError, ValueError):
+            return None
+    return int(value)
 
 
 def format_release_date(release_date):

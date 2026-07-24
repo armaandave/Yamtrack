@@ -20,6 +20,7 @@ from app.models import (
     Item,
     ItemFilterFacet,
     MediaLike,
+    BookCreditOverride,
     Tag,
     UserMessage,
 )
@@ -158,6 +159,21 @@ class ItemFilterFacetAdmin(admin.ModelAdmin):
     list_filter = ["facet_type"]
 
 
+@admin.register(BookCreditOverride)
+class BookCreditOverrideAdmin(admin.ModelAdmin):
+    """Admin curation for provider person credits."""
+
+    search_fields = ["author_id", "book_id", "display_title", "note"]
+    list_display = [
+        "display_title",
+        "author_id",
+        "book_id",
+        "disposition",
+        "author_source",
+    ]
+    list_filter = ["disposition", "author_source", "book_source"]
+
+
 class CustomPosterPreferenceAdmin(admin.ModelAdmin):
     """Custom admin for CustomPosterPreference model."""
     
@@ -240,6 +256,7 @@ SpecialModels = [
     "BookSession",
     "MediaLike",
     "ItemFilterFacet",
+    "BookCreditOverride",
     "UserMessage",
 ]
 for model in app_models:

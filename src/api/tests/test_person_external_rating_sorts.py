@@ -8,7 +8,15 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 
-from app.models import DiaryEntry, ExternalRating, Item, MediaTypes, Movie, Sources
+from app.models import (
+    BookCreditOverride,
+    DiaryEntry,
+    ExternalRating,
+    Item,
+    MediaTypes,
+    Movie,
+    Sources,
+)
 from lists.models import CustomListItem
 
 
@@ -187,6 +195,72 @@ class PersonExternalRatingSortTests(TestCase):
                 )
                 self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
                 self.assertIn("sort", response.data["error"]["fields"])
+
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_curated_bibliography_separates_unverified_and_hidden_credits(self, person_mock):
+        person_id = "curated-author"
+        base_credit = {
+            **self._credit(
+                "primary",
+                "Primary",
+                source=Sources.HARDCOVER.value,
+                media_type=MediaTypes.BOOK.value,
+            ),
+            "roles": ["Author"],
+            "is_author_role": True,
+        }
+        person_mock.return_value = {
+            **self._person(
+                [
+                    base_credit,
+                    {**base_credit, "media_id": "additional", "title": "Additional"},
+                    {**base_credit, "media_id": "hidden", "title": "Hidden"},
+                    {**base_credit, "media_id": "unverified", "title": "Unverified"},
+                    {
+                        **base_credit,
+                        "media_id": "story",
+                        "title": "Story credit",
+                        "roles": ["Story By"],
+                        "is_author_role": False,
+                    },
+                ],
+                source=Sources.HARDCOVER.value,
+            ),
+            "person_id": person_id,
+            "known_for_department": "Author",
+        }
+        BookCreditOverride.objects.bulk_create(
+            [
+                BookCreditOverride(
+                    author_source=Sources.HARDCOVER.value,
+                    author_id=person_id,
+                    book_source=Sources.HARDCOVER.value,
+                    book_id=media_id,
+                    disposition=disposition,
+                )
+                for media_id, disposition in (
+                    ("primary", BookCreditOverride.Disposition.PRIMARY),
+                    ("additional", BookCreditOverride.Disposition.ADDITIONAL),
+                    ("hidden", BookCreditOverride.Disposition.HIDDEN),
+                )
+            ],
+        )
+
+        response = self.client.get(f"/api/v1/people/hardcover/{person_id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {
+                credit["title"]: credit["credit_roles"]
+                for credit in response.data["credits"]["cast"]
+            },
+            {
+                "Primary": ["Author"],
+                "Additional": ["Additional writing"],
+                "Unverified": ["Unverified catalog"],
+                "Story credit": ["Story By"],
+            },
+        )
 
     @override_settings(EXTERNAL_RATING_PERSON_PREPARATION_ENABLED=False)
     @patch("api.services.media.provider_services.get_person_page")

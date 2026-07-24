@@ -62,6 +62,18 @@ final class PersonDetailTests: XCTestCase {
           "death_date": null,
           "place_of_birth": null,
           "popularity": 12,
+          "series": [
+            {
+              "id": "1185",
+              "source": "hardcover",
+              "name": "John Cleaver",
+              "book_count": 3,
+              "poster_urls": [
+                "https://example.com/one.jpg",
+                "https://example.com/two.jpg"
+              ]
+            }
+          ],
           "credits": {
             "cast": [
               {
@@ -93,6 +105,50 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.knownForDepartment, "Author")
         XCTAssertEqual(detail.filmography.first?.ref.mediaType, "book")
         XCTAssertEqual(detail.filmography.first?.title, "I Am Not a Serial Killer")
+        XCTAssertEqual(detail.bookSeries.first?.ref, BookSeriesRef(source: "hardcover", id: "1185"))
+        XCTAssertEqual(detail.bookSeries.first?.posterUrls.count, 2)
+    }
+
+    func testBookSeriesDetailDecodesPrimaryBookOrder() throws {
+        let json = """
+        {
+          "id": "1185",
+          "source": "hardcover",
+          "name": "Harry Potter",
+          "book_count": 2,
+          "books": [
+            {
+              "ref": {
+                "item_id": null,
+                "source": "hardcover",
+                "media_type": "book",
+                "media_id": "328491",
+                "season_number": null,
+                "episode_number": null
+              },
+              "title": "Book One",
+              "position": 1
+            },
+            {
+              "ref": {
+                "item_id": null,
+                "source": "hardcover",
+                "media_type": "book",
+                "media_id": "429306",
+                "season_number": null,
+                "episode_number": null
+              },
+              "title": "Book Two",
+              "position": 2
+            }
+          ]
+        }
+        """
+
+        let detail = try JSONDecoder.api.decode(BookSeriesDetail.self, from: Data(json.utf8))
+
+        XCTAssertEqual(detail.name, "Harry Potter")
+        XCTAssertEqual(detail.books.map(\.position), [1, 2])
     }
 
     func testPersonDetailDecodesMusicBrainzArtistReleases() throws {

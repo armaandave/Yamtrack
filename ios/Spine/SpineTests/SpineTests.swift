@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Spine
 
 final class SpineTests: XCTestCase {
@@ -510,6 +511,7 @@ final class SpineTests: XCTestCase {
             FilterChoice(value: "rating:imdb", label: "IMDb Rating"),
             FilterChoice(value: "rating:hardcover", label: "Hardcover Rating"),
             FilterChoice(value: "rating:metacritic", label: "Metacritic Rating"),
+            FilterChoice(value: "rating:steam", label: "Steam Rating"),
         ]
 
         for choice in choices {
@@ -519,7 +521,55 @@ final class SpineTests: XCTestCase {
             XCTAssertEqual(filter.direction, .desc)
             XCTAssertEqual(filter.queryItems().first { $0.name == "sort" }?.value, choice.value)
         }
-        XCTAssertEqual(choices.map(\.label), ["IMDb Rating", "Hardcover Rating", "Metacritic Rating"])
+        XCTAssertEqual(
+            choices.map(\.label),
+            ["IMDb Rating", "Hardcover Rating", "Metacritic Rating", "Steam Rating"]
+        )
+    }
+
+    func testSteamRatingPresentationAndAccessibility() throws {
+        let rating = try JSONDecoder.api.decode(
+            ExternalRating.self,
+            from: Data(
+                """
+                {
+                  "source": "Steam",
+                  "value": "92%",
+                  "vote_count": 123456,
+                  "max_value": "100%",
+                  "url": "https://store.steampowered.com/app/1245620/"
+                }
+                """.utf8
+            )
+        )
+        let chip = RatingChip(
+            source: rating.source.ratingAbbreviation,
+            value: rating.displayValue,
+            assetName: rating.ratingAssetName,
+            providerName: rating.source,
+            destination: rating.destinationURL,
+            voteCount: rating.voteCount,
+            voteCountLabel: rating.source.ratingCountLabel
+        )
+
+        XCTAssertEqual(rating.displayValue, "92%")
+        XCTAssertEqual(rating.ratingAssetName, "RatingSteam")
+        XCTAssertEqual(rating.source.ratingCountLabel, "reviews")
+        XCTAssertEqual(
+            rating.destinationURL?.absoluteString,
+            "https://store.steampowered.com/app/1245620/"
+        )
+        XCTAssertNotNil(UIImage(named: "RatingSteam"))
+        XCTAssertEqual(chip.accessibilityLabel, "Steam rating 92%, 123,456 reviews")
+        XCTAssertTrue(MediaExternalRatingPresentation.includes(source: "Steam", mediaType: "game"))
+        XCTAssertLessThan(
+            MediaExternalRatingPresentation.order(for: "Metacritic"),
+            MediaExternalRatingPresentation.order(for: "Steam")
+        )
+        XCTAssertLessThan(
+            MediaExternalRatingPresentation.order(for: "Steam"),
+            MediaExternalRatingPresentation.order(for: "IGDB")
+        )
     }
 
     @MainActor

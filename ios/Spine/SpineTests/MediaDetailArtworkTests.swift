@@ -123,11 +123,11 @@ final class MediaDetailArtworkTests: XCTestCase {
         let ready = MediaExternalRatingsResponse(
             externalRatings: [
                 ExternalRating(
-                    source: "Letterboxd",
-                    value: "4.3",
-                    voteCount: 500_000,
-                    maxValue: "5",
-                    url: "https://letterboxd.com/tmdb/550"
+                    source: "Steam",
+                    value: "92%",
+                    voteCount: 123_456,
+                    maxValue: "100%",
+                    url: "https://store.steampowered.com/app/1245620/"
                 ),
             ],
             externalRatingsPreparation: .ready
@@ -141,16 +141,35 @@ final class MediaDetailArtworkTests: XCTestCase {
             pollInterval: .zero,
             maxPollAttempts: 2
         )
-        viewModel.detail = makeDetail(
-            preparation: MediaExternalRatingsPreparation(
+        viewModel.detail = makeDetail().replacingExternalRatings(with: MediaExternalRatingsResponse(
+            externalRatings: [
+                ExternalRating(
+                    source: "IGDB",
+                    value: "96",
+                    voteCount: 5_000,
+                    maxValue: "100",
+                    url: "https://www.igdb.com/games/elden-ring"
+                ),
+                ExternalRating(
+                    source: "Metacritic",
+                    value: "94",
+                    voteCount: nil,
+                    maxValue: "100",
+                    url: "https://www.metacritic.com/game/elden-ring/"
+                ),
+            ],
+            externalRatingsPreparation: MediaExternalRatingsPreparation(
                 state: .pending,
                 retryAfterSeconds: 2
             )
-        )
+        ))
 
         await viewModel.pollExternalRatingsIfNeeded()
 
-        XCTAssertEqual(viewModel.detail?.externalRatings?.first?.source, "Letterboxd")
+        XCTAssertEqual(
+            viewModel.detail?.externalRatings?.map(\.source),
+            ["Steam", "IGDB", "Metacritic"]
+        )
         XCTAssertEqual(viewModel.detail?.externalRatingsPreparation?.state, .ready)
         let readyRequestCount = await repository.ratingRequestCount
         XCTAssertEqual(readyRequestCount, 1)

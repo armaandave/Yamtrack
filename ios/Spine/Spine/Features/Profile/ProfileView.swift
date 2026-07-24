@@ -2049,9 +2049,14 @@ private struct ProfileSettingsSheet: View {
                     LabeledContent("API Prefix", value: AppConfig.apiPrefix)
                 }
 
-                Section("Data Sources") {
+                Section {
                     Link("Music metadata provided by MusicBrainz", destination: URL(string: "https://musicbrainz.org/")!)
                     Link("Cover art provided by the Cover Art Archive", destination: URL(string: "https://coverartarchive.org/")!)
+                    Link("Steam review data provided by Steam®", destination: URL(string: "https://store.steampowered.com/")!)
+                } header: {
+                    Text("Data Sources")
+                } footer: {
+                    Text("©2026 Valve Corporation. Steam and the Steam logo are trademarks and/or registered trademarks of Valve Corporation in the U.S. and/or other countries.")
                 }
 
                 Section {

@@ -20,6 +20,17 @@ extension EnvironmentValues {
     }
 }
 
+private struct ExplorationDepthKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+private extension EnvironmentValues {
+    var explorationDepth: Int {
+        get { self[ExplorationDepthKey.self] }
+        set { self[ExplorationDepthKey.self] = newValue }
+    }
+}
+
 struct ExplorationHomeButton: View {
     @Environment(\.appNavigationState) private var appNavigationState
 
@@ -45,15 +56,15 @@ struct ExplorationHomeButton: View {
 
 private struct DismissExplorationOnReturnHome: ViewModifier {
     @Environment(\.appNavigationState) private var appNavigationState
+    @Environment(\.explorationDepth) private var explorationDepth
     @Environment(\.dismiss) private var dismiss
 
     func body(content: Content) -> some View {
         content
+            .environment(\.explorationDepth, explorationDepth + 1)
             .onChange(of: appNavigationState?.returnHomeRequest) { _, request in
-                guard request != nil else { return }
-                withTransaction(\.disablesAnimations, true) {
-                    dismiss()
-                }
+                guard request != nil, explorationDepth == 0 else { return }
+                dismiss()
             }
     }
 }

@@ -29,6 +29,7 @@ from api.views.lists import (
     ListsView,
 )
 from api.views.media import (
+    BookSeriesDetailView,
     CommunityStatsView,
     CompanyDetailView,
     CompanyGameOptionsView,
@@ -135,6 +136,7 @@ urlpatterns = [
     ),
     path("media/<str:source>/<str:media_type>/<str:media_id>/", MediaDetailView.as_view(), name="api-media-detail"),
     path("people/<str:source>/<str:person_id>/", PersonDetailView.as_view(), name="api-person-detail"),
+    path("series/<str:source>/<str:series_id>/", BookSeriesDetailView.as_view(), name="api-book-series-detail"),
     path("companies/<str:source>/<str:company_id>/", CompanyDetailView.as_view(), name="api-company-detail"),
     path(
         "companies/<str:source>/<str:company_id>/game-options/",

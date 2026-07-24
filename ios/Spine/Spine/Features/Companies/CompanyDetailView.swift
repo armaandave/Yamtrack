@@ -294,8 +294,9 @@ struct CompanyDetailView: View {
                 .padding(.top, 48)
                 .padding(.bottom, 36)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .containerRelativeFrame(.horizontal)
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])
             .refreshable {
                 await viewModel.load()
                 expandPrimaryRole()

@@ -33,6 +33,7 @@ on:
           - mangaupdates_manga
           - igdb_game
           - metacritic_game
+          - steam_game
           - openlibrary_book
           - hardcover_book
           - musicbrainz_music

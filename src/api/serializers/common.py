@@ -416,6 +416,7 @@ def media_summary_from_provider(
         "roles": payload.get("roles") or [],
         "credit_roles": payload.get("credit_roles") or payload.get("roles") or [],
         "default_source": source,
+        "position": payload.get("position"),
         "custom_poster_url": custom_poster_url_for_user(user, media_ref_from_item(item), request=request) if user and item else None,
         "user_state": user_state_for_item(user, item) if user and item else None,
     }

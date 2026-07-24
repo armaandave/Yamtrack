@@ -333,6 +333,26 @@ class PersonDetailView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 
+class BookSeriesDetailView(APIView):
+    """Provider-backed primary book series for native clients."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, series_id):
+        try:
+            return Response(
+                media_service.book_series_detail(
+                    source=source,
+                    series_id=series_id,
+                    request=request,
+                    user=request.user if request.user.is_authenticated else None,
+                ),
+            )
+        except NotImplementedError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
 class CompanyDetailView(APIView):
     """Provider-backed company profile for native studio pages."""
 

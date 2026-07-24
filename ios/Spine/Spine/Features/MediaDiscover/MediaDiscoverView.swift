@@ -253,7 +253,7 @@ struct MediaDiscoverView: View {
     }
 }
 
-private struct MediaDiscoverBackButton: View {
+struct MediaDiscoverBackButton: View {
     let action: () -> Void
 
     var body: some View {

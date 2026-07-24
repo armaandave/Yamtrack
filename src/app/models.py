@@ -386,6 +386,48 @@ class ItemFilterFacet(models.Model):
         return f"{self.facet_type}: {self.value}"
 
 
+class BookCreditOverride(models.Model):
+    """Curator decision for one provider book credit on an author page."""
+
+    class Disposition(models.TextChoices):
+        PRIMARY = "primary", "Primary work"
+        ADDITIONAL = "additional", "Additional work"
+        HIDDEN = "hidden", "Hidden"
+
+    author_source = models.CharField(max_length=20, choices=Sources)
+    author_id = models.CharField(max_length=36)
+    book_source = models.CharField(max_length=20, choices=Sources)
+    book_id = models.CharField(max_length=36)
+    disposition = models.CharField(max_length=20, choices=Disposition)
+    display_title = models.CharField(max_length=255, blank=True, default="")
+    note = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=[
+                    "author_source",
+                    "author_id",
+                    "book_source",
+                    "book_id",
+                ],
+                name="app_bookcreditoverride_unique_credit",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["author_source", "author_id"],
+                name="app_bookcredit_author_idx",
+            ),
+        ]
+        ordering = ["author_source", "author_id", "display_title", "book_id"]
+
+    def __str__(self):
+        """Return a readable curator decision."""
+        title = self.display_title or self.book_id
+        return f"{self.author_id}: {title} ({self.disposition})"
+
+
 class MediaLike(models.Model):
     """Canonical user-level like for a media item."""
 

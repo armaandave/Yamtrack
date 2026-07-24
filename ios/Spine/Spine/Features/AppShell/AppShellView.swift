@@ -176,9 +176,7 @@ struct AppShellView: View {
         .tabBarMinimizeBehavior(.never)
         .environment(\.appNavigationState, appNavigationState)
         .onChange(of: appNavigationState.returnHomeRequest) {
-            withTransaction(\.disablesAnimations, true) {
-                selectedTab = .home
-            }
+            selectedTab = .home
         }
         .background {
             TabBarSelectionObserver { index in

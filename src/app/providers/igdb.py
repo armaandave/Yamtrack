@@ -200,7 +200,8 @@ def external_game_uid(media_id, source=ExternalGameSource.STEAM):
 
 def steam_app_id(media_id):
     """Return the Steam app ID linked to an IGDB game, when IGDB has one."""
-    return external_game_uid(media_id, ExternalGameSource.STEAM)
+    uid = str(external_game_uid(media_id, ExternalGameSource.STEAM) or "").strip()
+    return str(int(uid)) if uid.isdigit() and int(uid) > 0 else None
 
 
 def search(query, page, *, preserve_ranking_fields=False, timeout=None):

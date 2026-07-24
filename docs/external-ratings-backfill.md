@@ -30,7 +30,7 @@ the already-running Celery task finishes normally, and a later run resumes from
 remaining coverage. The workflow never exposes `--force` and never deploys.
 
 Recommended scope order is `mdblist_movie`, `tmdb_movie`, TV/seasons/episodes,
-MAL and MangaUpdates, IGDB and Metacritic, OpenLibrary and Hardcover, then
+MAL and MangaUpdates, IGDB, Metacritic, and Steam, OpenLibrary and Hardcover, then
 MusicBrainz only after its runtime approval flag is enabled. IMDb episodes are
 available only when the licensed configuration gate passes. Enable person
 filmography preparation in a separate deployment after library sorting remains
@@ -118,16 +118,29 @@ Item/source pairs are not the same as HTTP requests:
   movie, TV show, or season.
 - A TMDB episode may use its shared metadata lookup plus the optional licensed
   IMDb lookup.
-- An IGDB game may use its metadata lookup plus the Steam/Metacritic mapping.
+- An IGDB game may use native metadata, the cached IGDB-to-Steam mapping,
+  Steam App Details for Metacritic, and Steam App Reviews for the Steam score.
 - MAL, MangaUpdates, OpenLibrary, Hardcover, MusicBrainz, and other native
   registry sources generally use one cached metadata operation per Item.
 - Existing provider caches can eliminate upstream requests entirely.
 
 Current shared limits include a five-request-per-second default limiter, MAL at
 30 requests/minute, IGDB at 3/second, OpenLibrary at 20/minute, Hardcover at
-50/minute, and MusicBrainz in its own shared Redis bucket at 1/second. Steam
-requests are limited to 3/second. Provider licensing and account quotas still
-apply even when the local limiter permits more work.
+50/minute, and MusicBrainz in its own shared Redis bucket at 1/second. All Steam
+Store requests, including App Details and App Reviews, share a 3/second limit.
+Provider licensing and account quotas still apply even when the local limiter
+permits more work.
+
+Inspect the production Steam scope without queueing work:
+
+```bash
+python manage.py backfill_external_ratings \
+  --rating-source steam \
+  --media-type game \
+  --item-source igdb \
+  --coverage-only \
+  --dry-run
+```
 
 MusicBrainz ratings are additionally gated by
 `MUSICBRAINZ_EXTERNAL_RATINGS_ENABLED=False`. Do not enable or backfill that

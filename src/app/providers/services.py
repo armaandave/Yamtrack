@@ -93,7 +93,7 @@ session.mount(
     LimiterAdapter(per_second=3),
 )
 session.mount(
-    "https://store.steampowered.com/api",
+    "https://store.steampowered.com/",
     LimiterAdapter(per_second=3),
 )
 
@@ -422,6 +422,14 @@ def get_person_page(source, person_id):
     if source == Sources.MUSICBRAINZ.value:
         return musicbrainz.person_page(person_id)
     raise_not_found_error(source, person_id, "person")
+
+
+def get_book_series(source, series_id):
+    """Return a provider-backed book series."""
+    if source == Sources.HARDCOVER.value:
+        return hardcover.series_page(series_id)
+    msg = "Book series pages are only supported for Hardcover in v1."
+    raise NotImplementedError(msg)
 
 
 def get_company(source, company_id):

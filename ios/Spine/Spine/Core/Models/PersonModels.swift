@@ -18,6 +18,7 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
     let popularity: Double?
     let filterOptions: MediaFilterOptionsResponse?
     let ratingPreparation: PersonRatingPreparation?
+    let series: [BookSeriesSummary]?
     let credits: PersonCredits
 
     init(
@@ -33,6 +34,7 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
         popularity: Double? = nil,
         filterOptions: MediaFilterOptionsResponse? = nil,
         ratingPreparation: PersonRatingPreparation? = nil,
+        series: [BookSeriesSummary]? = nil,
         credits: PersonCredits
     ) {
         self.id = id
@@ -47,6 +49,7 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
         self.popularity = popularity
         self.filterOptions = filterOptions
         self.ratingPreparation = ratingPreparation
+        self.series = series
         self.credits = credits
     }
 
@@ -56,6 +59,10 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
 
     var filmography: [MediaSummary] {
         credits.cast
+    }
+
+    var bookSeries: [BookSeriesSummary] {
+        series ?? []
     }
 }
 

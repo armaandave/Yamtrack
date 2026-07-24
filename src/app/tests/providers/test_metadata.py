@@ -1030,6 +1030,123 @@ class Metadata(TestCase):
         with self.assertRaisesRegex(RuntimeError, "Cached Steam Metacritic lookup failure"):
             steam.get_metacritic_rating("119133", raise_errors=True)
 
+    @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steam.services.api_request")
+    def test_steam_review_rating_uses_lifetime_steam_purchase_summary(
+        self,
+        api_request_mock,
+        _steam_id_mock,
+    ):
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": 1,
+            "query_summary": {
+                "total_positive": 925,
+                "total_negative": 75,
+                "total_reviews": 1000,
+            },
+        }
+
+        rating = steam.get_review_rating("119133")
+        cached_rating = steam.get_review_rating("119133")
+
+        self.assertEqual(rating["value"], 93)
+        self.assertEqual(rating["vote_count"], 1000)
+        self.assertEqual(rating["url"], "https://store.steampowered.com/app/1245620/")
+        self.assertEqual(cached_rating, rating)
+        api_request_mock.assert_called_once_with(
+            "steam",
+            "GET",
+            "https://store.steampowered.com/appreviews/1245620",
+            params={
+                "json": 1,
+                "filter": "all",
+                "language": "all",
+                "day_range": 365,
+                "review_type": "all",
+                "purchase_type": "steam",
+                "num_per_page": 1,
+            },
+        )
+
+    @patch("app.providers.steam.services.api_request")
+    @patch("app.providers.steam.igdb.steam_app_id", return_value=None)
+    def test_steam_review_rating_without_mapping_is_unavailable(
+        self,
+        _steam_id_mock,
+        api_request_mock,
+    ):
+        cache.clear()
+
+        self.assertIsNone(steam.get_review_rating("119133"))
+        api_request_mock.assert_not_called()
+
+    @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steam.services.api_request")
+    def test_steam_review_rating_empty_or_unsuccessful_is_unavailable(
+        self,
+        api_request_mock,
+        _steam_id_mock,
+    ):
+        for response in (
+            {"success": 0},
+            {
+                "success": 1,
+                "query_summary": {
+                    "total_positive": 0,
+                    "total_negative": 0,
+                    "total_reviews": 0,
+                },
+            },
+        ):
+            with self.subTest(response=response):
+                cache.clear()
+                api_request_mock.return_value = response
+                self.assertIsNone(steam.get_review_rating("119133"))
+
+    @patch("app.providers.steam.igdb.steam_app_id", return_value="1245620")
+    @patch("app.providers.steam.services.api_request")
+    def test_steam_review_rating_rejects_malformed_counts(
+        self,
+        api_request_mock,
+        _steam_id_mock,
+    ):
+        cache.clear()
+        api_request_mock.return_value = {
+            "success": 1,
+            "query_summary": {
+                "total_positive": 10,
+                "total_negative": 2,
+                "total_reviews": 11,
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "Malformed Steam review counts"):
+            steam.get_review_rating("119133", raise_errors=True)
+
+    @patch("app.providers.steam.igdb.steam_app_id")
+    def test_steam_review_failure_can_be_raised(self, steam_id_mock):
+        cache.clear()
+        steam_id_mock.side_effect = requests.ConnectionError("temporary outage")
+
+        self.assertIsNone(steam.get_review_rating("119133"))
+        with self.assertRaisesRegex(RuntimeError, "Cached Steam review lookup failure"):
+            steam.get_review_rating("119133", raise_errors=True)
+
+    @patch("app.providers.igdb.external_game_uid")
+    def test_steam_app_id_requires_positive_numeric_uid(self, external_uid_mock):
+        for uid, expected in (
+            ("1245620", "1245620"),
+            ("001", "1"),
+            ("0", None),
+            ("-1", None),
+            ("not-an-app", None),
+            (None, None),
+        ):
+            with self.subTest(uid=uid):
+                external_uid_mock.return_value = uid
+                self.assertEqual(igdb.steam_app_id("119133"), expected)
+
     @requires_provider_network
     def test_book(self):
         """Test the metadata method for books."""
@@ -1412,6 +1529,62 @@ class Metadata(TestCase):
             "is_partial_book: {_eq: false}",
         ):
             self.assertIn(constraint, request["query"])
+
+    def test_hardcover_series_keeps_only_primary_numbered_books(self):
+        rows = [
+            {"position": 0.5, "book": {"id": 1, "title": "Prequel", "users_read_count": 100}},
+            {"position": 1, "book": {"id": 2, "title": "Edition", "users_read_count": 1}},
+            {"position": 1, "book": {"id": 3, "title": "Book One", "users_read_count": 100}},
+            {
+                "position": 1,
+                "compilation": True,
+                "book": {"id": 4, "title": "Box Set", "users_read_count": 200},
+            },
+            {"position": 1.5, "book": {"id": 5, "title": "Holiday Story", "users_read_count": 100}},
+            {"position": 2, "book": {"id": 6, "title": "Book Two", "users_read_count": 90}},
+            {"position": 3, "book": {"id": 7, "title": "Continuation", "users_read_count": 80}},
+            {"position": None, "book": {"id": 8, "title": "Unnumbered", "users_read_count": 70}},
+        ]
+
+        books = hardcover._primary_series_books(rows, primary_books_count=2)
+
+        self.assertEqual(
+            [(book["position"], book["title"]) for book in books],
+            [(1, "Book One"), (2, "Book Two")],
+        )
+
+    def test_hardcover_author_series_dedupes_positions(self):
+        series = {"id": 10, "name": "Series", "primary_books_count": 2}
+        credits = [
+            {
+                "media_id": "edition",
+                "title": "Edition",
+                "is_author_role": True,
+                "users_count": 1,
+                "series": {**series, "position": 1},
+            },
+            {
+                "media_id": "one",
+                "title": "Book One",
+                "is_author_role": True,
+                "users_count": 100,
+                "series": {**series, "position": 1},
+            },
+            {
+                "media_id": "two",
+                "title": "Book Two",
+                "is_author_role": True,
+                "users_count": 90,
+                "series": {**series, "position": 2},
+            },
+        ]
+
+        result = hardcover.get_author_series(credits)
+
+        self.assertEqual(
+            [book["media_id"] for book in result[0]["books"]],
+            ["one", "two"],
+        )
 
     def test_igdb_get_score(self):
         """Test the get_score function from IGDB provider."""

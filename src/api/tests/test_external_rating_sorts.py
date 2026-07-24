@@ -13,6 +13,7 @@ from api.services import filters as filter_service
 from app.models import (
     DiaryEntry,
     ExternalRating,
+    Game,
     Item,
     MediaTypes,
     Movie,
@@ -46,6 +47,7 @@ class ExternalRatingCollectionSortTests(TestCase):
     def _rating(self, item, source, value=None, status_value=ExternalRating.Status.AVAILABLE):
         max_values = {
             "letterboxd": Decimal(5),
+            "steam": Decimal(100),
             "tomatoes": Decimal(100),
         }
         return ExternalRating.objects.create(
@@ -276,6 +278,13 @@ class ExternalRatingCollectionSortTests(TestCase):
     def test_filter_options_use_registry_identity_pairs_and_canonical_tokens(self):
         movie = self._item("options-movie", "Movie")
         Movie.objects.create(user=self.user, item=movie, status=Status.COMPLETED.value)
+        game = self._item(
+            "options-game",
+            "Game",
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+        )
+        Game.objects.create(user=self.user, item=game, status=Status.COMPLETED.value)
         books = CustomList.objects.create(owner=self.user, name="Books")
         openlibrary = self._item(
             "options-openlibrary",
@@ -306,6 +315,10 @@ class ExternalRatingCollectionSortTests(TestCase):
             "/api/v1/filter-options/",
             {"scope": "tracking", "media_type": "movie"},
         )
+        game_options = self.client.get(
+            "/api/v1/filter-options/",
+            {"scope": "tracking", "media_type": "game"},
+        )
         book_options = self.client.get(
             "/api/v1/filter-options/",
             {"scope": "list", "list_id": books.pk, "media_type": "book"},
@@ -329,12 +342,73 @@ class ExternalRatingCollectionSortTests(TestCase):
             [{"value": "rating:imdb", "label": "IMDb Rating"}],
         )
         self.assertEqual(
+            game_options.data["sorts"],
+            [
+                *[
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("title", "Title"),
+                        ("release_date", "Release Date"),
+                        ("your_rating", "Your Rating"),
+                        ("average_rating", "Average Rating"),
+                    )
+                ],
+                {"value": "rating:igdb", "label": "IGDB Rating"},
+                {"value": "rating:metacritic", "label": "Metacritic Rating"},
+                {"value": "rating:steam", "label": "Steam Rating"},
+            ],
+        )
+        self.assertEqual(
             [entry["value"] for entry in book_options.data["sorts"]],
             [*base, "rating:openlibrary", "rating:hardcover"],
         )
         self.assertEqual([entry["value"] for entry in wrong_media.data["sorts"]], base)
         self.assertEqual([entry["value"] for entry in manual_options.data["sorts"]], base)
         self.assertNotIn("imdb_rating", [entry["value"] for entry in tracking.data["sorts"]])
+
+    def test_steam_rating_sort_is_numeric_with_nulls_last_both_directions(self):
+        games = [
+            self._item(
+                f"steam-{title.lower()}",
+                title,
+                source=Sources.IGDB.value,
+                media_type=MediaTypes.GAME.value,
+            )
+            for title in ("High", "Low", "Unavailable", "Missing")
+        ]
+        Game.objects.bulk_create([
+            Game(user=self.user, item=item, status=Status.COMPLETED.value)
+            for item in games
+        ])
+        self._rating(games[0], "steam", Decimal(95))
+        self._rating(games[1], "steam", Decimal(72))
+        self._rating(
+            games[2],
+            "steam",
+            status_value=ExternalRating.Status.UNAVAILABLE,
+        )
+
+        descending = self.client.get(
+            "/api/v1/tracking/",
+            {"media_type": "game", "sort": "rating:steam"},
+        )
+        ascending = self.client.get(
+            "/api/v1/tracking/",
+            {
+                "media_type": "game",
+                "sort": "rating:steam",
+                "direction": "asc",
+            },
+        )
+
+        self.assertEqual(
+            self._titles(descending, "tracking"),
+            ["High", "Low", "Missing", "Unavailable"],
+        )
+        self.assertEqual(
+            self._titles(ascending, "tracking"),
+            ["Low", "High", "Missing", "Unavailable"],
+        )
 
     def test_external_sort_preserves_personal_rating_ranges_and_collection_scope(self):
         personal_high = self._item("personal-high", "Personal High")

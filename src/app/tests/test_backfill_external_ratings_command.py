@@ -118,9 +118,9 @@ class BackfillExternalRatingsCommandTests(TestCase):
                 stdout=stdout,
             )
 
-        self.assertIn("Eligible item/source pairs: 7", stdout.getvalue())
+        self.assertIn("Eligible item/source pairs: 8", stdout.getvalue())
         self.assertIn("Already fresh terminal pairs: 3", stdout.getvalue())
-        self.assertIn("Pending/missing pairs: 4", stdout.getvalue())
+        self.assertIn("Pending/missing pairs: 5", stdout.getvalue())
         self.assertIn("Unavailable rows: 1", stdout.getvalue())
         self.assertIn("Failed rows: 1", stdout.getvalue())
         self.assertIn("Eligible Items: 3", stdout.getvalue())

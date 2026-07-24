@@ -14,8 +14,14 @@ head, test account confirmation without credentials, and sanitized screenshots.
       stored IMDb value is first and paging preserves the token/direction.
 - [ ] Book Library advertises and sends `rating:hardcover`; server order is
       rendered without device sorting.
-- [ ] Game Library advertises and sends `rating:metacritic`; ascending and
-      descending both preserve nulls-last behavior.
+- [ ] Game Library advertises and sends `rating:steam`; ascending and descending
+      both preserve nulls-last behavior.
+- [ ] A seeded game renders Metacritic, Steam, then IGDB; Steam shows the
+      percentage plus compact review count and opens its exact store page.
+- [ ] A pending game gains Steam through polling without dropping already shown
+      IGDB or Metacritic pills; a game without a mapping remains pill-free.
+- [ ] Steam remains legible with horizontal pill scrolling and Dynamic Type, and
+      VoiceOver reads the percentage, full review count, and external-link hint.
 - [ ] No optional rating-provider call appears in backend logs during any GET.
 - [ ] Changing sort replaces page 1 and a stale prior page does not append.
 - [ ] Containers, disposable database/account, runserver, and runtime override

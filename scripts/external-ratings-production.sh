@@ -28,6 +28,7 @@ scopes=(
   mangaupdates_manga
   igdb_game
   metacritic_game
+  steam_game
   openlibrary_book
   hardcover_book
   musicbrainz_music
@@ -131,6 +132,7 @@ scope_args() {
     mangaupdates_manga) args=(--rating-source mangaupdates --media-type manga --item-source mangaupdates) ;;
     igdb_game) args=(--rating-source igdb --media-type game --item-source igdb) ;;
     metacritic_game) args=(--rating-source metacritic --media-type game --item-source igdb) ;;
+    steam_game) args=(--rating-source steam --media-type game --item-source igdb) ;;
     openlibrary_book) args=(--rating-source openlibrary --media-type book --item-source openlibrary) ;;
     hardcover_book) args=(--rating-source hardcover --media-type book --item-source hardcover) ;;
     musicbrainz_music) args=(--rating-source musicbrainz --media-type music --item-source musicbrainz) ;;

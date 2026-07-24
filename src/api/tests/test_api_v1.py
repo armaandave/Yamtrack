@@ -1107,6 +1107,7 @@ class ApiV1FoundationTests(TestCase):
         self.assertIsNone(response.data["previous"])
         self.assertEqual(summary_mock.call_count, 25)
 
+    @patch("app.providers.steam.get_review_rating")
     @patch("app.providers.steam.get_metacritic_rating")
     @patch("app.providers.imdb.get_title_rating")
     @patch("app.providers.mdblist.get_media_ratings")
@@ -1115,6 +1116,7 @@ class ApiV1FoundationTests(TestCase):
         mdblist_mock,
         imdb_mock,
         metacritic_mock,
+        steam_review_mock,
     ):
         user = get_user_model().objects.create_user(
             username="rating-free-reads",
@@ -1151,6 +1153,7 @@ class ApiV1FoundationTests(TestCase):
         mdblist_mock.assert_not_called()
         imdb_mock.assert_not_called()
         metacritic_mock.assert_not_called()
+        steam_review_mock.assert_not_called()
 
     def test_tracking_list_defaults_to_newest_release_date(self):
         user = get_user_model().objects.create_user(username="tracking-default-sort", password="strong-password-123")
@@ -2684,6 +2687,7 @@ class ApiV1FoundationTests(TestCase):
     def test_hardcover_person_page_returns_author_profile_and_books(self, api_request_mock):
         from app.providers import hardcover
 
+        cache.clear()
         api_request_mock.side_effect = [
             {
                 "data": {
@@ -2701,11 +2705,12 @@ class ApiV1FoundationTests(TestCase):
                             "contributions": [],
                         },
                     ],
+                    "aliases": [{"id": 900, "name": "D. Wells"}],
                 },
             },
             {
                 "data": {
-                    "by_id": [
+                    "books": [
                         {
                             "id": 1,
                             "title": "Edited Anthology",
@@ -2723,8 +2728,6 @@ class ApiV1FoundationTests(TestCase):
                                 },
                             ],
                         },
-                    ],
-                    "by_name": [
                         {
                             "id": 328491,
                             "title": "I Am Not a Serial Killer",
@@ -2738,7 +2741,7 @@ class ApiV1FoundationTests(TestCase):
                             "contributions": [
                                 {
                                     "contribution": "Author",
-                                    "author": {"id": 99, "name": "Dan Wells"},
+                                    "author": {"id": 900, "name": "D. Wells"},
                                 },
                             ],
                         },
@@ -2777,6 +2780,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response["credits"][0]["media_id"], "328491")
         self.assertEqual(response["credits"][1]["media_id"], "2")
         self.assertEqual(response["credits"][2]["media_id"], "1")
+        books_request = api_request_mock.call_args_list[1].kwargs["params"]
+        self.assertEqual(books_request["variables"]["author_ids"], [80626, 900])
+        profile_query = api_request_mock.call_args_list[0].kwargs["params"]["query"]
+        self.assertIn("alias_id: {_eq: $author_id}", profile_query)
 
     def test_hardcover_get_authors_returns_native_author_refs(self):
         from app.providers import hardcover
@@ -3497,6 +3504,18 @@ class ApiV1FoundationTests(TestCase):
             "death_date": None,
             "place_of_birth": None,
             "popularity": 12,
+            "series": [
+                {
+                    "series_id": "1185",
+                    "source": "hardcover",
+                    "name": "John Cleaver",
+                    "book_count": 3,
+                    "books": [
+                        {"image": "https://example.com/one.jpg"},
+                        {"image": "https://example.com/two.jpg"},
+                    ],
+                },
+            ],
             "credits": [
                 {
                     "media_type": MediaTypes.BOOK.value,
@@ -3519,6 +3538,11 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["credits"]["cast"][0]["ref"]["media_type"], MediaTypes.BOOK.value)
         self.assertEqual(response.data["credits"]["cast"][0]["ref"]["source"], Sources.HARDCOVER.value)
         self.assertEqual(response.data["credits"]["cast"][0]["title"], "I Am Not a Serial Killer")
+        self.assertEqual(response.data["series"][0]["id"], "1185")
+        self.assertEqual(response.data["series"][0]["poster_urls"], [
+            "https://example.com/one.jpg",
+            "https://example.com/two.jpg",
+        ])
 
     @patch("api.services.media.provider_services.get_person_page")
     def test_person_detail_returns_musicbrainz_artist_and_release_groups(self, person_mock):
@@ -4404,6 +4428,11 @@ class ApiV1FoundationTests(TestCase):
             "source": "hardcover",
             "title": "Harry Potter and the Sorcerer's Stone",
             "image": "https://example.com/hp1.jpg",
+            "details": {
+                "series_id": "1185",
+                "series_name": "Harry Potter",
+                "series_position": 1,
+            },
             "related": {
                 "Harry Potter": [
                     {
@@ -4440,7 +4469,44 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["related_sections"][0]["title"], "Harry Potter")
         self.assertEqual(response.data["related_sections"][0]["items"][1]["ref"]["media_id"], "377194")
         self.assertEqual(response.data["related_sections"][0]["items"][1]["title"], "Harry Potter and the Chamber of Secrets")
+        self.assertEqual(response.data["details"]["series_id"], "1185")
         self.assertEqual([section["id"] for section in response.data["related_sections"]], ["series", "recommendations"])
+
+    @patch("api.services.media.provider_services.get_book_series")
+    def test_book_series_detail_returns_primary_books(self, series_mock):
+        series_mock.return_value = {
+            "series_id": "1185",
+            "source": "hardcover",
+            "name": "Harry Potter",
+            "book_count": 2,
+            "books": [
+                {
+                    "media_id": "328491",
+                    "media_type": "book",
+                    "source": "hardcover",
+                    "title": "Book One",
+                    "image": "https://example.com/one.jpg",
+                    "position": 1,
+                },
+                {
+                    "media_id": "429306",
+                    "media_type": "book",
+                    "source": "hardcover",
+                    "title": "Book Two",
+                    "image": "https://example.com/two.jpg",
+                    "position": 2,
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/series/hardcover/1185/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["name"], "Harry Potter")
+        self.assertEqual(
+            [(book["position"], book["title"]) for book in response.data["books"]],
+            [(1, "Book One"), (2, "Book Two")],
+        )
 
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_hardcover_book_detail_omits_empty_series_section(self, metadata_mock):
@@ -4508,6 +4574,7 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(ratings[0]["url"], "https://hardcover.app/book/377193")
 
+    @patch("app.providers.steam.get_review_rating")
     @patch("app.providers.steam.get_metacritic_rating")
     @patch("app.providers.steamgriddb.get_game_logo", return_value=None)
     @patch("api.services.media.provider_services.get_media_metadata")
@@ -4518,10 +4585,16 @@ class ApiV1FoundationTests(TestCase):
         metadata_mock,
         _logo_mock,
         metacritic_mock,
+        steam_review_mock,
     ):
         metacritic_mock.return_value = {
             "value": 94,
             "url": "https://www.metacritic.com/game/pc/space-game",
+        }
+        steam_review_mock.return_value = {
+            "value": 92,
+            "vote_count": 123456,
+            "url": "https://store.steampowered.com/app/1245620/",
         }
         metadata_mock.return_value = {
             "media_id": "1020",
@@ -4594,6 +4667,17 @@ class ApiV1FoundationTests(TestCase):
             last_attempted_at=attempted_at,
             last_success_at=attempted_at,
         )
+        ExternalRating.objects.create(
+            item=item,
+            rating_source="steam",
+            value=92,
+            max_value=100,
+            vote_count=123456,
+            canonical_url="https://store.steampowered.com/app/1245620/",
+            status=ExternalRating.Status.AVAILABLE,
+            last_attempted_at=attempted_at,
+            last_success_at=attempted_at,
+        )
 
         response = self.client.get("/api/v1/media/igdb/game/1020/")
 
@@ -4610,8 +4694,18 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(response.data["external_ratings"][1]["max_value"], "100")
         self.assertEqual(response.data["external_ratings"][1]["url"], "https://www.metacritic.com/game/pc/space-game")
         self.assertEqual(
+            response.data["external_ratings"][2],
+            {
+                "source": "Steam",
+                "value": "92%",
+                "vote_count": 123456,
+                "max_value": "100%",
+                "url": "https://store.steampowered.com/app/1245620/",
+            },
+        )
+        self.assertEqual(
             set(item.external_ratings.values_list("rating_source", flat=True)),
-            {"igdb", "metacritic"},
+            {"igdb", "metacritic", "steam"},
         )
         self.assertEqual(response.data["release_date"], "2020-09-17")
         self.assertEqual(response.data["details"]["age_rating"], "ESRB M")
@@ -4624,6 +4718,7 @@ class ApiV1FoundationTests(TestCase):
             "https://images.igdb.com/igdb/image/upload/t_original/wide-art.jpg",
         )
         metacritic_mock.assert_not_called()
+        steam_review_mock.assert_not_called()
         enqueue_mock.assert_not_called()
 
     @patch("app.providers.steam.get_metacritic_rating", return_value=None)

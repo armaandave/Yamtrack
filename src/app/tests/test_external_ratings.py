@@ -11,6 +11,7 @@ from app.external_ratings import (
     RATING_SOURCES,
     TransientExternalRatingError,
     eligible_rating_sources,
+    normalize_rating_url,
     rating_source_is_exposed,
     rating_sources_needing_refresh,
     refresh_external_ratings,
@@ -40,6 +41,7 @@ class ExternalRatingServiceTests(TestCase):
                 "mangaupdates",
                 "igdb",
                 "metacritic",
+                "steam",
                 "openlibrary",
                 "hardcover",
                 "musicbrainz",
@@ -54,6 +56,89 @@ class ExternalRatingServiceTests(TestCase):
         )
         self.assertEqual(RATING_SOURCES["tomatoes"]["max_value"], Decimal("100"))
         self.assertEqual(RATING_SOURCES["tomatoes"]["wire_max"], "100%")
+        self.assertEqual(RATING_SOURCES["steam"]["max_value"], Decimal("100"))
+        self.assertEqual(RATING_SOURCES["steam"]["wire_max"], "100%")
+
+    @patch("app.providers.steam.get_review_rating")
+    def test_steam_rating_is_game_only_idempotent_and_preserves_on_failure(
+        self,
+        rating_mock,
+    ):
+        game = Item.objects.create(
+            media_id="119133",
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            title="Elden Ring",
+        )
+        rating_mock.return_value = {
+            "value": 92,
+            "vote_count": 123456,
+            "url": "https://store.steampowered.com/app/1245620/",
+        }
+
+        refresh_external_ratings(game, ["steam"], metadata={})
+        refresh_external_ratings(game, ["steam"], metadata={})
+
+        rating = game.external_ratings.get(rating_source="steam")
+        self.assertEqual(game.external_ratings.filter(rating_source="steam").count(), 1)
+        self.assertEqual(rating.value, Decimal("92"))
+        self.assertEqual(rating.max_value, Decimal("100"))
+        self.assertEqual(rating.vote_count, 123456)
+        self.assertEqual(
+            rating.canonical_url,
+            "https://store.steampowered.com/app/1245620/",
+        )
+        self.assertEqual(rating.status, ExternalRating.Status.AVAILABLE)
+        self.assertNotIn("steam", eligible_rating_sources(self.movie))
+
+        rating_mock.side_effect = requests.ConnectionError("temporary outage")
+        with self.assertRaises(TransientExternalRatingError):
+            refresh_external_ratings(
+                game,
+                ["steam"],
+                metadata={},
+                raise_transient=True,
+            )
+
+        rating.refresh_from_db()
+        self.assertEqual(rating.status, ExternalRating.Status.FAILED)
+        self.assertEqual(rating.value, Decimal("92"))
+        self.assertEqual(rating.vote_count, 123456)
+        self.assertEqual(
+            rating.canonical_url,
+            "https://store.steampowered.com/app/1245620/",
+        )
+
+        rating_mock.side_effect = None
+        rating_mock.return_value = None
+        refresh_external_ratings(game, ["steam"], metadata={})
+
+        rating.refresh_from_db()
+        self.assertEqual(rating.status, ExternalRating.Status.UNAVAILABLE)
+        self.assertIsNone(rating.value)
+        self.assertIsNone(rating.vote_count)
+        self.assertEqual(game.external_ratings.filter(rating_source="steam").count(), 1)
+
+    def test_steam_rating_url_requires_the_exact_trusted_host(self):
+        self.assertEqual(
+            normalize_rating_url(
+                "steam",
+                "http://store.steampowered.com/app/1245620/",
+            ),
+            "https://store.steampowered.com/app/1245620/",
+        )
+        self.assertIsNone(
+            normalize_rating_url(
+                "steam",
+                "https://store.steampowered.com.evil.example/app/1245620/",
+            ),
+        )
+        self.assertIsNone(
+            normalize_rating_url(
+                "steam",
+                "https://user:password@store.steampowered.com/app/1245620/",
+            ),
+        )
 
     def test_refresh_selection_uses_terminal_status_and_registry_freshness(self):
         now = timezone.now()

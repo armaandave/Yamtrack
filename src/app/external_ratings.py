@@ -45,6 +45,7 @@ RATING_URL_BASES = {
     "metacritic": "https://www.metacritic.com/",
     "musicbrainz": "https://musicbrainz.org/",
     "openlibrary": "https://openlibrary.org/",
+    "steam": "https://store.steampowered.com/",
     "tmdb": "https://www.themoviedb.org/",
     "tomatoes": "https://www.rottentomatoes.com/",
 }
@@ -59,6 +60,7 @@ RATING_URL_HOSTS = {
     "metacritic": {"metacritic.com"},
     "musicbrainz": {"musicbrainz.org"},
     "openlibrary": {"openlibrary.org"},
+    "steam": {"store.steampowered.com"},
     "tmdb": {"themoviedb.org"},
     "tomatoes": {"rottentomatoes.com"},
 }
@@ -108,6 +110,17 @@ def _fetch_metacritic(item, _get_metadata):
 
     return {
         "metacritic": steam.get_metacritic_rating(
+            item.media_id,
+            raise_errors=True,
+        ),
+    }
+
+
+def _fetch_steam(item, _get_metadata):
+    from app.providers import steam
+
+    return {
+        "steam": steam.get_review_rating(
             item.media_id,
             raise_errors=True,
         ),
@@ -230,6 +243,16 @@ RATING_SOURCES = {
         "wire_max": "100",
         "fresh_for": FRESH_FOR,
         "fetch": _fetch_metacritic,
+    },
+    "steam": {
+        "key": "steam",
+        "label": "Steam",
+        "item_sources": frozenset({Sources.IGDB.value}),
+        "media_types": frozenset({MediaTypes.GAME.value}),
+        "max_value": Decimal("100"),
+        "wire_max": "100%",
+        "fresh_for": FRESH_FOR,
+        "fetch": _fetch_steam,
     },
     "openlibrary": {
         "key": "openlibrary",

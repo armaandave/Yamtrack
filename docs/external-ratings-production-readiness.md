@@ -18,6 +18,7 @@ rating columns and aliases remain supported.
 | `mangaupdates` | MangaUpdates manga | 10 | Native metadata | 24h | Provider policy required |
 | `igdb` | IGDB game | 100 | Native metadata | 24h | 3 requests/second |
 | `metacritic` | IGDB game | 100 | Steam/IGDB mapping helper | 24h | Steam 3 requests/second |
+| `steam` | IGDB game | 100% | Lifetime Steam-purchase reviews via IGDB mapping | 24h | Steam Store host 3 requests/second |
 | `openlibrary` | Open Library book | 5 | Native metadata | 24h | 20 requests/minute |
 | `hardcover` | Hardcover book | 5 | Native metadata | 24h | 50 requests/minute |
 | `musicbrainz` | MusicBrainz release group | 5 | Native metadata | 24h | Runtime-disabled pending written approval; 1 request/second |
@@ -65,14 +66,18 @@ Use the manually dispatched **External Ratings Production Backfill** workflow:
 5. Run `backfill/mdblist_movie`; rerun if the four-hour limit reports a clean
    resumable pause.
 6. Require scoped coverage inventory to reach zero, API health to remain green,
-   and IMDb/Letterboxd/Rotten Tomatoes sorting to pass in Simulator.
+   and IMDb/Letterboxd/Rotten Tomatoes/Steam sorting to pass in Simulator.
 7. Repeat canary then backfill for one scope at a time in this order: TMDB
-   movies; TV, seasons, and episodes; MAL/MangaUpdates; IGDB/Metacritic;
+   movies; TV, seasons, and episodes; MAL/MangaUpdates; IGDB/Metacritic/Steam;
    OpenLibrary/Hardcover; and finally approved MusicBrainz. IMDb episodes require
    licensed runtime configuration.
 8. Run final all-scope inventory and Simulator smoke tests. Enable person
    filmography preparation only in a later deployment after monitoring remains
    healthy.
+
+For `steam_game`, run the commit-bound backup, a 10-game canary, and the full
+scope drain. Completion requires zero missing/failed pairs; `unavailable` is a
+valid terminal outcome for games without a Steam mapping or qualifying reviews.
 
 The workflow defaults to 500-Item selection waves and one outstanding 25-Item
 Celery task. It stops immediately after any failure or retry. Stale successful
