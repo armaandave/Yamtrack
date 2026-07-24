@@ -208,12 +208,18 @@ struct CompanyDetailView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .navigationBarBackButtonHidden()
+        .dismissExplorationOnReturnHome()
         .offset(x: edgeDragOffset)
         .overlay(alignment: .leading) {
             Color.clear
                 .frame(width: 28)
                 .contentShape(Rectangle())
                 .gesture(edgeSwipeBackGesture)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            ExplorationHomeButton()
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
         }
         .fullScreenCover(item: $selectedMedia) { selection in
             MediaDetailView(

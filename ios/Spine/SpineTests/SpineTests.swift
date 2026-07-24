@@ -2336,6 +2336,8 @@ final class SpineTests: XCTestCase {
               "vote_average": 0,
               "vote_count": 0,
               "language": null,
+              "provider_name": "Google Books",
+              "provider_url": "https://books.google.com/books?id=book",
               "is_original": true,
               "is_selected": true
             }
@@ -2359,6 +2361,65 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(decodedBookOptions.posters.first?.voteAverage, 0)
         XCTAssertEqual(decodedBookOptions.posters.first?.voteCount, 0)
         XCTAssertEqual(decodedBookOptions.posters.first?.thumbnailUrl, "https://example.com/book-original-thumb.jpg")
+        XCTAssertEqual(decodedBookOptions.posters.first?.providerName, "Google Books")
+        XCTAssertEqual(
+            decodedBookOptions.posters.first?.providerUrl,
+            "https://books.google.com/books?id=book"
+        )
+    }
+
+    func testGoogleBooksAttributionDecodingAndRatingPollingMerge() throws {
+        let payload = """
+        {
+          "ref": {
+            "source": "hardcover",
+            "media_type": "book",
+            "media_id": "1"
+          },
+          "title": "Book",
+          "external_links": {
+            "google_books": "https://books.google.com/books?id=book"
+          }
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder.api.decode(MediaDetail.self, from: payload)
+        XCTAssertEqual(
+            decoded.externalLinks["google_books"],
+            "https://books.google.com/books?id=book"
+        )
+
+        let google = ExternalRating(
+            source: "Google Books",
+            value: "4.5",
+            voteCount: 125,
+            maxValue: "5",
+            url: "https://books.google.com/books?id=book"
+        )
+        let imdb = ExternalRating(
+            source: "IMDb",
+            value: "8.0",
+            voteCount: 100,
+            maxValue: "10",
+            url: "https://www.imdb.com/title/tt1/"
+        )
+        let detail = MediaDetail(
+            ref: decoded.ref,
+            title: decoded.title,
+            externalLinks: decoded.externalLinks,
+            externalRatings: [google],
+            externalRatingsPreparation: MediaExternalRatingsPreparation(
+                state: .pending,
+                retryAfterSeconds: 2
+            )
+        )
+
+        let updated = detail.replacingExternalRatings(with: MediaExternalRatingsResponse(
+            externalRatings: [imdb],
+            externalRatingsPreparation: .ready
+        ))
+
+        XCTAssertEqual(updated.externalRatings?.map(\.source), ["IMDb", "Google Books"])
+        XCTAssertEqual(updated.externalLinks, decoded.externalLinks)
     }
 
     func testLogoOptionsAndSaveResponseDecoding() throws {
@@ -6008,11 +6069,11 @@ private final class FakeAuthRepository: AuthRepository {
     }
 
     func login(usernameOrEmail: String, password: String) async throws -> AuthUser {
-        AuthUser(id: 1, username: usernameOrEmail, displayName: usernameOrEmail, isPrivate: false)
+        AuthUser(id: 1, username: usernameOrEmail, displayName: usernameOrEmail, isPrivate: false, avatarUrl: nil)
     }
 
     func register(username: String, email: String, password: String) async throws -> AuthUser {
-        AuthUser(id: 1, username: username, displayName: username, isPrivate: false)
+        AuthUser(id: 1, username: username, displayName: username, isPrivate: false, avatarUrl: nil)
     }
 
     func refresh() async throws {

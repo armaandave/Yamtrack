@@ -23,6 +23,8 @@ from app.providers import (
 )
 
 logger = logging.getLogger(__name__)
+RATE_LIMIT_MAX_RETRIES = 3
+RATE_LIMIT_MAX_WAIT_SECONDS = 60
 
 
 def get_redis_client():
@@ -176,53 +178,56 @@ def api_request(
     Returns:
         Parsed JSON dict or ElementTree for XML
     """
-    try:
-        request_kwargs = {
-            "url": url,
-            "headers": headers,
-            "timeout": timeout or settings.REQUEST_TIMEOUT,
-        }
+    request_kwargs = {
+        "url": url,
+        "headers": headers,
+        "timeout": timeout or settings.REQUEST_TIMEOUT,
+    }
 
-        active_session = request_session or session
+    active_session = request_session or session
 
-        if method == "GET":
-            request_kwargs["params"] = params
-            request_func = active_session.get
-        elif method == "POST":
-            request_kwargs["data"] = data
-            request_kwargs["json"] = params
-            request_func = active_session.post
+    if method == "GET":
+        request_kwargs["params"] = params
+        request_func = active_session.get
+    elif method == "POST":
+        request_kwargs["data"] = data
+        request_kwargs["json"] = params
+        request_func = active_session.post
 
-        response = request_func(**request_kwargs)
-        response.raise_for_status()
+    for retry_number in range(RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            response = request_func(**request_kwargs)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as error:
+            error_resp = error.response
+            if (
+                error_resp.status_code != requests.codes.too_many_requests
+                or retry_number == RATE_LIMIT_MAX_RETRIES
+            ):
+                raise error from None
+
+            try:
+                seconds_to_wait = int(error_resp.headers.get("Retry-After", 5))
+            except (TypeError, ValueError):
+                seconds_to_wait = 5
+            seconds_to_wait = min(
+                max(seconds_to_wait, 0),
+                RATE_LIMIT_MAX_WAIT_SECONDS,
+            )
+            logger.warning(
+                "Rate limited, waiting %s seconds before retry %s/%s",
+                seconds_to_wait,
+                retry_number + 1,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            time.sleep(seconds_to_wait + 3)
+            continue
 
         if response_format == "xml":
             return ElementTree.fromstring(response.text)
         return response.json()
 
-    except requests.exceptions.HTTPError as error:
-        error_resp = error.response
-        status_code = error_resp.status_code
-
-        # handle rate limiting
-        if status_code == requests.codes.too_many_requests:
-            seconds_to_wait = int(error_resp.headers.get("Retry-After", 5))
-            logger.warning("Rate limited, waiting %s seconds", seconds_to_wait)
-            time.sleep(seconds_to_wait + 3)
-            logger.info("Retrying request")
-            return api_request(
-                provider,
-                method,
-                url,
-                params=params,
-                data=data,
-                headers=headers,
-                response_format=response_format,
-                request_session=request_session,
-                timeout=timeout,
-            )
-
-        raise error from None
+    raise RuntimeError("Unreachable rate-limit retry state")
 
 
 def get_media_metadata(

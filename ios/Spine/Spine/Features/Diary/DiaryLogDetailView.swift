@@ -212,6 +212,7 @@ struct DiaryLogDetailView: View {
         }
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .tabBar)
+        .dismissExplorationOnReturnHome()
         .offset(x: edgeDragOffset)
         .overlay(alignment: .leading) {
             Color.clear

@@ -835,6 +835,7 @@ struct MediaDetail: Decodable, Identifiable {
     let details: [String: JSONValue]?
     let music: MusicDetail?
     let related: [String: JSONValue]?
+    let externalLinks: [String: String]
     let providers: JSONValue?
     let community: CommunityStats?
     let externalRatings: [ExternalRating]?
@@ -896,6 +897,7 @@ struct MediaDetail: Decodable, Identifiable {
         case details
         case music
         case related
+        case externalLinks
         case providers
         case community
         case externalRatings
@@ -935,6 +937,7 @@ struct MediaDetail: Decodable, Identifiable {
         details: [String: JSONValue]? = nil,
         music: MusicDetail? = nil,
         related: [String: JSONValue]? = nil,
+        externalLinks: [String: String] = [:],
         providers: JSONValue? = nil,
         community: CommunityStats? = nil,
         externalRatings: [ExternalRating]? = nil,
@@ -972,6 +975,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.details = details
         self.music = music
         self.related = related
+        self.externalLinks = externalLinks
         self.providers = providers
         self.community = community
         self.externalRatings = externalRatings
@@ -1014,6 +1018,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: try container.decodeIfPresent([String: JSONValue].self, forKey: .details),
             music: try container.decodeIfPresent(MusicDetail.self, forKey: .music),
             related: try container.decodeIfPresent([String: JSONValue].self, forKey: .related),
+            externalLinks: try container.decodeIfPresent([String: String].self, forKey: .externalLinks) ?? [:],
             providers: try container.decodeIfPresent(JSONValue.self, forKey: .providers),
             community: try container.decodeIfPresent(CommunityStats.self, forKey: .community),
             externalRatings: try container.decodeIfPresent([ExternalRating].self, forKey: .externalRatings),
@@ -1058,6 +1063,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
             externalRatings: externalRatings,
@@ -1099,6 +1105,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
             externalRatings: externalRatings,
@@ -1140,6 +1147,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
             externalRatings: externalRatings,
@@ -1181,6 +1189,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
             externalRatings: externalRatings,
@@ -1222,6 +1231,7 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
             externalRatings: externalRatings,
@@ -1263,9 +1273,14 @@ struct MediaDetail: Decodable, Identifiable {
             details: details,
             music: music,
             related: related,
+            externalLinks: externalLinks,
             providers: providers,
             community: community,
-            externalRatings: response.externalRatings,
+            externalRatings: response.externalRatings + (externalRatings ?? []).filter { existing in
+                !response.externalRatings.contains { incoming in
+                    incoming.source.caseInsensitiveCompare(existing.source) == .orderedSame
+                }
+            },
             externalRatingsPreparation: response.externalRatingsPreparation,
             reviews: reviews,
             cast: cast,
@@ -1328,6 +1343,8 @@ struct PosterOption: Codable, Identifiable, Equatable {
     let voteAverage: Double
     let voteCount: Int
     let language: String?
+    var providerName: String? = nil
+    var providerUrl: String? = nil
     let isOriginal: Bool
     let isSelected: Bool
 

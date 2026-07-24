@@ -479,6 +479,11 @@ if not HARDCOVER_API.startswith("Bearer "):
     msg = "HARDCOVER_API must start with 'Bearer '."
     raise ImproperlyConfigured(msg)
 
+GOOGLE_BOOKS_API_KEY = config(
+    "GOOGLE_BOOKS_API_KEY",
+    default=secret("GOOGLE_BOOKS_API_KEY_FILE", ""),
+).strip()
+
 COMICVINE_API = config(
     "COMICVINE_API",
     default=secret(

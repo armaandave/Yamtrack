@@ -563,6 +563,8 @@ def book(media_id):
                 "authors": authors_for_details,
                 "publishers": publishers,
                 "isbn": isbns,
+                "series_name": featured_series.get("name") if featured_series else None,
+                "series_position": featured_series.get("position") if featured_series else None,
             },
             "related": related,
         }
@@ -579,6 +581,7 @@ def get_featured_series(series_data):
     if not isinstance(series_data, dict) or not series_data.get("id"):
         return None
 
+    position = series_data.get("position")
     series = series_data.get("series") or series_data
     if not isinstance(series, dict) or not series.get("id"):
         return None
@@ -587,7 +590,7 @@ def get_featured_series(series_data):
     if not name:
         return None
 
-    return {"id": series["id"], "name": name}
+    return {"id": series["id"], "name": name, "position": position}
 
 
 def get_authors(book_data):

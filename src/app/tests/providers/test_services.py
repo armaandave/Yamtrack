@@ -74,31 +74,23 @@ class ServicesTests(TestCase):
         self.assertEqual(kwargs["data"], {"form_data": "value"})
         self.assertIn("timeout", kwargs)
 
-    @patch("app.providers.services.api_request")
-    def test_request_error_handling_rate_limit(self, mock_api_request):
-        """Test the request_error_handling function with rate limiting."""
+    @patch("app.providers.services.time.sleep")
+    @patch("app.providers.services.session.get")
+    def test_api_request_stops_after_rate_limit_retries(self, mock_get, mock_sleep):
+        """Repeated rate limits stop after the bounded retry count."""
         mock_response = MagicMock()
         mock_response.status_code = 429  # Too many requests
         mock_response.headers = {"Retry-After": "5"}
-
         error = requests.exceptions.HTTPError("429 Too Many Requests")
         error.response = mock_response
+        mock_response.raise_for_status.side_effect = error
+        mock_get.return_value = mock_response
 
-        mock_api_request.return_value = {"data": "retry_success"}
+        with self.assertRaises(requests.exceptions.HTTPError):
+            services.api_request("TEST", "GET", "https://example.com/api")
 
-        result = services.api_request(
-            error,
-            "TEST",
-            "GET",
-            "https://example.com/api",
-            {"param": "value"},
-            None,
-            None,
-        )
-
-        mock_api_request.assert_called_once()
-
-        self.assertEqual(result, {"data": "retry_success"})
+        self.assertEqual(mock_get.call_count, services.RATE_LIMIT_MAX_RETRIES + 1)
+        self.assertEqual(mock_sleep.call_count, services.RATE_LIMIT_MAX_RETRIES)
 
     @patch("app.providers.igdb.cache.delete")
     def test_handle_error_igdb_unauthorized(

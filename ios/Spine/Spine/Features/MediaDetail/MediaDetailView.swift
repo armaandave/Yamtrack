@@ -940,6 +940,7 @@ struct MediaDetailView: View {
             }
         }
         .toolbar(.hidden, for: .tabBar)
+        .dismissExplorationOnReturnHome()
     }
 
     private func selectedIndex(in context: MediaBrowsingContext) -> Int {
@@ -1107,8 +1108,15 @@ private struct MediaDetailPageView: View {
 
             if progressUpdateDetail == nil, let detail = viewModel.detail {
                 bottomActionRail(detail)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+
+            if progressUpdateDetail == nil {
+                ExplorationHomeButton()
+                    .padding(.horizontal, 16)
                     .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
         }
         .navigationBarBackButtonHidden()
@@ -2836,6 +2844,18 @@ private struct MediaDetailPageView: View {
                 voteCountLabel: rating.source.ratingCountLabel
             ))
         }
+        if detail.ref.mediaType == "book",
+           !chips.contains(where: { $0.providerName.caseInsensitiveCompare("Google Books") == .orderedSame }),
+           let destination = detail.externalLinks["google_books"].flatMap(URL.init(string:)) {
+            chips.append(RatingChip(
+                source: "Google Books",
+                value: "Book page",
+                assetName: nil,
+                providerName: "Google Books",
+                destination: destination,
+                isAttributionOnly: true
+            ))
+        }
         return chips
     }
 
@@ -2965,6 +2985,9 @@ private struct MediaDetailPageView: View {
                 DetailFactRow(label: "Pages", value: detailString(detail, "number_of_pages") ?? detailString(detail, "pages")),
                 DetailFactRow(label: "Publish Date", value: formattedDate(detailString(detail, "publish_date") ?? detailString(detail, "published_date") ?? detailString(detail, "release_date"))),
                 DetailFactRow(label: "Physical Format", value: detailString(detail, "physical_format")),
+                DetailFactRow(label: "Series", value: bookSeries(detail)),
+                DetailFactRow(label: "Maturity Rating", value: detailString(detail, "maturity_rating")),
+                DetailFactRow(label: "Google Books Price", value: googleBooksPrice(detail)),
             ]
         default:
             rows.append(DetailFactRow(label: "Release Date", value: formattedReleaseDate(detail)))
@@ -2990,6 +3013,29 @@ private struct MediaDetailPageView: View {
             }
         }
         return rows.filter { !$0.isEmpty }
+    }
+
+    private func bookSeries(_ detail: MediaDetail) -> String? {
+        guard let name = detailString(detail, "series_name")?.nilIfEmpty else { return nil }
+        guard let position = detailString(detail, "series_position")?.nilIfEmpty else { return name }
+        return "\(name) · Book \(position)"
+    }
+
+    private func googleBooksPrice(_ detail: MediaDetail) -> String? {
+        guard
+            let amount = detailString(detail, "google_books_price_amount")?.nilIfEmpty,
+            let currency = detailString(detail, "google_books_price_currency")?.nilIfEmpty,
+            let country = detailString(detail, "google_books_price_country")?.nilIfEmpty
+        else {
+            return nil
+        }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = currency
+        let formatted = Decimal(string: amount).flatMap {
+            formatter.string(from: $0 as NSDecimalNumber)
+        }
+        return "\(formatted ?? amount) \(currency) · \(country)"
     }
 
     private func musicDetailRows(_ detail: MediaDetail) -> [DetailFactRow] {
@@ -4472,6 +4518,7 @@ private struct RatingChip: Hashable {
     let destination: URL?
     let voteCount: Int?
     let voteCountLabel: String?
+    let isAttributionOnly: Bool
 
     init(
         source: String,
@@ -4480,7 +4527,8 @@ private struct RatingChip: Hashable {
         providerName: String? = nil,
         destination: URL? = nil,
         voteCount: Int? = nil,
-        voteCountLabel: String? = nil
+        voteCountLabel: String? = nil,
+        isAttributionOnly: Bool = false
     ) {
         self.source = source
         self.value = value
@@ -4489,10 +4537,13 @@ private struct RatingChip: Hashable {
         self.destination = destination
         self.voteCount = voteCount
         self.voteCountLabel = voteCountLabel
+        self.isAttributionOnly = isAttributionOnly
     }
 
     var accessibilityLabel: String {
-        var components = ["\(providerName) rating \(value)"]
+        var components = [
+            isAttributionOnly ? "\(providerName) \(value)" : "\(providerName) rating \(value)"
+        ]
         if let voteCount, voteCount > 0 {
             components.append("\(voteCount.formatted()) \(voteCountLabel ?? "votes")")
         }
@@ -4566,18 +4617,25 @@ private struct RatingSourceBadge: View {
     let chip: RatingChip
 
     var body: some View {
-        Group {
-            if let assetName = chip.assetName {
-                ratingLogo(assetName: assetName)
-            } else {
-                Text(chip.source)
-                    .font(.system(size: 10, weight: .black))
-                    .foregroundStyle(.black)
+        if chip.providerName.caseInsensitiveCompare("Google Books") == .orderedSame {
+            Text("Google Books")
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+        } else {
+            Group {
+                if let assetName = chip.assetName {
+                    ratingLogo(assetName: assetName)
+                } else {
+                    Text(chip.source)
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(.black)
+                }
             }
+            .frame(width: MediaDetailLayout.ratingBadgeSize, height: MediaDetailLayout.ratingBadgeSize)
+            .background(["RatingMAL", "RatingMetacritic"].contains(chip.assetName) ? .clear : .white, in: Circle())
+            .clipShape(Circle())
         }
-        .frame(width: MediaDetailLayout.ratingBadgeSize, height: MediaDetailLayout.ratingBadgeSize)
-        .background(["RatingMAL", "RatingMetacritic"].contains(chip.assetName) ? .clear : .white, in: Circle())
-        .clipShape(Circle())
     }
 
     @ViewBuilder
@@ -6242,7 +6300,7 @@ private extension ExternalRating {
 
     private var ratingDenominator: String? {
         switch source.lowercased() {
-        case "spine", "letterboxd", "hardcover":
+        case "spine", "letterboxd", "hardcover", "google books":
             "5"
         case "imdb":
             "10"
@@ -6293,7 +6351,7 @@ private extension String {
 
     var ratingCountLabel: String {
         switch lowercased() {
-        case "letterboxd":
+        case "letterboxd", "google books":
             "ratings"
         case "rotten tomatoes", "rottentomatoes":
             "reviews"
@@ -6324,6 +6382,8 @@ private extension String {
             "MU"
         case "openlibrary":
             "OL"
+        case "google books":
+            "Google Books"
         default:
             String(prefix(2)).uppercased()
         }
