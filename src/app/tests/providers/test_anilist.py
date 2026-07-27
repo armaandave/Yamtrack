@@ -820,6 +820,7 @@ class MALAnimeMetadataTests(TestCase):
             "genres": [{"id": 1, "name": "Action"}],
             "mean": 8.5,
             "num_scoring_users": 100,
+            "num_list_users": 250,
             "num_episodes": 25,
             "average_episode_duration": 1440,
             "studios": [{"id": 1, "name": "Wit Studio"}],
@@ -855,6 +856,7 @@ class MALAnimeMetadataTests(TestCase):
 
         self.assertEqual(result["title"], "Shingeki no Kyojin")
         self.assertEqual(result["display_title"], "Attack on Titan")
+        self.assertEqual(result["member_count"], 250)
         self.assertEqual(len(result["posters"]), 2)
         self.assertEqual(result["related"]["relations"][0]["relation"], "Prequel")
         self.assertNotIn("relation", result["related"]["recommendations"][0])
@@ -872,6 +874,7 @@ class MALAnimeMetadataTests(TestCase):
         )
         fields = request_mock.call_args.kwargs["params"]["fields"]
         self.assertIn("alternative_titles", fields)
+        self.assertIn("num_list_users", fields)
         self.assertIn("pictures", fields)
 
     @patch("app.providers.mal.services.api_request")
@@ -1311,6 +1314,105 @@ class AnimeSeriesProviderTests(TestCase):
         self.assertEqual([item["media_id"] for item in result["items"]], ["10", "12", "11"])
         self.assertIn("OVA", result["items"][1]["subtitle"])
 
+    @patch("app.providers.anilist.anime_series_nodes")
+    @patch("app.providers.mal.anime")
+    def test_names_series_after_most_popular_member_without_changing_root(
+        self,
+        anime_mock,
+        nodes_mock,
+    ):
+        anime_mock.side_effect = lambda media_id, **_kwargs: self._anime(
+            media_id,
+            {
+                "1": [("2", "Sequel")],
+                "2": [("1", "Prequel")],
+            },
+            member_counts={"1": 100, "2": 1_000},
+            titles={"1": "Prequel OVA", "2": "Public Series Name"},
+        )
+        nodes_mock.side_effect = lambda ids, **_kwargs: {
+            str(media_id): {
+                "popularity": 10_000 if str(media_id) == "1" else 1,
+                "series_links": [],
+            }
+            for media_id in ids
+        }
+
+        result = mal.anime_series("1")
+
+        self.assertEqual(result["series_id"], "1")
+        self.assertEqual(result["representative_id"], "2")
+        self.assertEqual(result["name"], "Public Series Name")
+
+    @patch("app.providers.anilist.anime_series_nodes")
+    @patch("app.providers.mal.anime")
+    def test_uses_anilist_popularity_when_mal_member_counts_are_missing(
+        self,
+        anime_mock,
+        nodes_mock,
+    ):
+        anime_mock.side_effect = lambda media_id, **_kwargs: self._anime(
+            media_id,
+            {
+                "1": [("2", "Sequel")],
+                "2": [("1", "Prequel")],
+            },
+            titles={"1": None, "2": None},
+        )
+        nodes_mock.side_effect = lambda ids, **_kwargs: {
+            str(media_id): {
+                "display_title": (
+                    "AniList First"
+                    if str(media_id) == "1"
+                    else "AniList Popular"
+                ),
+                "popularity": 100 if str(media_id) == "1" else 200,
+                "series_links": [],
+            }
+            for media_id in ids
+        }
+
+        result = mal.anime_series("1")
+
+        self.assertEqual(result["representative_id"], "2")
+        self.assertEqual(result["name"], "AniList Popular")
+
+    def test_representative_ties_use_format_then_date_then_mal_id(self):
+        candidates = [
+            self._anime(
+                "4",
+                {},
+                dates={"4": "2010-01-01"},
+                formats={"4": "Movie"},
+                member_counts={"4": 100},
+            ),
+            self._anime(
+                "3",
+                {},
+                dates={"3": "2020-01-01"},
+                formats={"3": "TV"},
+                member_counts={"3": 100},
+            ),
+            self._anime(
+                "2",
+                {},
+                dates={"2": "2018-01-01"},
+                formats={"2": "TV"},
+                member_counts={"2": 100},
+            ),
+            self._anime(
+                "1",
+                {},
+                dates={"1": "2018-01-01"},
+                formats={"1": "TV"},
+                member_counts={"1": 100},
+            ),
+        ]
+
+        representative = min(candidates, key=mal._anime_series_representative_key)
+
+        self.assertEqual(str(representative["media_id"]), "1")
+
     def test_cycle_retains_members_in_deterministic_date_order(self):
         metadata = {
             "1": self._anime("1", {}, dates={"1": "2021-01-01"}),
@@ -1356,16 +1458,26 @@ class AnimeSeriesProviderTests(TestCase):
             self.assertEqual(error.exception.status_code, requests.codes.not_found)
 
     @staticmethod
-    def _anime(media_id, links, dates=None, formats=None):
+    def _anime(
+        media_id,
+        links,
+        dates=None,
+        formats=None,
+        member_counts=None,
+        titles=None,
+    ):
         media_id = str(media_id)
         dates = dates or {}
         formats = formats or {}
+        member_counts = member_counts or {}
+        titles = titles or {}
         return {
             "media_id": media_id,
             "source": "mal",
             "media_type": "anime",
             "title": f"Anime {media_id}",
-            "display_title": f"English {media_id}",
+            "display_title": titles.get(media_id, f"English {media_id}"),
+            "member_count": member_counts.get(media_id),
             "image": f"https://img.example/{media_id}.jpg",
             "details": {
                 "format": formats.get(media_id, "Anime"),

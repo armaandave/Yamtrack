@@ -262,7 +262,41 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertEqual(result["cast"][0]["person_id"], "11")
         self.assertEqual(result["cast"][0]["person_source"], "mal")
 
-    def test_person_series_requires_two_credits_without_provider_requests(self):
+    @patch("api.services.media.mal.anime_series")
+    def test_person_series_uses_shared_canonical_name_and_complete_count(
+        self,
+        series_mock,
+    ):
+        series_mock.return_value = {
+            "series_id": "1",
+            "source": "mal",
+            "media_type": "anime",
+            "name": "Canonical Series Name",
+            "item_count": 3,
+            "items": [
+                {
+                    "media_id": "1",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Example Series",
+                    "image": "https://img.example/one.jpg",
+                },
+                {
+                    "media_id": "2",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Example Series 2",
+                    "image": "https://img.example/two.jpg",
+                },
+                {
+                    "media_id": "3",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Example Series 3",
+                    "image": "https://img.example/three.jpg",
+                },
+            ],
+        }
         raw_credits = [
             {
                 "media_id": "1",
@@ -288,13 +322,20 @@ class AnimeDetailEnrichmentTests(TestCase):
 
         self.assertEqual(result[0]["id"], "1")
         self.assertEqual(result[0]["media_type"], "anime")
-        self.assertEqual(result[0]["item_count"], 2)
+        self.assertEqual(result[0]["name"], "Canonical Series Name")
+        self.assertEqual(result[0]["item_count"], 3)
         self.assertEqual(
             result[0]["poster_urls"],
-            ["https://img.example/one.jpg", "https://img.example/two.jpg"],
+            [
+                "https://img.example/one.jpg",
+                "https://img.example/two.jpg",
+                "https://img.example/three.jpg",
+            ],
         )
+        series_mock.assert_called_once_with("1")
 
-    def test_person_series_uses_the_viewers_custom_poster(self):
+    @patch("api.services.media.mal.anime_series")
+    def test_person_series_uses_the_viewers_custom_poster(self, series_mock):
         user = get_user_model().objects.create_user(
             username="anime-person-series",
             password="strong-password-123",
@@ -330,6 +371,29 @@ class AnimeDetailEnrichmentTests(TestCase):
                 "series_links": [{"media_id": "1", "relation": "Prequel"}],
             },
         ]
+        series_mock.return_value = {
+            "series_id": "1",
+            "source": "mal",
+            "media_type": "anime",
+            "name": "Example Series",
+            "item_count": 2,
+            "items": [
+                {
+                    "media_id": "1",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Example Series",
+                    "image": "https://cdn.myanimelist.net/default.jpg",
+                },
+                {
+                    "media_id": "2",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Example Series 2",
+                    "image": "https://cdn.myanimelist.net/two.jpg",
+                },
+            ],
+        }
 
         result = media._anime_person_series(raw_credits, user=user)
 
@@ -337,6 +401,31 @@ class AnimeDetailEnrichmentTests(TestCase):
             result[0]["poster_urls"],
             ["https://example.com/custom.jpg", "https://cdn.myanimelist.net/two.jpg"],
         )
+
+    @patch(
+        "api.services.media.mal.anime_series",
+        side_effect=media.provider_services.ProviderAPIError(
+            "mal",
+            RuntimeError("provider unavailable"),
+        ),
+    )
+    def test_person_series_failure_omits_only_the_series_group(self, _series_mock):
+        raw_credits = [
+            {
+                "media_id": "1",
+                "media_type": "anime",
+                "title": "Example Series",
+                "series_links": [{"media_id": "2", "relation": "Sequel"}],
+            },
+            {
+                "media_id": "2",
+                "media_type": "anime",
+                "title": "Example Series 2",
+                "series_links": [{"media_id": "1", "relation": "Prequel"}],
+            },
+        ]
+
+        self.assertEqual(media._anime_person_series(raw_credits), [])
 
 
 class AnimeArtworkTests(TestCase):

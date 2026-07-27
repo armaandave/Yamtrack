@@ -25,14 +25,14 @@ MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
 MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
 MANGA_MATCH_FAILURE_TTL = 60 * 5
 PERSON_TTL = 60 * 60 * 24
-ANIME_CACHE_VERSION = "v4"
+ANIME_CACHE_VERSION = "v5"
 ANIME_POSTER_CACHE_VERSION = "v1"
 ANIME_POSTER_TTL = 60 * 60 * 24 * 30
 ANIME_CAST_CACHE_VERSION = "v1"
 ANIME_CAST_FRESH_TTL = 60 * 60 * 24
 ANIME_CAST_STALE_TTL = 60 * 60 * 24 * 30
 ANIME_CAST_FAILURE_TTL = 60 * 5
-ANIME_SERIES_CACHE_VERSION = "v1"
+ANIME_SERIES_CACHE_VERSION = "v2"
 ANIME_SERIES_FRESH_TTL = 60 * 60 * 24
 ANIME_SERIES_STALE_TTL = 60 * 60 * 24 * 30
 ANIME_SERIES_FAILURE_TTL = 60 * 5
@@ -141,7 +141,7 @@ def anime(media_id, *, timeout=None, retry_rate_limits=True):
     if data is None:
         url = f"{base_url}/anime/{media_id}"
         params = {
-            "fields": f"{base_fields},num_episodes,average_episode_duration,studios,start_season,broadcast,source,related_anime",  # noqa: E501
+            "fields": f"{base_fields},num_list_users,num_episodes,average_episode_duration,studios,start_season,broadcast,source,related_anime",  # noqa: E501
         }
 
         try:
@@ -166,6 +166,7 @@ def anime(media_id, *, timeout=None, retry_rate_limits=True):
             "media_type": MediaTypes.ANIME.value,
             "title": response["title"],
             "display_title": get_english_title(response),
+            "member_count": response.get("num_list_users"),
             "max_progress": num_episodes,
             "image": get_image_url(response),
             "series_format": _anime_format(response.get("media_type")),
@@ -374,8 +375,10 @@ def _resolve_anime_series(seed_id, deadline):
         if len(fetched) != len(batch):
             raise RuntimeError("MAL returned an incomplete anime series graph")
         for current_id, node in nodes.items():
-            if current_id in fetched and not fetched[current_id].get("display_title"):
-                fetched[current_id]["display_title"] = node.get("display_title")
+            if current_id in fetched:
+                fetched[current_id]["anilist_popularity"] = node.get("popularity")
+                if not fetched[current_id].get("display_title"):
+                    fetched[current_id]["display_title"] = node.get("display_title")
         metadata.update(fetched)
 
         for current_id in batch:
@@ -424,12 +427,20 @@ def _resolve_anime_series(seed_id, deadline):
     ]
     if cycled:
         logger.warning("Anime series cycle detected root=%s members=%s", root_id, len(items))
-    root = metadata[root_id]
+    representative = min(
+        metadata.values(),
+        key=_anime_series_representative_key,
+    )
     return {
         "series_id": root_id,
         "source": Sources.MAL.value,
         "media_type": MediaTypes.ANIME.value,
-        "name": root.get("display_title") or root.get("title") or "",
+        "name": (
+            representative.get("display_title")
+            or representative.get("title")
+            or ""
+        ),
+        "representative_id": str(representative["media_id"]),
         "item_count": len(items),
         "items": items,
     }
@@ -497,6 +508,30 @@ def _anime_series_sort_key(metadata):
     return (str(start_date or "9999-99-99"), int(metadata["media_id"]))
 
 
+def _anime_series_representative_key(metadata):
+    popularity = metadata.get("member_count")
+    if not isinstance(popularity, (int, float)) or isinstance(popularity, bool):
+        popularity = metadata.get("anilist_popularity")
+    if not isinstance(popularity, (int, float)) or isinstance(popularity, bool):
+        popularity = -1
+    format_priority = {
+        "TV": 0,
+        "ONA": 1,
+        "Movie": 2,
+        "OVA": 3,
+        "Special": 4,
+        "Music": 5,
+    }
+    media_format = metadata.get("series_format") or (
+        metadata.get("details") or {}
+    ).get("format")
+    return (
+        -popularity,
+        format_priority.get(media_format, len(format_priority)),
+        *_anime_series_sort_key(metadata),
+    )
+
+
 def _anime_series_item(metadata, position):
     details = metadata.get("details") or {}
     start_date = details.get("start_date")
@@ -529,9 +564,10 @@ def _anime_series_key(kind, value):
 
 def _log_anime_series(cache_state, data, started_at=None):
     logger.info(
-        "Anime series cache=%s root=%s members=%s elapsed_ms=%s",
+        "Anime series cache=%s root=%s representative=%s members=%s elapsed_ms=%s",
         cache_state,
         data.get("series_id"),
+        data.get("representative_id"),
         data.get("item_count"),
         int((time.monotonic() - started_at) * 1000) if started_at else 0,
     )

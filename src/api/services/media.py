@@ -1996,33 +1996,35 @@ def _anime_person_series(
     if len(anime_credits) < 2:
         return []
 
-    candidates = _anime_series_candidate_groups(anime_credits, enrich_missing=False)
+    candidates = _anime_series_candidate_groups(anime_credits, enrich_missing=True)
     resolved = {}
     for credited_candidate in candidates:
-        credited_ids = set(credited_candidate).intersection(anime_credits)
-        ordered_ids = sorted(
-            credited_ids,
-            key=lambda media_id: (
-                anime_credits[media_id].get("release_date") or "9999",
-                int(media_id),
-            ),
-        )
-        seed = ordered_ids[0]
-        series_id = str(mal.cached_anime_series_id(seed) or seed)
+        seed = min(credited_candidate, key=int)
+        try:
+            series = mal.anime_series(seed)
+        except (requests.RequestException, provider_services.ProviderAPIError):
+            continue
+        member_ids = {str(item.get("media_id")) for item in series["items"]}
+        credited_ids = member_ids.intersection(anime_credits)
+        if len(credited_ids) < 2:
+            continue
+        series_id = str(series["series_id"])
         popularity = sum(
             anime_credits[media_id].get("vote_count") or 0
             for media_id in credited_ids
         )
         posters = []
-        for media_id in ordered_ids[:3]:
-            item = anime_credits[media_id]
+        for item in series["items"][:3]:
+            catalog_item = (
+                anime_credits.get(str(item.get("media_id"))) or {}
+            ).get("_catalog_item")
             summary = media_summary_from_provider(
                 item,
                 MediaTypes.ANIME.value,
                 Sources.MAL.value,
                 request=request,
                 user=user,
-                item=item.get("_catalog_item"),
+                item=catalog_item,
             )
             poster = summary.get("custom_poster_url") or summary.get("poster_url")
             if poster:
@@ -2031,12 +2033,8 @@ def _anime_person_series(
             "id": series_id,
             "source": Sources.MAL.value,
             "media_type": MediaTypes.ANIME.value,
-            "name": (
-                anime_credits[seed].get("display_title")
-                or anime_credits[seed].get("title")
-                or "Anime Series"
-            ),
-            "item_count": len(credited_ids),
+            "name": series["name"],
+            "item_count": series["item_count"],
             "poster_urls": posters,
             "_popularity": popularity,
         }
