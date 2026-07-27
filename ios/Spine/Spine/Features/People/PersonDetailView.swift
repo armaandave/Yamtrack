@@ -747,6 +747,7 @@ enum FilmographyType: String, CaseIterable, Identifiable {
     case movie
     case tv
     case book
+    case manga
     case music
 
     var id: String { rawValue }
@@ -759,6 +760,8 @@ enum FilmographyType: String, CaseIterable, Identifiable {
             "TV"
         case .book:
             "Books"
+        case .manga:
+            "Manga"
         case .music:
             "Music"
         }
@@ -768,6 +771,8 @@ enum FilmographyType: String, CaseIterable, Identifiable {
         switch self {
         case .book:
             "Books"
+        case .manga:
+            "Manga"
         case .music:
             "Discography"
         case .movie, .tv:
@@ -872,6 +877,8 @@ struct FilmographyCreditGroup: Identifiable {
             ["producer"]
         case "author":
             ["author"]
+        case "mangaka":
+            ["story & art", "story", "art", "author"]
         case "artist":
             ["artist"]
         default:
@@ -897,6 +904,8 @@ extension FilmographyType {
             count == 1 ? "show" : "shows"
         case .book:
             count == 1 ? "book" : "books"
+        case .manga:
+            "manga"
         case .music:
             count == 1 ? "release" : "releases"
         }

@@ -69,6 +69,10 @@ session.mount(
     LimiterAdapter(per_minute=85),
 )
 session.mount(
+    "https://api.jikan.moe",
+    LimiterAdapter(per_second=3),
+)
+session.mount(
     "https://api.igdb.com/v4",
     LimiterAdapter(per_second=3),
 )
@@ -421,6 +425,14 @@ def get_person_page(source, person_id):
         return openlibrary.person_page(person_id)
     if source == Sources.MUSICBRAINZ.value:
         return musicbrainz.person_page(person_id)
+    if source == Sources.MAL.value:
+        return mal.person_page(person_id)
+    if source == Sources.MANGAUPDATES.value:
+        return mangaupdates.person_page(person_id)
+    if source == "anilist":
+        from app.providers import anilist  # noqa: PLC0415
+
+        return anilist.person_page(person_id)
     raise_not_found_error(source, person_id, "person")
 
 

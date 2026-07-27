@@ -117,7 +117,7 @@ def manga(media_id):
 
 async def async_manga(media_id):
     """Asynchronous implementation of manga metadata retrieval."""
-    cache_key = f"{Sources.MANGAUPDATES.value}_{MediaTypes.MANGA.value}_{media_id}"
+    cache_key = f"{Sources.MANGAUPDATES.value}_{MediaTypes.MANGA.value}_{media_id}_v2"
     data = cache.get(cache_key)
 
     if data is None:
@@ -216,14 +216,102 @@ def get_creators(authors):
         if not name or key in seen:
             continue
         seen.add(key)
-        creators.append(
-            {
-                "person_id": f"mangaupdates:{author.get('author_id') or name}",
-                "name": name,
-                "role": role or None,
-            },
-        )
+        person_id = author.get("author_id")
+        creators.append({
+            "person_id": str(person_id or ""),
+            **(
+                {"person_source": Sources.MANGAUPDATES.value}
+                if person_id
+                else {}
+            ),
+            "name": name,
+            "role": role or None,
+        })
     return creators[:12]
+
+
+def person_page(person_id):
+    """Return a MangaUpdates author profile and manga bibliography."""
+    cache_key = f"{Sources.MANGAUPDATES.value}_person_{person_id}_v1"
+    data = cache.get(cache_key)
+    if data is not None:
+        return data
+
+    try:
+        author = services.api_request(
+            Sources.MANGAUPDATES.value,
+            "GET",
+            f"{base_url}/authors/{person_id}",
+        )
+        bibliography = services.api_request(
+            Sources.MANGAUPDATES.value,
+            "POST",
+            f"{base_url}/authors/{person_id}/series",
+            params={"page": 1, "perpage": 500},
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+
+    if not author or not author.get("id"):
+        services.raise_not_found_error(
+            Sources.MANGAUPDATES.value,
+            person_id,
+            "person",
+        )
+
+    credits = []
+    for series in bibliography.get("series_list") or []:
+        series_id = series.get("series_id")
+        if not series_id:
+            continue
+        year = series.get("year")
+        credits.append({
+            "media_type": MediaTypes.MANGA.value,
+            "source": Sources.MANGAUPDATES.value,
+            "media_id": str(series_id),
+            "title": series.get("title") or "",
+            "year": str(year) if year else None,
+            "release_date": str(year) if year else None,
+            "genres": series.get("genres") or [],
+            "roles": ["Author"],
+            "credit_roles": ["Author"],
+            "url": series.get("url"),
+        })
+
+    image = ((author.get("image") or {}).get("url") or {})
+    birthday = author.get("birthday") or {}
+    data = {
+        "source": Sources.MANGAUPDATES.value,
+        "person_id": str(author.get("id") or person_id),
+        "name": author.get("name") or "",
+        "image": image.get("original") or image.get("thumb"),
+        "biography": helpers.plain_text(author.get("comments")),
+        "known_for_department": "Author",
+        "birth_date": _author_date(birthday),
+        "death_date": (
+            _author_date(author.get("status_date") or {})
+            if str(author.get("status") or "").casefold() == "deceased"
+            else None
+        ),
+        "place_of_birth": author.get("birthplace"),
+        "popularity": (author.get("stats") or {}).get("total_series"),
+        "credits": credits,
+    }
+    cache.set(cache_key, data)
+    return data
+
+
+def _author_date(value):
+    year = value.get("year")
+    if not year:
+        return None
+    month = value.get("month")
+    day = value.get("day")
+    if month and day:
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    if month:
+        return f"{year:04d}-{month:02d}"
+    return str(year)
 
 
 def get_associated_titles(response):

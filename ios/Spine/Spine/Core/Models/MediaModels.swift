@@ -1726,9 +1726,31 @@ struct LikeState: Codable, Equatable {
 struct CreditPerson: Codable, Identifiable, Hashable {
     let id: String
     let name: String
+    let personSource: String?
     let role: String?
     let character: String?
     let imageUrl: String?
+
+    init(
+        id: String,
+        name: String,
+        personSource: String? = nil,
+        role: String?,
+        character: String?,
+        imageUrl: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.personSource = personSource
+        self.role = role
+        self.character = character
+        self.imageUrl = imageUrl
+    }
+
+    var personRef: PersonRef? {
+        guard let personSource, !personSource.isEmpty, !id.isEmpty else { return nil }
+        return PersonRef(source: personSource, id: id)
+    }
 }
 
 struct RelatedMediaSection: Codable, Identifiable, Hashable {

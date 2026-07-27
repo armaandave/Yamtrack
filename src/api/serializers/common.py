@@ -463,6 +463,7 @@ def cast_from_metadata(metadata, request=None):
         {
             "id": _credit_id(person),
             "name": person.get("name"),
+            "person_source": person.get("person_source"),
             "role": person.get("role"),
             "character": person.get("character"),
             "image_url": _credit_image(request, person),
@@ -479,6 +480,7 @@ def crew_from_metadata(metadata, request=None):
         {
             "id": _credit_id(person),
             "name": person.get("name"),
+            "person_source": person.get("person_source"),
             "role": (person.get("roles") or [None])[0] if person.get("roles") else person.get("job") or person.get("role"),
             "character": person.get("character"),
             "image_url": _credit_image(request, person),

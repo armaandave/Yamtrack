@@ -605,10 +605,16 @@ struct MediaCreditPresentation: Hashable {
             var seen = Set<String>()
             let authors = detail.details?["authors"]?.displayStrings ?? []
             let names = authors.isEmpty ? (detail.crew ?? []).prefix(1).map(\.name) : authors
+            let creatorsByName = (detail.crew ?? []).reduce(into: [String: CreditPerson]()) {
+                $0[$1.name.lowercased()] = $0[$1.name.lowercased()] ?? $1
+            }
             let people = names.compactMap { name -> MediaPersonCredit? in
                 let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !name.isEmpty, seen.insert(name.lowercased()).inserted else { return nil }
-                return MediaPersonCredit(name: name, personRef: nil)
+                return MediaPersonCredit(
+                    name: name,
+                    personRef: creatorsByName[name.lowercased()]?.personRef
+                )
             }
             guard !people.isEmpty else { return nil }
             return MediaCreditPresentation(
@@ -778,9 +784,14 @@ enum MediaExternalRatingPresentation {
 
     static func showsExternalRatingPlaceholder(
         mediaType: String,
+        ratings: [ExternalRating],
         preparation: MediaExternalRatingsPreparation?
     ) -> Bool {
-        mediaType != "music" && preparation?.state == .pending
+        mediaType != "music"
+            && preparation?.state == .pending
+            && !ratings.contains {
+                !$0.value.isEmpty && includes(source: $0.source, mediaType: mediaType)
+            }
     }
 }
 
@@ -989,6 +1000,7 @@ struct MediaDetailView: View {
                     detailPage(ref: ref, shouldLoad: true)
                 }
             }
+            .ignoresSafeArea(edges: .top)
             .scrollDisabled(presentedPoster != nil)
             .accessibilityHidden(presentedPoster != nil)
 
@@ -1983,11 +1995,16 @@ private struct MediaDetailPageView: View {
                     ZStack(alignment: .top) {
                         HeroArtwork(detail: detail)
                         if let backdropURL = backdropURLString(for: detail) {
-                            BackdropArtwork(urlString: backdropURL)
-                                .frame(height: resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight)
-                                .onLongPressGesture {
-                                    openBackdropPicker(for: detail)
-                                }
+                            GeometryReader { proxy in
+                                BackdropArtwork(urlString: backdropURL)
+                                    .frame(height: min(
+                                        resolvedTopSafeAreaInset + MediaDetailLayout.backdropHeight,
+                                        proxy.size.width / MediaDetailLayout.backdropCropAspectRatio
+                                    ))
+                                    .onLongPressGesture {
+                                        openBackdropPicker(for: detail)
+                                    }
+                            }
                         }
                     }
                 }
@@ -2939,6 +2956,7 @@ private struct MediaDetailPageView: View {
         }
         if MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
             mediaType: detail.ref.mediaType,
+            ratings: detail.externalRatings ?? [],
             preparation: detail.externalRatingsPreparation
         ) {
             chips.append(RatingChip(
@@ -2983,6 +3001,9 @@ private struct MediaDetailPageView: View {
     private func bylinePersonRef(_ detail: MediaDetail) -> PersonRef? {
         if detail.ref.mediaType == "book" {
             return bookAuthorCredits(detail).first?.personRef
+        }
+        if detail.ref.mediaType == "manga" {
+            return detail.crew?.first?.personRef
         }
         guard detail.ref.source == "tmdb" else { return nil }
         let key = detail.ref.mediaType == "movie" ? "director_id" : detail.ref.mediaType == "tv" ? "creator_id" : nil
@@ -3227,6 +3248,16 @@ private struct MediaDetailPageView: View {
                 )
             }
         }
+        if detail.ref.mediaType == "manga" {
+            return (detail.crew ?? []).map {
+                CreditDisplay(
+                    name: $0.name,
+                    subtitle: $0.role,
+                    imageUrl: $0.imageUrl,
+                    personRef: $0.personRef
+                )
+            }
+        }
         let supportsPeoplePages = detail.ref.source == "tmdb" && ["movie", "tv", "episode"].contains(detail.ref.mediaType)
         return (detail.crew ?? []).map {
             CreditDisplay(
@@ -3437,6 +3468,7 @@ private enum MediaDetailLayout {
     static let heroPosterTopOffset: CGFloat = 108
     static let backdropTopSpacing: CGFloat = 137.5
     static let backdropHeight: CGFloat = 352.34375
+    static let backdropCropAspectRatio: CGFloat = 1.5
     static let genrePillHeight: CGFloat = 31
     static let ratingBadgeSize: CGFloat = 24
     static let ratingPillVerticalPadding: CGFloat = 6
@@ -4289,12 +4321,9 @@ struct BackdropArtwork: View {
                     case let .success(image):
                         image
                             .resizable()
-                            .scaledToFit()
-                            .frame(
-                                width: proxy.size.width,
-                                height: proxy.size.height,
-                                alignment: .top
-                            )
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
                     default:
                         Color.clear
                     }

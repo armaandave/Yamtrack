@@ -1032,9 +1032,16 @@ def _merge_manga_creators(primary, enrichment):
         key = re.sub(r"[\W_]+", "", creator["name"].casefold())
         if key in positions:
             current = creators[positions[key]]
-            for field in ("image", "image_url", "role", "person_id"):
+            for field in ("image", "image_url", "role"):
                 if not current.get(field) and creator.get(field):
                     current[field] = creator[field]
+            if creator.get("person_source") == "anilist":
+                current["person_source"] = creator["person_source"]
+                current["person_id"] = creator.get("person_id")
+            else:
+                for field in ("person_source", "person_id"):
+                    if not current.get(field) and creator.get(field):
+                        current[field] = creator[field]
             continue
         positions[key] = len(creators)
         creators.append(dict(creator))
@@ -1739,8 +1746,14 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         Sources.HARDCOVER.value,
         Sources.OPENLIBRARY.value,
         Sources.MUSICBRAINZ.value,
+        Sources.MAL.value,
+        Sources.MANGAUPDATES.value,
+        "anilist",
     }:
-        msg = "People pages are only supported for TMDB, Hardcover, OpenLibrary, and MusicBrainz in v1."
+        msg = (
+            "People pages are only supported for TMDB, Hardcover, OpenLibrary, "
+            "MusicBrainz, MAL, MangaUpdates, and AniList in v1."
+        )
         raise NotImplementedError(msg)
 
     params = params or {}
@@ -1827,6 +1840,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
                     MediaTypes.TV.value,
                     MediaTypes.BOOK.value,
                     MediaTypes.MUSIC.value,
+                    MediaTypes.MANGA.value,
                 }
             ],
         },

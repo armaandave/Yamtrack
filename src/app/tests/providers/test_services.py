@@ -27,6 +27,36 @@ class ServicesTests(TestCase):
         self.assertEqual(result, {"person_id": "artist-1"})
         person_page.assert_called_once_with("artist-1")
 
+    @patch("app.providers.anilist.person_page")
+    @patch("app.providers.services.mangaupdates.person_page")
+    @patch("app.providers.services.mal.person_page")
+    def test_get_person_page_dispatches_manga_people_sources(
+        self,
+        mal_person,
+        mangaupdates_person,
+        anilist_person,
+    ):
+        mal_person.return_value = {"person_id": "1"}
+        mangaupdates_person.return_value = {"person_id": "2"}
+        anilist_person.return_value = {"person_id": "3"}
+
+        self.assertEqual(
+            services.get_person_page(Sources.MAL.value, "1"),
+            {"person_id": "1"},
+        )
+        self.assertEqual(
+            services.get_person_page(Sources.MANGAUPDATES.value, "2"),
+            {"person_id": "2"},
+        )
+        self.assertEqual(
+            services.get_person_page("anilist", "3"),
+            {"person_id": "3"},
+        )
+
+        mal_person.assert_called_once_with("1")
+        mangaupdates_person.assert_called_once_with("2")
+        anilist_person.assert_called_once_with("3")
+
     @patch("app.providers.services.session.get")
     def test_api_request_get(self, mock_get):
         """Test the api_request function with GET method."""

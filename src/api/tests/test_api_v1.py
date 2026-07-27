@@ -11,9 +11,9 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from api.serializers.common import media_summary_from_item
+from api.serializers.common import crew_from_metadata, media_summary_from_item
 from api.services.filters import update_item_filter_metadata
-from api.services.media import external_ratings
+from api.services.media import _merge_manga_creators, external_ratings
 from app.models import (
     TV,
     Anime,
@@ -52,6 +52,33 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "ok")
+
+    def test_manga_creator_enrichment_preserves_anilist_people_reference(self):
+        creators = _merge_manga_creators(
+            [
+                {
+                    "person_id": "11705",
+                    "person_source": "mal",
+                    "name": "Hajime Isayama",
+                    "role": "Story & Art",
+                },
+            ],
+            [
+                {
+                    "person_id": "106705",
+                    "person_source": "anilist",
+                    "name": "Hajime Isayama",
+                    "image": "https://example.com/isayama.jpg",
+                },
+            ],
+        )
+
+        self.assertEqual(creators[0]["person_id"], "106705")
+        self.assertEqual(creators[0]["person_source"], "anilist")
+        self.assertEqual(
+            crew_from_metadata({"crew": creators})[0]["person_source"],
+            "anilist",
+        )
 
     def test_meta_is_public(self):
         response = self.client.get("/api/v1/meta/")
@@ -3651,13 +3678,52 @@ class ApiV1FoundationTests(TestCase):
             ["Higher Rated", "Lower Rated"],
         )
 
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_person_detail_returns_anilist_mangaka_and_manga_credits(self, person_mock):
+        person_mock.return_value = {
+            "source": "anilist",
+            "person_id": "106705",
+            "name": "Hajime Isayama",
+            "image": "https://example.com/isayama.jpg",
+            "biography": "Mangaka biography.",
+            "known_for_department": "Mangaka",
+            "birth_date": "1986-08-29",
+            "place_of_birth": "Oita, Japan",
+            "credits": [
+                {
+                    "media_type": MediaTypes.MANGA.value,
+                    "source": Sources.MAL.value,
+                    "media_id": "23390",
+                    "title": "Attack on Titan",
+                    "image": "https://example.com/aot.jpg",
+                    "release_date": "2009-09-09",
+                    "genres": ["Action"],
+                    "languages": ["Japanese"],
+                    "roles": ["Story & Art"],
+                    "credit_roles": ["Story & Art"],
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/people/anilist/106705/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        person_mock.assert_called_once_with("anilist", "106705")
+        self.assertEqual(response.data["known_for_department"], "Mangaka")
+        credit = response.data["credits"]["cast"][0]
+        self.assertEqual(credit["ref"]["source"], Sources.MAL.value)
+        self.assertEqual(credit["ref"]["media_type"], MediaTypes.MANGA.value)
+        self.assertEqual(credit["ref"]["media_id"], "23390")
+        self.assertEqual(credit["credit_roles"], ["Story & Art"])
+
     def test_person_detail_rejects_unsupported_source_for_v1(self):
         response = self.client.get("/api/v1/people/manual/author-1/")
 
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertEqual(
             response.data["detail"],
-            "People pages are only supported for TMDB, Hardcover, OpenLibrary, and MusicBrainz in v1.",
+            "People pages are only supported for TMDB, Hardcover, OpenLibrary, "
+            "MusicBrainz, MAL, MangaUpdates, and AniList in v1.",
         )
 
     @patch("api.services.media.provider_services.company_catalog_count")

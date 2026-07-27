@@ -1,6 +1,8 @@
+import re
 from datetime import date, datetime
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
+from bs4 import BeautifulSoup
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
@@ -16,6 +18,15 @@ from app.models import BasicMedia, Item, MediaTypes, Status
 
 YEAR_ONLY_PARTS = 1
 YEAR_MONTH_PARTS = 2
+
+
+def plain_text(value):
+    """Return provider HTML/Markdown as compact display text."""
+    if not value:
+        return None
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(value))
+    text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    return " ".join(text.split()) or None
 
 
 def get_owned_media_or_404(request, media_type, instance_id, *, prefetch=False):

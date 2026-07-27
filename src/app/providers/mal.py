@@ -16,11 +16,13 @@ from app.providers.search_rank import rank_results
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.myanimelist.net/v2"
+jikan_base_url = "https://api.jikan.moe/v4"
 base_fields = "title,alternative_titles,main_picture,pictures,media_type,start_date,end_date,synopsis,status,genres,mean,num_scoring_users,recommendations"  # noqa: E501
 MANGA_MATCH_VERSION = "v1"
 MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
 MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
 MANGA_MATCH_FAILURE_TTL = 60 * 5
+PERSON_TTL = 60 * 60 * 24
 
 
 def handle_error(error):
@@ -178,7 +180,7 @@ def anime(media_id):
 
 def manga(media_id):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_v2"
+    cache_key = f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_v3"
     data = cache.get(cache_key)
 
     if data is None:
@@ -426,14 +428,75 @@ def get_authors(response):
         if not full_name or key in seen:
             continue
         seen.add(key)
-        creators.append(
-            {
-                "person_id": f"mal:{node.get('id')}",
-                "name": full_name,
-                "role": role or None,
-            },
-        )
+        person_id = node.get("id")
+        creators.append({
+            "person_id": str(person_id or ""),
+            **({"person_source": Sources.MAL.value} if person_id else {}),
+            "name": full_name,
+            "role": role or None,
+        })
     return creators[:12]
+
+
+def person_page(person_id):
+    """Return MAL person data through Jikan, which exposes MAL's people pages."""
+    cache_key = f"{Sources.MAL.value}_person_{person_id}_v1"
+    data = cache.get(cache_key)
+    if data is not None:
+        return data
+
+    try:
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/people/{person_id}/full",
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+
+    person = response.get("data") or {}
+    if not person:
+        services.raise_not_found_error(Sources.MAL.value, person_id, "person")
+
+    credits = []
+    seen = set()
+    for entry in person.get("manga") or []:
+        manga_data = entry.get("manga") or {}
+        manga_id = manga_data.get("mal_id")
+        if not manga_id or manga_id in seen:
+            continue
+        seen.add(manga_id)
+        images = manga_data.get("images") or {}
+        image = images.get("jpg") or images.get("webp") or {}
+        role = str(entry.get("position") or "").strip() or "Author"
+        credits.append({
+            "media_type": MediaTypes.MANGA.value,
+            "source": Sources.MAL.value,
+            "media_id": str(manga_id),
+            "title": manga_data.get("title") or "",
+            "image": image.get("large_image_url") or image.get("image_url"),
+            "roles": [role],
+            "credit_roles": [role],
+            "url": manga_data.get("url"),
+        })
+
+    profile_images = person.get("images") or {}
+    profile_image = profile_images.get("jpg") or profile_images.get("webp") or {}
+    data = {
+        "source": Sources.MAL.value,
+        "person_id": str(person.get("mal_id") or person_id),
+        "name": person.get("name") or "",
+        "image": profile_image.get("image_url") or profile_image.get("large_image_url"),
+        "biography": helpers.plain_text(person.get("about")),
+        "known_for_department": "Author",
+        "birth_date": person.get("birthday"),
+        "death_date": None,
+        "place_of_birth": None,
+        "popularity": person.get("favorites"),
+        "credits": credits,
+    }
+    cache.set(cache_key, data, PERSON_TTL)
+    return data
 
 
 def _match_titles(primary, alternatives=None):

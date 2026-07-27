@@ -4,7 +4,7 @@ import requests
 from django.core.cache import cache
 from django.test import TestCase
 
-from app.providers import anilist, mal
+from app.providers import anilist, mal, mangaupdates
 
 
 class AniListProviderTests(TestCase):
@@ -139,7 +139,11 @@ class AniListProviderTests(TestCase):
     @patch("app.providers.anilist.services.api_request")
     def test_anime_uses_stale_success_when_request_fails(self, request_mock):
         stale = {"display_title": "Cached Anime"}
-        cache.set("anilist:v1:anime:1:stale", stale, anilist.STALE_TTL)
+        cache.set(
+            f"anilist:{anilist.CACHE_VERSION}:anime:1:stale",
+            stale,
+            anilist.STALE_TTL,
+        )
         request_mock.side_effect = requests.Timeout("down")
 
         self.assertEqual(anilist.anime("1"), stale)
@@ -260,8 +264,85 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["rating"]["vote_count"], 100)
         self.assertEqual(result["characters"][0]["role"], "Main")
         self.assertEqual(result["creators"][0]["role"], "Story & Art")
+        self.assertEqual(result["creators"][0]["person_source"], "anilist")
+        self.assertEqual(result["creators"][0]["person_id"], "2")
         self.assertEqual(result["relations"][0]["media_type"], "anime")
         self.assertEqual(result["relations"][0]["relation"], "Adaptation")
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_person_page_normalizes_profile_and_mal_manga_credits(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Staff": {
+                    "id": 106705,
+                    "name": {
+                        "full": "Hajime Isayama",
+                        "native": "諫山創",
+                        "alternative": [],
+                    },
+                    "image": {"large": "https://img.example/isayama.jpg"},
+                    "description": "<b>Mangaka</b> and [creator](https://example.com).",
+                    "primaryOccupations": ["Mangaka"],
+                    "dateOfBirth": {"year": 1986, "month": 8, "day": 29},
+                    "dateOfDeath": {},
+                    "homeTown": "Oita, Japan",
+                    "favourites": 6785,
+                    "staffMedia": {
+                        "pageInfo": {"hasNextPage": False},
+                        "edges": [
+                            {
+                                "staffRole": "Story & Art",
+                                "node": {
+                                    "id": 53390,
+                                    "idMal": 23390,
+                                    "siteUrl": "https://anilist.co/manga/53390",
+                                    "title": {
+                                        "english": "Attack on Titan",
+                                        "romaji": "Shingeki no Kyojin",
+                                    },
+                                    "coverImage": {
+                                        "extraLarge": "https://img.example/aot.jpg",
+                                    },
+                                    "startDate": {
+                                        "year": 2009,
+                                        "month": 9,
+                                        "day": 9,
+                                    },
+                                    "countryOfOrigin": "JP",
+                                    "genres": ["Action"],
+                                    "averageScore": 84,
+                                    "popularity": 225000,
+                                },
+                            },
+                            {
+                                "staffRole": "Story",
+                                "node": {
+                                    "id": 999,
+                                    "idMal": None,
+                                    "title": {"romaji": "AniList-only manga"},
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        result = anilist.person_page("106705")
+
+        self.assertEqual(result["name"], "Hajime Isayama")
+        self.assertEqual(result["biography"], "Mangaka and creator.")
+        self.assertEqual(result["known_for_department"], "Mangaka")
+        self.assertEqual(result["birth_date"], "1986-08-29")
+        self.assertEqual(result["place_of_birth"], "Oita, Japan")
+        self.assertEqual(len(result["credits"]), 1)
+        self.assertEqual(result["credits"][0]["source"], "mal")
+        self.assertEqual(result["credits"][0]["media_id"], "23390")
+        self.assertEqual(result["credits"][0]["credit_roles"], ["Story & Art"])
+        self.assertEqual(result["credits"][0]["languages"], ["Japanese"])
 
 
 class MALAnimeMetadataTests(TestCase):
@@ -383,6 +464,87 @@ class MALAnimeMetadataTests(TestCase):
         fields = request_mock.call_args.kwargs["params"]["fields"]
         for field in ("num_volumes", "authors", "related_anime", "related_manga"):
             self.assertIn(field, fields)
+
+    @patch("app.providers.mal.services.api_request")
+    def test_person_page_normalizes_jikan_mal_profile(self, request_mock):
+        request_mock.return_value = {
+            "data": {
+                "mal_id": 11705,
+                "name": "Hajime Isayama",
+                "images": {
+                    "jpg": {"image_url": "https://img.example/isayama.jpg"},
+                },
+                "birthday": "1986-08-29T00:00:00+00:00",
+                "about": "<b>Manga creator</b>",
+                "favorites": 100,
+                "manga": [
+                    {
+                        "position": "Story & Art",
+                        "manga": {
+                            "mal_id": 23390,
+                            "title": "Shingeki no Kyojin",
+                            "url": "https://myanimelist.net/manga/23390",
+                            "images": {
+                                "jpg": {
+                                    "large_image_url": "https://img.example/aot.jpg",
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        }
+
+        result = mal.person_page("11705")
+
+        self.assertEqual(result["person_id"], "11705")
+        self.assertEqual(result["biography"], "Manga creator")
+        self.assertEqual(result["credits"][0]["media_id"], "23390")
+        self.assertEqual(result["credits"][0]["credit_roles"], ["Story & Art"])
+
+
+class MangaUpdatesPersonTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.mangaupdates.services.api_request")
+    def test_person_page_normalizes_author_and_series(self, request_mock):
+        request_mock.side_effect = [
+            {
+                "id": 56479861123,
+                "name": "ISAYAMA Hajime",
+                "image": {
+                    "url": {
+                        "original": "https://img.example/isayama.jpg",
+                    },
+                },
+                "birthday": {"year": 1986, "month": 8, "day": 29},
+                "birthplace": "Oita, Japan",
+                "status": "N/A",
+                "stats": {"total_series": 13},
+                "comments": "[Creator](https://example.com) biography.",
+            },
+            {
+                "series_list": [
+                    {
+                        "series_id": 23393951235,
+                        "title": "Shingeki no Kyojin",
+                        "url": "https://www.mangaupdates.com/series/example",
+                        "year": 2009,
+                        "genres": ["Action"],
+                    },
+                ],
+            },
+        ]
+
+        result = mangaupdates.person_page("56479861123")
+
+        self.assertEqual(result["name"], "ISAYAMA Hajime")
+        self.assertEqual(result["biography"], "Creator biography.")
+        self.assertEqual(result["birth_date"], "1986-08-29")
+        self.assertIsNone(result["death_date"])
+        self.assertEqual(result["credits"][0]["source"], "mangaupdates")
+        self.assertEqual(result["credits"][0]["media_id"], "23393951235")
 
 
 class MALMangaMatchingTests(TestCase):

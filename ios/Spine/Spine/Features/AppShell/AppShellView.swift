@@ -309,6 +309,9 @@ private struct TabBarSelectionObserver: UIViewControllerRepresentable {
             previousDelegate?.tabBarController?(tabBarController, didSelect: viewController)
 
             guard let index = tabBarController.viewControllers?.firstIndex(of: viewController) else { return }
+            if AppTab(tabBarIndex: index) == .profile {
+                tabBarController.tabBar.items?[index].selectedImage = tabBarController.tabBar.items?[index].image
+            }
             onSelect(index)
         }
     }

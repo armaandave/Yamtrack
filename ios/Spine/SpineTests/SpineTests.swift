@@ -3,6 +3,61 @@ import UIKit
 @testable import Spine
 
 final class SpineTests: XCTestCase {
+    func testMangaCreatorCreditsOpenSharedPeoplePages() {
+        let creator = CreditPerson(
+            id: "106705",
+            name: "Hajime Isayama",
+            personSource: "anilist",
+            role: "Story & Art",
+            character: nil,
+            imageUrl: "https://example.com/isayama.jpg"
+        )
+        let detail = MediaDetail(
+            ref: MediaRef(
+                itemId: nil,
+                source: "mal",
+                mediaType: "manga",
+                mediaId: "23390",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Attack on Titan",
+            details: [
+                "authors": .array([.string("Hajime Isayama")]),
+            ],
+            crew: [creator]
+        )
+
+        XCTAssertEqual(
+            creator.personRef,
+            PersonRef(source: "anilist", id: "106705")
+        )
+        XCTAssertEqual(
+            MediaCreditPresentation.make(for: detail)?.people.first?.personRef,
+            creator.personRef
+        )
+    }
+
+    func testPersonFilmographySupportsManga() {
+        let manga = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "mal",
+                mediaType: "manga",
+                mediaId: "23390",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Attack on Titan",
+            roles: ["Story & Art"],
+            creditRoles: ["Story & Art"]
+        )
+
+        XCTAssertEqual(FilmographyType.available(in: [manga]), [.manga])
+        XCTAssertEqual(FilmographyType.manga.sectionTitle, "Manga")
+        XCTAssertEqual(FilmographyType.manga.creditNoun(count: 2), "manga")
+    }
+
     func testAppRepositoriesExposeInjectedMusicRepository() async {
         let repositories = fakeRepositories(auth: FakeAuthRepository(hasStoredTokens: false))
         let album = MediaRef(
@@ -700,6 +755,7 @@ final class SpineTests: XCTestCase {
             XCTAssertTrue(
                 MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
                     mediaType: mediaType,
+                    ratings: [],
                     preparation: pending
                 ),
                 "Expected a pending placeholder for \(mediaType)"
@@ -707,15 +763,36 @@ final class SpineTests: XCTestCase {
         }
         XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
             mediaType: "music",
+            ratings: [],
             preparation: pending
         ))
         XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
             mediaType: "movie",
+            ratings: [],
             preparation: .ready
         ))
         XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
             mediaType: "movie",
+            ratings: [],
             preparation: MediaExternalRatingsPreparation(state: .degraded, retryAfterSeconds: 2)
+        ))
+        XCTAssertFalse(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: "game",
+            ratings: [rating],
+            preparation: pending
+        ))
+        XCTAssertTrue(MediaExternalRatingPresentation.showsExternalRatingPlaceholder(
+            mediaType: "game",
+            ratings: [
+                ExternalRating(
+                    source: "IGDB",
+                    value: "92",
+                    voteCount: 1_000,
+                    maxValue: "100",
+                    url: nil
+                ),
+            ],
+            preparation: pending
         ))
         let updatedChip = RatingChip(
             source: rating.source.ratingAbbreviation,
