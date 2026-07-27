@@ -294,6 +294,50 @@ class AnimeDetailEnrichmentTests(TestCase):
             ["https://img.example/one.jpg", "https://img.example/two.jpg"],
         )
 
+    def test_person_series_uses_the_viewers_custom_poster(self):
+        user = get_user_model().objects.create_user(
+            username="anime-person-series",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            media_id="1",
+            title="Example Series",
+            image="https://cdn.myanimelist.net/default.jpg",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom.jpg",
+        )
+        raw_credits = [
+            {
+                "media_id": "1",
+                "media_type": "anime",
+                "title": "Example Series",
+                "image": "https://cdn.myanimelist.net/default.jpg",
+                "release_date": "2020-01-01",
+                "series_links": [{"media_id": "2", "relation": "Sequel"}],
+                "_catalog_item": item,
+            },
+            {
+                "media_id": "2",
+                "media_type": "anime",
+                "title": "Example Series 2",
+                "image": "https://cdn.myanimelist.net/two.jpg",
+                "release_date": "2021-01-01",
+                "series_links": [{"media_id": "1", "relation": "Prequel"}],
+            },
+        ]
+
+        result = media._anime_person_series(raw_credits, user=user)
+
+        self.assertEqual(
+            result[0]["poster_urls"],
+            ["https://example.com/custom.jpg", "https://cdn.myanimelist.net/two.jpg"],
+        )
+
 
 class AnimeArtworkTests(TestCase):
     """Verify anime uses the existing artwork preference flow."""

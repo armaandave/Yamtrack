@@ -3766,6 +3766,33 @@ class ApiV1FoundationTests(TestCase):
             ["Voice Actor", "Theme Song Performance"],
         )
 
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_anilist_person_keeps_provider_poster_when_mal_artwork_is_unavailable(
+        self,
+        person_mock,
+    ):
+        person_mock.return_value = {
+            "source": "anilist",
+            "person_id": "95158",
+            "name": "Marina Inoue",
+            "credits": [{
+                "media_type": MediaTypes.ANIME.value,
+                "source": Sources.MAL.value,
+                "media_id": "16498",
+                "title": "Attack on Titan",
+                "image": "https://s4.anilist.co/file/anilistcdn/aot.jpg",
+                "credit_roles": ["Voice Actor"],
+            }],
+        }
+
+        response = self.client.get("/api/v1/people/anilist/95158/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["credits"]["cast"][0]["poster_url"],
+            "https://s4.anilist.co/file/anilistcdn/aot.jpg",
+        )
+
     def test_anilist_person_rejects_invalid_credit_page(self):
         response = self.client.get(
             "/api/v1/people/anilist/106705/",

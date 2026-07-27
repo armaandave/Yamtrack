@@ -832,6 +832,8 @@ def _schedule_person_page_refresh(person_id, page):
 
 
 def _apply_mal_anime_credit_images(person_id, staff, person):
+    from app.providers import mal  # noqa: PLC0415
+
     anime_credits = [
         credit
         for credit in person.get("credits") or []
@@ -849,10 +851,16 @@ def _apply_mal_anime_credit_images(person_id, staff, person):
             _alternative_staff_names(name),
             _fuzzy_date(staff.get("dateOfBirth")),
         )
+    cached_images = mal.cached_anime_posters(
+        credit.get("media_id") for credit in anime_credits
+    )
     for credit in anime_credits:
-        credit["image"] = images.get(
-            (MediaTypes.ANIME.value, str(credit.get("media_id") or "")),
-        )
+        media_id = str(credit.get("media_id") or "")
+        image = images.get(
+            (MediaTypes.ANIME.value, media_id),
+        ) or cached_images.get(media_id)
+        if image:
+            credit["image"] = image
 
 
 def _media(mal_id, *, media_kind, query, raise_errors):

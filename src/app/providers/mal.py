@@ -25,6 +25,9 @@ MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
 MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
 MANGA_MATCH_FAILURE_TTL = 60 * 5
 PERSON_TTL = 60 * 60 * 24
+ANIME_CACHE_VERSION = "v4"
+ANIME_POSTER_CACHE_VERSION = "v1"
+ANIME_POSTER_TTL = 60 * 60 * 24 * 30
 ANIME_CAST_CACHE_VERSION = "v1"
 ANIME_CAST_FRESH_TTL = 60 * 60 * 24
 ANIME_CAST_STALE_TTL = 60 * 60 * 24 * 30
@@ -105,6 +108,9 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
             }
             for media in response
         ]
+        if media_type == MediaTypes.ANIME.value:
+            for result in results:
+                _cache_anime_poster(result["media_id"], result["image"])
         results = rank_results(
             query,
             results,
@@ -126,7 +132,10 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
 
 def anime(media_id, *, timeout=None, retry_rate_limits=True):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v4"
+    cache_key = (
+        f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_"
+        f"{ANIME_CACHE_VERSION}"
+    )
     data = cache.get(cache_key)
 
     if data is None:
@@ -191,7 +200,56 @@ def anime(media_id, *, timeout=None, retry_rate_limits=True):
 
         cache.set(cache_key, data)
 
+    _cache_anime_poster(media_id, data.get("image"))
     return data
+
+
+def cached_anime_poster(media_id):
+    """Return MAL's cached canonical poster without making a provider request."""
+    return cached_anime_posters([media_id]).get(str(media_id))
+
+
+def cached_anime_posters(media_ids):
+    """Return cached canonical posters for many MAL anime in two reads."""
+    media_ids = {str(media_id) for media_id in media_ids if media_id not in {None, ""}}
+    if not media_ids:
+        return {}
+    poster_keys = {
+        media_id: f"mal:{ANIME_POSTER_CACHE_VERSION}:anime-poster:{media_id}"
+        for media_id in media_ids
+    }
+    cached = cache.get_many(poster_keys.values())
+    posters = {
+        media_id: cached[key]
+        for media_id, key in poster_keys.items()
+        if cached.get(key)
+    }
+    missing = media_ids - posters.keys()
+    if not missing:
+        return posters
+    detail_keys = {
+        media_id: (
+            f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_"
+            f"{ANIME_CACHE_VERSION}"
+        )
+        for media_id in missing
+    }
+    details = cache.get_many(detail_keys.values())
+    for media_id, key in detail_keys.items():
+        data = details.get(key)
+        image = data.get("image") if isinstance(data, dict) else None
+        if image and image != settings.IMG_NONE:
+            posters[media_id] = image
+    return posters
+
+
+def _cache_anime_poster(media_id, image):
+    if image and image != settings.IMG_NONE:
+        cache.set(
+            f"mal:{ANIME_POSTER_CACHE_VERSION}:anime-poster:{media_id}",
+            image,
+            ANIME_POSTER_TTL,
+        )
 
 
 def anime_series(media_id):
@@ -1239,7 +1297,7 @@ def get_score_count(response):
 def get_related(related_medias, media_type):
     """Return list of related media for the selected media."""
     if related_medias:
-        return [
+        results = [
             {
                 "media_id": media["node"]["id"],
                 "source": Sources.MAL.value,
@@ -1250,6 +1308,10 @@ def get_related(related_medias, media_type):
             }
             for media in related_medias
         ]
+        if media_type == MediaTypes.ANIME.value:
+            for result in results:
+                _cache_anime_poster(result["media_id"], result["image"])
+        return results
     return []
 
 

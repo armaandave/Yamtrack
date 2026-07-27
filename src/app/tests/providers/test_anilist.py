@@ -1,10 +1,11 @@
 from unittest.mock import patch
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase
 
-from app.models import MediaTypes
+from app.models import MediaTypes, Sources
 from app.providers import anilist, mal, mangaupdates, services
 
 
@@ -704,10 +705,12 @@ class AniListProviderTests(TestCase):
             request_session=requests,
         )
 
+    @patch("app.providers.mal.cached_anime_posters", return_value={})
     @patch("app.providers.anilist.refresh_person_credit_images", return_value={})
-    def test_person_page_does_not_use_anilist_cover_as_anime_poster(
+    def test_person_page_keeps_anilist_cover_when_mal_is_unavailable(
         self,
         _refresh_mock,
+        _cached_poster_mock,
     ):
         person = {
             "credits": [{
@@ -723,12 +726,72 @@ class AniListProviderTests(TestCase):
             person,
         )
 
-        self.assertIsNone(person["credits"][0]["image"])
+        self.assertEqual(
+            person["credits"][0]["image"],
+            "https://img.anilist.co/one-piece.jpg",
+        )
+        _cached_poster_mock.assert_called_once()
+
+    @patch(
+        "app.providers.mal.cached_anime_posters",
+        return_value={"21": "https://cdn.myanimelist.net/one-piece.jpg"},
+    )
+    @patch("app.providers.anilist.refresh_person_credit_images", return_value={})
+    def test_person_page_uses_cached_mal_poster_when_jikan_is_unavailable(
+        self,
+        _refresh_mock,
+        _cached_poster_mock,
+    ):
+        person = {
+            "credits": [{
+                "media_type": MediaTypes.ANIME.value,
+                "media_id": "21",
+                "image": "https://img.anilist.co/one-piece.jpg",
+            }],
+        }
+
+        anilist._apply_mal_anime_credit_images(
+            "950",
+            {"name": {"full": "Mayumi Tanaka"}},
+            person,
+        )
+
+        self.assertEqual(
+            person["credits"][0]["image"],
+            "https://cdn.myanimelist.net/one-piece.jpg",
+        )
+        _cached_poster_mock.assert_called_once()
 
 
 class MALAnimeMetadataTests(TestCase):
     def setUp(self):
         cache.clear()
+
+    def test_cached_anime_poster_returns_only_valid_mal_artwork(self):
+        cache_key = (
+            f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_21_"
+            f"{mal.ANIME_CACHE_VERSION}"
+        )
+        cache.set(cache_key, {"image": "https://cdn.myanimelist.net/one-piece.jpg"})
+        mal._cache_anime_poster(
+            "16498",
+            "https://cdn.myanimelist.net/attack-on-titan.jpg",
+        )
+
+        self.assertEqual(
+            mal.cached_anime_poster("21"),
+            "https://cdn.myanimelist.net/one-piece.jpg",
+        )
+        self.assertEqual(
+            mal.cached_anime_posters(["21", "16498", "missing"]),
+            {
+                "21": "https://cdn.myanimelist.net/one-piece.jpg",
+                "16498": "https://cdn.myanimelist.net/attack-on-titan.jpg",
+            },
+        )
+
+        cache.set(cache_key, {"image": settings.IMG_NONE})
+        self.assertIsNone(mal.cached_anime_poster("21"))
 
     @patch("app.providers.mal.services.api_request")
     def test_anime_keeps_english_title_pictures_and_relation_type(
@@ -795,6 +858,18 @@ class MALAnimeMetadataTests(TestCase):
         self.assertEqual(len(result["posters"]), 2)
         self.assertEqual(result["related"]["relations"][0]["relation"], "Prequel")
         self.assertNotIn("relation", result["related"]["recommendations"][0])
+        self.assertEqual(
+            mal.cached_anime_poster("16498"),
+            "https://img.example/main.jpg",
+        )
+        self.assertEqual(
+            mal.cached_anime_poster("100"),
+            "https://img.example/prequel.jpg",
+        )
+        self.assertEqual(
+            mal.cached_anime_poster("200"),
+            "https://img.example/recommendation.jpg",
+        )
         fields = request_mock.call_args.kwargs["params"]["fields"]
         self.assertIn("alternative_titles", fields)
         self.assertIn("pictures", fields)
