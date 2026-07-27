@@ -126,7 +126,7 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
 
 def anime(media_id, *, timeout=None, retry_rate_limits=True):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v3"
+    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v4"
     data = cache.get(cache_key)
 
     if data is None:
@@ -1239,6 +1239,8 @@ def get_related(related_medias, media_type):
 
 def _mal_relation(media):
     value = media.get("relation_type_formatted") or media.get("relation_type")
+    if not value:
+        return None
     return str(value).replace("_", " ").strip().title() or None
 
 

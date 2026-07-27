@@ -514,8 +514,40 @@ class AniListProviderTests(TestCase):
             anilist.STAFF_QUERY.count("sort: [POPULARITY_DESC, SCORE_DESC]"),
             3,
         )
-        self.assertEqual(anilist.STAFF_QUERY.count("perPage: 50"), 3)
+        self.assertEqual(anilist.STAFF_QUERY.count("perPage: 25"), 3)
         self.assertIn("characterRole", anilist.STAFF_QUERY)
+
+    @patch("app.providers.anilist._schedule_person_poster_refresh")
+    @patch("app.providers.anilist._schedule_person_page_refresh")
+    @patch("app.providers.anilist.services.api_request")
+    def test_person_page_returns_stale_immediately_and_schedules_refresh(
+        self,
+        request_mock,
+        schedule_mock,
+        _poster_schedule_mock,
+    ):
+        _, stale_key, _, _ = anilist._person_page_keys("100142", 1)
+        cache.set(
+            stale_key,
+            {
+                "staff": {
+                    "id": 100142,
+                    "name": {"full": "Yui Ishikawa"},
+                    "primaryOccupations": ["Voice Actor"],
+                },
+                "manga_edges": [],
+                "anime_staff_edges": [],
+                "anime_voice_edges": [],
+                "has_next_page": False,
+            },
+            60,
+        )
+
+        result = anilist.person_page("100142")
+
+        self.assertEqual(result["name"], "Yui Ishikawa")
+        request_mock.assert_not_called()
+        schedule_mock.assert_called_once_with("100142", 1)
 
     @patch(
         "app.providers.mal.person_page_by_name",
@@ -631,9 +663,19 @@ class AniListProviderTests(TestCase):
             ),
         ]
 
-        result = anilist.person_page("110665")
+        first_page = anilist.person_page("110665")
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertIs(
+            request_mock.call_args.kwargs["request_session"],
+            requests,
+        )
+        result = anilist.person_page("110665", page=2)
 
         self.assertEqual(request_mock.call_count, 2)
+        self.assertEqual(first_page["credits_page"], 1)
+        self.assertEqual(first_page["credits_next_page"], 2)
+        self.assertEqual(result["credits_page"], 2)
+        self.assertIsNone(result["credits_next_page"])
         self.assertEqual(result["alternative_names"], ["梶裕貴", "Kaji Yuki"])
         self.assertEqual(result["known_for_department"], "Voice Actor")
         self.assertEqual(len(result["credits"]), 2)
@@ -712,7 +754,17 @@ class MALAnimeMetadataTests(TestCase):
                     "relation_type_formatted": "Prequel",
                 },
             ],
-            "recommendations": [],
+            "recommendations": [
+                {
+                    "node": {
+                        "id": 200,
+                        "title": "A Recommendation",
+                        "main_picture": {
+                            "large": "https://img.example/recommendation.jpg",
+                        },
+                    },
+                },
+            ],
         }
 
         result = mal.anime("16498")
@@ -721,6 +773,7 @@ class MALAnimeMetadataTests(TestCase):
         self.assertEqual(result["display_title"], "Attack on Titan")
         self.assertEqual(len(result["posters"]), 2)
         self.assertEqual(result["related"]["relations"][0]["relation"], "Prequel")
+        self.assertNotIn("relation", result["related"]["recommendations"][0])
         fields = request_mock.call_args.kwargs["params"]["fields"]
         self.assertIn("alternative_titles", fields)
         self.assertIn("pictures", fields)

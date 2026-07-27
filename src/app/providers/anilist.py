@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from datetime import UTC, datetime
 
 import requests
@@ -18,7 +19,11 @@ STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
 CACHE_VERSION = "v4"
-PERSON_CACHE_VERSION = "v5"
+PERSON_CACHE_VERSION = "v6"
+PERSON_PAGE_LIMIT = 20
+PERSON_LOCK_TTL = REQUEST_TIMEOUT + 2
+PERSON_REFRESH_MARKER_TTL = 60
+PERSON_POSTER_CACHE_VERSION = "v1"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
@@ -313,7 +318,7 @@ query ($id: Int!, $page: Int!) {
     mangaStaffMedia: staffMedia(
       type: MANGA
       page: $page
-      perPage: 50
+      perPage: 25
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -355,7 +360,7 @@ query ($id: Int!, $page: Int!) {
     animeStaffMedia: staffMedia(
       type: ANIME
       page: $page
-      perPage: 50
+      perPage: 25
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -405,7 +410,7 @@ query ($id: Int!, $page: Int!) {
     }
     animeCharacterMedia: characterMedia(
       page: $page
-      perPage: 50
+      perPage: 25
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -594,96 +599,68 @@ def anime_reviews(mal_id, page):
         raise services.ProviderAPIError("anilist", error) from error
 
 
-def person_page(person_id):
-    """Return an AniList staff profile with navigable MAL-backed credits."""
-    fresh_key = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:fresh"
-    stale_key = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:stale"
-    if data := cache.get(fresh_key):
-        return data
+def person_page(person_id, *, page=1):
+    """Return a cumulative, lazily paged AniList staff profile."""
+    page = int(page)
+    if not 1 <= page <= PERSON_PAGE_LIMIT:
+        raise ValueError(f"AniList person page must be 1-{PERSON_PAGE_LIMIT}")
 
-    stale = cache.get(stale_key)
-    try:
-        staff = None
-        manga_edges = []
-        anime_staff_edges = []
-        anime_voice_edges = []
-        page = 1
-        while True:
-            response = services.api_request(
-                "ANILIST",
-                "POST",
-                API_URL,
-                params={
-                    "query": STAFF_QUERY,
-                    "variables": {"id": int(person_id), "page": page},
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-            current = (response.get("data") or {}).get("Staff")
-            if not isinstance(current, dict):
-                services.raise_not_found_error("anilist", person_id, "person")
-            staff = staff or current
-            manga_connection = (
-                current.get("mangaStaffMedia")
-                or current.get("staffMedia")
-                or {}
-            )
-            anime_staff_connection = current.get("animeStaffMedia") or {}
-            anime_voice_connection = current.get("animeCharacterMedia") or {}
-            manga_edges.extend(manga_connection.get("edges") or [])
-            anime_staff_edges.extend(anime_staff_connection.get("edges") or [])
-            anime_voice_edges.extend(anime_voice_connection.get("edges") or [])
-            if not any(
-                (connection.get("pageInfo") or {}).get("hasNextPage")
-                for connection in (
-                    manga_connection,
-                    anime_staff_connection,
-                    anime_voice_connection,
-                )
-            ):
-                break
-            page += 1
+    pages = []
+    for page_number in range(1, page + 1):
+        payload = _person_staff_page(person_id, page_number)
+        pages.append(payload)
+        if not payload["has_next_page"]:
+            break
 
-        data = _normalize_staff(
-            staff,
-            manga_edges,
-            anime_staff_edges,
-            anime_voice_edges,
-        )
-        cache.set(fresh_key, data, FRESH_TTL)
-        cache.set(stale_key, data, STALE_TTL)
-        _use_mal_anime_credit_images(data)
-        cache.set(fresh_key, data, FRESH_TTL)
-        cache.set(stale_key, data, STALE_TTL)
-        return data
-    except (
-        requests.RequestException,
-        services.ProviderAPIError,
-        AttributeError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as error:
-        if stale:
-            return stale
-        if isinstance(error, services.ProviderAPIError):
-            raise
-        raise services.ProviderAPIError("anilist", error) from error
+    data = _normalize_staff(
+        pages[0]["staff"],
+        [
+            edge
+            for payload in pages
+            for edge in payload["manga_edges"]
+        ],
+        [
+            edge
+            for payload in pages
+            for edge in payload["anime_staff_edges"]
+        ],
+        [
+            edge
+            for payload in pages
+            for edge in payload["anime_voice_edges"]
+        ],
+    )
+    current_page = len(pages)
+    data["credits_page"] = current_page
+    data["credits_next_page"] = (
+        current_page + 1
+        if current_page < PERSON_PAGE_LIMIT and pages[-1]["has_next_page"]
+        else None
+    )
+    _schedule_person_poster_refresh(person_id, pages[0]["staff"])
+    _apply_cached_mal_anime_credit_images(person_id, data)
+    return data
 
 
-def _use_mal_anime_credit_images(person):
-    """Replace AniList covers with the canonical MAL filmography posters."""
+def refresh_person_page(person_id, page):
+    """Refresh one cached AniList staff page outside the request path."""
+    return _refresh_person_staff_page(person_id, int(page))
+
+
+def refresh_person_credit_images(
+    person_id,
+    name,
+    alternative_names=None,
+    birth_date=None,
+):
+    """Cache canonical MAL posters for an AniList person's anime credits."""
     try:
         from app.providers import mal  # noqa: PLC0415
 
         mal_person = mal.person_page_by_name(
-            person.get("name"),
-            person.get("alternative_names"),
-            person.get("birth_date"),
+            name,
+            alternative_names,
+            birth_date,
         )
     except (
         requests.RequestException,
@@ -693,17 +670,202 @@ def _use_mal_anime_credit_images(person):
         TypeError,
         ValueError,
     ) as error:
-        logger.warning("MAL poster enrichment unavailable for %s: %s", person.get("name"), error)
-        return
+        logger.warning("MAL poster enrichment unavailable for %s: %s", name, error)
+        cache.set(_person_poster_key(person_id), {}, FAILURE_TTL)
+        return {}
     mal_images = {
         (credit.get("media_type"), str(credit.get("media_id") or "")): credit.get("image")
         for credit in (mal_person or {}).get("credits") or []
         if credit.get("image")
     }
+    cache.set(_person_poster_key(person_id), mal_images, STALE_TTL)
+    return mal_images
+
+
+def _person_staff_page(person_id, page):
+    fresh_key, stale_key, failure_key, _ = _person_page_keys(person_id, page)
+    if data := cache.get(fresh_key):
+        return data
+
+    stale = cache.get(stale_key)
+    if stale is not None:
+        if not cache.get(failure_key):
+            _schedule_person_page_refresh(person_id, page)
+        return stale
+    if cache.get(failure_key):
+        raise services.ProviderAPIError(
+            "anilist",
+            RuntimeError("Cached AniList person failure"),
+        )
+    return _refresh_person_staff_page(person_id, page)
+
+
+def _refresh_person_staff_page(person_id, page):
+    fresh_key, stale_key, failure_key, lock_key = _person_page_keys(person_id, page)
+    stale = cache.get(stale_key)
+    if not cache.add(lock_key, 1, timeout=PERSON_LOCK_TTL):
+        deadline = time.monotonic() + PERSON_LOCK_TTL
+        while time.monotonic() < deadline:
+            if data := cache.get(fresh_key):
+                return data
+            if cache.get(failure_key):
+                break
+            time.sleep(0.05)
+        if stale is not None:
+            return stale
+        raise services.ProviderAPIError(
+            "anilist",
+            RuntimeError("AniList person refresh is already in progress"),
+        )
+
+    try:
+        response = services.api_request(
+            "ANILIST",
+            "POST",
+            API_URL,
+            params={
+                "query": STAFF_QUERY,
+                "variables": {"id": int(person_id), "page": page},
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=REQUEST_TIMEOUT,
+            retry_rate_limits=False,
+            # Person pages must fail inside the native client's request budget.
+            # A provider 429 is cached below instead of occupying a web worker.
+            request_session=requests,
+        )
+        current = (response.get("data") or {}).get("Staff")
+        if not isinstance(current, dict):
+            services.raise_not_found_error("anilist", person_id, "person")
+        data = _staff_page_payload(current)
+        cache.set(fresh_key, data, FRESH_TTL)
+        cache.set(stale_key, data, STALE_TTL)
+        cache.delete(failure_key)
+        return data
+    except (
+        requests.RequestException,
+        services.ProviderAPIError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        cache.set(failure_key, True, FAILURE_TTL)
+        if stale is not None:
+            return stale
+        if isinstance(error, services.ProviderAPIError):
+            raise
+        raise services.ProviderAPIError("anilist", error) from error
+    finally:
+        cache.delete(lock_key)
+
+
+def _staff_page_payload(staff):
+    manga_connection = staff.get("mangaStaffMedia") or staff.get("staffMedia") or {}
+    anime_staff_connection = staff.get("animeStaffMedia") or {}
+    anime_voice_connection = staff.get("animeCharacterMedia") or {}
+    profile = {
+        key: value
+        for key, value in staff.items()
+        if key
+        not in {
+            "staffMedia",
+            "mangaStaffMedia",
+            "animeStaffMedia",
+            "animeCharacterMedia",
+        }
+    }
+    connections = (
+        manga_connection,
+        anime_staff_connection,
+        anime_voice_connection,
+    )
+    return {
+        "staff": profile,
+        "manga_edges": manga_connection.get("edges") or [],
+        "anime_staff_edges": anime_staff_connection.get("edges") or [],
+        "anime_voice_edges": anime_voice_connection.get("edges") or [],
+        "has_next_page": any(
+            (connection.get("pageInfo") or {}).get("hasNextPage") is True
+            for connection in connections
+        ),
+    }
+
+
+def _person_page_keys(person_id, page):
+    prefix = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:page:{page}"
+    return (
+        f"{prefix}:fresh",
+        f"{prefix}:stale",
+        f"{prefix}:failure",
+        f"{prefix}:lock",
+    )
+
+
+def _person_poster_key(person_id):
+    return (
+        f"anilist:{PERSON_POSTER_CACHE_VERSION}:person:{person_id}:mal-credit-images"
+    )
+
+
+def _schedule_person_page_refresh(person_id, page):
+    marker = (
+        f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:page:{page}:refresh"
+    )
+    if not cache.add(marker, 1, timeout=PERSON_REFRESH_MARKER_TTL):
+        return
+    try:
+        from app.tasks import refresh_anilist_person_page  # noqa: PLC0415
+
+        refresh_anilist_person_page.delay(str(person_id), int(page), marker)
+    except Exception:
+        cache.delete(marker)
+        logger.exception(
+            "Could not enqueue AniList person refresh id=%s page=%s",
+            person_id,
+            page,
+        )
+
+
+def _schedule_person_poster_refresh(person_id, staff):
+    poster_key = _person_poster_key(person_id)
+    if cache.get(poster_key) is not None:
+        return
+    marker = f"{poster_key}:refresh"
+    if not cache.add(marker, 1, timeout=FAILURE_TTL):
+        return
+    name = staff.get("name") or {}
+    try:
+        from app.tasks import refresh_anilist_person_posters  # noqa: PLC0415
+
+        refresh_anilist_person_posters.delay(
+            str(person_id),
+            name.get("full") or name.get("native") or "",
+            _alternative_staff_names(name),
+            _fuzzy_date(staff.get("dateOfBirth")),
+            marker,
+        )
+    except Exception:
+        cache.delete(marker)
+        logger.exception(
+            "Could not enqueue MAL poster refresh for AniList person %s",
+            person_id,
+        )
+
+
+def _apply_cached_mal_anime_credit_images(person_id, person):
+    images = cache.get(_person_poster_key(person_id))
+    if images is None:
+        return
     for credit in person.get("credits") or []:
         if credit.get("media_type") != MediaTypes.ANIME.value:
             continue
-        image = mal_images.get((MediaTypes.ANIME.value, str(credit.get("media_id") or "")))
+        image = images.get(
+            (MediaTypes.ANIME.value, str(credit.get("media_id") or "")),
+        )
         if image:
             credit["image"] = image
 

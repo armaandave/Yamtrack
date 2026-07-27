@@ -6874,17 +6874,10 @@ private struct RecommendationsSection: View {
                                         .foregroundStyle(.white)
                                         .lineLimit(2)
                                         .frame(height: 32, alignment: .topLeading)
-                                    if section.id == "series",
-                                       let subtitle = item.subtitle?.nilIfEmpty {
-                                        Text(subtitle)
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.5))
-                                            .lineLimit(2)
-                                    }
                                 }
                                 .frame(
                                     width: MediaDetailLayout.recommendationPosterSize.width,
-                                    height: MediaDetailLayout.recommendationCardHeight + (section.id == "series" ? 28 : 0),
+                                    height: MediaDetailLayout.recommendationCardHeight,
                                     alignment: .topLeading
                                 )
                             }

@@ -59,7 +59,6 @@ if build_was_all_cached "$build_log"; then
 fi
 
 "${compose[@]}" exec -T app python manage.py migrate
-"${compose[@]}" exec -T app python manage.py shell -c 'from django.core.cache import cache; cache.clear()'
 
 curl --fail --show-error --silent https://api.spine-api.com/api/v1/health/
 echo

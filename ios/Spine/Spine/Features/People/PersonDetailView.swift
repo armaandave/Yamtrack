@@ -17,9 +17,11 @@ final class PersonDetailViewModel {
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .empty
     var isLoading = true
+    var isLoadingNextPage = false
     var isPreparationPolling = false
     var preparationTimedOut = false
     var errorMessage: String?
+    var nextPageErrorMessage: String?
 
     private let ref: PersonRef
     private let peopleRepository: PeopleRepository
@@ -29,6 +31,10 @@ final class PersonDetailViewModel {
     private var requestGeneration = 0
     private var presentedFilter: MediaFilterState?
     private var pollingTask: Task<Void, Never>?
+
+    var canLoadMore: Bool {
+        detail?.creditsNextPage != nil
+    }
 
     init(
         ref: PersonRef,
@@ -55,7 +61,9 @@ final class PersonDetailViewModel {
         }
         presentedFilter = requestFilter
         isLoading = true
+        isLoadingNextPage = false
         errorMessage = nil
+        nextPageErrorMessage = nil
         defer {
             if generation == requestGeneration, requestFilter == filter {
                 isLoading = false
@@ -63,7 +71,11 @@ final class PersonDetailViewModel {
         }
 
         do {
-            let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+            let loaded = try await peopleRepository.detail(
+                ref: ref,
+                filter: requestFilter,
+                creditsPage: 1
+            )
             guard generation == requestGeneration, requestFilter == filter else { return }
             apply(loaded, requestFilter: requestFilter)
             startPreparationPollingIfNeeded(requestFilter: requestFilter, generation: generation)
@@ -81,6 +93,37 @@ final class PersonDetailViewModel {
     func cancelPreparation() {
         requestGeneration += 1
         stopPreparationPolling()
+    }
+
+    func loadNextPage() async {
+        guard let page = detail?.creditsNextPage, !isLoadingNextPage else { return }
+        let generation = requestGeneration
+        let requestFilter = filter
+        isLoadingNextPage = true
+        nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, requestFilter == filter {
+                isLoadingNextPage = false
+            }
+        }
+
+        do {
+            let loaded = try await peopleRepository.detail(
+                ref: ref,
+                filter: requestFilter,
+                creditsPage: page
+            )
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            apply(loaded, requestFilter: requestFilter)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == requestGeneration, requestFilter == filter else { return }
+            nextPageErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
     }
 
     private func apply(_ loaded: PersonDetail, requestFilter: MediaFilterState) {
@@ -114,7 +157,11 @@ final class PersonDetailViewModel {
                 guard !Task.isCancelled,
                       generation == requestGeneration,
                       requestFilter == filter else { return }
-                let loaded = try await peopleRepository.detail(ref: ref, filter: requestFilter)
+                let loaded = try await peopleRepository.detail(
+                    ref: ref,
+                    filter: requestFilter,
+                    creditsPage: detail?.creditsPage ?? 1
+                )
                 guard generation == requestGeneration, requestFilter == filter else { return }
                 apply(loaded, requestFilter: requestFilter)
                 if loaded.ratingPreparation?.state != .pending {
@@ -484,10 +531,45 @@ struct PersonDetailView: View {
                         ForEach(groups) { group in
                             roleDisclosureRow(group, type: selectedType)
                         }
+
+                        creditPagination
                     }
                 }
             }
             .spineContentTransition(value: selectedType)
+        }
+    }
+
+    @ViewBuilder
+    private var creditPagination: some View {
+        if viewModel.canLoadMore || viewModel.nextPageErrorMessage != nil {
+            Button {
+                Task {
+                    await viewModel.loadNextPage()
+                    syncSelectedFilmographyType()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if viewModel.isLoadingNextPage {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white.opacity(0.72))
+                    }
+                    Text(
+                        viewModel.nextPageErrorMessage == nil
+                            ? "Load more credits"
+                            : "Retry loading credits"
+                    )
+                    .font(.system(size: 13, weight: .bold))
+                }
+                .foregroundStyle(.white.opacity(0.78))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isLoadingNextPage)
+            .accessibilityHint(viewModel.nextPageErrorMessage ?? "")
         }
     }
 

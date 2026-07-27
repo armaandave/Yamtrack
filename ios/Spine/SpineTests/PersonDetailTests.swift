@@ -15,6 +15,8 @@ final class PersonDetailTests: XCTestCase {
           "death_date": null,
           "place_of_birth": "Boston, Massachusetts, USA",
           "popularity": 42.7,
+          "credits_page": 1,
+          "credits_next_page": 2,
           "credits": {
             "cast": [
               {
@@ -46,6 +48,8 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.name, "Edward Norton")
         XCTAssertEqual(detail.profileUrl, "https://image.tmdb.org/t/p/h632/profile.jpg")
         XCTAssertEqual(detail.knownForDepartment, "Acting")
+        XCTAssertEqual(detail.creditsPage, 1)
+        XCTAssertEqual(detail.creditsNextPage, 2)
         XCTAssertEqual(detail.filmography.map(\.title), ["Fight Club"])
     }
 
@@ -429,6 +433,38 @@ final class PersonDetailTests: XCTestCase {
     }
 
     @MainActor
+    func testPersonDetailViewModelLoadsNextCumulativeCreditPage() async {
+        let ref = PersonRef(source: "anilist", id: "950")
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(
+                filmography: [mediaSummary(id: "1", title: "First")],
+                creditsPage: 1,
+                creditsNextPage: 2
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "1", title: "First"),
+                    mediaSummary(id: "2", title: "Second"),
+                ],
+                creditsPage: 2
+            )),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: ref,
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertEqual(repository.creditPages, [1, 2])
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertFalse(viewModel.canLoadMore)
+        XCTAssertFalse(viewModel.isLoadingNextPage)
+    }
+
+    @MainActor
     func testPersonDetailViewModelKeepsFilterOptionsAfterFilteredReload() async {
         let ref = PersonRef(source: "tmdb", id: "819")
         let repository = ScriptedPeopleRepository(results: [
@@ -612,7 +648,9 @@ final class PersonDetailTests: XCTestCase {
     private func personDetail(
         filmography: [MediaSummary],
         filterOptions: MediaFilterOptionsResponse? = nil,
-        ratingPreparation: PersonRatingPreparation? = nil
+        ratingPreparation: PersonRatingPreparation? = nil,
+        creditsPage: Int? = nil,
+        creditsNextPage: Int? = nil
     ) -> PersonDetail {
         PersonDetail(
             id: "819",
@@ -627,6 +665,8 @@ final class PersonDetailTests: XCTestCase {
             popularity: 42.7,
             filterOptions: filterOptions,
             ratingPreparation: ratingPreparation,
+            creditsPage: creditsPage,
+            creditsNextPage: creditsNextPage,
             credits: PersonCredits(cast: filmography)
         )
     }
@@ -661,6 +701,7 @@ private final class ScriptedPeopleRepository: PeopleRepository {
     let results: [Result<PersonDetail, Error>]
     var requests: [PersonRef] = []
     var filters: [MediaFilterState] = []
+    var creditPages: [Int?] = []
 
     init(result: Result<PersonDetail, Error>) {
         self.results = [result]
@@ -678,6 +719,15 @@ private final class ScriptedPeopleRepository: PeopleRepository {
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
         filters.append(filter)
         return try await detail(ref: ref)
+    }
+
+    func detail(
+        ref: PersonRef,
+        filter: MediaFilterState,
+        creditsPage: Int?
+    ) async throws -> PersonDetail {
+        creditPages.append(creditsPage)
+        return try await detail(ref: ref, filter: filter)
     }
 }
 

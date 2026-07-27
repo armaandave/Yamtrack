@@ -18,6 +18,7 @@ from api.views.mixins import MediaExposureMixin
 from app import config, exposure, single_weight
 from app.forms import ManualItemForm
 from app.models import BasicMedia, DiaryEntry, MediaTypes, Status
+from app.providers import anilist
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
 
@@ -320,6 +321,19 @@ class PersonDetailView(APIView):
 
     def get(self, request, source, person_id):
         try:
+            credits_page = int(request.query_params.get("credits_page", 1))
+        except (TypeError, ValueError):
+            credits_page = 0
+        if source == "anilist" and not 1 <= credits_page <= anilist.PERSON_PAGE_LIMIT:
+            return Response(
+                {
+                    "credits_page": [
+                        f"Use a page from 1 to {anilist.PERSON_PAGE_LIMIT}.",
+                    ],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
             return Response(
                 media_service.person_detail(
                     source=source,
@@ -327,6 +341,7 @@ class PersonDetailView(APIView):
                     request=request,
                     user=request.user if request.user.is_authenticated else None,
                     params=request.query_params,
+                    credits_page=credits_page,
                 ),
             )
         except NotImplementedError as error:

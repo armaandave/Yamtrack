@@ -418,7 +418,7 @@ def discover(media_type, *, source=None, page=1, page_size=None, genre=None, yea
     raise NotImplementedError(msg)
 
 
-def get_person_page(source, person_id):
+def get_person_page(source, person_id, *, page=None):
     """Return person details and credits for the person page."""
     if source == Sources.TMDB.value:
         return tmdb.person_page(person_id)
@@ -435,7 +435,11 @@ def get_person_page(source, person_id):
     if source == "anilist":
         from app.providers import anilist  # noqa: PLC0415
 
-        return anilist.person_page(person_id)
+        return (
+            anilist.person_page(person_id, page=page)
+            if page is not None
+            else anilist.person_page(person_id)
+        )
     raise_not_found_error(source, person_id, "person")
 
 

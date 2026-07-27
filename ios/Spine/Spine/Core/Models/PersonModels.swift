@@ -18,6 +18,8 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
     let popularity: Double?
     let filterOptions: MediaFilterOptionsResponse?
     let ratingPreparation: PersonRatingPreparation?
+    let creditsPage: Int?
+    let creditsNextPage: Int?
     let series: [MediaSeriesSummary]?
     let credits: PersonCredits
 
@@ -34,6 +36,8 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
         popularity: Double? = nil,
         filterOptions: MediaFilterOptionsResponse? = nil,
         ratingPreparation: PersonRatingPreparation? = nil,
+        creditsPage: Int? = nil,
+        creditsNextPage: Int? = nil,
         series: [MediaSeriesSummary]? = nil,
         credits: PersonCredits
     ) {
@@ -49,6 +53,8 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
         self.popularity = popularity
         self.filterOptions = filterOptions
         self.ratingPreparation = ratingPreparation
+        self.creditsPage = creditsPage
+        self.creditsNextPage = creditsNextPage
         self.series = series
         self.credits = credits
     }

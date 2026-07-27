@@ -262,45 +262,26 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertEqual(result["cast"][0]["person_id"], "11")
         self.assertEqual(result["cast"][0]["person_source"], "mal")
 
-    @patch("api.services.media.anilist.anime_series_nodes")
-    @patch("api.services.media.mal.anime_series")
-    def test_person_series_requires_two_credits_and_uses_canonical_items(
-        self,
-        series_mock,
-        nodes_mock,
-    ):
-        nodes_mock.return_value = {
-            "1": {"series_links": [{"media_id": "2", "relation": "Sequel"}]},
-            "2": {"series_links": [{"media_id": "1", "relation": "Prequel"}]},
-        }
-        series_mock.return_value = {
-            "series_id": "1",
-            "source": "mal",
-            "media_type": "anime",
-            "name": "Example Series",
-            "item_count": 2,
-            "items": [
-                {
-                    "media_id": "1",
-                    "source": "mal",
-                    "media_type": "anime",
-                    "title": "One",
-                    "image": "https://img.example/one.jpg",
-                    "position": 1,
-                },
-                {
-                    "media_id": "2",
-                    "source": "mal",
-                    "media_type": "anime",
-                    "title": "Two",
-                    "image": "https://img.example/two.jpg",
-                    "position": 2,
-                },
-            ],
-        }
+    def test_person_series_requires_two_credits_without_provider_requests(self):
         raw_credits = [
-            {"media_id": "1", "media_type": "anime", "vote_count": 100},
-            {"media_id": "2", "media_type": "anime", "vote_count": 50},
+            {
+                "media_id": "1",
+                "media_type": "anime",
+                "title": "Example Series",
+                "image": "https://img.example/one.jpg",
+                "release_date": "2020-01-01",
+                "vote_count": 100,
+                "series_links": [{"media_id": "2", "relation": "Sequel"}],
+            },
+            {
+                "media_id": "2",
+                "media_type": "anime",
+                "title": "Example Series 2",
+                "image": "https://img.example/two.jpg",
+                "release_date": "2021-01-01",
+                "vote_count": 50,
+                "series_links": [{"media_id": "1", "relation": "Prequel"}],
+            },
         ]
 
         result = media._anime_person_series(raw_credits)

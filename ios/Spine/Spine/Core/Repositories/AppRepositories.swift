@@ -34,6 +34,11 @@ protocol MusicRepository {
 protocol PeopleRepository {
     func detail(ref: PersonRef) async throws -> PersonDetail
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail
+    func detail(
+        ref: PersonRef,
+        filter: MediaFilterState,
+        creditsPage: Int?
+    ) async throws -> PersonDetail
 }
 
 protocol CompanyRepository {
@@ -56,6 +61,14 @@ extension CompanyRepository {
 extension PeopleRepository {
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
         try await detail(ref: ref)
+    }
+
+    func detail(
+        ref: PersonRef,
+        filter: MediaFilterState,
+        creditsPage: Int?
+    ) async throws -> PersonDetail {
+        try await detail(ref: ref, filter: filter)
     }
 }
 
@@ -641,9 +654,21 @@ struct APIPeopleRepository: PeopleRepository {
     }
 
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
-        try await client.get(
+        try await detail(ref: ref, filter: filter, creditsPage: nil)
+    }
+
+    func detail(
+        ref: PersonRef,
+        filter: MediaFilterState,
+        creditsPage: Int?
+    ) async throws -> PersonDetail {
+        var query = filter.queryItems()
+        if let creditsPage {
+            query.append(URLQueryItem(name: "credits_page", value: String(creditsPage)))
+        }
+        return try await client.get(
             "/people/\(ref.source)/\(ref.id)/",
-            query: filter.queryItems(),
+            query: query,
             authenticated: client.tokenProvider.accessToken != nil
         )
     }

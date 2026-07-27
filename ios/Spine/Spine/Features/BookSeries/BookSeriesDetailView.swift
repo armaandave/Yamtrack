@@ -179,12 +179,6 @@ struct SeriesDetailView: View {
                                         .font(.system(size: 11, weight: .bold))
                                         .foregroundStyle(.white)
                                         .lineLimit(2)
-                                    if let subtitle = item.subtitle, !subtitle.isEmpty {
-                                        Text(subtitle)
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.52))
-                                            .lineLimit(2)
-                                    }
                                 }
                             }
                         }

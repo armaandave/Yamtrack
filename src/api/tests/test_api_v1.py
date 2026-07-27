@@ -3690,6 +3690,8 @@ class ApiV1FoundationTests(TestCase):
             "known_for_department": "Mangaka",
             "birth_date": "1986-08-29",
             "place_of_birth": "Oita, Japan",
+            "credits_page": 1,
+            "credits_next_page": 2,
             "credits": [
                 {
                     "media_type": MediaTypes.MANGA.value,
@@ -3728,9 +3730,11 @@ class ApiV1FoundationTests(TestCase):
         response = self.client.get("/api/v1/people/anilist/106705/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        person_mock.assert_called_once_with("anilist", "106705")
+        person_mock.assert_called_once_with("anilist", "106705", page=1)
         self.assertEqual(response.data["alternative_names"], ["諫山創"])
         self.assertEqual(response.data["known_for_department"], "Mangaka")
+        self.assertEqual(response.data["credits_page"], 1)
+        self.assertEqual(response.data["credits_next_page"], 2)
         manga_credit, anime_credit = response.data["credits"]["cast"]
         self.assertEqual(manga_credit["ref"]["source"], Sources.MAL.value)
         self.assertEqual(manga_credit["ref"]["media_type"], MediaTypes.MANGA.value)
@@ -3746,6 +3750,18 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             anime_credit["credit_roles"],
             ["Voice Actor", "Theme Song Performance"],
+        )
+
+    def test_anilist_person_rejects_invalid_credit_page(self):
+        response = self.client.get(
+            "/api/v1/people/anilist/106705/",
+            {"credits_page": "21"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["credits_page"],
+            ["Use a page from 1 to 20."],
         )
 
     @patch("api.services.media.provider_services.get_person_page")

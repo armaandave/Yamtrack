@@ -76,7 +76,6 @@ if [[ ! -e .env.production && ! -L .env.production ]]; then
 fi
 
 docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml up -d --build
-docker compose --project-name spine --env-file "$env_file" -f docker-compose.production.yml exec app python manage.py shell -c "from django.core.cache import cache; cache.clear()"
 
 sync_queued=false
 for attempt in 1 2 3; do

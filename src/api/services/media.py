@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import requests
 from aiohttp import ClientError
+from django.apps import apps
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -40,6 +41,7 @@ from api.serializers.common import (
     find_item,
     get_or_create_item_from_metadata,
     media_summary_from_provider,
+    prime_collection_items,
     related_sections_from_payload,
     seasons_from_metadata,
     synopsis_from_payload,
@@ -96,7 +98,7 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
-ANIME_DETAIL_CACHE_VERSION = "v4"
+ANIME_DETAIL_CACHE_VERSION = "v5"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
@@ -1604,6 +1606,24 @@ def _existing_person_credit_items(person_credits):
     }
 
 
+def _prime_person_items(items, user):
+    """Batch viewer state and artwork preferences for person credit cards."""
+    items = list(items)
+    if not items or not user or not user.is_authenticated:
+        return
+    item_ids_by_type = {}
+    for item in items:
+        item_ids_by_type.setdefault(item.media_type, []).append(item.pk)
+    media_by_item = {}
+    for media_type, item_ids in item_ids_by_type.items():
+        model = apps.get_model("app", media_type)
+        media_by_item.update({
+            media.item_id: media
+            for media in model.objects.filter(user=user, item_id__in=item_ids)
+        })
+    prime_collection_items(items, user, media_by_item=media_by_item)
+
+
 def _curate_person_credits(person_source, person_id, credit_list):
     """Apply explicit curator decisions without discarding unverified provider data."""
     overrides = list(
@@ -1813,7 +1833,15 @@ def _person_rating_preparation(
     }
 
 
-def person_detail(*, source, person_id, request=None, user=None, params=None):
+def person_detail(
+    *,
+    source,
+    person_id,
+    request=None,
+    user=None,
+    params=None,
+    credits_page=1,
+):
     """Return a provider person profile plus iOS-ready media summaries."""
     if source not in {
         Sources.TMDB.value,
@@ -1831,7 +1859,15 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         raise NotImplementedError(msg)
 
     params = params or {}
-    person = provider_services.get_person_page(source, person_id)
+    person = (
+        provider_services.get_person_page(
+            source,
+            person_id,
+            page=credits_page,
+        )
+        if source == "anilist"
+        else provider_services.get_person_page(source, person_id)
+    )
     raw_credits = [
         {**credit, "source": credit.get("source") or source}
         for credit in person.get("credits") or []
@@ -1843,6 +1879,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         if rating_source
         else _existing_person_credit_items(raw_credits)
     )
+    _prime_person_items(items.values(), user)
     enriched_credits = []
     for credit in raw_credits:
         item = items.get(_person_credit_identity(credit))
@@ -1905,10 +1942,9 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
     ]
     series_summaries.extend(
         _anime_person_series(
-            raw_credits,
+            enriched_credits,
             request=request,
             user=user,
-            enrich_missing=source == Sources.MAL.value,
         ),
     )
     return {
@@ -1925,6 +1961,8 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         "popularity": person.get("popularity"),
         "filter_options": _person_filter_options(raw_credits),
         "rating_preparation": rating_preparation,
+        "credits_page": person.get("credits_page"),
+        "credits_next_page": person.get("credits_next_page"),
         "series": series_summaries,
         "credits": {
             "cast": [
@@ -1956,7 +1994,6 @@ def _anime_person_series(
     *,
     request=None,
     user=None,
-    enrich_missing=True,
 ):
     anime_credits = {
         str(credit.get("media_id")): credit
@@ -1967,34 +2004,33 @@ def _anime_person_series(
     if len(anime_credits) < 2:
         return []
 
-    candidates = _anime_series_candidate_groups(
-        anime_credits,
-        enrich_missing=enrich_missing,
-    )
+    candidates = _anime_series_candidate_groups(anime_credits, enrich_missing=False)
     resolved = {}
     for credited_candidate in candidates:
-        seed = min(credited_candidate, key=int)
-        try:
-            series = mal.anime_series(seed)
-        except (requests.RequestException, provider_services.ProviderAPIError):
-            continue
-        member_ids = {str(item.get("media_id")) for item in series["items"]}
-        credited_ids = member_ids.intersection(anime_credits)
-        if len(credited_ids) < 2:
-            continue
-        series_id = str(series["series_id"])
+        credited_ids = set(credited_candidate).intersection(anime_credits)
+        ordered_ids = sorted(
+            credited_ids,
+            key=lambda media_id: (
+                anime_credits[media_id].get("release_date") or "9999",
+                int(media_id),
+            ),
+        )
+        seed = ordered_ids[0]
+        series_id = str(mal.cached_anime_series_id(seed) or seed)
         popularity = sum(
             anime_credits[media_id].get("vote_count") or 0
             for media_id in credited_ids
         )
         posters = []
-        for item in series["items"][:3]:
+        for media_id in ordered_ids[:3]:
+            item = anime_credits[media_id]
             summary = media_summary_from_provider(
                 item,
                 MediaTypes.ANIME.value,
                 Sources.MAL.value,
                 request=request,
                 user=user,
+                item=item.get("_catalog_item"),
             )
             poster = summary.get("custom_poster_url") or summary.get("poster_url")
             if poster:
@@ -2003,8 +2039,12 @@ def _anime_person_series(
             "id": series_id,
             "source": Sources.MAL.value,
             "media_type": MediaTypes.ANIME.value,
-            "name": series["name"],
-            "item_count": series["item_count"],
+            "name": (
+                anime_credits[seed].get("display_title")
+                or anime_credits[seed].get("title")
+                or "Anime Series"
+            ),
+            "item_count": len(credited_ids),
             "poster_urls": posters,
             "_popularity": popularity,
         }
