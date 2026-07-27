@@ -58,6 +58,66 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(FilmographyType.manga.creditNoun(count: 2), "manga")
     }
 
+    func testAnimeVoiceActorOpensSharedPersonWhileCharacterDoesNot() {
+        let voiceActor = CreditPerson(
+            id: "110665",
+            name: "Yuki Kaji",
+            personSource: "anilist",
+            role: nil,
+            character: "Eren Yeager",
+            imageUrl: "https://example.com/kaji.jpg"
+        )
+        let character = CreditPerson(
+            id: "character:1",
+            name: "Eren Yeager",
+            role: "Main",
+            character: nil,
+            imageUrl: "https://example.com/eren.jpg"
+        )
+
+        XCTAssertEqual(
+            voiceActor.personRef,
+            PersonRef(source: "anilist", id: "110665")
+        )
+        XCTAssertNil(character.personRef)
+    }
+
+    func testPersonFilmographySupportsAnimeAndPrioritizesVoiceActing() {
+        let anime = MediaSummary(
+            ref: MediaRef(
+                itemId: nil,
+                source: "mal",
+                mediaType: "anime",
+                mediaId: "16498",
+                seasonNumber: nil,
+                episodeNumber: nil
+            ),
+            title: "Attack on Titan",
+            roles: ["Key Animation", "Voice Actor"],
+            creditRoles: ["Key Animation", "Voice Actor"]
+        )
+
+        XCTAssertEqual(FilmographyType.available(in: [anime]), [.anime])
+        XCTAssertEqual(FilmographyType.anime.title, "Anime")
+        XCTAssertEqual(FilmographyType.anime.sectionTitle, "Anime")
+        XCTAssertEqual(FilmographyType.anime.creditNoun(count: 1), "anime")
+        XCTAssertEqual(anime.ref, MediaRef(
+            itemId: nil,
+            source: "mal",
+            mediaType: "anime",
+            mediaId: "16498",
+            seasonNumber: nil,
+            episodeNumber: nil
+        ))
+        XCTAssertEqual(
+            FilmographyCreditGroup.groups(
+                from: [anime],
+                knownForDepartment: "Voice Acting"
+            ).map(\.role),
+            ["Voice Actor", "Key Animation"]
+        )
+    }
+
     func testAppRepositoriesExposeInjectedMusicRepository() async {
         let repositories = fakeRepositories(auth: FakeAuthRepository(hasStoredTokens: false))
         let album = MediaRef(
@@ -8372,7 +8432,7 @@ private enum TestFixtures {
       ],
       "reviews": null,
       "cast": [
-        { "id": "voice:11:1", "name": "Yuki Kaji", "role": null, "character": "Eren Yeager", "image_url": "https://img.example/kaji.jpg" }
+        { "id": "110665", "name": "Yuki Kaji", "person_source": "anilist", "role": null, "character": "Eren Yeager", "image_url": "https://img.example/kaji.jpg" }
       ],
       "characters": [
         { "id": "character:1", "name": "Eren Yeager", "role": "Main", "character": null, "image_url": "https://img.example/eren.jpg" }

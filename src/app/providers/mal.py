@@ -23,6 +23,10 @@ MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
 MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
 MANGA_MATCH_FAILURE_TTL = 60 * 5
 PERSON_TTL = 60 * 60 * 24
+ANIME_CAST_CACHE_VERSION = "v1"
+ANIME_CAST_FRESH_TTL = 60 * 60 * 24
+ANIME_CAST_STALE_TTL = 60 * 60 * 24 * 30
+ANIME_CAST_FAILURE_TTL = 60 * 5
 
 
 def handle_error(error):
@@ -438,9 +442,96 @@ def get_authors(response):
     return creators[:12]
 
 
+def anime_cast(media_id, *, raise_errors=False):
+    """Return cached Jikan voice cast when AniList enrichment is unavailable."""
+    prefix = f"mal:{ANIME_CAST_CACHE_VERSION}:anime-cast:{media_id}"
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    failure_key = f"{prefix}:failure"
+    if data := cache.get(fresh_key):
+        return data
+
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        if stale:
+            return stale
+        if raise_errors:
+            raise RuntimeError("Cached Jikan anime cast failure")
+        return []
+
+    try:
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/anime/{media_id}/characters",
+            timeout=3,
+        )
+        cast = _normalize_jikan_anime_cast(response.get("data") or [])
+        cache.set(fresh_key, cast, ANIME_CAST_FRESH_TTL)
+        cache.set(stale_key, cast, ANIME_CAST_STALE_TTL)
+        cache.delete(failure_key)
+        return cast
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        logger.warning("Jikan cast unavailable for MAL anime %s", media_id)
+        cache.set(failure_key, True, ANIME_CAST_FAILURE_TTL)
+        if stale:
+            return stale
+        if raise_errors:
+            raise
+        return []
+
+
+def _normalize_jikan_anime_cast(entries):
+    cast = []
+    positions = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        character = entry.get("character") or {}
+        character_name = str(character.get("name") or "").strip()
+        voice_actors = entry.get("voice_actors") or []
+        voice_actor = next(
+            (
+                actor
+                for actor in voice_actors
+                if str(actor.get("language") or "").casefold() == "japanese"
+            ),
+            voice_actors[0] if voice_actors else None,
+        )
+        person = (voice_actor or {}).get("person") or {}
+        person_id = person.get("mal_id")
+        name = str(person.get("name") or "").strip()
+        if not person_id or not name or not character_name:
+            continue
+        key = str(person_id)
+        if key in positions:
+            current = cast[positions[key]]
+            characters = current["character"].split(" · ")
+            if character_name not in characters:
+                current["character"] = " · ".join([*characters, character_name])
+            continue
+        images = person.get("images") or {}
+        image = images.get("jpg") or images.get("webp") or {}
+        positions[key] = len(cast)
+        cast.append({
+            "person_id": key,
+            "person_source": Sources.MAL.value,
+            "name": name,
+            "character": character_name,
+            "image": image.get("image_url") or image.get("large_image_url"),
+        })
+    return cast
+
+
 def person_page(person_id):
     """Return MAL person data through Jikan, which exposes MAL's people pages."""
-    cache_key = f"{Sources.MAL.value}_person_{person_id}_v1"
+    cache_key = f"{Sources.MAL.value}_person_{person_id}_v2"
     data = cache.get(cache_key)
     if data is not None:
         return data
@@ -459,26 +550,33 @@ def person_page(person_id):
         services.raise_not_found_error(Sources.MAL.value, person_id, "person")
 
     credits = []
-    seen = set()
+    positions = {}
     for entry in person.get("manga") or []:
         manga_data = entry.get("manga") or {}
-        manga_id = manga_data.get("mal_id")
-        if not manga_id or manga_id in seen:
-            continue
-        seen.add(manga_id)
-        images = manga_data.get("images") or {}
-        image = images.get("jpg") or images.get("webp") or {}
         role = str(entry.get("position") or "").strip() or "Author"
-        credits.append({
-            "media_type": MediaTypes.MANGA.value,
-            "source": Sources.MAL.value,
-            "media_id": str(manga_id),
-            "title": manga_data.get("title") or "",
-            "image": image.get("large_image_url") or image.get("image_url"),
-            "roles": [role],
-            "credit_roles": [role],
-            "url": manga_data.get("url"),
-        })
+        _merge_jikan_person_credit(
+            credits,
+            positions,
+            manga_data,
+            media_type=MediaTypes.MANGA.value,
+            role=role,
+        )
+    for entry in person.get("anime") or []:
+        _merge_jikan_person_credit(
+            credits,
+            positions,
+            entry.get("anime") or {},
+            media_type=MediaTypes.ANIME.value,
+            role=str(entry.get("position") or "").strip() or "Staff",
+        )
+    for entry in person.get("voices") or []:
+        _merge_jikan_person_credit(
+            credits,
+            positions,
+            entry.get("anime") or {},
+            media_type=MediaTypes.ANIME.value,
+            role="Voice Actor",
+        )
 
     profile_images = person.get("images") or {}
     profile_image = profile_images.get("jpg") or profile_images.get("webp") or {}
@@ -486,9 +584,10 @@ def person_page(person_id):
         "source": Sources.MAL.value,
         "person_id": str(person.get("mal_id") or person_id),
         "name": person.get("name") or "",
+        "alternative_names": _jikan_person_alternative_names(person),
         "image": profile_image.get("image_url") or profile_image.get("large_image_url"),
         "biography": helpers.plain_text(person.get("about")),
-        "known_for_department": "Author",
+        "known_for_department": _jikan_known_for_department(credits),
         "birth_date": person.get("birthday"),
         "death_date": None,
         "place_of_birth": None,
@@ -497,6 +596,70 @@ def person_page(person_id):
     }
     cache.set(cache_key, data, PERSON_TTL)
     return data
+
+
+def _merge_jikan_person_credit(
+    credits,
+    positions,
+    media,
+    *,
+    media_type,
+    role,
+):
+    media_id = media.get("mal_id")
+    if not media_id:
+        return
+    key = (media_type, str(media_id))
+    if key in positions:
+        current = credits[positions[key]]
+        if role not in current["credit_roles"]:
+            current["roles"].append(role)
+            current["credit_roles"].append(role)
+        return
+
+    images = media.get("images") or {}
+    image = images.get("jpg") or images.get("webp") or {}
+    positions[key] = len(credits)
+    credits.append({
+        "media_type": media_type,
+        "source": Sources.MAL.value,
+        "media_id": str(media_id),
+        "title": media.get("title_english") or media.get("title") or "",
+        "display_title": media.get("title_english") or media.get("title") or "",
+        "image": image.get("large_image_url") or image.get("image_url"),
+        "roles": [role],
+        "credit_roles": [role],
+        "url": media.get("url")
+        or f"https://myanimelist.net/{media_type}/{media_id}",
+    })
+
+
+def _jikan_person_alternative_names(person):
+    values = [
+        person.get("given_name"),
+        person.get("family_name"),
+        *(person.get("alternate_names") or []),
+    ]
+    primary = str(person.get("name") or "").strip().casefold()
+    seen = {primary} if primary else set()
+    results = []
+    for value in values:
+        clean = str(value or "").strip()
+        if clean and clean.casefold() not in seen:
+            seen.add(clean.casefold())
+            results.append(clean)
+    return results
+
+
+def _jikan_known_for_department(credits):
+    roles = [
+        role
+        for credit in credits
+        for role in credit.get("credit_roles") or []
+    ]
+    if "Voice Actor" in roles:
+        return "Voice Actor"
+    return roles[0] if roles else None
 
 
 def _match_titles(primary, alternatives=None):

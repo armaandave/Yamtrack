@@ -3679,11 +3679,12 @@ class ApiV1FoundationTests(TestCase):
         )
 
     @patch("api.services.media.provider_services.get_person_page")
-    def test_person_detail_returns_anilist_mangaka_and_manga_credits(self, person_mock):
+    def test_person_detail_returns_anilist_manga_and_anime_credits(self, person_mock):
         person_mock.return_value = {
             "source": "anilist",
             "person_id": "106705",
             "name": "Hajime Isayama",
+            "alternative_names": ["諫山創"],
             "image": "https://example.com/isayama.jpg",
             "biography": "Mangaka biography.",
             "known_for_department": "Mangaka",
@@ -3702,6 +3703,18 @@ class ApiV1FoundationTests(TestCase):
                     "roles": ["Story & Art"],
                     "credit_roles": ["Story & Art"],
                 },
+                {
+                    "media_type": MediaTypes.ANIME.value,
+                    "source": Sources.MAL.value,
+                    "media_id": "16498",
+                    "title": "Attack on Titan",
+                    "image": "https://example.com/aot-anime.jpg",
+                    "release_date": "2013-04-07",
+                    "genres": ["Action"],
+                    "languages": ["Japanese"],
+                    "roles": ["Voice Actor", "Theme Song Performance"],
+                    "credit_roles": ["Voice Actor", "Theme Song Performance"],
+                },
             ],
         }
 
@@ -3709,12 +3722,20 @@ class ApiV1FoundationTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         person_mock.assert_called_once_with("anilist", "106705")
+        self.assertEqual(response.data["alternative_names"], ["諫山創"])
         self.assertEqual(response.data["known_for_department"], "Mangaka")
-        credit = response.data["credits"]["cast"][0]
-        self.assertEqual(credit["ref"]["source"], Sources.MAL.value)
-        self.assertEqual(credit["ref"]["media_type"], MediaTypes.MANGA.value)
-        self.assertEqual(credit["ref"]["media_id"], "23390")
-        self.assertEqual(credit["credit_roles"], ["Story & Art"])
+        manga_credit, anime_credit = response.data["credits"]["cast"]
+        self.assertEqual(manga_credit["ref"]["source"], Sources.MAL.value)
+        self.assertEqual(manga_credit["ref"]["media_type"], MediaTypes.MANGA.value)
+        self.assertEqual(manga_credit["ref"]["media_id"], "23390")
+        self.assertEqual(manga_credit["credit_roles"], ["Story & Art"])
+        self.assertEqual(anime_credit["ref"]["source"], Sources.MAL.value)
+        self.assertEqual(anime_credit["ref"]["media_type"], MediaTypes.ANIME.value)
+        self.assertEqual(anime_credit["ref"]["media_id"], "16498")
+        self.assertEqual(
+            anime_credit["credit_roles"],
+            ["Voice Actor", "Theme Song Performance"],
+        )
 
     def test_person_detail_rejects_unsupported_source_for_v1(self):
         response = self.client.get("/api/v1/people/manual/author-1/")
@@ -4400,12 +4421,14 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
         metadata_mock.assert_not_called()
 
+    @patch("api.services.media.mal.anime_cast", return_value=[])
     @patch("api.services.media.anilist.anime", return_value={})
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_mal_anime_detail_exposes_genres_related_and_rating(
         self,
         metadata_mock,
         _anilist_mock,
+        _cast_mock,
     ):
         metadata_mock.return_value = {
             "media_id": "1",

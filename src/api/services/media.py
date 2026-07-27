@@ -96,7 +96,7 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
-ANIME_DETAIL_CACHE_VERSION = "v1"
+ANIME_DETAIL_CACHE_VERSION = "v2"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
@@ -836,7 +836,12 @@ def _enrich_anime_metadata(metadata, source):
         return metadata
     enrichment = anilist.anime(metadata.get("media_id"))
     if not enrichment:
-        return metadata
+        fallback_cast = mal.anime_cast(metadata.get("media_id"))
+        if not fallback_cast:
+            return metadata
+        enriched = deepcopy(metadata)
+        enriched["cast"] = fallback_cast
+        return enriched
 
     enriched = deepcopy(metadata)
     if not enriched.get("display_title"):
@@ -1799,6 +1804,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         "id": str(person.get("person_id") or person_id),
         "source": source,
         "name": person.get("name") or "",
+        "alternative_names": person.get("alternative_names") or [],
         "biography": person.get("biography"),
         "profile_url": absolute_url(request, person.get("image")),
         "known_for_department": person.get("known_for_department"),
@@ -1841,6 +1847,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
                     MediaTypes.BOOK.value,
                     MediaTypes.MUSIC.value,
                     MediaTypes.MANGA.value,
+                    MediaTypes.ANIME.value,
                 }
             ],
         },

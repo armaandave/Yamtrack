@@ -117,6 +117,28 @@ class AniListProviderTests(TestCase):
                                     },
                                 ],
                             },
+                            {
+                                "role": "SUPPORTING",
+                                "node": {
+                                    "id": 2,
+                                    "name": {"full": "Another Character", "native": None},
+                                    "image": {
+                                        "large": "https://img.example/another.jpg",
+                                        "medium": None,
+                                    },
+                                },
+                                "voiceActors": [
+                                    {
+                                        "id": 11,
+                                        "languageV2": "Japanese",
+                                        "name": {"full": "Yuki Kaji", "native": None},
+                                        "image": {
+                                            "large": "https://img.example/kaji.jpg",
+                                            "medium": None,
+                                        },
+                                    },
+                                ],
+                            },
                         ],
                     },
                 },
@@ -132,8 +154,15 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["relations"][0]["media_type"], "anime")
         self.assertEqual(result["relations"][1]["media_type"], "manga")
         self.assertEqual(result["characters"][0]["role"], "Main")
+        self.assertNotIn("person_source", result["characters"][0])
+        self.assertEqual(len(result["cast"]), 1)
+        self.assertEqual(result["cast"][0]["person_id"], "11")
+        self.assertEqual(result["cast"][0]["person_source"], "anilist")
         self.assertEqual(result["cast"][0]["name"], "Yuki Kaji")
-        self.assertEqual(result["cast"][0]["character"], "Eren Yeager")
+        self.assertEqual(
+            result["cast"][0]["character"],
+            "Eren Yeager · Another Character",
+        )
         request_mock.assert_called_once()
 
     @patch("app.providers.anilist.services.api_request")
@@ -344,6 +373,115 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["credits"][0]["credit_roles"], ["Story & Art"])
         self.assertEqual(result["credits"][0]["languages"], ["Japanese"])
 
+    @patch("app.providers.anilist.services.api_request")
+    def test_person_page_paginates_and_merges_anime_voice_and_staff_credits(
+        self,
+        request_mock,
+    ):
+        def staff_payload(*, has_next, staff_edges, voice_edges):
+            return {
+                "data": {
+                    "Staff": {
+                        "id": 110665,
+                        "name": {
+                            "full": "Yuki Kaji",
+                            "native": "梶裕貴",
+                            "alternative": ["Kaji Yuki"],
+                        },
+                        "image": {"large": "https://img.example/kaji.jpg"},
+                        "description": "Japanese voice actor.",
+                        "primaryOccupations": ["Voice Actor"],
+                        "dateOfBirth": {"year": 1985, "month": 9, "day": 3},
+                        "dateOfDeath": {},
+                        "homeTown": "Tokyo, Japan",
+                        "favourites": 10000,
+                        "mangaStaffMedia": {
+                            "pageInfo": {"hasNextPage": False},
+                            "edges": [],
+                        },
+                        "animeStaffMedia": {
+                            "pageInfo": {"hasNextPage": has_next},
+                            "edges": staff_edges,
+                        },
+                        "animeCharacterMedia": {
+                            "pageInfo": {"hasNextPage": has_next},
+                            "edges": voice_edges,
+                        },
+                    },
+                },
+            }
+
+        attack_on_titan = {
+            "id": 16498,
+            "idMal": 16498,
+            "title": {
+                "english": "Attack on Titan",
+                "romaji": "Shingeki no Kyojin",
+            },
+            "coverImage": {"large": "https://img.example/aot.jpg"},
+            "startDate": {"year": 2013, "month": 4, "day": 7},
+            "countryOfOrigin": "JP",
+            "genres": ["Action"],
+            "averageScore": 84,
+            "popularity": 400000,
+        }
+        blue_lock = {
+            "id": 137822,
+            "idMal": 49596,
+            "title": {"english": "Blue Lock", "romaji": "Blue Lock"},
+            "coverImage": {"large": "https://img.example/blue-lock.jpg"},
+            "startDate": {"year": 2022, "month": 10, "day": 9},
+            "countryOfOrigin": "JP",
+            "genres": ["Sports"],
+            "averageScore": 80,
+            "popularity": 200000,
+        }
+        request_mock.side_effect = [
+            staff_payload(
+                has_next=True,
+                staff_edges=[
+                    {"staffRole": "Theme Song Performance", "node": attack_on_titan},
+                ],
+                voice_edges=[
+                    {"characters": [{"id": 1}], "node": attack_on_titan},
+                ],
+            ),
+            staff_payload(
+                has_next=False,
+                staff_edges=[
+                    {"staffRole": "Key Animation", "node": attack_on_titan},
+                ],
+                voice_edges=[
+                    {"characters": [{"id": 2}], "node": blue_lock},
+                    {
+                        "characters": [{"id": 3}],
+                        "node": {
+                            "id": 999,
+                            "idMal": None,
+                            "title": {"romaji": "AniList only"},
+                        },
+                    },
+                ],
+            ),
+        ]
+
+        result = anilist.person_page("110665")
+
+        self.assertEqual(request_mock.call_count, 2)
+        self.assertEqual(result["alternative_names"], ["梶裕貴", "Kaji Yuki"])
+        self.assertEqual(result["known_for_department"], "Voice Actor")
+        self.assertEqual(len(result["credits"]), 2)
+        attack_credit = result["credits"][0]
+        self.assertEqual(attack_credit["media_type"], "anime")
+        self.assertEqual(attack_credit["source"], "mal")
+        self.assertEqual(attack_credit["media_id"], "16498")
+        self.assertEqual(
+            attack_credit["credit_roles"],
+            ["Theme Song Performance", "Key Animation", "Voice Actor"],
+        )
+        self.assertEqual(result["credits"][1]["media_id"], "49596")
+        self.assertEqual(result["credits"][1]["credit_roles"], ["Voice Actor"])
+
 
 class MALAnimeMetadataTests(TestCase):
     def setUp(self):
@@ -492,6 +630,38 @@ class MALAnimeMetadataTests(TestCase):
                         },
                     },
                 ],
+                "anime": [
+                    {
+                        "position": "Theme Song Performance",
+                        "anime": {
+                            "mal_id": 16498,
+                            "title": "Shingeki no Kyojin",
+                            "title_english": "Attack on Titan",
+                            "url": "https://myanimelist.net/anime/16498",
+                            "images": {
+                                "jpg": {
+                                    "large_image_url": "https://img.example/anime.jpg",
+                                },
+                            },
+                        },
+                    },
+                ],
+                "voices": [
+                    {
+                        "role": "Main",
+                        "anime": {
+                            "mal_id": 16498,
+                            "title": "Shingeki no Kyojin",
+                            "title_english": "Attack on Titan",
+                            "url": "https://myanimelist.net/anime/16498",
+                            "images": {
+                                "jpg": {
+                                    "large_image_url": "https://img.example/anime.jpg",
+                                },
+                            },
+                        },
+                    },
+                ],
             },
         }
 
@@ -499,8 +669,85 @@ class MALAnimeMetadataTests(TestCase):
 
         self.assertEqual(result["person_id"], "11705")
         self.assertEqual(result["biography"], "Manga creator")
+        self.assertEqual(len(result["credits"]), 2)
         self.assertEqual(result["credits"][0]["media_id"], "23390")
         self.assertEqual(result["credits"][0]["credit_roles"], ["Story & Art"])
+        self.assertEqual(result["credits"][1]["media_type"], "anime")
+        self.assertEqual(result["credits"][1]["media_id"], "16498")
+        self.assertEqual(
+            result["credits"][1]["credit_roles"],
+            ["Theme Song Performance", "Voice Actor"],
+        )
+        self.assertEqual(result["known_for_department"], "Voice Actor")
+
+    @patch("app.providers.mal.services.api_request")
+    def test_anime_cast_uses_japanese_voice_actor_and_merges_characters(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": [
+                {
+                    "character": {"mal_id": 1, "name": "Eren Yeager"},
+                    "voice_actors": [
+                        {
+                            "language": "English",
+                            "person": {"mal_id": 10, "name": "English Actor"},
+                        },
+                        {
+                            "language": "Japanese",
+                            "person": {
+                                "mal_id": 11,
+                                "name": "Yuki Kaji",
+                                "images": {
+                                    "jpg": {
+                                        "image_url": "https://img.example/kaji.jpg",
+                                    },
+                                },
+                            },
+                        },
+                    ],
+                },
+                {
+                    "character": {"mal_id": 2, "name": "Another Character"},
+                    "voice_actors": [
+                        {
+                            "language": "Japanese",
+                            "person": {
+                                "mal_id": 11,
+                                "name": "Yuki Kaji",
+                                "images": {
+                                    "jpg": {
+                                        "image_url": "https://img.example/kaji.jpg",
+                                    },
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+
+        result = mal.anime_cast("16498")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["person_id"], "11")
+        self.assertEqual(result[0]["person_source"], "mal")
+        self.assertEqual(result[0]["character"], "Eren Yeager · Another Character")
+
+    @patch("app.providers.mal.services.api_request")
+    def test_anime_cast_uses_stale_data_and_failure_marker(self, request_mock):
+        stale = [{"person_id": "11", "person_source": "mal", "name": "Yuki Kaji"}]
+        cache.set(
+            "mal:v1:anime-cast:16498:stale",
+            stale,
+            mal.ANIME_CAST_STALE_TTL,
+        )
+        request_mock.side_effect = requests.Timeout("down")
+
+        self.assertEqual(mal.anime_cast("16498"), stale)
+        self.assertEqual(mal.anime_cast("16498"), stale)
+        request_mock.assert_called_once()
 
 
 class MangaUpdatesPersonTests(TestCase):

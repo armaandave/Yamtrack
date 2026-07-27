@@ -97,7 +97,8 @@ class AnimeDetailEnrichmentTests(TestCase):
             ],
             "cast": [
                 {
-                    "person_id": "voice:11:1",
+                    "person_id": "110665",
+                    "person_source": "anilist",
                     "name": "Yuki Kaji",
                     "character": "Eren Yeager",
                     "image": "https://img.example/kaji.jpg",
@@ -134,8 +135,11 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertEqual(result["display_title"], "Attack on Titan")
         self.assertEqual(result["synopsis"], "MAL synopsis")
         self.assertEqual(result["backdrop_url"], "https://img.example/banner.jpg")
+        self.assertEqual(result["cast"][0]["id"], "110665")
         self.assertEqual(result["cast"][0]["name"], "Yuki Kaji")
+        self.assertEqual(result["cast"][0]["person_source"], "anilist")
         self.assertEqual(result["characters"][0]["role"], "Main")
+        self.assertIsNone(result["characters"][0]["person_source"])
         self.assertEqual(
             [section["id"] for section in result["related_sections"]],
             ["relations", "recommendations"],
@@ -152,12 +156,14 @@ class AnimeDetailEnrichmentTests(TestCase):
             "external_ratings_preparation": {"state": "ready"},
         },
     )
+    @patch("api.services.media.mal.anime_cast", return_value=[])
     @patch("api.services.media.anilist.anime", return_value={})
     @patch("api.services.media.provider_services.get_media_metadata")
     def test_detail_still_returns_mal_when_anilist_has_no_data(
         self,
         metadata_mock,
         _anilist_mock,
+        _cast_mock,
         _ratings_mock,
     ):
         metadata_mock.return_value = {
@@ -179,6 +185,35 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertIsNone(result["backdrop_url"])
         self.assertEqual(result["cast"], [])
         self.assertEqual(result["characters"], [])
+
+    @patch("api.services.media.anilist.anime", return_value={})
+    @patch("api.services.media.mal.anime_cast")
+    def test_detail_uses_jikan_cast_when_anilist_is_unavailable(
+        self,
+        cast_mock,
+        _anilist_mock,
+    ):
+        cast_mock.return_value = [
+            {
+                "person_id": "11",
+                "person_source": "mal",
+                "name": "Yuki Kaji",
+                "character": "Eren Yeager",
+            },
+        ]
+
+        result = media._enrich_anime_metadata(
+            {
+                "media_id": "16498",
+                "source": "mal",
+                "media_type": "anime",
+                "title": "Shingeki no Kyojin",
+            },
+            Sources.MAL.value,
+        )
+
+        self.assertEqual(result["cast"][0]["person_id"], "11")
+        self.assertEqual(result["cast"][0]["person_source"], "mal")
 
 
 class AnimeArtworkTests(TestCase):

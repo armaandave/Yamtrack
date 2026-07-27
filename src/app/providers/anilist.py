@@ -14,8 +14,8 @@ FRESH_TTL = 60 * 60 * 24
 STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
-CACHE_VERSION = "v2"
-PERSON_CACHE_VERSION = "v1"
+CACHE_VERSION = "v3"
+PERSON_CACHE_VERSION = "v2"
 
 ANIME_QUERY = """
 query ($malId: Int!) {
@@ -236,7 +236,7 @@ query ($id: Int!, $page: Int!) {
     homeTown
     siteUrl
     favourites
-    staffMedia(
+    mangaStaffMedia: staffMedia(
       type: MANGA
       page: $page
       perPage: 25
@@ -247,6 +247,95 @@ query ($id: Int!, $page: Int!) {
       }
       edges {
         staffRole
+        node {
+          id
+          idMal
+          siteUrl
+          title {
+            english
+            romaji
+            native
+          }
+          coverImage {
+            extraLarge
+            large
+            medium
+          }
+          startDate {
+            year
+            month
+            day
+          }
+          endDate {
+            year
+            month
+            day
+          }
+          countryOfOrigin
+          genres
+          averageScore
+          popularity
+        }
+      }
+    }
+    animeStaffMedia: staffMedia(
+      type: ANIME
+      page: $page
+      perPage: 25
+      sort: [START_DATE_DESC]
+    ) {
+      pageInfo {
+        hasNextPage
+      }
+      edges {
+        staffRole
+        node {
+          id
+          idMal
+          siteUrl
+          title {
+            english
+            romaji
+            native
+          }
+          coverImage {
+            extraLarge
+            large
+            medium
+          }
+          startDate {
+            year
+            month
+            day
+          }
+          endDate {
+            year
+            month
+            day
+          }
+          countryOfOrigin
+          genres
+          averageScore
+          popularity
+        }
+      }
+    }
+    animeCharacterMedia: characterMedia(
+      page: $page
+      perPage: 25
+      sort: [START_DATE_DESC]
+    ) {
+      pageInfo {
+        hasNextPage
+      }
+      edges {
+        characters {
+          id
+          name {
+            full
+            native
+          }
+        }
         node {
           id
           idMal
@@ -320,7 +409,7 @@ def manga(mal_id, *, raise_errors=False):
 
 
 def person_page(person_id):
-    """Return an AniList staff profile with MAL-backed manga credits."""
+    """Return an AniList staff profile with navigable MAL-backed credits."""
     fresh_key = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:fresh"
     stale_key = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:stale"
     if data := cache.get(fresh_key):
@@ -329,7 +418,9 @@ def person_page(person_id):
     stale = cache.get(stale_key)
     try:
         staff = None
-        edges = []
+        manga_edges = []
+        anime_staff_edges = []
+        anime_voice_edges = []
         page = 1
         while True:
             response = services.api_request(
@@ -350,13 +441,33 @@ def person_page(person_id):
             if not isinstance(current, dict):
                 services.raise_not_found_error("anilist", person_id, "person")
             staff = staff or current
-            connection = current.get("staffMedia") or {}
-            edges.extend(connection.get("edges") or [])
-            if not (connection.get("pageInfo") or {}).get("hasNextPage"):
+            manga_connection = (
+                current.get("mangaStaffMedia")
+                or current.get("staffMedia")
+                or {}
+            )
+            anime_staff_connection = current.get("animeStaffMedia") or {}
+            anime_voice_connection = current.get("animeCharacterMedia") or {}
+            manga_edges.extend(manga_connection.get("edges") or [])
+            anime_staff_edges.extend(anime_staff_connection.get("edges") or [])
+            anime_voice_edges.extend(anime_voice_connection.get("edges") or [])
+            if not any(
+                (connection.get("pageInfo") or {}).get("hasNextPage")
+                for connection in (
+                    manga_connection,
+                    anime_staff_connection,
+                    anime_voice_connection,
+                )
+            ):
                 break
             page += 1
 
-        data = _normalize_staff(staff, edges)
+        data = _normalize_staff(
+            staff,
+            manga_edges,
+            anime_staff_edges,
+            anime_voice_edges,
+        )
         cache.set(fresh_key, data, FRESH_TTL)
         cache.set(stale_key, data, STALE_TTL)
         return data
@@ -573,41 +684,35 @@ def _staff(media):
     return creators
 
 
-def _normalize_staff(staff, edges):
+def _normalize_staff(staff, manga_edges, anime_staff_edges, anime_voice_edges):
     name = staff.get("name") or {}
     image = staff.get("image") or {}
     credits = []
-    seen = set()
-    for edge in edges:
-        node = (edge or {}).get("node") or {}
-        mal_id = node.get("idMal")
-        if not mal_id or mal_id in seen:
-            continue
-        seen.add(mal_id)
-        title = node.get("title") or {}
-        cover = node.get("coverImage") or {}
-        role = str((edge or {}).get("staffRole") or "").strip() or "Author"
-        start_date = _fuzzy_date(node.get("startDate"))
-        score = node.get("averageScore")
-        credits.append({
-            "media_type": MediaTypes.MANGA.value,
-            "source": Sources.MAL.value,
-            "media_id": str(mal_id),
-            "title": title.get("english") or title.get("romaji") or title.get("native") or "",
-            "display_title": title.get("english") or title.get("romaji") or title.get("native") or "",
-            "image": cover.get("extraLarge") or cover.get("large") or cover.get("medium"),
-            "release_date": start_date,
-            "year": str((node.get("startDate") or {}).get("year") or "") or None,
-            "genres": node.get("genres") or [],
-            "languages": [_language_name(node.get("countryOfOrigin"))]
-            if node.get("countryOfOrigin")
-            else [],
-            "roles": [role],
-            "credit_roles": [role],
-            "vote_average": score / 10 if isinstance(score, (int, float)) else None,
-            "vote_count": node.get("popularity"),
-            "url": node.get("siteUrl"),
-        })
+    positions = {}
+    for edge in manga_edges:
+        _merge_staff_credit(
+            credits,
+            positions,
+            edge,
+            media_type=MediaTypes.MANGA.value,
+            role=str((edge or {}).get("staffRole") or "").strip() or "Author",
+        )
+    for edge in anime_staff_edges:
+        _merge_staff_credit(
+            credits,
+            positions,
+            edge,
+            media_type=MediaTypes.ANIME.value,
+            role=str((edge or {}).get("staffRole") or "").strip() or "Staff",
+        )
+    for edge in anime_voice_edges:
+        _merge_staff_credit(
+            credits,
+            positions,
+            edge,
+            media_type=MediaTypes.ANIME.value,
+            role="Voice Actor",
+        )
 
     occupations = [
         str(value).strip()
@@ -618,15 +723,88 @@ def _normalize_staff(staff, edges):
         "source": "anilist",
         "person_id": str(staff.get("id") or ""),
         "name": name.get("full") or name.get("native") or "",
+        "alternative_names": _alternative_staff_names(name),
         "image": image.get("large") or image.get("medium"),
         "biography": helpers.plain_text(staff.get("description")),
-        "known_for_department": occupations[0] if occupations else "Author",
+        "known_for_department": (
+            occupations[0]
+            if occupations
+            else _known_for_department(credits)
+        ),
         "birth_date": _fuzzy_date(staff.get("dateOfBirth")),
         "death_date": _fuzzy_date(staff.get("dateOfDeath")),
         "place_of_birth": staff.get("homeTown"),
         "popularity": staff.get("favourites"),
         "credits": credits,
     }
+
+
+def _merge_staff_credit(credits, positions, edge, *, media_type, role):
+    node = (edge or {}).get("node") or {}
+    mal_id = node.get("idMal")
+    if not mal_id:
+        return
+    key = (media_type, str(mal_id))
+    if key in positions:
+        current = credits[positions[key]]
+        if role not in current["credit_roles"]:
+            current["roles"].append(role)
+            current["credit_roles"].append(role)
+        return
+
+    title = node.get("title") or {}
+    cover = node.get("coverImage") or {}
+    score = node.get("averageScore")
+    display_title = (
+        title.get("english")
+        or title.get("romaji")
+        or title.get("native")
+        or ""
+    )
+    positions[key] = len(credits)
+    credits.append({
+        "media_type": media_type,
+        "source": Sources.MAL.value,
+        "media_id": str(mal_id),
+        "title": display_title,
+        "display_title": display_title,
+        "image": cover.get("extraLarge") or cover.get("large") or cover.get("medium"),
+        "release_date": _fuzzy_date(node.get("startDate")),
+        "year": str((node.get("startDate") or {}).get("year") or "") or None,
+        "genres": node.get("genres") or [],
+        "languages": [_language_name(node.get("countryOfOrigin"))]
+        if node.get("countryOfOrigin")
+        else [],
+        "roles": [role],
+        "credit_roles": [role],
+        "vote_average": score / 10 if isinstance(score, (int, float)) else None,
+        "vote_count": node.get("popularity"),
+        "url": f"https://myanimelist.net/{media_type}/{mal_id}",
+    })
+
+
+def _alternative_staff_names(name):
+    values = [name.get("native"), *(name.get("alternative") or [])]
+    primary = str(name.get("full") or "").strip().casefold()
+    seen = {primary} if primary else set()
+    results = []
+    for value in values:
+        clean = str(value or "").strip()
+        if clean and clean.casefold() not in seen:
+            seen.add(clean.casefold())
+            results.append(clean)
+    return results
+
+
+def _known_for_department(credits):
+    roles = [
+        role
+        for credit in credits
+        for role in credit.get("credit_roles") or []
+    ]
+    if "Voice Actor" in roles:
+        return "Voice Actor"
+    return roles[0] if roles else None
 
 
 def _fuzzy_date(value):
@@ -696,6 +874,7 @@ def _recommendations(media):
 
 def _cast(media):
     cast = []
+    positions = {}
     for edge in ((media.get("characters") or {}).get("edges") or [])[:25]:
         character = edge.get("node") or {}
         character_name = (character.get("name") or {}).get("full") or (
@@ -710,14 +889,24 @@ def _cast(media):
         if not name:
             continue
         image = voice_actor.get("image") or {}
-        cast.append(
-            {
-                "person_id": f"voice:{voice_actor.get('id')}:{character.get('id')}",
-                "name": name,
-                "character": character_name,
-                "image": image.get("large") or image.get("medium"),
-            },
-        )
+        person_id = voice_actor.get("id")
+        if not person_id:
+            continue
+        key = str(person_id)
+        if key in positions:
+            current = cast[positions[key]]
+            characters = current["character"].split(" · ")
+            if character_name not in characters:
+                current["character"] = " · ".join([*characters, character_name])
+            continue
+        positions[key] = len(cast)
+        cast.append({
+            "person_id": key,
+            "person_source": "anilist",
+            "name": name,
+            "character": character_name,
+            "image": image.get("large") or image.get("medium"),
+        })
     return cast
 
 

@@ -746,6 +746,7 @@ private struct BookSeriesCard: View {
 enum FilmographyType: String, CaseIterable, Identifiable {
     case movie
     case tv
+    case anime
     case book
     case manga
     case music
@@ -758,6 +759,8 @@ enum FilmographyType: String, CaseIterable, Identifiable {
             "Film"
         case .tv:
             "TV"
+        case .anime:
+            "Anime"
         case .book:
             "Books"
         case .manga:
@@ -771,6 +774,8 @@ enum FilmographyType: String, CaseIterable, Identifiable {
         switch self {
         case .book:
             "Books"
+        case .anime:
+            "Anime"
         case .manga:
             "Manga"
         case .music:
@@ -866,7 +871,13 @@ struct FilmographyCreditGroup: Identifiable {
     }
 
     private static func primaryRoles(for department: String?) -> Set<String> {
-        switch department?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        let department = department?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if department?.contains("voice act") == true {
+            return ["voice actor", "voice actress", "voice acting"]
+        }
+        return switch department {
         case "acting":
             ["actor", "actress"]
         case "directing":
@@ -902,6 +913,8 @@ extension FilmographyType {
             count == 1 ? "film" : "films"
         case .tv:
             count == 1 ? "show" : "shows"
+        case .anime:
+            "anime"
         case .book:
             count == 1 ? "book" : "books"
         case .manga:

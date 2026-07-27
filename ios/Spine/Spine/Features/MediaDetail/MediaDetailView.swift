@@ -3228,7 +3228,10 @@ private struct MediaDetailPageView: View {
                 name: $0.name,
                 subtitle: $0.character,
                 imageUrl: $0.imageUrl,
-                personRef: supportsPeoplePages && !$0.id.isEmpty ? PersonRef(source: "tmdb", id: $0.id) : nil
+                personRef: $0.personRef
+                    ?? (supportsPeoplePages && !$0.id.isEmpty
+                        ? PersonRef(source: "tmdb", id: $0.id)
+                        : nil)
             )
         }
         if credits.isEmpty, detail.ref.mediaType == "comic" {
