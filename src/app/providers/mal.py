@@ -598,6 +598,63 @@ def person_page(person_id):
     return data
 
 
+def person_page_by_name(name, alternative_names=None, birth_date=None):
+    """Find the matching MAL person and return their full Jikan profile."""
+    if not str(name or "").strip():
+        return None
+    response = services.api_request(
+        Sources.MAL.value,
+        "GET",
+        f"{jikan_base_url}/people",
+        params={
+            "q": name,
+            "limit": 10,
+            "order_by": "favorites",
+            "sort": "desc",
+        },
+        timeout=3,
+    )
+    target_names = _person_name_keys([name, *(alternative_names or [])])
+    candidates = [
+        candidate
+        for candidate in response.get("data") or []
+        if target_names
+        & _person_name_keys(
+            [
+                candidate.get("name"),
+                candidate.get("given_name"),
+                candidate.get("family_name"),
+                *(candidate.get("alternate_names") or []),
+            ],
+        )
+    ]
+    if not candidates:
+        return None
+    birthday = str(birth_date or "")[:10]
+    match = max(
+        candidates,
+        key=lambda candidate: (
+            bool(birthday and str(candidate.get("birthday") or "")[:10] == birthday),
+            candidate.get("favorites") or 0,
+        ),
+    )
+    person_id = match.get("mal_id")
+    return person_page(person_id) if person_id else None
+
+
+def _person_name_keys(values):
+    keys = set()
+    for value in values:
+        normalized = _normalize_match_title(value)
+        if not normalized:
+            continue
+        keys.add(normalized)
+        words = normalized.split()
+        if len(words) > 1 and all(word.isascii() for word in words):
+            keys.add(" ".join(sorted(words)))
+    return keys
+
+
 def _merge_jikan_person_credit(
     credits,
     positions,

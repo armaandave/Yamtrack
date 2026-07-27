@@ -5842,6 +5842,10 @@ private struct AniListRatingCard: View {
                 }
 
                 Spacer()
+
+                Text("AniList")
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(.white.opacity(0.56))
             }
         }
         .padding(14)

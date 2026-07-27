@@ -4,6 +4,7 @@ import requests
 from django.core.cache import cache
 from django.test import TestCase
 
+from app.models import MediaTypes
 from app.providers import anilist, mal, mangaupdates
 
 
@@ -411,10 +412,12 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["relations"][0]["media_type"], "anime")
         self.assertEqual(result["relations"][0]["relation"], "Adaptation")
 
+    @patch("app.providers.mal.person_page_by_name", return_value=None)
     @patch("app.providers.anilist.services.api_request")
     def test_person_page_normalizes_profile_and_mal_manga_credits(
         self,
         request_mock,
+        _mal_person_mock,
     ):
         request_mock.return_value = {
             "data": {
@@ -513,10 +516,28 @@ class AniListProviderTests(TestCase):
         )
         self.assertIn("characterRole", anilist.STAFF_QUERY)
 
+    @patch(
+        "app.providers.mal.person_page_by_name",
+        return_value={
+            "credits": [
+                {
+                    "media_type": MediaTypes.ANIME.value,
+                    "media_id": "16498",
+                    "image": "https://cdn.myanimelist.net/aot.jpg",
+                },
+                {
+                    "media_type": MediaTypes.ANIME.value,
+                    "media_id": "49596",
+                    "image": "https://cdn.myanimelist.net/blue-lock.jpg",
+                },
+            ],
+        },
+    )
     @patch("app.providers.anilist.services.api_request")
     def test_person_page_paginates_and_merges_anime_voice_and_staff_credits(
         self,
         request_mock,
+        mal_person_mock,
     ):
         def staff_payload(*, has_next, staff_edges, voice_edges):
             return {
@@ -620,12 +641,25 @@ class AniListProviderTests(TestCase):
         self.assertEqual(attack_credit["source"], "mal")
         self.assertEqual(attack_credit["media_id"], "16498")
         self.assertEqual(
+            attack_credit["image"],
+            "https://cdn.myanimelist.net/aot.jpg",
+        )
+        self.assertEqual(
             attack_credit["credit_roles"],
             ["Theme Song Performance", "Key Animation", "Voice Actor"],
         )
         self.assertEqual(attack_credit["character_role"], "MAIN")
         self.assertEqual(result["credits"][1]["media_id"], "49596")
+        self.assertEqual(
+            result["credits"][1]["image"],
+            "https://cdn.myanimelist.net/blue-lock.jpg",
+        )
         self.assertEqual(result["credits"][1]["credit_roles"], ["Voice Actor"])
+        mal_person_mock.assert_called_once_with(
+            "Yuki Kaji",
+            ["梶裕貴", "Kaji Yuki"],
+            "1985-09-03",
+        )
 
 
 class MALAnimeMetadataTests(TestCase):
@@ -824,6 +858,40 @@ class MALAnimeMetadataTests(TestCase):
             ["Theme Song Performance", "Voice Actor"],
         )
         self.assertEqual(result["known_for_department"], "Voice Actor")
+
+    @patch("app.providers.mal.person_page")
+    @patch("app.providers.mal.services.api_request")
+    def test_person_page_by_name_matches_reversed_name_and_birthday(
+        self,
+        request_mock,
+        person_mock,
+    ):
+        request_mock.return_value = {
+            "data": [
+                {
+                    "mal_id": 1,
+                    "name": "Ishikawa, Yui",
+                    "birthday": "1988-01-01T00:00:00+00:00",
+                    "favorites": 1000,
+                },
+                {
+                    "mal_id": 2,
+                    "name": "Ishikawa Yui",
+                    "birthday": "1989-05-30T00:00:00+00:00",
+                    "favorites": 900,
+                },
+            ],
+        }
+        person_mock.return_value = {"person_id": "2", "credits": []}
+
+        result = mal.person_page_by_name(
+            "Yui Ishikawa",
+            ["石川由依"],
+            "1989-05-30",
+        )
+
+        self.assertEqual(result["person_id"], "2")
+        person_mock.assert_called_once_with(2)
 
     @patch("app.providers.mal.services.api_request")
     def test_anime_cast_uses_japanese_voice_actor_and_merges_characters(

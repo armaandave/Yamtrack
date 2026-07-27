@@ -3717,6 +3717,13 @@ class ApiV1FoundationTests(TestCase):
                 },
             ],
         }
+        Item.objects.create(
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            media_id="16498",
+            title="Attack on Titan",
+            image="https://cdn.myanimelist.net/aot-anime.jpg",
+        )
 
         response = self.client.get("/api/v1/people/anilist/106705/")
 
@@ -3732,6 +3739,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(anime_credit["ref"]["source"], Sources.MAL.value)
         self.assertEqual(anime_credit["ref"]["media_type"], MediaTypes.ANIME.value)
         self.assertEqual(anime_credit["ref"]["media_id"], "16498")
+        self.assertEqual(
+            anime_credit["poster_url"],
+            "https://cdn.myanimelist.net/aot-anime.jpg",
+        )
         self.assertEqual(
             anime_credit["credit_roles"],
             ["Voice Actor", "Theme Song Performance"],

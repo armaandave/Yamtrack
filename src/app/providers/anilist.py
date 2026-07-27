@@ -18,7 +18,7 @@ STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
 CACHE_VERSION = "v4"
-PERSON_CACHE_VERSION = "v3"
+PERSON_CACHE_VERSION = "v4"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
@@ -582,12 +582,15 @@ def person_page(person_id):
             anime_staff_edges,
             anime_voice_edges,
         )
+        _use_mal_anime_credit_images(data)
         cache.set(fresh_key, data, FRESH_TTL)
         cache.set(stale_key, data, STALE_TTL)
         return data
     except (
         requests.RequestException,
         services.ProviderAPIError,
+        AttributeError,
+        KeyError,
         TypeError,
         ValueError,
     ) as error:
@@ -596,6 +599,39 @@ def person_page(person_id):
         if isinstance(error, services.ProviderAPIError):
             raise
         raise services.ProviderAPIError("anilist", error) from error
+
+
+def _use_mal_anime_credit_images(person):
+    """Replace AniList covers with the canonical MAL filmography posters."""
+    try:
+        from app.providers import mal  # noqa: PLC0415
+
+        mal_person = mal.person_page_by_name(
+            person.get("name"),
+            person.get("alternative_names"),
+            person.get("birth_date"),
+        )
+    except (
+        requests.RequestException,
+        services.ProviderAPIError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.warning("MAL poster enrichment unavailable for %s: %s", person.get("name"), error)
+        return
+    mal_images = {
+        (credit.get("media_type"), str(credit.get("media_id") or "")): credit.get("image")
+        for credit in (mal_person or {}).get("credits") or []
+        if credit.get("image")
+    }
+    for credit in person.get("credits") or []:
+        if credit.get("media_type") != MediaTypes.ANIME.value:
+            continue
+        image = mal_images.get((MediaTypes.ANIME.value, str(credit.get("media_id") or "")))
+        if image:
+            credit["image"] = image
 
 
 def _media(mal_id, *, media_kind, query, raise_errors):

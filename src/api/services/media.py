@@ -1804,8 +1804,16 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
     for credit in raw_credits:
         item = items.get(_person_credit_identity(credit))
         ratings = list(item.external_ratings.all()) if item is not None and rating_source else []
+        enriched_credit = dict(credit)
+        if (
+            item is not None
+            and enriched_credit.get("source") == Sources.MAL.value
+            and enriched_credit.get("media_type") == MediaTypes.ANIME.value
+            and item.image != settings.IMG_NONE
+        ):
+            enriched_credit["image"] = item.image
         enriched_credits.append({
-            **credit,
+            **enriched_credit,
             "_catalog_item": item,
             "_catalog_item_id": item.pk if item else None,
             "_external_rating": ratings[0] if ratings else None,
