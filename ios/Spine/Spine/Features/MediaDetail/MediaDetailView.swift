@@ -5789,7 +5789,14 @@ private struct AniListRatingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
-                metric(title: "AVERAGE SCORE", value: "\(summary.averageScore)%")
+                HStack(spacing: 8) {
+                    Image("RatingAniList")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 38, height: 38)
+                        .accessibilityLabel("AniList")
+                    metric(title: "AVERAGE SCORE", value: "\(summary.averageScore)%")
+                }
                 Spacer()
                 metric(title: "NUMBER OF RATINGS", value: summary.ratingCount.formatted())
             }
@@ -5835,17 +5842,6 @@ private struct AniListRatingCard: View {
                 }
 
                 Spacer()
-
-                HStack(spacing: 6) {
-                    Image("RatingAniList")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 20, height: 20)
-                    Text("AniList")
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundStyle(.white.opacity(0.56))
-                }
-                .accessibilityElement(children: .combine)
             }
         }
         .padding(14)

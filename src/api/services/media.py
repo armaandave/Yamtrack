@@ -101,6 +101,7 @@ MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
 PERSON_SORT_OPTIONS = [
+    {"value": "popularity", "label": "Popularity"},
     {"value": "title", "label": "Title"},
     {"value": "release_date", "label": "Release Date"},
     {"value": "average_rating", "label": "Average Rating"},
@@ -1635,8 +1636,14 @@ def _person_filter_options(person_credits):
         _release_date, year, _runtime = _person_release_fields(credit)
         if year is not None:
             years.add(year)
+    sorts = [
+        option
+        for option in PERSON_SORT_OPTIONS
+        if option["value"] != "popularity"
+        or any(credit.get("vote_count") is not None for credit in person_credits)
+    ]
     return {
-        "sorts": [*PERSON_SORT_OPTIONS, *rating_sorts],
+        "sorts": [*sorts, *rating_sorts],
         "genres": [{"value": value, "label": value} for value in genres],
         "languages": [{"value": value, "label": value} for value in languages],
         "platforms": [],
@@ -1807,6 +1814,12 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         enriched_credits,
         params,
         rating_source=rating_source,
+        default_sort=(
+            "popularity"
+            if source == "anilist"
+            and any(credit.get("vote_count") is not None for credit in raw_credits)
+            else None
+        ),
     )
     rating_preparation = (
         _person_rating_preparation(

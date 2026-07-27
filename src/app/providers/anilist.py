@@ -1,7 +1,9 @@
 import logging
+import re
 from datetime import UTC, datetime
 
 import requests
+from bs4 import BeautifulSoup
 from django.core.cache import cache
 
 from app import helpers
@@ -16,7 +18,7 @@ STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
 CACHE_VERSION = "v4"
-PERSON_CACHE_VERSION = "v2"
+PERSON_CACHE_VERSION = "v3"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
@@ -268,7 +270,7 @@ query ($id: Int!, $page: Int!) {
       large
       medium
     }
-    description
+    description(asHtml: true)
     primaryOccupations
     dateOfBirth {
       year
@@ -287,7 +289,7 @@ query ($id: Int!, $page: Int!) {
       type: MANGA
       page: $page
       perPage: 25
-      sort: [START_DATE_DESC]
+      sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
         hasNextPage
@@ -329,7 +331,7 @@ query ($id: Int!, $page: Int!) {
       type: ANIME
       page: $page
       perPage: 25
-      sort: [START_DATE_DESC]
+      sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
         hasNextPage
@@ -370,12 +372,13 @@ query ($id: Int!, $page: Int!) {
     animeCharacterMedia: characterMedia(
       page: $page
       perPage: 25
-      sort: [START_DATE_DESC]
+      sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
         hasNextPage
       }
       edges {
+        characterRole
         characters {
           id
           name {
@@ -932,6 +935,7 @@ def _normalize_staff(staff, manga_edges, anime_staff_edges, anime_voice_edges):
             edge,
             media_type=MediaTypes.ANIME.value,
             role="Voice Actor",
+            character_role=(edge or {}).get("characterRole"),
         )
 
     occupations = [
@@ -945,7 +949,7 @@ def _normalize_staff(staff, manga_edges, anime_staff_edges, anime_voice_edges):
         "name": name.get("full") or name.get("native") or "",
         "alternative_names": _alternative_staff_names(name),
         "image": image.get("large") or image.get("medium"),
-        "biography": helpers.plain_text(staff.get("description")),
+        "biography": _staff_biography(staff.get("description")),
         "known_for_department": (
             occupations[0]
             if occupations
@@ -959,7 +963,15 @@ def _normalize_staff(staff, manga_edges, anime_staff_edges, anime_voice_edges):
     }
 
 
-def _merge_staff_credit(credits, positions, edge, *, media_type, role):
+def _merge_staff_credit(
+    credits,
+    positions,
+    edge,
+    *,
+    media_type,
+    role,
+    character_role=None,
+):
     node = (edge or {}).get("node") or {}
     mal_id = node.get("idMal")
     if not mal_id:
@@ -970,6 +982,10 @@ def _merge_staff_credit(credits, positions, edge, *, media_type, role):
         if role not in current["credit_roles"]:
             current["roles"].append(role)
             current["credit_roles"].append(role)
+        if _character_role_order(character_role) < _character_role_order(
+            current.get("character_role"),
+        ):
+            current["character_role"] = character_role
         return
 
     title = node.get("title") or {}
@@ -997,10 +1013,70 @@ def _merge_staff_credit(credits, positions, edge, *, media_type, role):
         else [],
         "roles": [role],
         "credit_roles": [role],
+        "character_role": character_role,
         "vote_average": score / 10 if isinstance(score, (int, float)) else None,
         "vote_count": node.get("popularity"),
         "url": f"https://myanimelist.net/{media_type}/{mal_id}",
     })
+
+
+def _staff_biography(value):
+    if not value:
+        return None
+    html = re.sub(
+        r"""<span class=['"]markdown_spoiler['"]>.*?</span>\s*</span>""",
+        "",
+        str(value),
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    soup = BeautifulSoup(html, "html.parser")
+    for spoiler in soup.select(".markdown_spoiler"):
+        parent = spoiler.parent if spoiler.parent and spoiler.parent.name == "p" else None
+        spoiler.decompose()
+        if parent and len(parent.get_text(" ", strip=True)) <= 80:
+            parent.decompose()
+
+    for paragraph in soup.find_all("p"):
+        text = paragraph.get_text(" ", strip=True)
+        if len(text) <= 80 and re.search(r"\b(?:roles|credits):?$", text, re.IGNORECASE):
+            paragraph.decompose()
+            continue
+        links = paragraph.find_all("a")
+        if not links:
+            continue
+        residual = paragraph.get_text(" ", strip=True)
+        for link in links:
+            residual = residual.replace(link.get_text(" ", strip=True), "")
+        if not re.sub(r"[\s|·,/&-]+", "", residual):
+            paragraph.decompose()
+
+    blocks = soup.find_all(["p", "li"])
+    if not blocks:
+        return _clean_staff_text(helpers.plain_text(value))
+    paragraphs = []
+    for block in blocks:
+        if block.find_parent(["p", "li"]):
+            continue
+        text = _clean_staff_text(block.get_text(" ", strip=True))
+        if text and text not in paragraphs:
+            paragraphs.append(text)
+    return "\n\n".join(paragraphs) or None
+
+
+def _clean_staff_text(value):
+    if not value:
+        return None
+    text = re.sub(r"~!.*?!~", "", value, flags=re.DOTALL)
+    text = re.sub(r"(\*\*|__|~~|~!|!~)", "", text)
+    return " ".join(text.split()) or None
+
+
+def _character_role_order(value):
+    return {
+        "MAIN": 0,
+        "SUPPORTING": 1,
+        "BACKGROUND": 2,
+    }.get(str(value or "").upper(), 3)
 
 
 def _alternative_staff_names(name):

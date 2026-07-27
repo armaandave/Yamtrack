@@ -486,6 +486,33 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["credits"][0]["credit_roles"], ["Story & Art"])
         self.assertEqual(result["credits"][0]["languages"], ["Japanese"])
 
+    def test_staff_biography_removes_markup_links_and_collapsed_role_dumps(self):
+        biography = anilist._staff_biography(
+            """
+            <p><strong>Height:</strong> 161 cm</p>
+            <p><a href="https://example.com/twitter">Twitter</a> |
+            <a href="https://example.com/blog">Blog</a></p>
+            <p>She is an award-winning voice actor.</p>
+            <p><strong>Non-Anime Roles:</strong><br>
+            <span class="markdown_spoiler"><span>- A role</p>
+            <ul><li>Another role</li>
+            <li>Final role<br></span></span></li></ul>
+            """,
+        )
+
+        self.assertEqual(
+            biography,
+            "Height: 161 cm\n\nShe is an award-winning voice actor.",
+        )
+
+    def test_staff_query_requests_ranked_credits_and_rendered_biography(self):
+        self.assertIn("description(asHtml: true)", anilist.STAFF_QUERY)
+        self.assertEqual(
+            anilist.STAFF_QUERY.count("sort: [POPULARITY_DESC, SCORE_DESC]"),
+            3,
+        )
+        self.assertIn("characterRole", anilist.STAFF_QUERY)
+
     @patch("app.providers.anilist.services.api_request")
     def test_person_page_paginates_and_merges_anime_voice_and_staff_credits(
         self,
@@ -556,7 +583,11 @@ class AniListProviderTests(TestCase):
                     {"staffRole": "Theme Song Performance", "node": attack_on_titan},
                 ],
                 voice_edges=[
-                    {"characters": [{"id": 1}], "node": attack_on_titan},
+                    {
+                        "characterRole": "MAIN",
+                        "characters": [{"id": 1}],
+                        "node": attack_on_titan,
+                    },
                 ],
             ),
             staff_payload(
@@ -592,6 +623,7 @@ class AniListProviderTests(TestCase):
             attack_credit["credit_roles"],
             ["Theme Song Performance", "Key Animation", "Voice Actor"],
         )
+        self.assertEqual(attack_credit["character_role"], "MAIN")
         self.assertEqual(result["credits"][1]["media_id"], "49596")
         self.assertEqual(result["credits"][1]["credit_roles"], ["Voice Actor"])
 

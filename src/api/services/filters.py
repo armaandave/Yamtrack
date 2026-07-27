@@ -42,6 +42,7 @@ API_SORTS = [
 ]
 
 DESC_SORTS = {
+    "popularity",
     "release_date",
     "your_rating",
     "average_rating",
@@ -475,7 +476,13 @@ def person_rating_source(credit_list, params):
     return source
 
 
-def apply_person_credit_filters(credit_list, params, *, rating_source=None):
+def apply_person_credit_filters(
+    credit_list,
+    params,
+    *,
+    rating_source=None,
+    default_sort=None,
+):
     """Apply in-memory filters to provider person credits."""
     active_keys = {
         "media_type",
@@ -494,7 +501,7 @@ def apply_person_credit_filters(credit_list, params, *, rating_source=None):
         "ordering",
         "direction",
     }
-    if not any(values(params, key) for key in active_keys):
+    if default_sort is None and not any(values(params, key) for key in active_keys):
         return credit_list
 
     media_types = set(values(params, "media_type"))
@@ -547,7 +554,16 @@ def apply_person_credit_filters(credit_list, params, *, rating_source=None):
             )
         ]
 
-    sort = params.get("sort") or "average_rating"
+    return _sort_person_credits(
+        filtered,
+        params,
+        rating_source=rating_source,
+        default_sort=default_sort,
+    )
+
+
+def _sort_person_credits(credit_list, params, *, rating_source=None, default_sort=None):
+    sort = params.get("sort") or default_sort or "average_rating"
     direction = params.get("direction")
     if direction not in {"asc", "desc"}:
         direction = "desc" if rating_source or sort in DESC_SORTS else "asc"
@@ -563,6 +579,11 @@ def apply_person_credit_filters(credit_list, params, *, rating_source=None):
                 (credit.get("title") or "").casefold(),
                 credit.get("_catalog_item_id") or 0,
             )
+    elif sort == "popularity":
+        return sorted(
+            credit_list,
+            key=lambda credit: _person_popularity_key(credit, descending),
+        )
     elif sort == "release_date":
         def key(credit):
             release_date = _credit_release_date(credit)
@@ -574,8 +595,32 @@ def apply_person_credit_filters(credit_list, params, *, rating_source=None):
             value = float(rating or 0)
             return (rating is None, -value if descending else value)
     else:
-        return sorted(filtered, key=lambda credit: (credit.get("title") or "").lower(), reverse=descending)
-    return sorted(filtered, key=key)
+        return sorted(
+            credit_list,
+            key=lambda credit: (credit.get("title") or "").lower(),
+            reverse=descending,
+        )
+    return sorted(credit_list, key=key)
+
+
+def _person_popularity_key(credit, descending):
+    popularity = _credit_number(credit, "vote_count")
+    rating = _credit_number(credit, "vote_average")
+    release_date = _credit_release_date(credit)
+    direction = -1 if descending else 1
+    return (
+        popularity is None,
+        direction * popularity if popularity is not None else 0,
+        rating is None,
+        direction * rating if rating is not None else 0,
+        {
+            "MAIN": 0,
+            "SUPPORTING": 1,
+            "BACKGROUND": 2,
+        }.get(str(credit.get("character_role") or "").upper(), 3),
+        -(release_date.toordinal() if release_date else 0),
+        (credit.get("title") or "").casefold(),
+    )
 
 
 def _person_credit_matches(  # noqa: C901, PLR0911

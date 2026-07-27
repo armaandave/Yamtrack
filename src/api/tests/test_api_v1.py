@@ -3737,6 +3737,72 @@ class ApiV1FoundationTests(TestCase):
             ["Voice Actor", "Theme Song Performance"],
         )
 
+    @patch("api.services.media.provider_services.get_person_page")
+    def test_anilist_person_defaults_to_popular_voice_credits(self, person_mock):
+        def credit(
+            media_id,
+            title,
+            popularity,
+            rating,
+            role,
+            release_date,
+        ):
+            return {
+                "media_type": MediaTypes.ANIME.value,
+                "source": Sources.MAL.value,
+                "media_id": media_id,
+                "title": title,
+                "release_date": release_date,
+                "credit_roles": ["Voice Actor"],
+                "vote_count": popularity,
+                "vote_average": rating,
+                "character_role": role,
+            }
+
+        person_mock.return_value = {
+            "source": "anilist",
+            "person_id": "100142",
+            "name": "Yui Ishikawa",
+            "known_for_department": "Voice Actor",
+            "credits": [
+                credit("new", "New Niche Anime", 10_000, 10, "MAIN", "2026-01-01"),
+                credit("support", "Popular Supporting Role", 1_000_000, 8.5, "SUPPORTING", "2020-01-01"),
+                credit("main", "Popular Main Role", 1_000_000, 8.5, "MAIN", "2013-01-01"),
+                credit("lower", "Popular Lower Score", 1_000_000, 8.4, "MAIN", "2024-01-01"),
+            ],
+        }
+
+        response = self.client.get("/api/v1/people/anilist/100142/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item["title"] for item in response.data["credits"]["cast"]],
+            [
+                "Popular Main Role",
+                "Popular Supporting Role",
+                "Popular Lower Score",
+                "New Niche Anime",
+            ],
+        )
+        self.assertEqual(
+            response.data["filter_options"]["sorts"][0],
+            {"value": "popularity", "label": "Popularity"},
+        )
+
+        release_order = self.client.get(
+            "/api/v1/people/anilist/100142/",
+            {"sort": "release_date"},
+        )
+        self.assertEqual(
+            [item["title"] for item in release_order.data["credits"]["cast"]],
+            [
+                "New Niche Anime",
+                "Popular Lower Score",
+                "Popular Supporting Role",
+                "Popular Main Role",
+            ],
+        )
+
     def test_person_detail_rejects_unsupported_source_for_v1(self):
         response = self.client.get("/api/v1/people/manual/author-1/")
 
