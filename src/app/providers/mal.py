@@ -826,7 +826,13 @@ def _normalize_jikan_anime_cast(entries):
     return cast
 
 
-def person_page(person_id, *, timeout=None, retry_rate_limits=True):
+def person_page(
+    person_id,
+    *,
+    timeout=None,
+    retry_rate_limits=True,
+    request_session=None,
+):
     """Return MAL person data through Jikan, which exposes MAL's people pages."""
     cache_key = f"{Sources.MAL.value}_person_{person_id}_v2"
     data = cache.get(cache_key)
@@ -840,6 +846,7 @@ def person_page(person_id, *, timeout=None, retry_rate_limits=True):
             f"{jikan_base_url}/people/{person_id}/full",
             timeout=timeout,
             retry_rate_limits=retry_rate_limits,
+            request_session=request_session,
         )
     except requests.exceptions.HTTPError as error:
         handle_error(error)
@@ -897,7 +904,14 @@ def person_page(person_id, *, timeout=None, retry_rate_limits=True):
     return data
 
 
-def person_page_by_name(name, alternative_names=None, birth_date=None, *, timeout=1):
+def person_page_by_name(
+    name,
+    alternative_names=None,
+    birth_date=None,
+    *,
+    timeout=1,
+    request_session=None,
+):
     """Find the matching MAL person and return their full Jikan profile."""
     if not str(name or "").strip():
         return None
@@ -913,6 +927,7 @@ def person_page_by_name(name, alternative_names=None, birth_date=None, *, timeou
         },
         timeout=timeout,
         retry_rate_limits=False,
+        request_session=request_session,
     )
     target_names = _person_name_keys([name, *(alternative_names or [])])
     candidates = [
@@ -944,6 +959,7 @@ def person_page_by_name(name, alternative_names=None, birth_date=None, *, timeou
             person_id,
             timeout=timeout,
             retry_rate_limits=False,
+            request_session=request_session,
         )
         if person_id
         else None

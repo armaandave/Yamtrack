@@ -3710,7 +3710,7 @@ class ApiV1FoundationTests(TestCase):
                     "source": Sources.MAL.value,
                     "media_id": "16498",
                     "title": "Attack on Titan",
-                    "image": "https://example.com/aot-anime.jpg",
+                    "image": "https://cdn.myanimelist.net/aot-anime.jpg",
                     "release_date": "2013-04-07",
                     "genres": ["Action"],
                     "languages": ["Japanese"],
@@ -3719,13 +3719,23 @@ class ApiV1FoundationTests(TestCase):
                 },
             ],
         }
-        Item.objects.create(
+        item = Item.objects.create(
             source=Sources.MAL.value,
             media_type=MediaTypes.ANIME.value,
             media_id="16498",
             title="Attack on Titan",
-            image="https://cdn.myanimelist.net/aot-anime.jpg",
+            image="https://img.anilist.co/stale-aot-anime.jpg",
         )
+        user = get_user_model().objects.create_user(
+            username="anime-person-posters",
+            password="strong-password-123",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom-aot-anime.jpg",
+        )
+        self.client.force_authenticate(user)
 
         response = self.client.get("/api/v1/people/anilist/106705/")
 
@@ -3746,6 +3756,10 @@ class ApiV1FoundationTests(TestCase):
         self.assertEqual(
             anime_credit["poster_url"],
             "https://cdn.myanimelist.net/aot-anime.jpg",
+        )
+        self.assertEqual(
+            anime_credit["custom_poster_url"],
+            "https://example.com/custom-aot-anime.jpg",
         )
         self.assertEqual(
             anime_credit["credit_roles"],

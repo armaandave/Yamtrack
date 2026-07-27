@@ -23,7 +23,7 @@ PERSON_CACHE_VERSION = "v6"
 PERSON_PAGE_LIMIT = 20
 PERSON_LOCK_TTL = REQUEST_TIMEOUT + 2
 PERSON_REFRESH_MARKER_TTL = 60
-PERSON_POSTER_CACHE_VERSION = "v1"
+PERSON_POSTER_CACHE_VERSION = "v2"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
@@ -637,8 +637,7 @@ def person_page(person_id, *, page=1):
         if current_page < PERSON_PAGE_LIMIT and pages[-1]["has_next_page"]
         else None
     )
-    _schedule_person_poster_refresh(person_id, pages[0]["staff"])
-    _apply_cached_mal_anime_credit_images(person_id, data)
+    _apply_mal_anime_credit_images(person_id, pages[0]["staff"], data)
     return data
 
 
@@ -661,6 +660,8 @@ def refresh_person_credit_images(
             name,
             alternative_names,
             birth_date,
+            timeout=1,
+            request_session=requests,
         )
     except (
         requests.RequestException,
@@ -830,44 +831,28 @@ def _schedule_person_page_refresh(person_id, page):
         )
 
 
-def _schedule_person_poster_refresh(person_id, staff):
+def _apply_mal_anime_credit_images(person_id, staff, person):
+    anime_credits = [
+        credit
+        for credit in person.get("credits") or []
+        if credit.get("media_type") == MediaTypes.ANIME.value
+    ]
+    if not anime_credits:
+        return
     poster_key = _person_poster_key(person_id)
-    if cache.get(poster_key) is not None:
-        return
-    marker = f"{poster_key}:refresh"
-    if not cache.add(marker, 1, timeout=FAILURE_TTL):
-        return
-    name = staff.get("name") or {}
-    try:
-        from app.tasks import refresh_anilist_person_posters  # noqa: PLC0415
-
-        refresh_anilist_person_posters.delay(
-            str(person_id),
+    images = cache.get(poster_key)
+    if images is None:
+        name = staff.get("name") or {}
+        images = refresh_person_credit_images(
+            person_id,
             name.get("full") or name.get("native") or "",
             _alternative_staff_names(name),
             _fuzzy_date(staff.get("dateOfBirth")),
-            marker,
         )
-    except Exception:
-        cache.delete(marker)
-        logger.exception(
-            "Could not enqueue MAL poster refresh for AniList person %s",
-            person_id,
-        )
-
-
-def _apply_cached_mal_anime_credit_images(person_id, person):
-    images = cache.get(_person_poster_key(person_id))
-    if images is None:
-        return
-    for credit in person.get("credits") or []:
-        if credit.get("media_type") != MediaTypes.ANIME.value:
-            continue
-        image = images.get(
+    for credit in anime_credits:
+        credit["image"] = images.get(
             (MediaTypes.ANIME.value, str(credit.get("media_id") or "")),
         )
-        if image:
-            credit["image"] = image
 
 
 def _media(mal_id, *, media_kind, query, raise_errors):

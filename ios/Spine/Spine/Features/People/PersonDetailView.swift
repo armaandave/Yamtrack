@@ -522,7 +522,7 @@ struct PersonDetailView: View {
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, minHeight: 220)
                 } else {
-                    VStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
                         let series = viewModel.detail?.series(for: selectedType.rawValue) ?? []
                         if !series.isEmpty {
                             seriesDisclosureRow(series)
@@ -542,34 +542,38 @@ struct PersonDetailView: View {
 
     @ViewBuilder
     private var creditPagination: some View {
-        if viewModel.canLoadMore || viewModel.nextPageErrorMessage != nil {
+        if viewModel.isLoadingNextPage {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.white.opacity(0.72))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+        } else if viewModel.nextPageErrorMessage != nil {
             Button {
                 Task {
                     await viewModel.loadNextPage()
                     syncSelectedFilmographyType()
                 }
             } label: {
-                HStack(spacing: 8) {
-                    if viewModel.isLoadingNextPage {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white.opacity(0.72))
-                    }
-                    Text(
-                        viewModel.nextPageErrorMessage == nil
-                            ? "Load more credits"
-                            : "Retry loading credits"
-                    )
+                Text("Retry loading credits")
                     .font(.system(size: 13, weight: .bold))
-                }
                 .foregroundStyle(.white.opacity(0.78))
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isLoadingNextPage)
             .accessibilityHint(viewModel.nextPageErrorMessage ?? "")
+        } else if viewModel.canLoadMore {
+            Color.clear
+                .frame(height: 1)
+                .id(viewModel.detail?.creditsNextPage)
+                .onAppear {
+                    Task {
+                        await viewModel.loadNextPage()
+                        syncSelectedFilmographyType()
+                    }
+                }
         }
     }
 

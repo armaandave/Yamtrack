@@ -64,29 +64,6 @@ def refresh_anilist_person_page(person_id, page, marker=None):
             cache.delete(marker)
 
 
-@shared_task(name="Refresh AniList person MAL posters", ignore_result=True)
-def refresh_anilist_person_posters(
-    person_id,
-    name,
-    alternative_names=None,
-    birth_date=None,
-    marker=None,
-):
-    """Resolve canonical MAL filmography posters outside the API request."""
-    from app.providers import anilist
-
-    try:
-        return anilist.refresh_person_credit_images(
-            person_id,
-            name,
-            alternative_names,
-            birth_date,
-        )
-    finally:
-        if marker:
-            cache.delete(marker)
-
-
 def _normalize_rating_sources(rating_sources):
     if rating_sources is None:
         return None

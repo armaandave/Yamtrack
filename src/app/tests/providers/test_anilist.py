@@ -517,14 +517,12 @@ class AniListProviderTests(TestCase):
         self.assertEqual(anilist.STAFF_QUERY.count("perPage: 25"), 3)
         self.assertIn("characterRole", anilist.STAFF_QUERY)
 
-    @patch("app.providers.anilist._schedule_person_poster_refresh")
     @patch("app.providers.anilist._schedule_person_page_refresh")
     @patch("app.providers.anilist.services.api_request")
     def test_person_page_returns_stale_immediately_and_schedules_refresh(
         self,
         request_mock,
         schedule_mock,
-        _poster_schedule_mock,
     ):
         _, stale_key, _, _ = anilist._person_page_keys("100142", 1)
         cache.set(
@@ -702,7 +700,30 @@ class AniListProviderTests(TestCase):
             "Yuki Kaji",
             ["梶裕貴", "Kaji Yuki"],
             "1985-09-03",
+            timeout=1,
+            request_session=requests,
         )
+
+    @patch("app.providers.anilist.refresh_person_credit_images", return_value={})
+    def test_person_page_does_not_use_anilist_cover_as_anime_poster(
+        self,
+        _refresh_mock,
+    ):
+        person = {
+            "credits": [{
+                "media_type": MediaTypes.ANIME.value,
+                "media_id": "21",
+                "image": "https://img.anilist.co/one-piece.jpg",
+            }],
+        }
+
+        anilist._apply_mal_anime_credit_images(
+            "950",
+            {"name": {"full": "Mayumi Tanaka"}},
+            person,
+        )
+
+        self.assertIsNone(person["credits"][0]["image"])
 
 
 class MALAnimeMetadataTests(TestCase):
@@ -942,6 +963,7 @@ class MALAnimeMetadataTests(TestCase):
             "Yui Ishikawa",
             ["石川由依"],
             "1989-05-30",
+            request_session=requests,
         )
 
         self.assertEqual(result["person_id"], "2")
@@ -949,9 +971,11 @@ class MALAnimeMetadataTests(TestCase):
             2,
             timeout=1,
             retry_rate_limits=False,
+            request_session=requests,
         )
         self.assertEqual(request_mock.call_args.kwargs["timeout"], 1)
         self.assertFalse(request_mock.call_args.kwargs["retry_rate_limits"])
+        self.assertIs(request_mock.call_args.kwargs["request_session"], requests)
 
     @patch("app.providers.mal.services.api_request")
     def test_anime_cast_uses_japanese_voice_actor_and_merges_characters(
