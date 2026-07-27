@@ -447,7 +447,9 @@ def get_book_series(source, series_id):
         return tmdb.collection(series_id)
     if source == Sources.IGDB.value:
         return igdb.collection(series_id)
-    msg = "Series pages are only supported for Hardcover, TMDB, and IGDB in v1."
+    if source == Sources.MAL.value:
+        return mal.anime_series(series_id)
+    msg = "Series pages are only supported for Hardcover, TMDB, IGDB, and MAL in v1."
     raise NotImplementedError(msg)
 
 

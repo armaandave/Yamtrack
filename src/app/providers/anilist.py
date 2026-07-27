@@ -18,11 +18,36 @@ STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
 CACHE_VERSION = "v4"
-PERSON_CACHE_VERSION = "v4"
+PERSON_CACHE_VERSION = "v5"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
 REVIEWS_PAGE_SIZE = 25
+
+ANIME_SERIES_QUERY = """
+query ($malIds: [Int]) {
+  Page(page: 1, perPage: 50) {
+    media(idMal_in: $malIds, type: ANIME) {
+      idMal
+      popularity
+      title {
+        english
+        romaji
+        native
+      }
+      relations {
+        edges {
+          relationType
+          node {
+            idMal
+            type
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
 ANIME_QUERY = """
 query ($malId: Int!) {
@@ -366,6 +391,15 @@ query ($id: Int!, $page: Int!) {
           genres
           averageScore
           popularity
+          relations {
+            edges {
+              relationType
+              node {
+                idMal
+                type
+              }
+            }
+          }
         }
       }
     }
@@ -414,6 +448,15 @@ query ($id: Int!, $page: Int!) {
           genres
           averageScore
           popularity
+          relations {
+            edges {
+              relationType
+              node {
+                idMal
+                type
+              }
+            }
+          }
         }
       }
     }
@@ -456,6 +499,35 @@ def manga(mal_id, *, raise_errors=False):
         query=MANGA_QUERY,
         raise_errors=raise_errors,
     )
+
+
+def anime_series_nodes(mal_ids, *, timeout=REQUEST_TIMEOUT):
+    """Return direct AniList prequel/sequel links for MAL anime IDs."""
+    ids = sorted({int(value) for value in mal_ids if str(value).isdigit()})
+    results = {}
+    for offset in range(0, len(ids), 50):
+        response = services.api_request(
+            "ANILIST",
+            "POST",
+            API_URL,
+            params={
+                "query": ANIME_SERIES_QUERY,
+                "variables": {"malIds": ids[offset : offset + 50]},
+            },
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=timeout,
+            retry_rate_limits=False,
+        )
+        media = (((response.get("data") or {}).get("Page") or {}).get("media") or [])
+        for node in media:
+            mal_id = node.get("idMal")
+            if mal_id:
+                results[str(mal_id)] = {
+                    "display_title": _display_title(node.get("title") or {}),
+                    "popularity": node.get("popularity"),
+                    "series_links": _series_links(node),
+                }
+    return results
 
 
 def anime_reviews(mal_id, page):
@@ -900,6 +972,17 @@ def _relations(media):
     return relations
 
 
+def _series_links(media):
+    links = []
+    for edge in ((media.get("relations") or {}).get("edges") or []):
+        node = (edge or {}).get("node") or {}
+        relation = str((edge or {}).get("relationType") or "").upper()
+        mal_id = node.get("idMal")
+        if relation in {"PREQUEL", "SEQUEL"} and node.get("type") == "ANIME" and mal_id:
+            links.append({"media_id": str(mal_id), "relation": relation.title()})
+    return links
+
+
 def relation_label(value):
     normalized = str(value or "OTHER").upper()
     return RELATION_LABELS.get(normalized, normalized.replace("_", " ").title())
@@ -1024,6 +1107,10 @@ def _merge_staff_credit(
             current.get("character_role"),
         ):
             current["character_role"] = character_role
+        current_links = current.setdefault("series_links", [])
+        for link in _series_links(node):
+            if link not in current_links:
+                current_links.append(link)
         return
 
     title = node.get("title") or {}
@@ -1054,6 +1141,7 @@ def _merge_staff_credit(
         "character_role": character_role,
         "vote_average": score / 10 if isinstance(score, (int, float)) else None,
         "vote_count": node.get("popularity"),
+        "series_links": _series_links(node),
         "url": f"https://myanimelist.net/{media_type}/{mal_id}",
     })
 

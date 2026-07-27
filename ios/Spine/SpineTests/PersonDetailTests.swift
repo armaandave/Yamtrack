@@ -215,6 +215,63 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.items.first?.ref.mediaType, "game")
     }
 
+    func testAnimePersonAndSeriesDecodeGenericSeriesFields() throws {
+        let personJSON = """
+        {
+          "id": "950",
+          "source": "anilist",
+          "name": "Voice Actor",
+          "series": [
+            {
+              "id": "16498",
+              "source": "mal",
+              "media_type": "anime",
+              "name": "Attack on Titan",
+              "item_count": 4,
+              "poster_urls": ["https://example.com/aot.jpg"]
+            }
+          ],
+          "credits": { "cast": [] }
+        }
+        """
+        let seriesJSON = """
+        {
+          "series_id": "16498",
+          "source": "mal",
+          "media_type": "anime",
+          "name": "Attack on Titan",
+          "item_count": 2,
+          "items": [
+            {
+              "ref": {
+                "item_id": null,
+                "source": "mal",
+                "media_type": "anime",
+                "media_id": "16498",
+                "season_number": null,
+                "episode_number": null
+              },
+              "title": "Shingeki no Kyojin",
+              "display_title": "Attack on Titan",
+              "subtitle": "Anime · 2013 · 25 episodes",
+              "position": 1
+            }
+          ]
+        }
+        """
+
+        let person = try JSONDecoder.api.decode(PersonDetail.self, from: Data(personJSON.utf8))
+        let detail = try JSONDecoder.api.decode(SeriesDetail.self, from: Data(seriesJSON.utf8))
+
+        XCTAssertEqual(person.series(for: "anime").first?.ref, SeriesRef(source: "mal", id: "16498", mediaType: "anime"))
+        XCTAssertEqual(person.series(for: "anime").first?.itemCount, 4)
+        XCTAssertTrue(person.bookSeries.isEmpty)
+        XCTAssertEqual(detail.mediaType, "anime")
+        XCTAssertEqual(detail.items.first?.displayTitle, "Attack on Titan")
+        XCTAssertEqual(detail.items.first?.subtitle, "Anime · 2013 · 25 episodes")
+        XCTAssertEqual(detail.items.first?.position, 1)
+    }
+
     func testPersonDetailDecodesMusicBrainzArtistReleases() throws {
         let json = """
         {

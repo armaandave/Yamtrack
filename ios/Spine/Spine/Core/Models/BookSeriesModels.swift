@@ -12,17 +12,44 @@ struct SeriesRef: Codable, Hashable, Identifiable {
     }
 }
 
-struct BookSeriesSummary: Codable, Hashable, Identifiable {
+struct MediaSeriesSummary: Decodable, Hashable, Identifiable {
     let id: String
     let source: String
+    let mediaType: String
     let name: String
-    let bookCount: Int
+    let itemCount: Int
     let posterUrls: [String]
 
     var ref: SeriesRef {
-        SeriesRef(source: source, id: id)
+        SeriesRef(source: source, id: id, mediaType: mediaType)
+    }
+
+    var bookCount: Int { itemCount }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case source
+        case mediaType
+        case name
+        case itemCount
+        case bookCount
+        case posterUrls
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        source = try container.decode(String.self, forKey: .source)
+        mediaType = try container.decodeIfPresent(String.self, forKey: .mediaType) ?? "book"
+        name = try container.decode(String.self, forKey: .name)
+        itemCount = try container.decodeIfPresent(Int.self, forKey: .itemCount)
+            ?? container.decodeIfPresent(Int.self, forKey: .bookCount)
+            ?? 0
+        posterUrls = try container.decodeIfPresent([String].self, forKey: .posterUrls) ?? []
     }
 }
+
+typealias BookSeriesSummary = MediaSeriesSummary
 
 struct SeriesDetail: Decodable, Hashable, Identifiable {
     let seriesId: String

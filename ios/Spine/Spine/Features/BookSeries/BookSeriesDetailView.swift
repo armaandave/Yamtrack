@@ -152,8 +152,8 @@ struct SeriesDetailView: View {
             )
         } else if let detail = viewModel.detail, detail.items.isEmpty {
             ContentUnavailableView(
-                detail.mediaType == "movie" ? "No movies" : detail.mediaType == "game" ? "No games" : "No books",
-                systemImage: detail.mediaType == "movie" ? "film" : detail.mediaType == "game" ? "gamecontroller" : "books.vertical"
+                emptyTitle(for: detail.mediaType),
+                systemImage: emptyIcon(for: detail.mediaType)
             )
         } else if let detail = viewModel.detail {
             ScrollView {
@@ -165,23 +165,55 @@ struct SeriesDetailView: View {
                         Button {
                             selectedMedia = viewModel.selection(for: item)
                         } label: {
-                            MediaArtwork(
-                                url: item.displayPosterURL,
-                                title: item.title,
-                                slot: .tagGrid,
-                                mediaType: item.ref.mediaType,
-                                orientation: item.posterOrientation
-                            )
-                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                            VStack(alignment: .leading, spacing: 7) {
+                                MediaArtwork(
+                                    url: item.displayPosterURL,
+                                    title: item.displayTitle,
+                                    slot: .tagGrid,
+                                    mediaType: item.ref.mediaType,
+                                    orientation: item.posterOrientation
+                                )
+                                .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                                if detail.mediaType == "anime" {
+                                    Text(item.displayTitle)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(2)
+                                    if let subtitle = item.subtitle, !subtitle.isEmpty {
+                                        Text(subtitle)
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.52))
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("View \(item.title)")
+                        .accessibilityLabel("View \(item.displayTitle)")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
             }
+        }
+    }
+
+    private func emptyTitle(for mediaType: String) -> String {
+        switch mediaType {
+        case "movie": "No movies"
+        case "game": "No games"
+        case "anime": "No anime installments"
+        default: "No books"
+        }
+    }
+
+    private func emptyIcon(for mediaType: String) -> String {
+        switch mediaType {
+        case "movie": "film"
+        case "game": "gamecontroller"
+        case "anime": "play.rectangle"
+        default: "books.vertical"
         }
     }
 

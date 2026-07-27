@@ -595,6 +595,34 @@ def related_sections_from_payload(related, media_type, source, request=None, use
                 "recommendations",
             )
         ]
+    elif media_type == MediaTypes.ANIME.value:
+        ordered_keys = [
+            key
+            for key in ("series", "relations", "recommendations")
+            if related.get(key)
+        ]
+        ordered_keys.extend(
+            key
+            for key, values in related.items()
+            if key not in {*ordered_keys, "seasons", "all_related"} and values
+        )
+        candidates = [
+            (
+                key,
+                (
+                    "Related"
+                    if key == "relations"
+                    else (
+                        values[0].get("series_name") or "Series"
+                        if key == "series" and isinstance(values[0], dict)
+                        else key.replace("_", " ").title()
+                    )
+                ),
+                values,
+            )
+            for key in ordered_keys
+            if (values := related.get(key) or [])
+        ]
     else:
         candidates = [
             (
@@ -612,7 +640,7 @@ def related_sections_from_payload(related, media_type, source, request=None, use
     sections = []
     for key, title, values in candidates:
         items = []
-        section_values = values if key == "relations" else values[:7]
+        section_values = values if key in {"relations", "series"} else values[:7]
         for value in section_values:
             payload = value.get("item", value) if isinstance(value, dict) else value
             if not isinstance(payload, dict):

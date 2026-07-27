@@ -135,11 +135,43 @@ class AnimeDetailEnrichmentTests(TestCase):
             ],
         }
 
-        result = media.media_detail(
-            source=Sources.MAL.value,
-            media_type=MediaTypes.ANIME.value,
-            media_id="16498",
-        )
+        with patch(
+            "api.services.media.mal.anime_series",
+            return_value={
+                "series_id": "100",
+                "source": "mal",
+                "media_type": "anime",
+                "name": "Attack on Titan",
+                "item_count": 2,
+                "items": [
+                    {
+                        "media_id": "100",
+                        "source": "mal",
+                        "media_type": "anime",
+                        "title": "MAL Prequel",
+                        "display_title": "The Prequel",
+                        "image": "https://img.example/prequel.jpg",
+                        "subtitle": "Anime · 2012 · 12 episodes",
+                        "position": 1,
+                    },
+                    {
+                        "media_id": "16498",
+                        "source": "mal",
+                        "media_type": "anime",
+                        "title": "Shingeki no Kyojin",
+                        "display_title": "Attack on Titan",
+                        "image": "https://img.example/mal.jpg",
+                        "subtitle": "Anime · 2013 · 25 episodes",
+                        "position": 2,
+                    },
+                ],
+            },
+        ):
+            result = media.media_detail(
+                source=Sources.MAL.value,
+                media_type=MediaTypes.ANIME.value,
+                media_id="16498",
+            )
 
         self.assertEqual(result["title"], "Shingeki no Kyojin")
         self.assertEqual(result["display_title"], "Attack on Titan")
@@ -154,12 +186,14 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertTrue(result["details"]["anilist_rating"]["has_reviews"])
         self.assertEqual(
             [section["id"] for section in result["related_sections"]],
-            ["relations", "recommendations"],
+            ["series", "relations", "recommendations"],
         )
-        relations = result["related_sections"][0]["items"]
-        self.assertEqual([relation["relation"] for relation in relations], ["Source", "Prequel"])
+        self.assertEqual(result["details"]["series_id"], "100")
+        self.assertEqual(result["details"]["series_position"], 2)
+        self.assertEqual(result["related_sections"][0]["title"], "Attack on Titan")
+        relations = result["related_sections"][1]["items"]
+        self.assertEqual([relation["relation"] for relation in relations], ["Source"])
         self.assertEqual(relations[0]["display_title"], "Attack on Titan")
-        self.assertEqual(relations[1]["title"], "MAL Prequel")
 
     @patch(
         "api.services.media.external_rating_payload",
@@ -227,6 +261,57 @@ class AnimeDetailEnrichmentTests(TestCase):
 
         self.assertEqual(result["cast"][0]["person_id"], "11")
         self.assertEqual(result["cast"][0]["person_source"], "mal")
+
+    @patch("api.services.media.anilist.anime_series_nodes")
+    @patch("api.services.media.mal.anime_series")
+    def test_person_series_requires_two_credits_and_uses_canonical_items(
+        self,
+        series_mock,
+        nodes_mock,
+    ):
+        nodes_mock.return_value = {
+            "1": {"series_links": [{"media_id": "2", "relation": "Sequel"}]},
+            "2": {"series_links": [{"media_id": "1", "relation": "Prequel"}]},
+        }
+        series_mock.return_value = {
+            "series_id": "1",
+            "source": "mal",
+            "media_type": "anime",
+            "name": "Example Series",
+            "item_count": 2,
+            "items": [
+                {
+                    "media_id": "1",
+                    "source": "mal",
+                    "media_type": "anime",
+                    "title": "One",
+                    "image": "https://img.example/one.jpg",
+                    "position": 1,
+                },
+                {
+                    "media_id": "2",
+                    "source": "mal",
+                    "media_type": "anime",
+                    "title": "Two",
+                    "image": "https://img.example/two.jpg",
+                    "position": 2,
+                },
+            ],
+        }
+        raw_credits = [
+            {"media_id": "1", "media_type": "anime", "vote_count": 100},
+            {"media_id": "2", "media_type": "anime", "vote_count": 50},
+        ]
+
+        result = media._anime_person_series(raw_credits)
+
+        self.assertEqual(result[0]["id"], "1")
+        self.assertEqual(result[0]["media_type"], "anime")
+        self.assertEqual(result[0]["item_count"], 2)
+        self.assertEqual(
+            result[0]["poster_urls"],
+            ["https://img.example/one.jpg", "https://img.example/two.jpg"],
+        )
 
 
 class AnimeArtworkTests(TestCase):

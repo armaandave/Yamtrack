@@ -4689,6 +4689,71 @@ class ApiV1FoundationTests(TestCase):
             [(1, "Book One"), (2, "Book Two")],
         )
 
+    @patch("api.services.media.provider_services.get_book_series")
+    def test_mal_anime_series_detail_uses_generic_series_contract(self, series_mock):
+        user = get_user_model().objects.create_user(
+            username="anime-series",
+            password="strong-password-123",
+        )
+        item = Item.objects.create(
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            media_id="16498",
+            title="Shingeki no Kyojin",
+            image="https://example.com/aot.jpg",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom-aot.jpg",
+        )
+        self.client.force_authenticate(user)
+        series_mock.return_value = {
+            "series_id": "16498",
+            "source": "mal",
+            "media_type": "anime",
+            "name": "Attack on Titan",
+            "item_count": 2,
+            "items": [
+                {
+                    "media_id": "16498",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Shingeki no Kyojin",
+                    "display_title": "Attack on Titan",
+                    "image": "https://example.com/aot.jpg",
+                    "subtitle": "Anime · 2013 · 25 episodes",
+                    "position": 1,
+                },
+                {
+                    "media_id": "25777",
+                    "media_type": "anime",
+                    "source": "mal",
+                    "title": "Shingeki no Kyojin Season 2",
+                    "display_title": "Attack on Titan Season 2",
+                    "image": "https://example.com/aot2.jpg",
+                    "subtitle": "Anime · 2017 · 12 episodes",
+                    "position": 2,
+                },
+            ],
+        }
+
+        response = self.client.get("/api/v1/series/mal/25777/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["series_id"], "16498")
+        self.assertEqual(response.data["media_type"], MediaTypes.ANIME.value)
+        self.assertEqual(response.data["items"][0]["display_title"], "Attack on Titan")
+        self.assertEqual(
+            response.data["items"][0]["custom_poster_url"],
+            "https://example.com/custom-aot.jpg",
+        )
+        self.assertEqual(response.data["items"][1]["position"], 2)
+        self.assertEqual(
+            response.data["items"][1]["subtitle"],
+            "Anime · 2017 · 12 episodes",
+        )
+
     @patch("app.providers.tmdb.services.api_request")
     def test_tmdb_series_detail_normalizes_collection_movies(self, request_mock):
         cache.clear()

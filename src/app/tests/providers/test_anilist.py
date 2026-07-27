@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from app.models import MediaTypes
-from app.providers import anilist, mal, mangaupdates
+from app.providers import anilist, mal, mangaupdates, services
 
 
 class AniListProviderTests(TestCase):
@@ -1097,3 +1097,139 @@ class MALMangaMatchingTests(TestCase):
                 {"title": "Monster", "details": {"year": "1994", "format": "Manga"}},
             ),
         )
+
+
+class AnimeSeriesProviderTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    @patch("app.providers.anilist.anime_series_nodes")
+    @patch("app.providers.mal.anime")
+    def test_resolves_linear_series_from_any_member_with_mal_direction(
+        self,
+        anime_mock,
+        nodes_mock,
+    ):
+        anime_mock.side_effect = lambda media_id, **_kwargs: self._anime(
+            media_id,
+            {
+                "1": [("2", "Sequel")],
+                "2": [("1", "Prequel"), ("3", "Sequel")],
+                "3": [("2", "Prequel")],
+            },
+        )
+        nodes_mock.side_effect = lambda ids, **_kwargs: {
+            str(media_id): {
+                "series_links": (
+                    [{"media_id": "2", "relation": "Prequel"}]
+                    if str(media_id) == "1"
+                    else []
+                ),
+            }
+            for media_id in ids
+        }
+
+        result = mal.anime_series("2")
+
+        self.assertEqual(result["series_id"], "1")
+        self.assertEqual([item["media_id"] for item in result["items"]], ["1", "2", "3"])
+        self.assertEqual([item["position"] for item in result["items"]], [1, 2, 3])
+        self.assertEqual(mal.anime_series("3"), result)
+
+    @patch("app.providers.anilist.anime_series_nodes", return_value={})
+    @patch("app.providers.mal.anime")
+    def test_orders_branches_by_date_and_retains_every_format(
+        self,
+        anime_mock,
+        _nodes_mock,
+    ):
+        anime_mock.side_effect = lambda media_id, **_kwargs: self._anime(
+            media_id,
+            {
+                "10": [("11", "Sequel"), ("12", "Sequel")],
+                "11": [("10", "Prequel")],
+                "12": [("10", "Prequel")],
+            },
+            dates={"10": "2020-01-01", "11": "2021-06-01", "12": "2021-01-01"},
+            formats={"12": "OVA"},
+        )
+
+        result = mal.anime_series("11")
+
+        self.assertEqual([item["media_id"] for item in result["items"]], ["10", "12", "11"])
+        self.assertIn("OVA", result["items"][1]["subtitle"])
+
+    def test_cycle_retains_members_in_deterministic_date_order(self):
+        metadata = {
+            "1": self._anime("1", {}, dates={"1": "2021-01-01"}),
+            "2": self._anime("2", {}, dates={"2": "2020-01-01"}),
+        }
+
+        ordered, cycled = mal._ordered_anime_series_ids(
+            metadata,
+            [("1", "2"), ("2", "1")],
+        )
+
+        self.assertTrue(cycled)
+        self.assertEqual(ordered, ["2", "1"])
+
+    @patch("app.providers.mal._resolve_anime_series", side_effect=TimeoutError)
+    def test_uses_stale_canonical_payload_when_refresh_fails(self, _resolve_mock):
+        stale = {
+            "series_id": "1",
+            "source": "mal",
+            "media_type": "anime",
+            "name": "Series",
+            "item_count": 2,
+            "items": [{"media_id": "1"}, {"media_id": "2"}],
+        }
+        cache.set(mal._anime_series_key("alias", "2"), "1", 60)
+        cache.set(mal._anime_series_key("stale", "1"), stale, 60)
+
+        self.assertEqual(mal.anime_series("2"), stale)
+        self.assertTrue(cache.get(mal._anime_series_key("failure", "2")))
+
+    @patch("app.providers.anilist.anime_series_nodes", return_value={})
+    @patch("app.providers.mal.anime")
+    def test_single_anime_is_not_exposed_as_a_series(
+        self,
+        anime_mock,
+        _nodes_mock,
+    ):
+        anime_mock.return_value = self._anime("1", {})
+
+        for _attempt in range(2):
+            with self.assertRaisesRegex(services.ProviderAPIError, "Anime series") as error:
+                mal.anime_series("1")
+            self.assertEqual(error.exception.status_code, requests.codes.not_found)
+
+    @staticmethod
+    def _anime(media_id, links, dates=None, formats=None):
+        media_id = str(media_id)
+        dates = dates or {}
+        formats = formats or {}
+        return {
+            "media_id": media_id,
+            "source": "mal",
+            "media_type": "anime",
+            "title": f"Anime {media_id}",
+            "display_title": f"English {media_id}",
+            "image": f"https://img.example/{media_id}.jpg",
+            "details": {
+                "format": formats.get(media_id, "Anime"),
+                "start_date": dates.get(media_id, f"202{int(media_id) - 1}-01-01"),
+                "episodes": 12,
+            },
+            "related": {
+                "relations": [
+                    {
+                        "media_id": neighbor,
+                        "source": "mal",
+                        "media_type": "anime",
+                        "title": f"Anime {neighbor}",
+                        "relation": relation,
+                    }
+                    for neighbor, relation in links.get(media_id, [])
+                ],
+            },
+        }

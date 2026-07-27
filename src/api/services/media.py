@@ -96,7 +96,7 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
-ANIME_DETAIL_CACHE_VERSION = "v3"
+ANIME_DETAIL_CACHE_VERSION = "v4"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
@@ -838,11 +838,10 @@ def _enrich_anime_metadata(metadata, source):
     enrichment = anilist.anime(metadata.get("media_id"))
     if not enrichment:
         fallback_cast = mal.anime_cast(metadata.get("media_id"))
-        if not fallback_cast:
-            return metadata
         enriched = deepcopy(metadata)
-        enriched["cast"] = fallback_cast
-        return enriched
+        if fallback_cast:
+            enriched["cast"] = fallback_cast
+        return _add_anime_series(enriched)
 
     enriched = deepcopy(metadata)
     if not enriched.get("display_title"):
@@ -874,6 +873,50 @@ def _enrich_anime_metadata(metadata, source):
         enrichment.get("relations") or [],
         media_id=metadata.get("media_id"),
     )
+    enriched["related"] = related
+    return _add_anime_series(enriched)
+
+
+def _add_anime_series(metadata):
+    """Attach a complete canonical series without making anime detail fragile."""
+    relations = (metadata.get("related") or {}).get("relations") or []
+    if not any(
+        item.get("relation") in {"Prequel", "Sequel"}
+        for item in relations
+    ):
+        return metadata
+    try:
+        series = mal.anime_series(metadata.get("media_id"))
+    except (requests.RequestException, provider_services.ProviderAPIError):
+        return metadata
+
+    enriched = deepcopy(metadata)
+    position = next(
+        (
+            item.get("position")
+            for item in series["items"]
+            if str(item.get("media_id")) == str(metadata.get("media_id"))
+        ),
+        None,
+    )
+    enriched["details"] = {
+        **(enriched.get("details") or {}),
+        "series_id": series["series_id"],
+        "series_source": series["source"],
+        "series_media_type": series["media_type"],
+        "series_name": series["name"],
+        "series_position": position,
+    }
+    related = dict(enriched.get("related") or {})
+    related["relations"] = [
+        item
+        for item in related.get("relations") or []
+        if item.get("relation") not in {"Prequel", "Sequel"}
+    ]
+    related["series"] = [
+        {**item, "series_name": series["name"]}
+        for item in series["items"]
+    ]
     enriched["related"] = related
     return enriched
 
@@ -1840,6 +1883,34 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         if rating_source
         else None
     )
+    series_summaries = [
+        {
+            "id": str(series.get("series_id") or ""),
+            "source": series.get("source") or source,
+            "media_type": series.get("media_type") or MediaTypes.BOOK.value,
+            "name": series.get("name") or "",
+            "item_count": series.get("item_count")
+            or series.get("book_count")
+            or len(series.get("books") or []),
+            "book_count": series.get("book_count")
+            or len(series.get("books") or []),
+            "poster_urls": [
+                absolute_url(request, book.get("image"))
+                for book in (series.get("books") or [])[:3]
+                if book.get("image")
+            ],
+        }
+        for series in person.get("series") or []
+        if series.get("series_id") and series.get("name")
+    ]
+    series_summaries.extend(
+        _anime_person_series(
+            raw_credits,
+            request=request,
+            user=user,
+            enrich_missing=source == Sources.MAL.value,
+        ),
+    )
     return {
         "id": str(person.get("person_id") or person_id),
         "source": source,
@@ -1854,21 +1925,7 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
         "popularity": person.get("popularity"),
         "filter_options": _person_filter_options(raw_credits),
         "rating_preparation": rating_preparation,
-        "series": [
-            {
-                "id": str(series.get("series_id") or ""),
-                "source": series.get("source") or source,
-                "name": series.get("name") or "",
-                "book_count": series.get("book_count") or len(series.get("books") or []),
-                "poster_urls": [
-                    absolute_url(request, book.get("image"))
-                    for book in (series.get("books") or [])[:3]
-                    if book.get("image")
-                ],
-            }
-            for series in person.get("series") or []
-            if series.get("series_id") and series.get("name")
-        ],
+        "series": series_summaries,
         "credits": {
             "cast": [
                 media_summary_from_provider(
@@ -1892,6 +1949,144 @@ def person_detail(*, source, person_id, request=None, user=None, params=None):
             ],
         },
     }
+
+
+def _anime_person_series(
+    raw_credits,
+    *,
+    request=None,
+    user=None,
+    enrich_missing=True,
+):
+    anime_credits = {
+        str(credit.get("media_id")): credit
+        for credit in raw_credits
+        if credit.get("media_type") == MediaTypes.ANIME.value
+        and credit.get("media_id")
+    }
+    if len(anime_credits) < 2:
+        return []
+
+    candidates = _anime_series_candidate_groups(
+        anime_credits,
+        enrich_missing=enrich_missing,
+    )
+    resolved = {}
+    for credited_candidate in candidates:
+        seed = min(credited_candidate, key=int)
+        try:
+            series = mal.anime_series(seed)
+        except (requests.RequestException, provider_services.ProviderAPIError):
+            continue
+        member_ids = {str(item.get("media_id")) for item in series["items"]}
+        credited_ids = member_ids.intersection(anime_credits)
+        if len(credited_ids) < 2:
+            continue
+        series_id = str(series["series_id"])
+        popularity = sum(
+            anime_credits[media_id].get("vote_count") or 0
+            for media_id in credited_ids
+        )
+        posters = []
+        for item in series["items"][:3]:
+            summary = media_summary_from_provider(
+                item,
+                MediaTypes.ANIME.value,
+                Sources.MAL.value,
+                request=request,
+                user=user,
+            )
+            poster = summary.get("custom_poster_url") or summary.get("poster_url")
+            if poster:
+                posters.append(poster)
+        resolved[series_id] = {
+            "id": series_id,
+            "source": Sources.MAL.value,
+            "media_type": MediaTypes.ANIME.value,
+            "name": series["name"],
+            "item_count": series["item_count"],
+            "poster_urls": posters,
+            "_popularity": popularity,
+        }
+    return [
+        {key: value for key, value in series.items() if key != "_popularity"}
+        for series in sorted(
+            resolved.values(),
+            key=lambda value: (-value["_popularity"], value["name"].casefold()),
+        )
+    ]
+
+
+def _anime_series_candidate_groups(anime_credits, *, enrich_missing):
+    nodes = _anilist_person_series_nodes(anime_credits) if enrich_missing else {}
+    _apply_anilist_popularity(anime_credits, nodes)
+
+    candidates = {}
+    for media_id in anime_credits:
+        if root_id := mal.cached_anime_series_id(media_id):
+            candidates.setdefault(str(root_id), set()).add(media_id)
+
+    adjacency = {}
+    for media_id, credit in anime_credits.items():
+        links = credit.get("series_links")
+        if links is None:
+            links = (nodes.get(media_id) or {}).get("series_links") or []
+        for link in links:
+            neighbor = str(link.get("media_id") or "")
+            if not neighbor or neighbor == media_id:
+                continue
+            adjacency.setdefault(media_id, set()).add(neighbor)
+            adjacency.setdefault(neighbor, set()).add(media_id)
+
+    for component in _connected_components(adjacency):
+        credited = component.intersection(anime_credits)
+        if len(credited) >= 2:
+            candidates.setdefault(f"candidate:{min(credited, key=int)}", set()).update(
+                credited,
+            )
+    return [
+        credited
+        for credited in candidates.values()
+        if len(credited) >= 2
+    ]
+
+
+def _apply_anilist_popularity(anime_credits, nodes):
+    for media_id, node in nodes.items():
+        credit = anime_credits.get(media_id)
+        if credit is not None and credit.get("vote_count") is None:
+            credit["vote_count"] = node.get("popularity")
+
+
+def _connected_components(adjacency):
+    remaining = set(adjacency)
+    while remaining:
+        stack = [remaining.pop()]
+        component = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(adjacency.get(current, set()) - component)
+        remaining -= component
+        yield component
+
+
+def _anilist_person_series_nodes(anime_credits):
+    if all("series_links" in credit for credit in anime_credits.values()):
+        return {}
+    try:
+        return anilist.anime_series_nodes(anime_credits)
+    except (
+        requests.RequestException,
+        provider_services.ProviderAPIError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return {}
 
 
 def series_detail(*, source, series_id, request=None, user=None):

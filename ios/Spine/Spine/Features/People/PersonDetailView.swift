@@ -476,9 +476,8 @@ struct PersonDetailView: View {
                     .frame(maxWidth: .infinity, minHeight: 220)
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
-                        if selectedType == .book,
-                           let series = viewModel.detail?.bookSeries,
-                           !series.isEmpty {
+                        let series = viewModel.detail?.series(for: selectedType.rawValue) ?? []
+                        if !series.isEmpty {
                             seriesDisclosureRow(series)
                         }
 
@@ -583,7 +582,7 @@ struct PersonDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func seriesDisclosureRow(_ series: [BookSeriesSummary]) -> some View {
+    private func seriesDisclosureRow(_ series: [MediaSeriesSummary]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -620,7 +619,7 @@ struct PersonDetailView: View {
                         Button {
                             selectedSeries = item.ref
                         } label: {
-                            BookSeriesCard(series: item)
+                            MediaSeriesCard(series: item)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("View \(item.name) series")
@@ -667,7 +666,7 @@ struct PersonDetailView: View {
         } else {
             expandedCreditRoles = []
         }
-        if selectedType == .book, !(viewModel.detail?.bookSeries.isEmpty ?? true) {
+        if !(viewModel.detail?.series(for: selectedType.rawValue).isEmpty ?? true) {
             expandedCreditRoles.insert(Self.seriesRoleID)
         }
     }
@@ -683,11 +682,11 @@ struct PersonDetailView: View {
         value.count >= 4 ? String(value.prefix(4)) : value
     }
 
-    private static let seriesRoleID = "book-series"
+    private static let seriesRoleID = "media-series"
 }
 
-private struct BookSeriesCard: View {
-    let series: BookSeriesSummary
+private struct MediaSeriesCard: View {
+    let series: MediaSeriesSummary
 
     var body: some View {
         VStack(spacing: 8) {
@@ -697,7 +696,7 @@ private struct BookSeriesCard: View {
                         url: url,
                         title: series.name,
                         slot: .profileRail,
-                        mediaType: "book"
+                        mediaType: series.mediaType
                     )
                     .scaleEffect(scale(index))
                     .rotationEffect(.degrees(rotation(index)))

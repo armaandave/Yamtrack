@@ -4598,6 +4598,46 @@ final class SpineTests: XCTestCase {
         ])
     }
 
+    func testAnimeSeriesRelatedSectionDecoding() throws {
+        let data = """
+        {
+          "ref": { "item_id": null, "source": "mal", "media_type": "anime", "media_id": "16498", "season_number": null, "episode_number": null },
+          "title": "Shingeki no Kyojin",
+          "display_title": "Attack on Titan",
+          "details": {
+            "series_id": "16498",
+            "series_source": "mal",
+            "series_media_type": "anime",
+            "series_name": "Attack on Titan",
+            "series_position": 1
+          },
+          "related_sections": [
+            {
+              "id": "series",
+              "title": "Attack on Titan",
+              "items": [
+                {
+                  "ref": { "item_id": null, "source": "mal", "media_type": "anime", "media_id": "16498", "season_number": null, "episode_number": null },
+                  "title": "Shingeki no Kyojin",
+                  "display_title": "Attack on Titan",
+                  "subtitle": "TV · 2013 · 25 episodes",
+                  "position": 1
+                }
+              ]
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let detail = try JSONDecoder.api.decode(MediaDetail.self, from: data)
+
+        XCTAssertEqual(detail.displayTitle, "Attack on Titan")
+        XCTAssertEqual(detail.details?["series_id"]?.stringValue, "16498")
+        XCTAssertEqual(detail.relatedSections?.first?.title, "Attack on Titan")
+        XCTAssertEqual(detail.relatedSections?.first?.items.first?.subtitle, "TV · 2013 · 25 episodes")
+        XCTAssertEqual(detail.relatedSections?.first?.items.first?.position, 1)
+    }
+
     func testCommunityStatsDecodesRatingDistribution() throws {
         let data = """
         {

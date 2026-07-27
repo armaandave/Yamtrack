@@ -2,7 +2,9 @@ import logging
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from heapq import heappop, heappush
 from zoneinfo import ZoneInfo
 
 import requests
@@ -27,6 +29,13 @@ ANIME_CAST_CACHE_VERSION = "v1"
 ANIME_CAST_FRESH_TTL = 60 * 60 * 24
 ANIME_CAST_STALE_TTL = 60 * 60 * 24 * 30
 ANIME_CAST_FAILURE_TTL = 60 * 5
+ANIME_SERIES_CACHE_VERSION = "v1"
+ANIME_SERIES_FRESH_TTL = 60 * 60 * 24
+ANIME_SERIES_STALE_TTL = 60 * 60 * 24 * 30
+ANIME_SERIES_FAILURE_TTL = 60 * 5
+ANIME_SERIES_TIMEOUT = 3
+ANIME_SERIES_BUDGET = 10
+ANIME_SERIES_LIMIT = 100
 
 
 def handle_error(error):
@@ -115,9 +124,9 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
     return data
 
 
-def anime(media_id):
+def anime(media_id, *, timeout=None, retry_rate_limits=True):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v2"
+    cache_key = f"{Sources.MAL.value}_{MediaTypes.ANIME.value}_{media_id}_v3"
     data = cache.get(cache_key)
 
     if data is None:
@@ -133,6 +142,8 @@ def anime(media_id):
                 url,
                 params=params,
                 headers={"X-MAL-CLIENT-ID": settings.MAL_API},
+                timeout=timeout,
+                retry_rate_limits=retry_rate_limits,
             )
         except requests.exceptions.HTTPError as error:
             handle_error(error)
@@ -148,6 +159,7 @@ def anime(media_id):
             "display_title": get_english_title(response),
             "max_progress": num_episodes,
             "image": get_image_url(response),
+            "series_format": _anime_format(response.get("media_type")),
             "posters": get_pictures(response, media_id, MediaTypes.ANIME.value),
             "synopsis": get_synopsis(response),
             "genres": get_genres(response),
@@ -180,6 +192,291 @@ def anime(media_id):
         cache.set(cache_key, data)
 
     return data
+
+
+def anime_series(media_id):
+    """Resolve the complete MAL-first prequel/sequel graph for an anime."""
+    seed_id = str(media_id)
+    alias_key = _anime_series_key("alias", seed_id)
+    root_id = cache.get(alias_key) or seed_id
+    fresh_key = _anime_series_key("fresh", root_id)
+    stale_key = _anime_series_key("stale", root_id)
+    if data := cache.get(fresh_key):
+        _log_anime_series("fresh", data)
+        return data
+
+    stale = cache.get(stale_key)
+    failure_key = _anime_series_key("failure", seed_id)
+    if failure := cache.get(failure_key):
+        if stale:
+            _log_anime_series("stale", stale)
+            return stale
+        if failure == "not_found":
+            services.raise_not_found_error(Sources.MAL.value, seed_id, "anime series")
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Cached anime series resolution failure"),
+        )
+
+    lock_key = _anime_series_key("lock", seed_id)
+    if not cache.add(lock_key, 1, timeout=ANIME_SERIES_BUDGET + 2):
+        if stale:
+            return stale
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Anime series resolution is already in progress"),
+        )
+
+    started_at = time.monotonic()
+    try:
+        data = _resolve_anime_series(seed_id, started_at + ANIME_SERIES_BUDGET)
+        root_id = data["series_id"]
+        cache.set(
+            _anime_series_key("fresh", root_id),
+            data,
+            ANIME_SERIES_FRESH_TTL,
+        )
+        cache.set(
+            _anime_series_key("stale", root_id),
+            data,
+            ANIME_SERIES_STALE_TTL,
+        )
+        for item in data["items"]:
+            cache.set(
+                _anime_series_key("alias", item["media_id"]),
+                root_id,
+                ANIME_SERIES_STALE_TTL,
+            )
+        cache.delete(failure_key)
+        _log_anime_series("resolved", data, started_at)
+        return data
+    except services.ProviderAPIError as error:
+        cache.set(
+            failure_key,
+            "not_found" if error.status_code == requests.codes.not_found else True,
+            ANIME_SERIES_FAILURE_TTL,
+        )
+        if stale:
+            _log_anime_series("stale", stale, started_at)
+            return stale
+        raise
+    except Exception as error:
+        cache.set(failure_key, True, ANIME_SERIES_FAILURE_TTL)
+        logger.warning(
+            "Anime series resolution failed seed=%s elapsed_ms=%s type=%s",
+            seed_id,
+            int((time.monotonic() - started_at) * 1000),
+            type(error).__name__,
+        )
+        if stale:
+            return stale
+        raise services.ProviderAPIError(Sources.MAL.value, error) from error
+    finally:
+        cache.delete(lock_key)
+
+
+def cached_anime_series_id(media_id):
+    """Return an already-resolved canonical root for a MAL anime."""
+    return cache.get(_anime_series_key("alias", str(media_id)))
+
+
+def _resolve_anime_series(seed_id, deadline):
+    from app.providers import anilist  # noqa: PLC0415
+
+    metadata = {}
+    mal_edges = {}
+    anilist_edges = {}
+    pending = {seed_id}
+    while pending:
+        if len(metadata) + len(pending) > ANIME_SERIES_LIMIT:
+            raise ValueError("Anime series exceeds the 100-member safety limit")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Anime series resolution exceeded ten seconds")
+
+        batch = sorted(pending, key=int)
+        pending.clear()
+        nodes = {}
+        try:
+            nodes = anilist.anime_series_nodes(
+                batch,
+                timeout=min(ANIME_SERIES_TIMEOUT, remaining),
+            )
+        except (
+            requests.RequestException,
+            services.ProviderAPIError,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logger.warning("AniList anime series gap-fill unavailable: %s", error)
+
+        fetched = _fetch_anime_series_members(batch, deadline)
+        if len(fetched) != len(batch):
+            raise RuntimeError("MAL returned an incomplete anime series graph")
+        for current_id, node in nodes.items():
+            if current_id in fetched and not fetched[current_id].get("display_title"):
+                fetched[current_id]["display_title"] = node.get("display_title")
+        metadata.update(fetched)
+
+        for current_id in batch:
+            for related in (fetched[current_id].get("related") or {}).get("relations") or []:
+                relation = str(related.get("relation") or "")
+                neighbor = str(related.get("media_id") or "")
+                if relation not in {"Prequel", "Sequel"} or not neighbor or neighbor == current_id:
+                    continue
+                pair, edge = _directed_series_edge(current_id, neighbor, relation)
+                mal_edges[pair] = edge
+                if neighbor not in metadata:
+                    pending.add(neighbor)
+            for related in (nodes.get(current_id) or {}).get("series_links") or []:
+                relation = str(related.get("relation") or "")
+                neighbor = str(related.get("media_id") or "")
+                if relation not in {"Prequel", "Sequel"} or not neighbor or neighbor == current_id:
+                    continue
+                pair, edge = _directed_series_edge(current_id, neighbor, relation)
+                anilist_edges[pair] = edge
+                if neighbor not in metadata:
+                    pending.add(neighbor)
+
+    conflicts = sum(
+        1
+        for pair, edge in anilist_edges.items()
+        if pair in mal_edges and mal_edges[pair] != edge
+    )
+    if conflicts:
+        logger.warning(
+            "Anime series provider conflicts seed=%s conflicts=%s",
+            seed_id,
+            conflicts,
+        )
+    edges = {**anilist_edges, **mal_edges}
+    if len(metadata) < 2:
+        services.raise_not_found_error(Sources.MAL.value, seed_id, "anime series")
+
+    ordered_ids, cycled = _ordered_anime_series_ids(metadata, edges.values())
+    root_candidates = set(metadata)
+    for _before, after in edges.values():
+        root_candidates.discard(after)
+    root_id = min(root_candidates or metadata, key=lambda value: _anime_series_sort_key(metadata[value]))
+    items = [
+        _anime_series_item(metadata[item_id], position)
+        for position, item_id in enumerate(ordered_ids, start=1)
+    ]
+    if cycled:
+        logger.warning("Anime series cycle detected root=%s members=%s", root_id, len(items))
+    root = metadata[root_id]
+    return {
+        "series_id": root_id,
+        "source": Sources.MAL.value,
+        "media_type": MediaTypes.ANIME.value,
+        "name": root.get("display_title") or root.get("title") or "",
+        "item_count": len(items),
+        "items": items,
+    }
+
+
+def _fetch_anime_series_members(media_ids, deadline):
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(media_ids))) as executor:
+        futures = {
+            executor.submit(
+                anime,
+                media_id,
+                timeout=min(ANIME_SERIES_TIMEOUT, max(deadline - time.monotonic(), 0.01)),
+                retry_rate_limits=False,
+            ): media_id
+            for media_id in media_ids
+        }
+        for future in as_completed(futures, timeout=max(deadline - time.monotonic(), 0.01)):
+            results[futures[future]] = dict(future.result())
+    return results
+
+
+def _directed_series_edge(current_id, neighbor_id, relation):
+    edge = (
+        (neighbor_id, current_id)
+        if relation == "Prequel"
+        else (current_id, neighbor_id)
+    )
+    return frozenset((current_id, neighbor_id)), edge
+
+
+def _ordered_anime_series_ids(metadata, edges):
+    successors = {media_id: set() for media_id in metadata}
+    indegree = dict.fromkeys(metadata, 0)
+    for before, after in set(edges):
+        if before not in metadata or after not in metadata or after in successors[before]:
+            continue
+        successors[before].add(after)
+        indegree[after] += 1
+
+    queue = []
+    for media_id, count in indegree.items():
+        if count == 0:
+            heappush(queue, (_anime_series_sort_key(metadata[media_id]), media_id))
+    ordered = []
+    while queue:
+        _key, media_id = heappop(queue)
+        ordered.append(media_id)
+        for successor in successors[media_id]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                heappush(
+                    queue,
+                    (_anime_series_sort_key(metadata[successor]), successor),
+                )
+    remaining = sorted(
+        set(metadata) - set(ordered),
+        key=lambda value: _anime_series_sort_key(metadata[value]),
+    )
+    return [*ordered, *remaining], bool(remaining)
+
+
+def _anime_series_sort_key(metadata):
+    start_date = (metadata.get("details") or {}).get("start_date")
+    return (str(start_date or "9999-99-99"), int(metadata["media_id"]))
+
+
+def _anime_series_item(metadata, position):
+    details = metadata.get("details") or {}
+    start_date = details.get("start_date")
+    year = str(start_date)[:4] if start_date else None
+    subtitle = " · ".join(
+        value
+        for value in (
+            metadata.get("series_format") or details.get("format"),
+            year,
+            f"{details['episodes']} episodes" if details.get("episodes") else None,
+        )
+        if value
+    )
+    return {
+        "media_id": str(metadata["media_id"]),
+        "source": Sources.MAL.value,
+        "media_type": MediaTypes.ANIME.value,
+        "title": metadata.get("title") or "",
+        "display_title": metadata.get("display_title"),
+        "image": metadata.get("image"),
+        "release_date": start_date,
+        "subtitle": subtitle or None,
+        "position": position,
+    }
+
+
+def _anime_series_key(kind, value):
+    return f"mal:{ANIME_SERIES_CACHE_VERSION}:anime-series:{kind}:{value}"
+
+
+def _log_anime_series(cache_state, data, started_at=None):
+    logger.info(
+        "Anime series cache=%s root=%s members=%s elapsed_ms=%s",
+        cache_state,
+        data.get("series_id"),
+        data.get("item_count"),
+        int((time.monotonic() - started_at) * 1000) if started_at else 0,
+    )
 
 
 def manga(media_id):
@@ -933,12 +1230,18 @@ def get_related(related_medias, media_type):
                 "title": media["node"]["title"],
                 "media_type": media_type,
                 "image": get_image_url(media["node"]),
-                **(
-                    {"relation": media["relation_type_formatted"]}
-                    if media.get("relation_type_formatted")
-                    else {}
-                ),
+                **({"relation": relation} if (relation := _mal_relation(media)) else {}),
             }
             for media in related_medias
         ]
     return []
+
+
+def _mal_relation(media):
+    value = media.get("relation_type_formatted") or media.get("relation_type")
+    return str(value).replace("_", " ").strip().title() or None
+
+
+def _anime_format(value):
+    normalized = str(value or "").replace("_", " ").strip()
+    return normalized.upper() if normalized in {"tv", "ova", "ona"} else normalized.title()

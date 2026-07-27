@@ -18,7 +18,7 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
     let popularity: Double?
     let filterOptions: MediaFilterOptionsResponse?
     let ratingPreparation: PersonRatingPreparation?
-    let series: [BookSeriesSummary]?
+    let series: [MediaSeriesSummary]?
     let credits: PersonCredits
 
     init(
@@ -34,7 +34,7 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
         popularity: Double? = nil,
         filterOptions: MediaFilterOptionsResponse? = nil,
         ratingPreparation: PersonRatingPreparation? = nil,
-        series: [BookSeriesSummary]? = nil,
+        series: [MediaSeriesSummary]? = nil,
         credits: PersonCredits
     ) {
         self.id = id
@@ -62,7 +62,11 @@ struct PersonDetail: Decodable, Identifiable, Hashable {
     }
 
     var bookSeries: [BookSeriesSummary] {
-        series ?? []
+        series(for: "book")
+    }
+
+    func series(for mediaType: String) -> [MediaSeriesSummary] {
+        (series ?? []).filter { $0.mediaType == mediaType }
     }
 }
 

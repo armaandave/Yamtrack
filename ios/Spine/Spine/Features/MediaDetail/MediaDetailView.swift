@@ -2581,6 +2581,22 @@ private struct MediaDetailPageView: View {
                     CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
                         presentedPerson = person
                     }
+                } else if detail.ref.mediaType == "anime",
+                          let series = relatedSections(detail).first(where: { $0.id == "series" }) {
+                    RecommendationsSection(
+                        sections: [series],
+                        onSelectSection: { _ in
+                            presentedSeries = seriesRef(detail)
+                        }
+                    ) { item in
+                        presentedMediaSelection = MediaBrowsingSelection(
+                            ref: item.ref,
+                            within: series.items.map(\.ref)
+                        )
+                    }
+                    CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
+                        presentedPerson = person
+                    }
                 } else {
                     CreditSection(title: creditTitle(detail), cast: castCredits(detail), crew: crewCredits(detail)) { person in
                         presentedPerson = person
@@ -2611,7 +2627,9 @@ private struct MediaDetailPageView: View {
                     mediaType: detail.ref.mediaType
                 )
                 RecommendationsSection(
-                    sections: relatedSections(detail),
+                    sections: relatedSections(detail).filter {
+                        detail.ref.mediaType != "anime" || $0.id != "series"
+                    },
                     onSelectSection: { section in
                         if section.id == "series" || section.id == "collection" {
                             presentedSeries = seriesRef(detail)
@@ -3142,7 +3160,7 @@ private struct MediaDetailPageView: View {
     }
 
     private func seriesRef(_ detail: MediaDetail) -> SeriesRef? {
-        guard ["book", "movie", "game"].contains(detail.ref.mediaType),
+        guard ["book", "movie", "game", "anime"].contains(detail.ref.mediaType),
               let id = detailString(detail, "series_id")?.nilIfEmpty
         else { return nil }
         return SeriesRef(
@@ -6856,8 +6874,19 @@ private struct RecommendationsSection: View {
                                         .foregroundStyle(.white)
                                         .lineLimit(2)
                                         .frame(height: 32, alignment: .topLeading)
+                                    if section.id == "series",
+                                       let subtitle = item.subtitle?.nilIfEmpty {
+                                        Text(subtitle)
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                            .lineLimit(2)
+                                    }
                                 }
-                                .frame(width: MediaDetailLayout.recommendationPosterSize.width, height: MediaDetailLayout.recommendationCardHeight, alignment: .topLeading)
+                                .frame(
+                                    width: MediaDetailLayout.recommendationPosterSize.width,
+                                    height: MediaDetailLayout.recommendationCardHeight + (section.id == "series" ? 28 : 0),
+                                    alignment: .topLeading
+                                )
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Open \(item.displayTitle)")
