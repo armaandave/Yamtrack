@@ -485,6 +485,34 @@ class MediaReviewsView(MediaExposureMixin, APIView):
         )
 
 
+class AniListReviewsView(MediaExposureMixin, APIView):
+    """Paginated AniList written reviews for MAL anime."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, media_type, media_id):
+        try:
+            return Response(
+                media_service.anilist_reviews(
+                    source=source,
+                    media_type=media_type,
+                    media_id=media_id,
+                    page=request.query_params.get("page", "1"),
+                ),
+            )
+        except NotImplementedError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        except ValueError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
 class MediaPostersView(MediaExposureMixin, APIView):
     """Selectable poster images for supported media."""
 

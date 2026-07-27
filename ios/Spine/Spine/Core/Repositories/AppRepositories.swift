@@ -18,6 +18,7 @@ protocol MediaRepository {
     func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
     func reviews(ref: MediaRef) async throws -> [MediaReview]
+    func anilistReviews(ref: MediaRef, page: Int) async throws -> AniListReviewPage
     func posters(ref: MediaRef) async throws -> [PosterOption]
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse
     func backdrops(ref: MediaRef) async throws -> [PosterOption]
@@ -81,6 +82,10 @@ extension MediaRepository {
 
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse {
         fatalError("Not implemented")
+    }
+
+    func anilistReviews(ref _: MediaRef, page: Int) async throws -> AniListReviewPage {
+        AniListReviewPage(currentPage: page, nextPage: nil, results: [])
     }
 }
 
@@ -538,6 +543,14 @@ struct APIMediaRepository: MediaRepository {
         } catch APIError.httpStatus(404, _), APIError.httpStatus(501, _) {
             return []
         }
+    }
+
+    func anilistReviews(ref: MediaRef, page: Int) async throws -> AniListReviewPage {
+        try await client.get(
+            "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/anilist-reviews/",
+            query: [URLQueryItem(name: "page", value: String(page))],
+            authenticated: client.tokenProvider.accessToken != nil
+        )
     }
 
     func posters(ref: MediaRef) async throws -> [PosterOption] {

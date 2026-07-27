@@ -1718,6 +1718,31 @@ struct MediaReview: Codable, Identifiable, Hashable {
     let createdAt: String?
 }
 
+struct AniListReviewPage: Codable, Equatable {
+    let currentPage: Int
+    let nextPage: Int?
+    let results: [AniListReview]
+}
+
+struct AniListReview: Codable, Identifiable, Hashable {
+    let id: String
+    let user: AniListReviewUser
+    let score: Int?
+    let summary: String?
+    let body: String
+    let communityRating: Int?
+    let communityRatingCount: Int?
+    let url: String?
+    let createdAt: String?
+}
+
+struct AniListReviewUser: Codable, Hashable {
+    let id: String
+    let name: String
+    let avatarUrl: String?
+    let profileUrl: String?
+}
+
 struct LikeState: Codable, Equatable {
     let liked: Bool
     let likeCount: Int

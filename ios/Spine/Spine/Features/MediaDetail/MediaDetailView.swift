@@ -1079,6 +1079,7 @@ private struct MediaDetailPageView: View {
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
     @State private var isLogoPickerPresented = false
+    @State private var isAniListReviewsPresented = false
     @State private var pendingPosterSave: PosterSaveResponse?
     @State private var pendingBackdropSave: BackdropSaveResponse?
     @State private var pendingLogoSave: LogoSaveResponse?
@@ -1400,6 +1401,14 @@ private struct MediaDetailPageView: View {
                     pendingPosterSave = response
                     presentedSheet = nil
                 }
+            }
+        }
+        .fullScreenCover(isPresented: $isAniListReviewsPresented) {
+            if let detail = viewModel.detail {
+                AniListReviewsView(
+                    detail: detail,
+                    mediaRepository: mediaRepository
+                )
             }
         }
         .fullScreenCover(item: $presentedRef) { ref in
@@ -2560,6 +2569,11 @@ private struct MediaDetailPageView: View {
                         community: detail.community,
                         mediaType: detail.ref.mediaType
                     )
+                }
+                if let rating = AniListRatingSummary(detail: detail) {
+                    AniListRatingCard(summary: rating) {
+                        isAniListReviewsPresented = true
+                    }
                 }
 
                 if detail.ref.mediaType == "tv" {
@@ -5633,6 +5647,558 @@ private extension View {
             .background(Color.white.opacity(0.028), in: shape)
             .overlay { shape.stroke(.white.opacity(0.045), lineWidth: 1) }
     }
+}
+
+struct AniListRatingSummary: Equatable {
+    struct Bucket: Equatable, Identifiable {
+        let score: Int
+        let count: Int
+
+        var id: Int { score }
+    }
+
+    let averageScore: Int
+    let ratingCount: Int
+    let buckets: [Bucket]
+    let hasReviews: Bool
+    let url: URL?
+
+    init?(detail: MediaDetail) {
+        guard
+            detail.ref.mediaType == "anime",
+            let object = detail.details?["anilist_rating"]?.objectValue,
+            let averageScore = object["average_score"]?.intValue,
+            (0...100).contains(averageScore),
+            let declaredRatingCount = object["rating_count"]?.intValue,
+            declaredRatingCount >= 0,
+            let values = object["score_distribution"]?.arrayValue
+        else { return nil }
+
+        var counts: [Int: Int] = [:]
+        for value in values {
+            guard
+                let bucket = value.objectValue,
+                let score = bucket["score"]?.intValue,
+                stride(from: 10, through: 100, by: 10).contains(score),
+                let count = bucket["count"]?.intValue,
+                count >= 0
+            else { continue }
+            counts[score, default: 0] += count
+        }
+
+        let buckets = stride(from: 10, through: 100, by: 10).map {
+            Bucket(score: $0, count: counts[$0, default: 0])
+        }
+        self.averageScore = averageScore
+        ratingCount = buckets.reduce(0) { $0 + $1.count }
+        self.buckets = buckets
+        if case let .bool(value)? = object["has_reviews"] {
+            hasReviews = value
+        } else {
+            hasReviews = false
+        }
+        url = aniListDestination(object["url"]?.displayString)
+    }
+}
+
+@MainActor
+@Observable
+final class AniListReviewsViewModel {
+    var reviews: [AniListReview] = []
+    var nextPage: Int?
+    var isLoadingInitial = false
+    var isLoadingMore = false
+    var initialError: String?
+    var paginationError: String?
+
+    private let ref: MediaRef
+    private let mediaRepository: MediaRepository
+    private var loadedPages: Set<Int> = []
+
+    init(ref: MediaRef, mediaRepository: MediaRepository) {
+        self.ref = ref
+        self.mediaRepository = mediaRepository
+    }
+
+    func loadInitial() async {
+        guard reviews.isEmpty, !isLoadingInitial else { return }
+        isLoadingInitial = true
+        initialError = nil
+        defer { isLoadingInitial = false }
+        do {
+            apply(try await mediaRepository.anilistReviews(ref: ref, page: 1))
+        } catch is CancellationError {
+            return
+        } catch {
+            initialError = error.localizedDescription
+        }
+    }
+
+    func retryInitial() async {
+        reviews = []
+        nextPage = nil
+        loadedPages = []
+        await loadInitial()
+    }
+
+    func loadNextPage() async {
+        guard
+            let page = nextPage,
+            !loadedPages.contains(page),
+            !isLoadingInitial,
+            !isLoadingMore
+        else { return }
+        isLoadingMore = true
+        paginationError = nil
+        defer { isLoadingMore = false }
+        do {
+            apply(try await mediaRepository.anilistReviews(ref: ref, page: page))
+        } catch is CancellationError {
+            return
+        } catch {
+            paginationError = error.localizedDescription
+        }
+    }
+
+    func shouldLoadNext(after reviewID: String) -> Bool {
+        guard
+            nextPage != nil,
+            let index = reviews.firstIndex(where: { $0.id == reviewID })
+        else { return false }
+        return index >= max(reviews.count - 5, 0)
+    }
+
+    private func apply(_ page: AniListReviewPage) {
+        loadedPages.insert(page.currentPage)
+        var seen = Set(reviews.map(\.id))
+        reviews.append(
+            contentsOf: page.results.filter { seen.insert($0.id).inserted }
+        )
+        nextPage = page.nextPage
+        initialError = nil
+        paginationError = nil
+    }
+}
+
+private struct AniListRatingCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let summary: AniListRatingSummary
+    let onSeeReviews: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                metric(title: "AVERAGE SCORE", value: "\(summary.averageScore)%")
+                Spacer()
+                metric(title: "NUMBER OF RATINGS", value: summary.ratingCount.formatted())
+            }
+
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(summary.buckets) { bucket in
+                    VStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(.white.opacity(0.86))
+                            .frame(
+                                height: max(
+                                    3,
+                                    CGFloat(bucket.count) / CGFloat(maxCount) * 42
+                                )
+                            )
+                        Text("\(bucket.score)")
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(accessibilityLabel(for: bucket))
+                }
+            }
+            .frame(height: 58, alignment: .bottom)
+
+            HStack(alignment: .center) {
+                if summary.hasReviews {
+                    Button(action: onSeeReviews) {
+                        HStack(spacing: 5) {
+                            Text("SEE ALL REVIEWS")
+                            Image(systemName: "arrow.right")
+                        }
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens AniList written reviews")
+                } else {
+                    Text("No written reviews.")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Image("RatingAniList")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                    Text("AniList")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.56))
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(14)
+        .frame(
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 216 : 176,
+            alignment: .top
+        )
+        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func metric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(.white.opacity(0.5))
+            Text(value)
+                .font(.system(size: 22, weight: .heavy))
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var maxCount: Int {
+        max(summary.buckets.map(\.count).max() ?? 1, 1)
+    }
+
+    private func accessibilityLabel(for bucket: AniListRatingSummary.Bucket) -> String {
+        let percentage = summary.ratingCount > 0
+            ? Double(bucket.count) / Double(summary.ratingCount) * 100
+            : 0
+        return "\(bucket.score) score, \(bucket.count.formatted()) ratings, \(percentage.formatted(.number.precision(.fractionLength(0)))) percent"
+    }
+}
+
+private struct AniListReviewsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: AniListReviewsViewModel
+
+    private let detail: MediaDetail
+
+    init(detail: MediaDetail, mediaRepository: MediaRepository) {
+        self.detail = detail
+        _viewModel = State(
+            initialValue: AniListReviewsViewModel(
+                ref: detail.ref,
+                mediaRepository: mediaRepository
+            )
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    spoilerWarning
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    reviewsContent
+                }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            doneButton
+        }
+        .task {
+            await viewModel.loadInitial()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            reviewPoster
+                .frame(width: 40, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("AniList reviews for…")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+                Text(detail.displayTitle)
+                    .font(.system(size: 19, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(.white.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close AniList reviews")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.white.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var reviewPoster: some View {
+        SpineAsyncImage(url: detail.displayPosterURL.flatMap(URL.init(string:))) { phase in
+            switch phase {
+            case let .success(image):
+                image
+                    .resizable()
+                    .scaledToFill()
+            default:
+                LinearGradient(
+                    colors: MediaTypeTheme.theme(for: "anime").gradientColors,
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                    .overlay {
+                        Image(systemName: "play.rectangle.fill")
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var spoilerWarning: some View {
+        Label(
+            "AniList reviews may contain spoilers.",
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .font(.system(size: 12, weight: .bold))
+        .foregroundStyle(.yellow.opacity(0.82))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(.yellow.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private var reviewsContent: some View {
+        if viewModel.isLoadingInitial, viewModel.reviews.isEmpty {
+            ProgressView("Loading AniList reviews…")
+                .tint(.white)
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity, minHeight: 180)
+        } else if let error = viewModel.initialError, viewModel.reviews.isEmpty {
+            errorState(message: error) {
+                Task { await viewModel.retryInitial() }
+            }
+            .frame(minHeight: 180)
+        } else if viewModel.reviews.isEmpty {
+            Text("No written reviews.")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.58))
+                .frame(maxWidth: .infinity, minHeight: 180)
+        } else {
+            ForEach(viewModel.reviews) { review in
+                AniListReviewRow(review: review)
+                    .padding(.horizontal, 16)
+                    .onAppear {
+                        guard viewModel.shouldLoadNext(after: review.id) else { return }
+                        Task { await viewModel.loadNextPage() }
+                    }
+                Divider()
+                    .overlay(.white.opacity(0.08))
+                    .padding(.horizontal, 16)
+            }
+            paginationState
+        }
+    }
+
+    @ViewBuilder
+    private var paginationState: some View {
+        if viewModel.isLoadingMore {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity)
+                .padding(24)
+        } else if let error = viewModel.paginationError {
+            errorState(message: error) {
+                Task { await viewModel.loadNextPage() }
+            }
+        }
+    }
+
+    private func errorState(message: String, retry: @escaping () -> Void) -> some View {
+        VStack(spacing: 10) {
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.red.opacity(0.82))
+                .multilineTextAlignment(.center)
+            Button("Retry", action: retry)
+                .font(.system(size: 13, weight: .heavy))
+                .buttonStyle(.bordered)
+                .tint(.white)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+    }
+
+    private var doneButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Text("Done")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+                .background(.white, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(SpinePalette.pageBackground.opacity(0.96))
+        .accessibilityHint("Closes AniList reviews")
+    }
+}
+
+private struct AniListReviewRow: View {
+    @State private var isExpanded = false
+
+    let review: AniListReview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            reviewerHeader
+
+            HStack {
+                if let score = review.score {
+                    Text("\(score)%")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white)
+                }
+                Spacer()
+                if let date = review.createdAt?.shortDateLabel {
+                    Text(date)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.48))
+                }
+            }
+
+            if let summary = review.summary?.nilIfEmpty {
+                Text(summary)
+                    .font(.system(size: 15, weight: .heavy))
+                    .foregroundStyle(.white)
+            }
+
+            Text(review.body)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.white.opacity(0.76))
+                .lineSpacing(3)
+                .lineLimit(isExpanded ? nil : 5)
+
+            if review.body.count > 180 {
+                Button(isExpanded ? "SHOW LESS" : "SHOW MORE") {
+                    isExpanded.toggle()
+                }
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(.white.opacity(0.58))
+                .buttonStyle(.plain)
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            }
+
+            HStack(spacing: 14) {
+                if let helpfulness {
+                    Text(helpfulness)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+                Spacer()
+                if let destination = aniListDestination(review.url) {
+                    Link(destination: destination) {
+                        Label("Original review", systemImage: "arrow.up.right")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 18)
+    }
+
+    @ViewBuilder
+    private var reviewerHeader: some View {
+        if let destination = aniListDestination(review.user.profileUrl) {
+            Link(destination: destination) {
+                reviewerIdentity
+            }
+            .accessibilityLabel("Open \(review.user.name)'s AniList profile")
+        } else {
+            reviewerIdentity
+        }
+    }
+
+    private var reviewerIdentity: some View {
+        HStack(spacing: 10) {
+            SpineAsyncImage(url: aniListDestination(review.user.avatarUrl)) { phase in
+                switch phase {
+                case let .success(image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                default:
+                    Circle()
+                        .fill(.white.opacity(0.08))
+                        .overlay {
+                            Image(systemName: "person.fill")
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+                }
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(Circle())
+
+            Text(review.user.name)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+        }
+    }
+
+    private var helpfulness: String? {
+        switch (review.communityRating, review.communityRatingCount) {
+        case let (rating?, count?):
+            "\(rating.formatted()) helpful score · \(count.formatted()) votes"
+        case let (rating?, nil):
+            "\(rating.formatted()) helpful score"
+        case let (nil, count?):
+            "\(count.formatted()) votes"
+        case (nil, nil):
+            nil
+        }
+    }
+}
+
+private func aniListDestination(_ rawValue: String?) -> URL? {
+    guard
+        let rawValue,
+        let url = URL(string: rawValue),
+        ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+        url.host != nil
+    else { return nil }
+    return url
 }
 
 private struct SpineRatingDistributionSection: View {

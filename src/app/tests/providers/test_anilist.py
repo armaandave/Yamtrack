@@ -41,6 +41,7 @@ class AniListProviderTests(TestCase):
                             {"score": 90, "amount": 80},
                         ],
                     },
+                    "reviews": {"nodes": [{"id": 1}]},
                     "relations": {
                         "edges": [
                             {
@@ -151,6 +152,11 @@ class AniListProviderTests(TestCase):
         self.assertEqual(result["backdrop"], "https://img.example/banner.jpg")
         self.assertEqual(result["rating"]["value"], 84)
         self.assertEqual(result["rating"]["vote_count"], 200)
+        self.assertEqual(
+            result["rating_summary"]["score_distribution"],
+            [{"score": 80, "count": 120}, {"score": 90, "count": 80}],
+        )
+        self.assertTrue(result["rating_summary"]["has_reviews"])
         self.assertEqual(result["relations"][0]["media_type"], "anime")
         self.assertEqual(result["relations"][1]["media_type"], "manga")
         self.assertEqual(result["characters"][0]["role"], "Main")
@@ -164,6 +170,113 @@ class AniListProviderTests(TestCase):
             "Eren Yeager · Another Character",
         )
         request_mock.assert_called_once()
+
+    def test_rating_distribution_sorts_merges_and_rejects_invalid_buckets(self):
+        result = anilist._normalize_score_distribution(
+            [
+                {"score": 90, "amount": 2},
+                {"score": 10, "amount": 3},
+                {"score": 90, "amount": 4},
+                {"score": 0, "amount": 1},
+                {"score": 100, "amount": -1},
+                {"score": "bad", "amount": 2},
+                None,
+            ],
+        )
+
+        self.assertEqual(
+            result,
+            [{"score": 10, "count": 3}, {"score": 90, "count": 6}],
+        )
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_reviews_normalize_filter_dedupe_and_paginate(self, request_mock):
+        request_mock.return_value = {
+            "data": {
+                "Media": {
+                    "reviews": {
+                        "pageInfo": {"currentPage": 2, "hasNextPage": True},
+                        "nodes": [
+                            {
+                                "id": 12,
+                                "score": 90,
+                                "summary": "<b>Excellent</b>",
+                                "body": "<p>[Safe heading]() <i>review</i> body.</p>",
+                                "rating": 42,
+                                "ratingAmount": 50,
+                                "private": False,
+                                "siteUrl": "https://anilist.co/review/12",
+                                "createdAt": 1_700_000_000,
+                                "user": {
+                                    "id": 7,
+                                    "name": "reviewer",
+                                    "siteUrl": "https://anilist.co/user/reviewer",
+                                    "avatar": {"large": "https://img.example/user.jpg"},
+                                },
+                            },
+                            {
+                                "id": 12,
+                                "body": "duplicate",
+                                "user": {"id": 7, "name": "reviewer"},
+                            },
+                            {
+                                "id": 13,
+                                "private": True,
+                                "body": "private",
+                                "user": {"id": 8, "name": "private"},
+                            },
+                            {
+                                "id": 14,
+                                "body": "",
+                                "user": {"id": 9, "name": "malformed"},
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        result = anilist.anime_reviews("16498", 2)
+
+        self.assertEqual(result["current_page"], 2)
+        self.assertEqual(result["next_page"], 3)
+        self.assertEqual([review["id"] for review in result["results"]], ["12"])
+        self.assertEqual(result["results"][0]["summary"], "Excellent")
+        self.assertEqual(
+            result["results"][0]["body"],
+            "Safe heading review body.",
+        )
+        self.assertEqual(result["results"][0]["score"], 90)
+        self.assertEqual(result["results"][0]["community_rating_count"], 50)
+        self.assertEqual(
+            request_mock.call_args.kwargs["params"]["variables"],
+            {"malId": 16498, "page": 2},
+        )
+        self.assertIn(
+            "sort: [RATING_DESC, ID_DESC]",
+            request_mock.call_args.kwargs["params"]["query"],
+        )
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_reviews_use_stale_page_and_failure_marker(self, request_mock):
+        stale = {"current_page": 1, "next_page": None, "results": []}
+        cache.set(
+            f"anilist:{anilist.REVIEWS_CACHE_VERSION}:anime:1:reviews:1:stale",
+            stale,
+            anilist.REVIEWS_STALE_TTL,
+        )
+        request_mock.side_effect = requests.Timeout("down")
+
+        self.assertEqual(anilist.anime_reviews("1", 1), stale)
+        self.assertEqual(anilist.anime_reviews("1", 1), stale)
+        request_mock.assert_called_once()
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_reviews_raise_provider_error_without_stale_page(self, request_mock):
+        request_mock.side_effect = requests.Timeout("down")
+
+        with self.assertRaises(anilist.services.ProviderAPIError):
+            anilist.anime_reviews("1", 1)
 
     @patch("app.providers.anilist.services.api_request")
     def test_anime_uses_stale_success_when_request_fails(self, request_mock):

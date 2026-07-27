@@ -104,6 +104,16 @@ class AnimeDetailEnrichmentTests(TestCase):
                     "image": "https://img.example/kaji.jpg",
                 },
             ],
+            "rating_summary": {
+                "average_score": 84,
+                "rating_count": 200,
+                "score_distribution": [
+                    {"score": 80, "count": 120},
+                    {"score": 90, "count": 80},
+                ],
+                "has_reviews": True,
+                "url": "https://anilist.co/anime/16498",
+            },
             "relations": [
                 {
                     "media_id": "200",
@@ -140,6 +150,8 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertEqual(result["cast"][0]["person_source"], "anilist")
         self.assertEqual(result["characters"][0]["role"], "Main")
         self.assertIsNone(result["characters"][0]["person_source"])
+        self.assertEqual(result["details"]["anilist_rating"]["average_score"], 84)
+        self.assertTrue(result["details"]["anilist_rating"]["has_reviews"])
         self.assertEqual(
             [section["id"] for section in result["related_sections"]],
             ["relations", "recommendations"],
@@ -185,6 +197,7 @@ class AnimeDetailEnrichmentTests(TestCase):
         self.assertIsNone(result["backdrop_url"])
         self.assertEqual(result["cast"], [])
         self.assertEqual(result["characters"], [])
+        self.assertNotIn("anilist_rating", result["details"])
 
     @patch("api.services.media.anilist.anime", return_value={})
     @patch("api.services.media.mal.anime_cast")

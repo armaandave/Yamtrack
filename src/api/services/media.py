@@ -96,7 +96,7 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
-ANIME_DETAIL_CACHE_VERSION = "v2"
+ANIME_DETAIL_CACHE_VERSION = "v3"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
@@ -857,6 +857,10 @@ def _enrich_anime_metadata(metadata, source):
     enriched["characters"] = enrichment.get("characters") or []
     enriched["cast"] = enrichment.get("cast") or []
     enriched["_anilist"] = enrichment
+    enriched["details"] = {
+        **(enriched.get("details") or {}),
+        "anilist_rating": enrichment.get("rating_summary"),
+    }
 
     external_links = dict(enriched.get("external_links") or {})
     if enrichment.get("source_url"):
@@ -871,6 +875,21 @@ def _enrich_anime_metadata(metadata, source):
     )
     enriched["related"] = related
     return enriched
+
+
+def anilist_reviews(*, source, media_type, media_id, page):
+    """Return an on-demand AniList review page for a MAL anime."""
+    if source != Sources.MAL.value or media_type != MediaTypes.ANIME.value:
+        raise NotImplementedError(
+            "AniList reviews are only available for MAL anime.",
+        )
+    try:
+        page = int(page)
+    except (TypeError, ValueError) as error:
+        raise ValueError("page must be a positive integer.") from error
+    if page < 1:
+        raise ValueError("page must be a positive integer.")
+    return anilist.anime_reviews(media_id, page)
 
 
 def _enrich_manga_metadata(metadata, source):  # noqa: C901, PLR0912, PLR0915

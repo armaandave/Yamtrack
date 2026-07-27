@@ -30,6 +30,7 @@ from api.views.lists import (
     ListsView,
 )
 from api.views.media import (
+    AniListReviewsView,
     BookSeriesDetailView,
     CommunityStatsView,
     CompanyDetailView,
@@ -125,6 +126,11 @@ urlpatterns = [
     path("media/<str:source>/<str:media_type>/<str:media_id>/logo/", MediaLogoPreferenceView.as_view(), name="api-media-logo"),
     path("media/<str:source>/<str:media_type>/<str:media_id>/community/", CommunityStatsView.as_view(), name="api-media-community"),
     path("media/<str:source>/<str:media_type>/<str:media_id>/reviews/", MediaReviewsView.as_view(), name="api-media-reviews"),
+    path(
+        "media/<str:source>/<str:media_type>/<str:media_id>/anilist-reviews/",
+        AniListReviewsView.as_view(),
+        name="api-media-anilist-reviews",
+    ),
     path(
         "media/<str:source>/<str:media_type>/<str:media_id>/external-ratings/",
         MediaExternalRatingsView.as_view(),

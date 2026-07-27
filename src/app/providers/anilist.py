@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 
 import requests
 from django.core.cache import cache
@@ -14,8 +15,12 @@ FRESH_TTL = 60 * 60 * 24
 STALE_TTL = 60 * 60 * 24 * 30
 FAILURE_TTL = 60 * 5
 REQUEST_TIMEOUT = 3
-CACHE_VERSION = "v3"
+CACHE_VERSION = "v4"
 PERSON_CACHE_VERSION = "v2"
+REVIEWS_CACHE_VERSION = "v1"
+REVIEWS_FRESH_TTL = 60 * 60
+REVIEWS_STALE_TTL = 60 * 60 * 24
+REVIEWS_PAGE_SIZE = 25
 
 ANIME_QUERY = """
 query ($malId: Int!) {
@@ -40,6 +45,11 @@ query ($malId: Int!) {
       scoreDistribution {
         score
         amount
+      }
+    }
+    reviews(page: 1, perPage: 1) {
+      nodes {
+        id
       }
     }
     relations {
@@ -89,6 +99,43 @@ query ($malId: Int!) {
             native
           }
           image {
+            large
+            medium
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+REVIEWS_QUERY = """
+query ($malId: Int!, $page: Int!) {
+  Media(idMal: $malId, type: ANIME) {
+    reviews(
+      page: $page
+      perPage: 25
+      sort: [RATING_DESC, ID_DESC]
+    ) {
+      pageInfo {
+        currentPage
+        hasNextPage
+      }
+      nodes {
+        id
+        score
+        summary
+        body(asHtml: true)
+        rating
+        ratingAmount
+        private
+        siteUrl
+        createdAt
+        user {
+          id
+          name
+          siteUrl
+          avatar {
             large
             medium
           }
@@ -408,6 +455,70 @@ def manga(mal_id, *, raise_errors=False):
     )
 
 
+def anime_reviews(mal_id, page):
+    """Return one cached page of public AniList reviews for a MAL anime."""
+    page = int(page)
+    fresh_key = (
+        f"anilist:{REVIEWS_CACHE_VERSION}:anime:{mal_id}:reviews:{page}:fresh"
+    )
+    stale_key = (
+        f"anilist:{REVIEWS_CACHE_VERSION}:anime:{mal_id}:reviews:{page}:stale"
+    )
+    failure_key = (
+        f"anilist:{REVIEWS_CACHE_VERSION}:anime:{mal_id}:reviews:{page}:failure"
+    )
+    if data := cache.get(fresh_key):
+        return data
+
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        if stale:
+            return stale
+        raise services.ProviderAPIError(
+            "anilist",
+            RuntimeError("Cached AniList provider failure"),
+        )
+
+    try:
+        response = services.api_request(
+            "ANILIST",
+            "POST",
+            API_URL,
+            params={
+                "query": REVIEWS_QUERY,
+                "variables": {"malId": int(mal_id), "page": page},
+            },
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        media = (response.get("data") or {}).get("Media")
+        connection = (media or {}).get("reviews")
+        if not isinstance(connection, dict):
+            raise ValueError("AniList returned no matching anime reviews")
+        data = _normalize_reviews(connection, requested_page=page)
+        cache.set(fresh_key, data, REVIEWS_FRESH_TTL)
+        cache.set(stale_key, data, REVIEWS_STALE_TTL)
+        cache.delete(failure_key)
+        return data
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.warning(
+            "AniList reviews unavailable for MAL anime %s page %s: %s",
+            mal_id,
+            page,
+            error,
+        )
+        cache.set(failure_key, True, FAILURE_TTL)
+        if stale:
+            return stale
+        raise services.ProviderAPIError("anilist", error) from error
+
+
 def person_page(person_id):
     """Return an AniList staff profile with navigable MAL-backed credits."""
     fresh_key = f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:fresh"
@@ -544,7 +655,12 @@ def _normalize_media(media, *, media_kind=MediaTypes.ANIME.value):
         f"https://anilist.co/{media_kind}/{media['id']}"
     )
     cover_url = cover.get("extraLarge") or cover.get("large") or cover.get("medium")
-    score_distribution = ((media.get("stats") or {}).get("scoreDistribution") or [])
+    score_distribution = _normalize_score_distribution(
+        (media.get("stats") or {}).get("scoreDistribution") or [],
+    )
+    rating_count = sum(bucket["count"] for bucket in score_distribution)
+    average_score = _bounded_int(media.get("averageScore"), minimum=0, maximum=100)
+    has_reviews = bool(((media.get("reviews") or {}).get("nodes") or []))
 
     posters = []
     if cover_url:
@@ -582,12 +698,15 @@ def _normalize_media(media, *, media_kind=MediaTypes.ANIME.value):
         "backdrop": media.get("bannerImage"),
         "cover_color": cover.get("color"),
         "rating": {
-            "value": media.get("averageScore"),
-            "vote_count": sum(
-                int(bucket.get("amount") or 0)
-                for bucket in score_distribution
-                if isinstance(bucket, dict)
-            ),
+            "value": average_score,
+            "vote_count": rating_count,
+            "url": site_url,
+        },
+        "rating_summary": {
+            "average_score": average_score,
+            "rating_count": rating_count,
+            "score_distribution": score_distribution,
+            "has_reviews": has_reviews,
             "url": site_url,
         },
         "relations": _relations(media),
@@ -600,6 +719,107 @@ def _normalize_media(media, *, media_kind=MediaTypes.ANIME.value):
             else []
         ),
     }
+
+
+def _normalize_score_distribution(buckets):
+    counts = {}
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        score = _bounded_int(bucket.get("score"), minimum=1, maximum=100)
+        count = _bounded_int(bucket.get("amount"), minimum=0)
+        if score is not None and count is not None:
+            counts[score] = counts.get(score, 0) + count
+    return [
+        {"score": score, "count": count}
+        for score, count in sorted(counts.items())
+    ]
+
+
+def _normalize_reviews(connection, *, requested_page):
+    reviews = []
+    seen = set()
+    for review in connection.get("nodes") or []:
+        normalized = _normalize_review(review)
+        if normalized and normalized["id"] not in seen:
+            seen.add(normalized["id"])
+            reviews.append(normalized)
+
+    page_info = connection.get("pageInfo") or {}
+    current_page = _bounded_int(page_info.get("currentPage"), minimum=1)
+    current_page = current_page or requested_page
+    return {
+        "current_page": current_page,
+        "next_page": current_page + 1
+        if page_info.get("hasNextPage") is True
+        else None,
+        "results": reviews[:REVIEWS_PAGE_SIZE],
+    }
+
+
+def _normalize_review(review):
+    if not isinstance(review, dict) or review.get("private"):
+        return None
+    user = review.get("user") or {}
+    if not isinstance(user, dict):
+        return None
+    review_id = _bounded_int(review.get("id"), minimum=1)
+    user_id = _bounded_int(user.get("id"), minimum=1)
+    name = str(user.get("name") or "").strip()
+    body = helpers.plain_text(review.get("body"))
+    if review_id is None or user_id is None or not name or not body:
+        return None
+
+    avatar = user.get("avatar") or {}
+    if not isinstance(avatar, dict):
+        avatar = {}
+    return {
+        "id": str(review_id),
+        "user": {
+            "id": str(user_id),
+            "name": name,
+            "avatar_url": avatar.get("large") or avatar.get("medium"),
+            "profile_url": user.get("siteUrl"),
+        },
+        "score": _bounded_int(review.get("score"), minimum=0, maximum=100),
+        "summary": helpers.plain_text(review.get("summary")),
+        "body": body,
+        "community_rating": _integer(review.get("rating")),
+        "community_rating_count": _bounded_int(
+            review.get("ratingAmount"),
+            minimum=0,
+        ),
+        "url": review.get("siteUrl"),
+        "created_at": _iso_timestamp(review.get("createdAt")),
+    }
+
+
+def _integer(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bounded_int(value, *, minimum=None, maximum=None):
+    value = _integer(value)
+    if value is None or (minimum is not None and value < minimum):
+        return None
+    if maximum is not None and value > maximum:
+        return None
+    return value
+
+
+def _iso_timestamp(value):
+    timestamp = _bounded_int(value, minimum=0)
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _display_title(title):

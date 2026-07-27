@@ -24,7 +24,7 @@ def plain_text(value):
     """Return provider HTML/Markdown as compact display text."""
     if not value:
         return None
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(value))
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(value))
     text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     return " ".join(text.split()) or None
 
