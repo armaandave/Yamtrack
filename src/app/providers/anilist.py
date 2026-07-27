@@ -288,7 +288,7 @@ query ($id: Int!, $page: Int!) {
     mangaStaffMedia: staffMedia(
       type: MANGA
       page: $page
-      perPage: 25
+      perPage: 50
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -330,7 +330,7 @@ query ($id: Int!, $page: Int!) {
     animeStaffMedia: staffMedia(
       type: ANIME
       page: $page
-      perPage: 25
+      perPage: 50
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -371,7 +371,7 @@ query ($id: Int!, $page: Int!) {
     }
     animeCharacterMedia: characterMedia(
       page: $page
-      perPage: 25
+      perPage: 50
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
       pageInfo {
@@ -582,6 +582,8 @@ def person_page(person_id):
             anime_staff_edges,
             anime_voice_edges,
         )
+        cache.set(fresh_key, data, FRESH_TTL)
+        cache.set(stale_key, data, STALE_TTL)
         _use_mal_anime_credit_images(data)
         cache.set(fresh_key, data, FRESH_TTL)
         cache.set(stale_key, data, STALE_TTL)

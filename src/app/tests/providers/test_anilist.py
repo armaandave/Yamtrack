@@ -514,6 +514,7 @@ class AniListProviderTests(TestCase):
             anilist.STAFF_QUERY.count("sort: [POPULARITY_DESC, SCORE_DESC]"),
             3,
         )
+        self.assertEqual(anilist.STAFF_QUERY.count("perPage: 50"), 3)
         self.assertIn("characterRole", anilist.STAFF_QUERY)
 
     @patch(
@@ -891,7 +892,13 @@ class MALAnimeMetadataTests(TestCase):
         )
 
         self.assertEqual(result["person_id"], "2")
-        person_mock.assert_called_once_with(2)
+        person_mock.assert_called_once_with(
+            2,
+            timeout=1,
+            retry_rate_limits=False,
+        )
+        self.assertEqual(request_mock.call_args.kwargs["timeout"], 1)
+        self.assertFalse(request_mock.call_args.kwargs["retry_rate_limits"])
 
     @patch("app.providers.mal.services.api_request")
     def test_anime_cast_uses_japanese_voice_actor_and_merges_characters(

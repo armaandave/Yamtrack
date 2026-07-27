@@ -58,6 +58,9 @@ final class AniListReviewsTests: XCTestCase {
         XCTAssertEqual(summary.buckets.count, 10)
         XCTAssertEqual(summary.buckets[1].count, 0)
         XCTAssertEqual(summary.buckets.last?.count, 8)
+        XCTAssertEqual(summary.bucket(at: 0, width: 100)?.score, 10)
+        XCTAssertEqual(summary.bucket(at: 49, width: 100)?.score, 50)
+        XCTAssertEqual(summary.bucket(at: 100, width: 100)?.score, 100)
         XCTAssertTrue(summary.hasReviews)
         XCTAssertNil(AniListRatingSummary(detail: movie))
     }

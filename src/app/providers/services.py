@@ -165,6 +165,7 @@ def api_request(
     response_format="json",
     request_session=None,
     timeout=None,
+    retry_rate_limits=True,
 ):
     """Make a request to the API and return the response.
 
@@ -178,6 +179,7 @@ def api_request(
         response_format: "json" (default) or "xml" for XML parsing
         request_session: Optional requests session; defaults to the shared provider session
         timeout: Optional request timeout; defaults to the global provider timeout
+        retry_rate_limits: Whether HTTP 429 responses may wait and retry
 
     Returns:
         Parsed JSON dict or ElementTree for XML
@@ -198,7 +200,8 @@ def api_request(
         request_kwargs["json"] = params
         request_func = active_session.post
 
-    for retry_number in range(RATE_LIMIT_MAX_RETRIES + 1):
+    rate_limit_retries = RATE_LIMIT_MAX_RETRIES if retry_rate_limits else 0
+    for retry_number in range(rate_limit_retries + 1):
         try:
             response = request_func(**request_kwargs)
             response.raise_for_status()
@@ -206,7 +209,7 @@ def api_request(
             error_resp = error.response
             if (
                 error_resp.status_code != requests.codes.too_many_requests
-                or retry_number == RATE_LIMIT_MAX_RETRIES
+                or retry_number == rate_limit_retries
             ):
                 raise error from None
 

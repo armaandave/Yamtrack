@@ -122,6 +122,26 @@ class ServicesTests(TestCase):
         self.assertEqual(mock_get.call_count, services.RATE_LIMIT_MAX_RETRIES + 1)
         self.assertEqual(mock_sleep.call_count, services.RATE_LIMIT_MAX_RETRIES)
 
+    @patch("app.providers.services.time.sleep")
+    @patch("app.providers.services.session.get")
+    def test_api_request_can_skip_rate_limit_retries(self, mock_get, mock_sleep):
+        mock_response = MagicMock(status_code=429, headers={"Retry-After": "60"})
+        error = requests.exceptions.HTTPError("429 Too Many Requests")
+        error.response = mock_response
+        mock_response.raise_for_status.side_effect = error
+        mock_get.return_value = mock_response
+
+        with self.assertRaises(requests.exceptions.HTTPError):
+            services.api_request(
+                "TEST",
+                "GET",
+                "https://example.com/api",
+                retry_rate_limits=False,
+            )
+
+        mock_get.assert_called_once()
+        mock_sleep.assert_not_called()
+
     @patch("app.providers.igdb.cache.delete")
     def test_handle_error_igdb_unauthorized(
         self,

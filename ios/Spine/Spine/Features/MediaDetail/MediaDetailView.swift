@@ -5663,6 +5663,12 @@ struct AniListRatingSummary: Equatable {
     let hasReviews: Bool
     let url: URL?
 
+    func bucket(at x: CGFloat, width: CGFloat) -> Bucket? {
+        guard x.isFinite, width.isFinite, width > 0, !buckets.isEmpty else { return nil }
+        let index = min(max(Int(x / width * CGFloat(buckets.count)), 0), buckets.count - 1)
+        return buckets[index]
+    }
+
     init?(detail: MediaDetail) {
         guard
             detail.ref.mediaType == "anime",
@@ -5782,6 +5788,8 @@ final class AniListReviewsViewModel {
 
 private struct AniListRatingCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var selectedBucketScore: Int?
+    @State private var haptics = UISelectionFeedbackGenerator()
 
     let summary: AniListRatingSummary
     let onSeeReviews: () -> Void
@@ -5798,30 +5806,44 @@ private struct AniListRatingCard: View {
                     metric(title: "AVERAGE SCORE", value: "\(summary.averageScore)%")
                 }
                 Spacer()
-                metric(title: "NUMBER OF RATINGS", value: summary.ratingCount.formatted())
+                metric(
+                    title: selectedBucket.map { "\($0.score) SCORE VOTES" } ?? "NUMBER OF RATINGS",
+                    value: (selectedBucket?.count ?? summary.ratingCount).formatted()
+                )
             }
 
-            HStack(alignment: .bottom, spacing: 4) {
-                ForEach(summary.buckets) { bucket in
-                    VStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(.white.opacity(0.86))
-                            .frame(
-                                height: max(
-                                    3,
-                                    CGFloat(bucket.count) / CGFloat(maxCount) * 42
+            GeometryReader { proxy in
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(summary.buckets) { bucket in
+                        VStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(
+                                    .white.opacity(
+                                        selectedBucketScore == nil || selectedBucketScore == bucket.score
+                                            ? 0.86
+                                            : 0.28
+                                    )
                                 )
-                            )
-                        Text("\(bucket.score)")
-                            .font(.system(size: 8, weight: .heavy))
-                            .foregroundStyle(.white.opacity(0.52))
+                                .frame(
+                                    height: max(
+                                        3,
+                                        CGFloat(bucket.count) / CGFloat(maxCount) * 42
+                                    )
+                                )
+                            Text("\(bucket.score)")
+                                .font(.system(size: 8, weight: .heavy))
+                                .foregroundStyle(.white.opacity(0.52))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(accessibilityLabel(for: bucket))
                     }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(accessibilityLabel(for: bucket))
                 }
+                .contentShape(Rectangle())
+                .gesture(scrubGesture(width: proxy.size.width))
             }
             .frame(height: 58, alignment: .bottom)
+            .onAppear { haptics.prepare() }
 
             HStack(alignment: .center) {
                 if summary.hasReviews {
@@ -5869,6 +5891,32 @@ private struct AniListRatingCard: View {
 
     private var maxCount: Int {
         max(summary.buckets.map(\.count).max() ?? 1, 1)
+    }
+
+    private var selectedBucket: AniListRatingSummary.Bucket? {
+        summary.buckets.first { $0.score == selectedBucketScore }
+    }
+
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.2)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case let .second(true, drag) = value, let drag else { return }
+                selectBucket(at: drag.location.x, width: width)
+            }
+            .onEnded { _ in
+                selectedBucketScore = nil
+            }
+    }
+
+    private func selectBucket(at x: CGFloat, width: CGFloat) {
+        guard
+            let bucket = summary.bucket(at: x, width: width),
+            bucket.score != selectedBucketScore
+        else { return }
+        selectedBucketScore = bucket.score
+        haptics.selectionChanged()
+        haptics.prepare()
     }
 
     private func accessibilityLabel(for bucket: AniListRatingSummary.Bucket) -> String {
