@@ -115,6 +115,7 @@ struct HomeView: View {
 
     @State private var viewModel: HomeViewModel
     @State private var selectedRef: MediaRef?
+    @State private var selectedPerson: PersonRef?
     @State private var selectedActivityEntry: ActivityEntrySelection?
     @State private var scrollOffset: CGFloat = 0
 
@@ -123,6 +124,7 @@ struct HomeView: View {
     private let diaryRepository: DiaryRepository
     private let activityRepository: ActivityRepository
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let currentUserId: Int?
     private let selectedTab: AppTab
     private let onSelectTab: (AppTab) -> Void
@@ -135,6 +137,7 @@ struct HomeView: View {
         diaryRepository: DiaryRepository,
         activityRepository: ActivityRepository = AppRepositories.current().activity,
         listRepository: ListRepository = AppRepositories.current().lists,
+        peopleRepository: PeopleRepository = AppRepositories.current().people,
         currentUserId: Int? = nil,
         selectedTab: AppTab = .home,
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
@@ -145,6 +148,7 @@ struct HomeView: View {
         self.diaryRepository = diaryRepository
         self.activityRepository = activityRepository
         self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
@@ -216,6 +220,21 @@ struct HomeView: View {
             .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
                 MediaDetailView(
                     ref: ref,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    diaryRepository: diaryRepository,
+                    listRepository: listRepository,
+                    peopleRepository: peopleRepository,
+                    currentUserId: currentUserId,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    onUnauthorized: onUnauthorized
+                )
+            }
+            .fullScreenCover(item: $selectedPerson, onDismiss: { selectedPerson = nil }) { ref in
+                PersonDetailView(
+                    ref: ref,
+                    peopleRepository: peopleRepository,
                     mediaRepository: mediaRepository,
                     trackingRepository: trackingRepository,
                     diaryRepository: diaryRepository,
@@ -411,10 +430,15 @@ struct HomeView: View {
     }
 
     private func handleActivityTap(_ activity: ActivityItem) {
-        if activity.object.type == "diary" {
-            selectedActivityEntry = ActivityEntrySelection(id: activity.object.id)
-        } else if let ref = activity.media?.ref {
+        switch ActivityDestination.resolve(activity) {
+        case let .diary(id):
+            selectedActivityEntry = ActivityEntrySelection(id: id)
+        case let .person(ref):
+            selectedPerson = ref
+        case let .media(ref):
             selectedRef = ref
+        case .none:
+            break
         }
     }
 }

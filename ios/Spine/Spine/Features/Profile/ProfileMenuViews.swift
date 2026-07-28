@@ -571,6 +571,7 @@ private final class ProfileListsViewModel {
     private let listRepository: ListRepository
     private let onUnauthorized: () -> Void
     private var hasLoaded = false
+    private var requestGeneration = 0
 
     init(listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
         self.listRepository = listRepository
@@ -578,16 +579,25 @@ private final class ProfileListsViewModel {
     }
 
     func load() async {
+        requestGeneration += 1
+        let generation = requestGeneration
         isLoading = !hasLoaded
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == requestGeneration {
+                isLoading = false
+            }
+        }
 
         do {
-            lists = try await listRepository.list()
+            let loadedLists = try await listRepository.list()
+            guard generation == requestGeneration else { return }
+            lists = loadedLists
             hasLoaded = true
         } catch is CancellationError {
             return
         } catch {
+            guard generation == requestGeneration else { return }
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
@@ -622,6 +632,7 @@ struct ProfileListsView: View {
     @State private var createdListDestination: ProfileCreatedListDestination?
 
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
@@ -641,6 +652,7 @@ struct ProfileListsView: View {
     init(
         profileRepository: ProfileRepository,
         listRepository: ListRepository,
+        peopleRepository: PeopleRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
@@ -658,6 +670,7 @@ struct ProfileListsView: View {
     ) {
         self.profileRepository = profileRepository
         self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
@@ -710,11 +723,17 @@ struct ProfileListsView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    presentedForm = .create
+                Menu {
+                    Button("Media List", systemImage: "rectangle.stack") {
+                        presentedForm = .create(.media)
+                    }
+                    Button("People List", systemImage: "person.2") {
+                        presentedForm = .create(.people)
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("Create list")
                 .disabled(viewModel.isLoading)
             }
         }
@@ -736,6 +755,9 @@ struct ProfileListsView: View {
             if viewModel.lists.isEmpty {
                 await viewModel.load()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .customListsDidChange)) { _ in
+            Task { await viewModel.load() }
         }
     }
 
@@ -764,6 +786,7 @@ struct ProfileListsView: View {
                         listId: list.id,
                         profileRepository: profileRepository,
                         listRepository: listRepository,
+                        peopleRepository: peopleRepository,
                         mediaRepository: mediaRepository,
                         trackingRepository: trackingRepository,
                         diaryRepository: diaryRepository,
@@ -804,6 +827,7 @@ struct ProfileListsView: View {
             listId: listID,
             profileRepository: profileRepository,
             listRepository: listRepository,
+            peopleRepository: peopleRepository,
             mediaRepository: mediaRepository,
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
@@ -839,11 +863,21 @@ struct ProfileListRow: View {
 
                 Spacer(minLength: 0)
 
-                Text("\(list.itemsCount.formatted()) items")
+                Text(countLabel)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.52))
                     .lineLimit(1)
                     .padding(.top, 3)
+
+                if list.listType == .people {
+                    Text("People")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .padding(.horizontal, 7)
+                        .frame(height: 21)
+                        .background(.white.opacity(0.1), in: Capsule())
+                        .padding(.top, 1)
+                }
 
                 if list.isRanked {
                     Text("Ranked")
@@ -874,8 +908,17 @@ struct ProfileListRow: View {
 
     @ViewBuilder
     private var posterStrip: some View {
-        let items = list.previewItems ?? []
-        if items.isEmpty {
+        if list.listType == .people {
+            peopleStrip
+        } else {
+            mediaStrip
+        }
+    }
+
+    @ViewBuilder
+    private var mediaStrip: some View {
+        let media = list.previewItems ?? []
+        if media.isEmpty {
             Text("No items yet")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white.opacity(0.38))
@@ -885,7 +928,7 @@ struct ProfileListRow: View {
         } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 8) {
-                    ForEach(items) { item in
+                    ForEach(media) { item in
                         MediaArtwork(
                             url: item.displayPosterURL,
                             title: item.title,
@@ -898,15 +941,50 @@ struct ProfileListRow: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var peopleStrip: some View {
+        if list.previewPeople.isEmpty {
+            Text("No people yet")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.38))
+                .frame(maxWidth: .infinity, minHeight: PosterSlot.listPreview.size.height, alignment: .leading)
+                .padding(.horizontal, 10)
+                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 8) {
+                    ForEach(list.previewPeople, id: \.entryId) { person in
+                        PersonArtwork(
+                            urlString: person.profileUrl,
+                            name: person.name,
+                            size: PosterSlot.listPreview.size.width
+                        )
+                        .accessibilityLabel(person.name)
+                    }
+                }
+                .frame(minHeight: PosterSlot.listPreview.size.height)
+            }
+        }
+    }
+
+    private var countLabel: String {
+        let count = list.listType == .people ? list.entriesCount : list.itemsCount
+        let noun = list.listType == .people
+            ? (count == 1 ? "person" : "people")
+            : (count == 1 ? "item" : "items")
+        return "\(count.formatted()) \(noun)"
+    }
 }
 
 @MainActor
 @Observable
-private final class ProfileListDetailViewModel {
+final class ProfileListDetailViewModel {
     var list: CustomListDetail?
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse = .empty
     var filteredItems: [MediaSummary] = []
+    var people: [PersonListEntry] = []
     var isLoading = true
     var isLoadingFilteredItems = false
     var isSaving = false
@@ -936,11 +1014,17 @@ private final class ProfileListDetailViewModel {
         filteredItems
     }
 
+    var displayedPeople: [PersonListEntry] {
+        people
+    }
+
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
         isLoading = list == nil
+        isLoadingFilteredItems = false
         errorMessage = nil
+        nextPageErrorMessage = nil
         let requestFilter = filter
         defer {
             if generation == requestGeneration {
@@ -950,12 +1034,25 @@ private final class ProfileListDetailViewModel {
 
         do {
             let detail = try await listRepository.detail(id: listId)
-            let response = try await listRepository.items(listId: listId, page: nil, filter: requestFilter)
-            guard generation == requestGeneration, requestFilter == filter else { return }
-            filteredItems = response.results
-            nextPage = APIPageCursor.nextPage(from: response.next)
-            list = detail.withItems(response.results)
-            Task { await loadFilterOptions() }
+            switch detail.listType {
+            case .media:
+                let response = try await listRepository.items(listId: listId, page: nil, filter: requestFilter)
+                guard generation == requestGeneration, requestFilter == filter else { return }
+                filteredItems = response.results
+                people = []
+                nextPage = APIPageCursor.nextPage(from: response.next)
+                list = detail.withItems(response.results)
+                Task { await loadFilterOptions() }
+            case .people:
+                let response = try await listRepository.people(listId: listId, page: nil)
+                guard generation == requestGeneration else { return }
+                filteredItems = []
+                filter = MediaFilterState()
+                filterOptions = .empty
+                people = Self.deduplicatedPeople(response.results)
+                nextPage = APIPageCursor.nextPage(from: response.next)
+                list = detail.withPeople(people)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -968,6 +1065,7 @@ private final class ProfileListDetailViewModel {
     }
 
     func loadFilterOptions() async {
+        guard list?.listType != .people else { return }
         do {
             filterOptions = try await filterOptionsRepository.options(scope: .list(id: listId), filter: filter)
         } catch {
@@ -976,6 +1074,7 @@ private final class ProfileListDetailViewModel {
     }
 
     func loadFilteredItems(reset: Bool) async {
+        guard list?.listType != .people else { return }
         if reset {
             requestGeneration += 1
             filteredItems = []
@@ -985,7 +1084,11 @@ private final class ProfileListDetailViewModel {
         let requestFilter = filter
         isLoadingFilteredItems = true
         nextPageErrorMessage = nil
-        defer { isLoadingFilteredItems = false }
+        defer {
+            if generation == requestGeneration {
+                isLoadingFilteredItems = false
+            }
+        }
 
         do {
             let response = try await listRepository.items(listId: listId, page: reset ? nil : nextPage, filter: requestFilter)
@@ -1019,31 +1122,102 @@ private final class ProfileListDetailViewModel {
         await loadFilteredItems(reset: false)
     }
 
-    func loadAllItemsForEditing() async {
-        guard let currentList = list, currentList.items.count < currentList.itemsCount else { return }
+    func loadNextPeoplePageIfNeeded(currentPerson: PersonListEntry) async {
+        guard list?.listType == .people,
+              nextPage != nil,
+              !isLoadingFilteredItems,
+              let thresholdIndex = people.index(people.endIndex, offsetBy: -8, limitedBy: people.startIndex) ?? people.indices.first,
+              let currentIndex = people.firstIndex(where: { $0.entryId == currentPerson.entryId }),
+              currentIndex >= thresholdIndex else {
+            return
+        }
+        await loadNextPeoplePage()
+    }
+
+    func retryNextPage() async {
+        if list?.listType == .people {
+            await loadNextPeoplePage()
+        } else {
+            await loadFilteredItems(reset: false)
+        }
+    }
+
+    private func loadNextPeoplePage() async {
+        guard let page = nextPage, !isLoadingFilteredItems else { return }
+        let generation = requestGeneration
+        isLoadingFilteredItems = true
+        nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration {
+                isLoadingFilteredItems = false
+            }
+        }
+
+        do {
+            let response = try await listRepository.people(listId: listId, page: page)
+            guard generation == requestGeneration else { return }
+            let existingIDs = Set(people.map(\.entryId))
+            people += response.results.filter { !existingIDs.contains($0.entryId) }
+            nextPage = APIPageCursor.nextPage(from: response.next)
+            list = list?.withPeople(people)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == requestGeneration else { return }
+            nextPageErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadAllItemsForEditing() async -> Bool {
+        guard let currentList = list else { return false }
+        if currentList.listType == .people {
+            guard currentList.people.count < currentList.entriesCount else { return true }
+        } else {
+            guard currentList.items.count < currentList.itemsCount else { return true }
+        }
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
 
         do {
-            var items: [MediaSummary] = []
-            var page: String?
-            repeat {
-                let response = try await listRepository.items(listId: listId, page: page, filter: MediaFilterState())
-                let existingIDs = Set(items.map(\.id))
-                items += response.results.filter { !existingIDs.contains($0.id) }
-                page = APIPageCursor.nextPage(from: response.next)
-            } while page != nil
-            list = currentList.withItems(items)
-            if !filter.isActive {
-                filteredItems = items
+            switch currentList.listType {
+            case .media:
+                var items: [MediaSummary] = []
+                var page: String?
+                repeat {
+                    let response = try await listRepository.items(listId: listId, page: page, filter: MediaFilterState())
+                    let existingIDs = Set(items.map(\.id))
+                    items += response.results.filter { !existingIDs.contains($0.id) }
+                    page = APIPageCursor.nextPage(from: response.next)
+                } while page != nil
+                list = currentList.withItems(items)
+                if !filter.isActive {
+                    filteredItems = items
+                    nextPage = nil
+                }
+            case .people:
+                var loadedPeople: [PersonListEntry] = []
+                var page: String?
+                repeat {
+                    let response = try await listRepository.people(listId: listId, page: page)
+                    let existingIDs = Set(loadedPeople.map(\.entryId))
+                    loadedPeople += response.results.filter { !existingIDs.contains($0.entryId) }
+                    page = APIPageCursor.nextPage(from: response.next)
+                } while page != nil
+                people = loadedPeople
+                list = currentList.withPeople(loadedPeople)
                 nextPage = nil
             }
+            return true
         } catch {
             errorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
+            return false
         }
     }
 
@@ -1055,10 +1229,15 @@ private final class ProfileListDetailViewModel {
         do {
             let updatedList = try await listRepository.update(id: listId, request)
             list = updatedList
-            if !filter.isActive {
+            if updatedList.listType == .people {
+                people = updatedList.people
+                filteredItems = []
+                nextPage = nil
+            } else if !filter.isActive {
                 filteredItems = updatedList.items
                 nextPage = nil
             }
+            CustomListChange.post(listId: listId, listType: updatedList.listType)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -1076,6 +1255,7 @@ private final class ProfileListDetailViewModel {
 
         do {
             try await listRepository.delete(id: listId)
+            CustomListChange.post(listId: listId, listType: list?.listType ?? .media)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -1130,6 +1310,11 @@ private final class ProfileListDetailViewModel {
             }
         }
     }
+
+    private static func deduplicatedPeople(_ people: [PersonListEntry]) -> [PersonListEntry] {
+        var seen = Set<Int>()
+        return people.filter { seen.insert($0.entryId).inserted }
+    }
 }
 
 private extension CustomListDetail {
@@ -1142,26 +1327,55 @@ private extension CustomListDetail {
             tags: tags,
             visibility: visibility,
             isRanked: isRanked,
+            listType: listType,
             owner: owner,
             imageUrl: imageUrl,
             itemsCount: itemsCount,
+            peopleCount: peopleCount,
+            entriesCount: entriesCount,
             updatedAt: updatedAt,
             likeCount: likeCount,
-            items: items
+            items: items,
+            people: people
+        )
+    }
+
+    func withPeople(_ people: [PersonListEntry]) -> CustomListDetail {
+        CustomListDetail(
+            id: id,
+            name: name,
+            slug: slug,
+            description: description,
+            tags: tags,
+            visibility: visibility,
+            isRanked: isRanked,
+            listType: listType,
+            owner: owner,
+            imageUrl: imageUrl,
+            itemsCount: itemsCount,
+            peopleCount: peopleCount,
+            entriesCount: entriesCount,
+            updatedAt: updatedAt,
+            likeCount: likeCount,
+            items: items,
+            people: people
         )
     }
 }
 
 struct ProfileListDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var viewModel: ProfileListDetailViewModel
     @State private var presentedForm: ListComposerMode?
     @State private var selectedMedia: MediaBrowsingSelection?
+    @State private var selectedPerson: PersonRef?
     @State private var isDeleteAlertPresented = false
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var edgeDragOffset: CGFloat = 0
 
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let profileRepository: ProfileRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
@@ -1182,6 +1396,7 @@ struct ProfileListDetailView: View {
         listId: Int,
         profileRepository: ProfileRepository,
         listRepository: ListRepository,
+        peopleRepository: PeopleRepository,
         mediaRepository: MediaRepository,
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
@@ -1199,6 +1414,7 @@ struct ProfileListDetailView: View {
     ) {
         self.profileRepository = profileRepository
         self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
@@ -1238,17 +1454,30 @@ struct ProfileListDetailView: View {
                                 .padding(
                                     .top,
                                     CustomListHeaderLayout.topPadding(
-                                        hasBackdrop: CustomListBackdropSelection.artworkURL(from: list.items) != nil,
+                                        hasBackdrop: list.listType == .media
+                                            && CustomListBackdropSelection.artworkURL(from: list.items) != nil,
                                         topSafeAreaInset: topSafeAreaInset
                                     )
                                 )
-                            if viewModel.displayedItems.isEmpty {
+                            if list.listType == .people, viewModel.displayedPeople.isEmpty {
+                                DiaryStateCard(
+                                    title: "No people yet",
+                                    systemImage: "person.2",
+                                    message: "Add people from any person page."
+                                )
+                                .padding(.horizontal, 14)
+                            } else if list.listType == .people {
+                                peopleGrid(viewModel.displayedPeople)
+                                    .padding(.horizontal, 14)
+                                filteredPaginationFooter
+                                    .padding(.horizontal, 14)
+                            } else if viewModel.displayedItems.isEmpty {
                                 DiaryStateCard(
                                     title: viewModel.filter.isActive ? "No matching items" : "No items yet",
                                     systemImage: "square.grid.2x2",
                                     message: viewModel.filter.isActive ? "Try changing or resetting the filters." : "Add items from any media detail page."
                                 )
-                                    .padding(.horizontal, 14)
+                                .padding(.horizontal, 14)
                             } else {
                                 mediaGrid(viewModel.displayedItems)
                                     .padding(.horizontal, 14)
@@ -1293,6 +1522,25 @@ struct ProfileListDetailView: View {
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
+                listRepository: listRepository,
+                peopleRepository: peopleRepository,
+                currentUserId: currentUserId,
+                selectedTab: selectedTab,
+                onSelectTab: onSelectTab,
+                onUnauthorized: onUnauthorized
+            )
+        }
+        .fullScreenCover(item: $selectedPerson, onDismiss: {
+            selectedPerson = nil
+            Task { await viewModel.load() }
+        }) { ref in
+            PersonDetailView(
+                ref: ref,
+                peopleRepository: peopleRepository,
+                mediaRepository: mediaRepository,
+                trackingRepository: trackingRepository,
+                diaryRepository: diaryRepository,
+                listRepository: listRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -1319,12 +1567,17 @@ struct ProfileListDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the list. Items stay in your library.")
+            Text(deleteConfirmationMessage)
         }
         .task {
             if viewModel.list == nil {
                 await viewModel.load()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .customListsDidChange)) { notification in
+            guard CustomListChange.listId(from: notification) == viewModel.list?.id,
+                  !viewModel.isSaving else { return }
+            Task { await viewModel.load() }
         }
     }
 
@@ -1361,10 +1614,11 @@ struct ProfileListDetailView: View {
 
             Spacer()
 
-            if viewModel.list != nil {
+            if let list = viewModel.list {
+                if list.listType == .media {
                 MediaFilterButton(
                     filter: $viewModel.filter,
-                    scope: .list(id: viewModel.list?.id ?? 0),
+                    scope: .list(id: list.id),
                     options: viewModel.filterOptions
                 ) {
                     Task {
@@ -1372,12 +1626,13 @@ struct ProfileListDetailView: View {
                         await viewModel.loadFilteredItems(reset: true)
                     }
                 }
+                }
 
                 Menu {
                     Button("Edit List", systemImage: "slider.horizontal.3") {
                         Task {
-                            await viewModel.loadAllItemsForEditing()
-                            if let list = viewModel.list {
+                            if await viewModel.loadAllItemsForEditing(),
+                               let list = viewModel.list {
                                 presentedForm = .edit(list)
                             }
                         }
@@ -1395,7 +1650,9 @@ struct ProfileListDetailView: View {
     }
 
     private func listHeader(_ list: CustomListDetail) -> some View {
-        let backdropURL = CustomListBackdropSelection.artworkURL(from: list.items)
+        let backdropURL = list.listType == .media
+            ? CustomListBackdropSelection.artworkURL(from: list.items)
+            : nil
 
         return ZStack(alignment: .bottomLeading) {
             if let backdropURL {
@@ -1422,6 +1679,7 @@ struct ProfileListDetailView: View {
                     trackingRepository: trackingRepository,
                     activityRepository: activityRepository,
                     listRepository: listRepository,
+                    peopleRepository: peopleRepository,
                     importCoordinator: importCoordinator,
                     storygraphImportCoordinator: storygraphImportCoordinator,
                     goodreadsImportCoordinator: goodreadsImportCoordinator,
@@ -1469,9 +1727,18 @@ struct ProfileListDetailView: View {
                 .shadow(color: .black.opacity(0.35), radius: 14, y: 8)
 
             HStack(spacing: 8) {
-                Text("\(list.itemsCount.formatted()) items")
+                Text(detailCountLabel(list))
                     .font(.system(size: 12, weight: .heavy))
                     .foregroundStyle(.white.opacity(0.72))
+
+                if list.listType == .people {
+                    Text("People")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(.white.opacity(0.13), in: Capsule())
+                }
 
                 if list.isRanked {
                     Text("Ranked")
@@ -1545,6 +1812,84 @@ struct ProfileListDetailView: View {
         }
     }
 
+    private func peopleGrid(_ people: [PersonListEntry]) -> some View {
+        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 3
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: columnCount)
+
+        return LazyVGrid(columns: columns, spacing: 18) {
+            ForEach(people, id: \.entryId) { person in
+                Button {
+                    selectedPerson = person.ref
+                } label: {
+                    VStack(spacing: 7) {
+                        ZStack(alignment: .topLeading) {
+                            PersonArtwork(
+                                urlString: person.profileUrl,
+                                name: person.name,
+                                size: dynamicTypeSize.isAccessibilitySize ? 104 : 88
+                            )
+                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+
+                            if viewModel.list?.isRanked == true, let position = person.position {
+                                Text("#\(position)")
+                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(.black)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 22)
+                                    .background(.white, in: Capsule())
+                            }
+                        }
+
+                        Text(person.name)
+                            .font(.system(size: 14, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.94))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity)
+
+                        if let department = person.knownForDepartment {
+                            Text(department)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.5))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(personAccessibilityLabel(person))
+                .accessibilityHint("Opens person details")
+                .task {
+                    await viewModel.loadNextPeoplePageIfNeeded(currentPerson: person)
+                }
+            }
+        }
+    }
+
+    private func detailCountLabel(_ list: CustomListDetail) -> String {
+        let count = list.listType == .people ? list.entriesCount : list.itemsCount
+        let noun = list.listType == .people
+            ? (count == 1 ? "person" : "people")
+            : (count == 1 ? "item" : "items")
+        return "\(count.formatted()) \(noun)"
+    }
+
+    private func personAccessibilityLabel(_ person: PersonListEntry) -> String {
+        let rank = viewModel.list?.isRanked == true
+            ? person.position.map { "Rank \($0), " } ?? ""
+            : ""
+        let department = person.knownForDepartment.map { ", \($0)" } ?? ""
+        return "\(rank)\(person.name)\(department)"
+    }
+
+    private var deleteConfirmationMessage: String {
+        if viewModel.list?.listType == .people {
+            return "This removes the list. The people themselves are unaffected."
+        }
+        return "This removes the list. Items stay in your library."
+    }
+
     @ViewBuilder
     private var filteredPaginationFooter: some View {
         Group {
@@ -1552,7 +1897,17 @@ struct ProfileListDetailView: View {
                 ProgressView()
                     .tint(.white)
             } else if let error = viewModel.nextPageErrorMessage {
-                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+                VStack(spacing: 10) {
+                    DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+                    Button("Retry") {
+                        Task { await viewModel.retryNextPage() }
+                    }
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 14)
+                    .frame(height: 36)
+                    .background(.white, in: Capsule())
+                }
             } else {
                 Color.clear
             }

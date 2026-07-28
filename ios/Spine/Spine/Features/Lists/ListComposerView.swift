@@ -65,9 +65,14 @@ struct ListComposerView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, focusedField == nil ? 92 : 14)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let removedPerson = viewModel.removedPerson {
+                undoBanner(removedPerson)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, focusedField == nil ? 92 : 14)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: viewModel.removedItem?.id)
+        .animation(.easeInOut(duration: 0.18), value: removedEntryID)
         .fullScreenCover(item: $presentedSheet) { _ in
             ListMediaPickerView(
                 viewModel: viewModel,
@@ -82,7 +87,7 @@ struct ListComposerView: View {
             }
             Button("Keep Editing", role: .cancel) {}
         } message: {
-            Text("Your list details, media selections, and order have not been saved.")
+            Text(viewModel.discardConfirmationMessage)
         }
         .preferredColorScheme(.dark)
     }
@@ -162,6 +167,14 @@ struct ListComposerView: View {
 
     @ViewBuilder
     private var itemsSection: some View {
+        if viewModel.draft.listType == .people {
+            peopleSection
+        } else {
+            mediaItemsSection
+        }
+    }
+
+    private var mediaItemsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -191,6 +204,45 @@ struct ListComposerView: View {
                 emptyItemsState
             } else {
                 ListComposerReorderRows(viewModel: viewModel)
+            }
+        }
+    }
+
+    private var peopleSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your People")
+                    .font(.system(size: 16, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("\(viewModel.draft.people.count) selected")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+            .padding(.horizontal, 2)
+
+            if viewModel.draft.people.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.54))
+                    Text("No people added yet")
+                        .font(.system(size: 17, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Add people from the menu on any person page.")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 30)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(.white.opacity(0.07))
+                }
+            } else {
+                ListComposerPeopleReorderRows(viewModel: viewModel)
             }
         }
     }
@@ -244,7 +296,7 @@ struct ListComposerView: View {
                     if viewModel.isSaving {
                         ProgressView().tint(.black)
                     }
-                    Text(viewModel.isSaving ? viewModel.phase.label : viewModel.primaryActionTitle)
+                    Text(viewModel.isSaving ? viewModel.phaseLabel : viewModel.primaryActionTitle)
                         .font(.system(size: 16, weight: .heavy, design: .rounded))
                 }
                 .spineContentTransition(value: viewModel.isSaving)
@@ -258,7 +310,7 @@ struct ListComposerView: View {
 
             if viewModel.draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Add a list name to continue")
-            } else if viewModel.draft.items.isEmpty {
+            } else if viewModel.draft.listType == .media, viewModel.draft.items.isEmpty {
                 Text("Add at least one media item to continue")
             }
         }
@@ -292,6 +344,34 @@ struct ListComposerView: View {
             guard !Task.isCancelled else { return }
             viewModel.clearUndo()
         }
+    }
+
+    private func undoBanner(_ removedPerson: RemovedListComposerPerson) -> some View {
+        HStack(spacing: 12) {
+            Text("Removed \(removedPerson.person.name)")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button("Undo") {
+                viewModel.undoPersonRemoval()
+            }
+            .font(.system(size: 13, weight: .heavy, design: .rounded))
+            .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 15)
+        .frame(height: 48)
+        .background(.black.opacity(0.94), in: Capsule())
+        .overlay { Capsule().stroke(.white.opacity(0.14)) }
+        .task(id: removedPerson.id) {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            viewModel.clearUndo()
+        }
+    }
+
+    private var removedEntryID: UUID? {
+        viewModel.removedItem?.id ?? viewModel.removedPerson?.id
     }
 
     private func composerSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -418,6 +498,169 @@ private struct ListComposerReorderRows: View {
         sourceIndex = nil
         dragTranslation = 0
         targetIndex = nil
+    }
+}
+
+private struct ListComposerPeopleReorderRows: View {
+    let viewModel: ListComposerViewModel
+
+    @State private var draggedEntryID: Int?
+    @State private var sourceIndex: Int?
+    @State private var dragTranslation = 0.0
+    @State private var targetIndex: Int?
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(viewModel.draft.people.enumerated()), id: \.element.entryId) { index, person in
+                ListComposerPersonRow(
+                    person: person,
+                    rank: viewModel.draft.isRanked ? index + 1 : nil,
+                    canMoveUp: index > 0,
+                    canMoveDown: index < viewModel.draft.people.count - 1,
+                    onRemove: { viewModel.removePerson(entryId: person.entryId) },
+                    onMoveUp: { viewModel.movePerson(from: index, to: index - 1) },
+                    onMoveDown: { viewModel.movePerson(from: index, to: index + 2) },
+                    onReorderChanged: { value in handleChanged(value, person: person, at: index) },
+                    onReorderEnded: { value in handleEnded(value) }
+                )
+                .frame(height: ListComposerReorderMath.rowHeight)
+                .offset(
+                    y: Double(index) * ListComposerReorderMath.rowHeight
+                        + ListComposerReorderMath.rowOffset(
+                            for: index,
+                            sourceIndex: sourceIndex,
+                            targetIndex: targetIndex,
+                            activeTranslation: dragTranslation
+                        )
+                )
+                .zIndex(draggedEntryID == person.entryId ? 10 : 0)
+                .shadow(color: draggedEntryID == person.entryId ? .black.opacity(0.34) : .clear, radius: 12, y: 6)
+                .animation(draggedEntryID == person.entryId ? nil : .snappy(duration: 0.14), value: targetIndex)
+            }
+        }
+        .frame(
+            height: Double(viewModel.draft.people.count) * ListComposerReorderMath.rowHeight,
+            alignment: .topLeading
+        )
+        .disabled(viewModel.isSaving)
+    }
+
+    private func handleChanged(_ value: DragGesture.Value, person: PersonListEntry, at index: Int) {
+        if draggedEntryID == nil {
+            draggedEntryID = person.entryId
+            sourceIndex = index
+            targetIndex = index
+            UIImpactFeedbackGenerator(style: .light).prepare()
+        }
+        guard let sourceIndex else { return }
+        dragTranslation = ListComposerReorderMath.clampedTranslation(
+            Double(value.translation.height),
+            sourceIndex: sourceIndex,
+            count: viewModel.draft.people.count
+        )
+        let nextTarget = ListComposerReorderMath.targetIndex(
+            from: sourceIndex,
+            translation: dragTranslation,
+            count: viewModel.draft.people.count
+        )
+        if nextTarget != targetIndex {
+            targetIndex = nextTarget
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    private func handleEnded(_ value: DragGesture.Value) {
+        guard let sourceIndex else { reset(); return }
+        let destination = ListComposerReorderMath.destination(
+            from: sourceIndex,
+            translation: Double(value.translation.height),
+            count: viewModel.draft.people.count
+        )
+        reset()
+        guard destination != sourceIndex else { return }
+        viewModel.movePerson(from: sourceIndex, to: destination)
+    }
+
+    private func reset() {
+        draggedEntryID = nil
+        sourceIndex = nil
+        dragTranslation = 0
+        targetIndex = nil
+    }
+}
+
+private struct ListComposerPersonRow: View {
+    let person: PersonListEntry
+    let rank: Int?
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let onRemove: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+    let onReorderChanged: (DragGesture.Value) -> Void
+    let onReorderEnded: (DragGesture.Value) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let rank {
+                Text("#\(rank)")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.56))
+                    .frame(width: 30)
+            }
+
+            PersonArtwork(urlString: person.profileUrl, name: person.name, size: 48)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(person.name)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .lineLimit(2)
+                if let department = person.knownForDepartment {
+                    Text(department)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.46))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.red.opacity(0.82))
+                    .frame(width: 38, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(person.name)")
+
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.52))
+                .frame(width: 42, height: 44)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 4)
+                        .onChanged(onReorderChanged)
+                        .onEnded(onReorderEnded)
+                )
+                .accessibilityLabel("Reorder \(person.name)")
+        }
+        .padding(.horizontal, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.white.opacity(0.075))
+        }
+        .accessibilityAction(named: "Move Up") {
+            if canMoveUp { onMoveUp() }
+        }
+        .accessibilityAction(named: "Move Down") {
+            if canMoveDown { onMoveDown() }
+        }
     }
 }
 

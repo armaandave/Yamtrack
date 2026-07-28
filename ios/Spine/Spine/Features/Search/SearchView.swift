@@ -123,6 +123,7 @@ struct SearchView: View {
     private let trackingRepository: TrackingRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let mediaLensStore: MediaLensStore
     private let currentUserId: Int?
     private let selectedTab: AppTab
@@ -136,6 +137,7 @@ struct SearchView: View {
         trackingRepository: TrackingRepository,
         diaryRepository: DiaryRepository,
         listRepository: ListRepository? = nil,
+        peopleRepository: PeopleRepository? = nil,
         mediaLensStore: MediaLensStore? = nil,
         currentUserId: Int? = nil,
         selectedTab: AppTab = .search,
@@ -147,6 +149,7 @@ struct SearchView: View {
         self.trackingRepository = trackingRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository ?? AppRepositories.current().lists
+        self.peopleRepository = peopleRepository ?? AppRepositories.current().people
         self.mediaLensStore = mediaLensStore ?? MediaLensStore()
         self.currentUserId = currentUserId
         self.selectedTab = selectedTab
@@ -161,6 +164,7 @@ struct SearchView: View {
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
             listRepository: listRepository,
+            peopleRepository: peopleRepository,
             mediaLensStore: mediaLensStore,
             currentUserId: currentUserId,
             selectedTab: selectedTab,
@@ -180,6 +184,7 @@ private struct SearchViewContainer: View {
     let trackingRepository: TrackingRepository
     let diaryRepository: DiaryRepository
     let listRepository: ListRepository
+    let peopleRepository: PeopleRepository
     let mediaLensStore: MediaLensStore
     let currentUserId: Int?
     let selectedTab: AppTab
@@ -204,6 +209,7 @@ private struct SearchViewContainer: View {
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
                 listRepository: listRepository,
+                peopleRepository: peopleRepository,
                 currentUserId: currentUserId,
                 selectedTab: selectedTab,
                 onSelectTab: onSelectTab,
@@ -216,6 +222,7 @@ private struct SearchViewContainer: View {
                 listId: destination.id,
                 profileRepository: repositories.profile,
                 listRepository: listRepository,
+                peopleRepository: peopleRepository,
                 mediaRepository: mediaRepository,
                 trackingRepository: trackingRepository,
                 diaryRepository: diaryRepository,
@@ -240,6 +247,7 @@ private struct MediaDetailCover: View {
     let trackingRepository: TrackingRepository
     let diaryRepository: DiaryRepository
     let listRepository: ListRepository
+    let peopleRepository: PeopleRepository
     let currentUserId: Int?
     let selectedTab: AppTab
     let onSelectTab: (AppTab) -> Void
@@ -252,6 +260,7 @@ private struct MediaDetailCover: View {
             trackingRepository: trackingRepository,
             diaryRepository: diaryRepository,
             listRepository: listRepository,
+            peopleRepository: peopleRepository,
             currentUserId: currentUserId,
             selectedTab: selectedTab,
             onSelectTab: onSelectTab,

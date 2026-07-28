@@ -281,7 +281,34 @@ struct ActivityFeedRow: View {
                 }
             }
 
-            if let media = activity.media {
+            if let person = activity.person {
+                HStack(alignment: .top, spacing: 12) {
+                    PersonArtwork(urlString: person.profileUrl, name: person.name, size: 72)
+                        .shadow(color: .black.opacity(0.22), radius: 8, y: 4)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(person.name)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+
+                        if let department = ActivityFeedPresentation.clean(person.knownForDepartment) {
+                            Text(department)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                                .lineLimit(1)
+                        }
+
+                        if let listName = ActivityFeedPresentation.listName(for: activity) {
+                            Text(listName)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                                .lineLimit(2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let media = activity.media {
                 HStack(alignment: .top, spacing: 12) {
                     MediaArtwork(
                         url: media.displayPosterURL,
@@ -420,7 +447,16 @@ enum ActivityFeedPresentation {
     }
 
     static func destinationHint(for activity: ActivityItem) -> String {
-        activity.object.type == "diary" ? "Opens log details" : "Opens media details"
+        switch ActivityDestination.resolve(activity) {
+        case .diary:
+            "Opens log details"
+        case .person:
+            "Opens person details"
+        case .media:
+            "Opens media details"
+        case .none:
+            "No details available"
+        }
     }
 
     static func progressDelta(for activity: ActivityItem) -> ProgressChangeDisplay? {
@@ -465,10 +501,30 @@ enum ActivityFeedPresentation {
         }
     }
 
-    private static func clean(_ value: String?) -> String? {
+    static func clean(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum ActivityDestination: Equatable {
+    case diary(Int)
+    case person(PersonRef)
+    case media(MediaRef)
+    case none
+
+    static func resolve(_ activity: ActivityItem) -> ActivityDestination {
+        if activity.object.type == "diary" {
+            return .diary(activity.object.id)
+        }
+        if let ref = activity.person?.ref {
+            return .person(ref)
+        }
+        if let ref = activity.media?.ref {
+            return .media(ref)
+        }
+        return .none
     }
 }
 

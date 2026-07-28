@@ -304,6 +304,7 @@ extension ProfileRepository {
 protocol ListRepository {
     func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary]
     func list() async throws -> [CustomListSummary]
+    func peopleLists(membershipFor ref: PersonRef) async throws -> [CustomListSummary]
     func featured() async throws -> [CustomListSummary]
     func detail(id: Int) async throws -> CustomListDetail
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary
@@ -313,6 +314,10 @@ protocol ListRepository {
     func items(listId: Int, page: String?, filter: MediaFilterState) async throws -> PagedResponse<MediaSummary>
     func removeItem(listId: Int, itemId: Int) async throws
     func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail
+    func people(listId: Int, page: String?) async throws -> PagedResponse<PersonListEntry>
+    func addPerson(listId: Int, ref: PersonRef) async throws -> PersonListEntry
+    func removePerson(listId: Int, entryId: Int) async throws
+    func reorderPeople(listId: Int, entryIds: [Int]) async throws -> CustomListDetail
 }
 
 extension ListRepository {
@@ -1069,6 +1074,15 @@ struct APIProfileRepository: ProfileRepository {
 struct APIListRepository: ListRepository {
     let client: APIClient
 
+    func list() async throws -> [CustomListSummary] {
+        let response: PagedResponse<CustomListSummary> = try await client.get(
+            "/lists/",
+            query: [URLQueryItem(name: "list_type", value: "all")],
+            authenticated: true
+        )
+        return response.results
+    }
+
     func list(membershipFor ref: MediaRef? = nil) async throws -> [CustomListSummary] {
         var query: [URLQueryItem] = []
         if let ref {
@@ -1085,6 +1099,19 @@ struct APIListRepository: ListRepository {
         let response: PagedResponse<CustomListSummary> = try await client.get(
             "/lists/",
             query: query,
+            authenticated: true
+        )
+        return response.results
+    }
+
+    func peopleLists(membershipFor ref: PersonRef) async throws -> [CustomListSummary] {
+        let response: PagedResponse<CustomListSummary> = try await client.get(
+            "/lists/",
+            query: [
+                URLQueryItem(name: "list_type", value: CustomListType.people.rawValue),
+                URLQueryItem(name: "person_ref[source]", value: ref.source),
+                URLQueryItem(name: "person_ref[id]", value: ref.id),
+            ],
             authenticated: true
         )
         return response.results
@@ -1143,6 +1170,38 @@ struct APIListRepository: ListRepository {
         try await client.patch(
             "/lists/\(listId)/items/reorder/",
             body: ListItemsReorderRequest(itemIds: itemIds),
+            authenticated: true
+        )
+    }
+
+    func people(listId: Int, page: String?) async throws -> PagedResponse<PersonListEntry> {
+        try await client.get(
+            "/lists/\(listId)/people/",
+            query: page.map { [URLQueryItem(name: "page", value: $0)] } ?? [],
+            authenticated: true
+        )
+    }
+
+    func addPerson(listId: Int, ref: PersonRef) async throws -> PersonListEntry {
+        let response: ListPersonWriteResponse = try await client.post(
+            "/lists/\(listId)/people/",
+            body: ListPersonWriteRequest(ref: ref),
+            authenticated: true
+        )
+        return response.person
+    }
+
+    func removePerson(listId: Int, entryId: Int) async throws {
+        let _: EmptyResponse = try await client.delete(
+            "/lists/\(listId)/people/\(entryId)/",
+            authenticated: true
+        )
+    }
+
+    func reorderPeople(listId: Int, entryIds: [Int]) async throws -> CustomListDetail {
+        try await client.patch(
+            "/lists/\(listId)/people/reorder/",
+            body: ListPeopleReorderRequest(entryIds: entryIds),
             authenticated: true
         )
     }

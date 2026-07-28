@@ -2,13 +2,13 @@ import Foundation
 import Observation
 
 enum ListComposerMode: Identifiable {
-    case create
+    case create(CustomListType)
     case edit(CustomListDetail)
 
     var id: String {
         switch self {
-        case .create:
-            "create"
+        case let .create(type):
+            "create-\(type.rawValue)"
         case let .edit(list):
             "edit-\(list.id)"
         }
@@ -16,26 +16,39 @@ enum ListComposerMode: Identifiable {
 
     var title: String {
         switch self {
-        case .create: "New List"
+        case let .create(type): type == .people ? "New People List" : "New Media List"
         case .edit: "Edit List"
+        }
+    }
+
+    var listType: CustomListType {
+        switch self {
+        case let .create(type): type
+        case let .edit(list): list.listType
         }
     }
 }
 
 struct ListComposerDraft: Equatable {
+    var listType: CustomListType
     var name: String
     var description: String
     var visibility: String
     var isRanked: Bool
     var items: [MediaSummary]
+    var people: [PersonListEntry]
 
-    static let empty = ListComposerDraft(
-        name: "",
-        description: "",
-        visibility: "private",
-        isRanked: false,
-        items: []
-    )
+    static func empty(type: CustomListType) -> ListComposerDraft {
+        ListComposerDraft(
+            listType: type,
+            name: "",
+            description: "",
+            visibility: "private",
+            isRanked: false,
+            items: [],
+            people: []
+        )
+    }
 }
 
 enum ListComposerSavePhase: Equatable {
@@ -76,6 +89,12 @@ struct RemovedListComposerItem: Identifiable {
     let index: Int
 }
 
+struct RemovedListComposerPerson: Identifiable {
+    let id = UUID()
+    let person: PersonListEntry
+    let index: Int
+}
+
 @MainActor
 @Observable
 final class ListComposerViewModel {
@@ -84,6 +103,7 @@ final class ListComposerViewModel {
     var errorMessage: String?
     var failedItemTitles: [String] = []
     var removedItem: RemovedListComposerItem?
+    var removedPerson: RemovedListComposerPerson?
 
     let mode: ListComposerMode
 
@@ -92,6 +112,7 @@ final class ListComposerViewModel {
     private let onUnauthorized: () -> Void
     private var serverListID: Int?
     private var serverItemsByRefID: [String: MediaSummary]
+    private var serverPeopleByEntryID: [Int: PersonListEntry]
     private var needsReconciliation = false
 
     init(
@@ -104,24 +125,28 @@ final class ListComposerViewModel {
         self.onUnauthorized = onUnauthorized
 
         switch mode {
-        case .create:
-            let draft = ListComposerDraft.empty
+        case let .create(type):
+            let draft = ListComposerDraft.empty(type: type)
             self.draft = draft
             initialDraft = draft
             serverListID = nil
             serverItemsByRefID = [:]
+            serverPeopleByEntryID = [:]
         case let .edit(list):
             let draft = ListComposerDraft(
+                listType: list.listType,
                 name: list.name,
                 description: list.description,
                 visibility: list.visibility == "public" ? "public" : "private",
                 isRanked: list.isRanked,
-                items: list.items
+                items: list.items,
+                people: list.people
             )
             self.draft = draft
             initialDraft = draft
             serverListID = list.id
             serverItemsByRefID = Dictionary(uniqueKeysWithValues: list.items.map { ($0.ref.id, $0) })
+            serverPeopleByEntryID = Dictionary(uniqueKeysWithValues: list.people.map { ($0.entryId, $0) })
         }
     }
 
@@ -139,7 +164,7 @@ final class ListComposerViewModel {
 
     var canSave: Bool {
         !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !draft.items.isEmpty
+            && (draft.listType == .people || !draft.items.isEmpty)
             && !isSaving
     }
 
@@ -153,6 +178,19 @@ final class ListComposerViewModel {
         }
     }
 
+    var phaseLabel: String {
+        if phase == .savingOrder, draft.listType == .people {
+            return "Saving people order…"
+        }
+        return phase.label
+    }
+
+    var discardConfirmationMessage: String {
+        draft.listType == .people
+            ? "Your list details, people changes, and order have not been saved."
+            : "Your list details, media selections, and order have not been saved."
+    }
+
     func contains(_ item: MediaSummary) -> Bool {
         draft.items.contains { $0.ref.id == item.ref.id }
     }
@@ -164,6 +202,7 @@ final class ListComposerViewModel {
             draft.items.append(item)
         }
         removedItem = nil
+        removedPerson = nil
         clearFailure()
     }
 
@@ -171,6 +210,7 @@ final class ListComposerViewModel {
         guard let index = draft.items.firstIndex(where: { $0.id == id }) else { return }
         let item = draft.items.remove(at: index)
         removedItem = RemovedListComposerItem(item: item, index: index)
+        removedPerson = nil
         clearFailure()
     }
 
@@ -187,6 +227,7 @@ final class ListComposerViewModel {
 
     func clearUndo() {
         removedItem = nil
+        removedPerson = nil
     }
 
     /// Uses SwiftUI's move destination semantics: downward destinations refer to the pre-removal array.
@@ -196,6 +237,36 @@ final class ListComposerViewModel {
         let insertionIndex = destination > source ? destination - 1 : destination
         draft.items.insert(item, at: min(max(insertionIndex, 0), draft.items.endIndex))
         removedItem = nil
+        removedPerson = nil
+        clearFailure()
+    }
+
+    func removePerson(entryId: Int) {
+        guard let index = draft.people.firstIndex(where: { $0.entryId == entryId }) else { return }
+        let person = draft.people.remove(at: index)
+        removedPerson = RemovedListComposerPerson(person: person, index: index)
+        removedItem = nil
+        clearFailure()
+    }
+
+    func undoPersonRemoval() {
+        guard let removedPerson else { return }
+        let index = min(removedPerson.index, draft.people.endIndex)
+        guard !draft.people.contains(where: { $0.entryId == removedPerson.person.entryId }) else {
+            self.removedPerson = nil
+            return
+        }
+        draft.people.insert(removedPerson.person, at: index)
+        self.removedPerson = nil
+    }
+
+    func movePerson(from source: Int, to destination: Int) {
+        guard draft.people.indices.contains(source), destination >= 0, destination <= draft.people.count else { return }
+        let person = draft.people.remove(at: source)
+        let insertionIndex = destination > source ? destination - 1 : destination
+        draft.people.insert(person, at: min(max(insertionIndex, 0), draft.people.endIndex))
+        removedItem = nil
+        removedPerson = nil
         clearFailure()
     }
 
@@ -204,73 +275,35 @@ final class ListComposerViewModel {
         errorMessage = nil
         failedItemTitles = []
         removedItem = nil
+        removedPerson = nil
 
         do {
             if needsReconciliation, let listID = serverListID {
                 phase = .reconciling
-                try await reconcileServerItems(listID: listID)
+                try await reconcileServerEntries(listID: listID)
                 needsReconciliation = false
             }
 
             phase = .savingDetails
             let listID = try await saveDetails()
-
-            let desiredRefIDs = Set(draft.items.map(\.ref.id))
-            let additions = draft.items.filter { serverItemsByRefID[$0.ref.id] == nil }
-            var addFailures: [String] = []
-            for (offset, item) in additions.enumerated() {
-                phase = .adding(current: offset + 1, total: additions.count)
-                do {
-                    let savedItem = try await listRepository.addItem(listId: listID, ref: item.ref)
-                    serverItemsByRefID[savedItem.ref.id] = savedItem
-                    replaceDraftItem(savedItem)
-                } catch {
-                    addFailures.append(item.title)
-                    handleUnauthorized(error)
-                }
+            let saved: Bool
+            switch draft.listType {
+            case .media:
+                saved = await saveMediaEntries(listID: listID)
+            case .people:
+                saved = await savePeopleEntries(listID: listID)
             }
-            if !addFailures.isEmpty {
-                return fail(
-                    message: "Some media could not be added. Your list was kept so you can retry.",
-                    itemTitles: addFailures
-                )
-            }
-
-            let removals = serverItemsByRefID.values.filter { !desiredRefIDs.contains($0.ref.id) }
-            var removeFailures: [String] = []
-            for (offset, item) in removals.enumerated() {
-                phase = .removing(current: offset + 1, total: removals.count)
-                guard let itemID = item.ref.itemId else {
-                    removeFailures.append(item.title)
-                    continue
-                }
-                do {
-                    try await listRepository.removeItem(listId: listID, itemId: itemID)
-                    serverItemsByRefID[item.ref.id] = nil
-                } catch {
-                    removeFailures.append(item.title)
-                    handleUnauthorized(error)
-                }
-            }
-            if !removeFailures.isEmpty {
-                return fail(
-                    message: "Some media could not be removed. Retry to finish saving this list.",
-                    itemTitles: removeFailures
-                )
-            }
-
-            let orderedItemIDs = draft.items.compactMap { serverItemsByRefID[$0.ref.id]?.ref.itemId }
-            guard orderedItemIDs.count == draft.items.count else {
-                return fail(message: "Spine could not determine the saved order. Retry to reconcile the list.")
-            }
-
-            phase = .savingOrder
-            _ = try await listRepository.reorderItems(listId: listID, itemIds: orderedItemIDs)
+            guard saved else { return nil }
 
             phase = .reloading
-            try await reconcileServerItems(listID: listID)
+            try await reconcileServerEntries(listID: listID)
+            needsReconciliation = false
             phase = .idle
+            CustomListChange.post(listId: listID, listType: draft.listType)
             return listID
+        } catch is CancellationError {
+            phase = .idle
+            return nil
         } catch {
             errorMessage = error.localizedDescription
             phase = .failed
@@ -285,18 +318,137 @@ final class ListComposerViewModel {
             name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
             description: draft.description.trimmingCharacters(in: .whitespacesAndNewlines),
             visibility: draft.visibility,
-            isRanked: draft.isRanked
+            isRanked: draft.isRanked,
+            listType: serverListID == nil && draft.listType == .people ? .people : nil
         )
 
         if let serverListID {
             _ = try await listRepository.update(id: serverListID, request)
+            CustomListChange.post(listId: serverListID, listType: draft.listType)
             return serverListID
         }
 
         let list = try await listRepository.create(request)
         serverListID = list.id
         needsReconciliation = true
+        CustomListChange.post(listId: list.id, listType: draft.listType)
         return list.id
+    }
+
+    private func saveMediaEntries(listID: Int) async -> Bool {
+        let desiredRefIDs = Set(draft.items.map(\.ref.id))
+        let additions = draft.items.filter { serverItemsByRefID[$0.ref.id] == nil }
+        var addFailures: [String] = []
+        for (offset, item) in additions.enumerated() {
+            phase = .adding(current: offset + 1, total: additions.count)
+            do {
+                let savedItem = try await listRepository.addItem(listId: listID, ref: item.ref)
+                serverItemsByRefID[savedItem.ref.id] = savedItem
+                replaceDraftItem(savedItem)
+                CustomListChange.post(listId: listID, listType: .media)
+            } catch {
+                addFailures.append(item.title)
+                handleUnauthorized(error)
+            }
+        }
+        if !addFailures.isEmpty {
+            fail(
+                message: "Some media could not be added. Your list was kept so you can retry.",
+                itemTitles: addFailures
+            )
+            return false
+        }
+
+        let removals = serverItemsByRefID.values.filter { !desiredRefIDs.contains($0.ref.id) }
+        var removeFailures: [String] = []
+        for (offset, item) in removals.enumerated() {
+            phase = .removing(current: offset + 1, total: removals.count)
+            guard let itemID = item.ref.itemId else {
+                removeFailures.append(item.title)
+                continue
+            }
+            do {
+                try await listRepository.removeItem(listId: listID, itemId: itemID)
+                serverItemsByRefID[item.ref.id] = nil
+                CustomListChange.post(listId: listID, listType: .media)
+            } catch {
+                removeFailures.append(item.title)
+                handleUnauthorized(error)
+            }
+        }
+        if !removeFailures.isEmpty {
+            fail(
+                message: "Some media could not be removed. Retry to finish saving this list.",
+                itemTitles: removeFailures
+            )
+            return false
+        }
+
+        let orderedItemIDs = draft.items.compactMap { serverItemsByRefID[$0.ref.id]?.ref.itemId }
+        guard orderedItemIDs.count == draft.items.count else {
+            fail(message: "Spine could not determine the saved order. Retry to reconcile the list.")
+            return false
+        }
+
+        phase = .savingOrder
+        do {
+            _ = try await listRepository.reorderItems(listId: listID, itemIds: orderedItemIDs)
+            CustomListChange.post(listId: listID, listType: .media)
+            return true
+        } catch {
+            fail(message: error.localizedDescription)
+            handleUnauthorized(error)
+            return false
+        }
+    }
+
+    private func savePeopleEntries(listID: Int) async -> Bool {
+        let desiredEntryIDs = Set(draft.people.map(\.entryId))
+        let removals = serverPeopleByEntryID.values.filter { !desiredEntryIDs.contains($0.entryId) }
+        var removeFailures: [String] = []
+        for (offset, person) in removals.enumerated() {
+            phase = .removing(current: offset + 1, total: removals.count)
+            do {
+                try await listRepository.removePerson(listId: listID, entryId: person.entryId)
+                serverPeopleByEntryID[person.entryId] = nil
+                CustomListChange.post(listId: listID, listType: .people)
+            } catch {
+                removeFailures.append(person.name)
+                handleUnauthorized(error)
+            }
+        }
+        if !removeFailures.isEmpty {
+            fail(
+                message: "Some people could not be removed. Retry to finish saving this list.",
+                itemTitles: removeFailures
+            )
+            return false
+        }
+
+        let entryIDs = draft.people.map(\.entryId)
+        guard entryIDs.allSatisfy({ serverPeopleByEntryID[$0] != nil }) else {
+            fail(message: "Spine could not determine the saved people order. Retry to reconcile the list.")
+            return false
+        }
+        phase = .savingOrder
+        do {
+            _ = try await listRepository.reorderPeople(listId: listID, entryIds: entryIDs)
+            CustomListChange.post(listId: listID, listType: .people)
+            return true
+        } catch {
+            fail(message: error.localizedDescription)
+            handleUnauthorized(error)
+            return false
+        }
+    }
+
+    private func reconcileServerEntries(listID: Int) async throws {
+        switch draft.listType {
+        case .media:
+            try await reconcileServerItems(listID: listID)
+        case .people:
+            try await reconcileServerPeople(listID: listID)
+        }
     }
 
     private func reconcileServerItems(listID: Int) async throws {
@@ -318,17 +470,31 @@ final class ListComposerViewModel {
         draft.items = draft.items.map { serverItemsByRefID[$0.ref.id] ?? $0 }
     }
 
+    private func reconcileServerPeople(listID: Int) async throws {
+        _ = try await listRepository.detail(id: listID)
+        var people: [PersonListEntry] = []
+        var page: String?
+        repeat {
+            let response = try await listRepository.people(listId: listID, page: page)
+            let existingIDs = Set(people.map(\.entryId))
+            people += response.results.filter { !existingIDs.contains($0.entryId) }
+            page = APIPageCursor.nextPage(from: response.next)
+        } while page != nil
+
+        serverPeopleByEntryID = Dictionary(uniqueKeysWithValues: people.map { ($0.entryId, $0) })
+        draft.people = draft.people.compactMap { serverPeopleByEntryID[$0.entryId] }
+    }
+
     private func replaceDraftItem(_ savedItem: MediaSummary) {
         guard let index = draft.items.firstIndex(where: { $0.ref.id == savedItem.ref.id }) else { return }
         draft.items[index] = savedItem
     }
 
-    private func fail(message: String, itemTitles: [String] = []) -> Int? {
+    private func fail(message: String, itemTitles: [String] = []) {
         errorMessage = message
         failedItemTitles = itemTitles
         phase = .failed
         needsReconciliation = serverListID != nil
-        return nil
     }
 
     private func clearFailure() {

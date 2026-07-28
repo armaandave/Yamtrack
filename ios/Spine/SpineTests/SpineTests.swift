@@ -252,7 +252,7 @@ final class SpineTests: XCTestCase {
     @MainActor
     func testListComposerRequiresNameAndItemAndSupportsUndoAndOrdering() {
         let repository = ScriptedListComposerRepository()
-        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        let viewModel = ListComposerViewModel(mode: .create(.media), listRepository: repository, onUnauthorized: {})
         let first = composerMedia("1")
         let second = composerMedia("2")
 
@@ -278,7 +278,7 @@ final class SpineTests: XCTestCase {
     @MainActor
     func testListComposerSelectsMusic() {
         let viewModel = ListComposerViewModel(
-            mode: .create,
+            mode: .create(.media),
             listRepository: ScriptedListComposerRepository(),
             onUnauthorized: {}
         )
@@ -304,7 +304,7 @@ final class SpineTests: XCTestCase {
     @MainActor
     func testListComposerCreatesAddsAndSavesCompleteOrder() async {
         let repository = ScriptedListComposerRepository()
-        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        let viewModel = ListComposerViewModel(mode: .create(.media), listRepository: repository, onUnauthorized: {})
         viewModel.draft.name = "Favorites"
         viewModel.draft.isRanked = true
         viewModel.toggleSelection(composerMedia("1"))
@@ -324,7 +324,7 @@ final class SpineTests: XCTestCase {
     @MainActor
     func testListComposerRetriesPartialCreateWithoutCreatingOrAddingTwice() async {
         let repository = ScriptedListComposerRepository(failingMediaIDs: ["album"])
-        let viewModel = ListComposerViewModel(mode: .create, listRepository: repository, onUnauthorized: {})
+        let viewModel = ListComposerViewModel(mode: .create(.media), listRepository: repository, onUnauthorized: {})
         viewModel.draft.name = "Favorites"
         viewModel.toggleSelection(composerMedia("1"))
         viewModel.toggleSelection(composerMedia("album", mediaType: "music"))
@@ -3343,8 +3343,11 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(railItems.map(\.activity.id), [1, 2])
         XCTAssertEqual(ProfileRecentActivityRailModel.rating(for: diary), "9.0")
         XCTAssertTrue(ProfileRecentActivityRailModel.isLikedDiary(diary))
+        guard case let .media(progressMedia) = railItems[1].subject else {
+            return XCTFail("Expected media activity")
+        }
         XCTAssertEqual(
-            ProfileRecentActivityRailModel.progressDeltaText(for: progress, media: railItems[1].media),
+            ProfileRecentActivityRailModel.progressDeltaText(for: progress, media: progressMedia),
             "+2%"
         )
     }
@@ -4749,7 +4752,10 @@ final class SpineTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertEqual(viewModel.recentActivityItems.map(\.type), ["progress_updated", "diary_created"])
-        XCTAssertEqual(ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).last?.media.ref.mediaType, "music")
+        guard case let .media(recentMedia)? = ProfileRecentActivityRailModel.items(from: viewModel.recentActivityItems).last?.subject else {
+            return XCTFail("Expected media activity")
+        }
+        XCTAssertEqual(recentMedia.ref.mediaType, "music")
         XCTAssertEqual(ActivityFeedPresentation.actionText(for: viewModel.recentActivityItems[1]), "listened to an album")
         XCTAssertEqual(activityRepository.requests, [ActivityRequest(username: "mobile", limit: 6)])
     }
@@ -7509,6 +7515,7 @@ private final class ScriptedListComposerRepository: ListRepository {
     }
 
     func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary] { [] }
+    func peopleLists(membershipFor ref: PersonRef) async throws -> [CustomListSummary] { [] }
 
     func detail(id: Int) async throws -> CustomListDetail {
         composerList(items: serverItems)
@@ -7575,6 +7582,20 @@ private final class ScriptedListComposerRepository: ListRepository {
         serverItems = itemIds.compactMap { byID[$0] }
         return composerList(items: serverItems)
     }
+
+    func people(listId: Int, page: String?) async throws -> PagedResponse<PersonListEntry> {
+        PagedResponse(count: 0, next: nil, previous: nil, results: [])
+    }
+
+    func addPerson(listId: Int, ref: PersonRef) async throws -> PersonListEntry {
+        fatalError("Not used")
+    }
+
+    func removePerson(listId: Int, entryId: Int) async throws {}
+
+    func reorderPeople(listId: Int, entryIds: [Int]) async throws -> CustomListDetail {
+        fatalError("Not used")
+    }
 }
 
 private func composerMedia(_ mediaID: String, itemID: Int? = nil, mediaType: String = "movie") -> MediaSummary {
@@ -7609,6 +7630,7 @@ private func composerList(items: [MediaSummary]) -> CustomListDetail {
 
 private struct FakeListRepository: ListRepository {
     func list(membershipFor ref: MediaRef?) async throws -> [CustomListSummary] { fatalError("Not used") }
+    func peopleLists(membershipFor ref: PersonRef) async throws -> [CustomListSummary] { fatalError("Not used") }
     func detail(id: Int) async throws -> CustomListDetail { fatalError("Not used") }
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary { fatalError("Not used") }
     func update(id: Int, _ request: CustomListWriteRequest) async throws -> CustomListDetail { fatalError("Not used") }
@@ -7616,6 +7638,10 @@ private struct FakeListRepository: ListRepository {
     func addItem(listId: Int, ref: MediaRef) async throws -> MediaSummary { fatalError("Not used") }
     func removeItem(listId: Int, itemId: Int) async throws {}
     func reorderItems(listId: Int, itemIds: [Int]) async throws -> CustomListDetail { fatalError("Not used") }
+    func people(listId: Int, page: String?) async throws -> PagedResponse<PersonListEntry> { fatalError("Not used") }
+    func addPerson(listId: Int, ref: PersonRef) async throws -> PersonListEntry { fatalError("Not used") }
+    func removePerson(listId: Int, entryId: Int) async throws {}
+    func reorderPeople(listId: Int, entryIds: [Int]) async throws -> CustomListDetail { fatalError("Not used") }
 }
 
 private final class ScriptedProfileRepository: ProfileRepository {

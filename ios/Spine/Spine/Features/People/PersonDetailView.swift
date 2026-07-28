@@ -9,6 +9,20 @@ private struct PersonTopSafeAreaInsetKey: PreferenceKey {
     }
 }
 
+private enum PersonDetailSheet: Identifiable {
+    case actions
+    case addToList
+
+    var id: String {
+        switch self {
+        case .actions:
+            "actions"
+        case .addToList:
+            "addToList"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class PersonDetailViewModel {
@@ -223,6 +237,7 @@ struct PersonDetailView: View {
     @State private var expandedCreditRoles = Set<String>()
     @State private var edgeDragOffset: CGFloat = 0
     @State private var topSafeAreaInset: CGFloat = 0
+    @State private var presentedSheet: PersonDetailSheet?
 
     private let peopleRepository: PeopleRepository
     private let mediaRepository: MediaRepository
@@ -269,9 +284,22 @@ struct PersonDetailView: View {
             content
                 .spineContentTransition(value: contentPhase)
 
-            PersonBackButton {
-                dismiss()
+            HStack {
+                PersonCircleIconButton(systemName: "chevron.left", label: "Back") {
+                    dismiss()
+                }
+                .accessibilityIdentifier("person-detail.back")
+
+                Spacer()
+
+                if viewModel.detail != nil {
+                    PersonCircleIconButton(systemName: "ellipsis", label: "More") {
+                        presentedSheet = .actions
+                    }
+                    .accessibilityIdentifier("person-detail.more")
+                }
             }
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.top, 8)
         }
@@ -296,6 +324,24 @@ struct PersonDetailView: View {
             }
         }
         .onPreferenceChange(PersonTopSafeAreaInsetKey.self) { topSafeAreaInset = $0 }
+        .sheet(item: $presentedSheet) { sheet in
+            switch sheet {
+            case .actions:
+                PersonActionSheet {
+                    presentedSheet = .addToList
+                }
+                .presentationDetents([.height(80)])
+                .presentationDragIndicator(.visible)
+            case .addToList:
+                if let detail = viewModel.detail {
+                    AddToListSheet(
+                        target: .person(detail.ref),
+                        listRepository: listRepository,
+                        onUnauthorized: onUnauthorized
+                    )
+                }
+            }
+        }
         .fullScreenCover(item: $selectedMedia, onDismiss: { selectedMedia = nil }) { selection in
             MediaDetailView(
                 ref: selection.ref,
@@ -1103,19 +1149,42 @@ private struct PersonHeroArtwork: View {
     }
 }
 
-private struct PersonBackButton: View {
+private struct PersonCircleIconButton: View {
+    let systemName: String
+    let label: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "chevron.left")
+            Image(systemName: systemName)
                 .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
+                .frame(width: 44, height: 44)
                 .background(.black.opacity(0.34), in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Back")
+        .accessibilityLabel(label)
+    }
+}
+
+private struct PersonActionSheet: View {
+    let onAddToList: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Button(action: onAddToList) {
+                Label("Add to List", systemImage: "list.bullet.rectangle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .frame(height: 54)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .accessibilityIdentifier("person-detail.add-to-list")
+        }
+        .presentationBackground(.regularMaterial)
     }
 }
 

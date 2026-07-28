@@ -1299,7 +1299,7 @@ private struct MediaDetailPageView: View {
             case .addToList:
                 if let detail = viewModel.detail {
                     AddToListSheet(
-                        ref: detail.ref,
+                        target: .media(detail.ref),
                         listRepository: listRepository,
                         onUnauthorized: onUnauthorized
                     )
@@ -2339,7 +2339,10 @@ private struct MediaDetailPageView: View {
                     )
 
                     if let credits = heroCompanyCredits(detail) {
-                        companyCreditBylineView(credits)
+                        companyCreditBylineView(
+                            credits,
+                            textAlignment: detail.ref.mediaType == "anime" ? .leading : nil
+                        )
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
                         creditBylineView(
                             credits,
@@ -2376,7 +2379,10 @@ private struct MediaDetailPageView: View {
                     )
 
                     if let credits = heroCompanyCredits(detail) {
-                        companyCreditBylineView(credits)
+                        companyCreditBylineView(
+                            credits,
+                            textAlignment: detail.ref.mediaType == "anime" ? .leading : nil
+                        )
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
                         creditBylineView(
                             credits,
@@ -2506,9 +2512,12 @@ private struct MediaDetailPageView: View {
         }
     }
 
-    private func companyCreditBylineView(_ credits: [MediaCompanyCredit]) -> some View {
-        let alignment: Alignment = showsTitleLogo ? .center : .leading
-        let textAlignment: TextAlignment = showsTitleLogo ? .center : .leading
+    private func companyCreditBylineView(
+        _ credits: [MediaCompanyCredit],
+        textAlignment: TextAlignment? = nil
+    ) -> some View {
+        let textAlignment = textAlignment ?? (showsTitleLogo ? .center : .leading)
+        let alignment: Alignment = textAlignment == .center ? .center : .leading
         let visibleCredits = Array(credits.prefix(2))
         let moreCount = max(0, credits.count - visibleCredits.count)
 
@@ -3934,223 +3943,6 @@ private struct BookGameActionSheet: View {
                 .frame(height: 36, alignment: .top)
         }
         .frame(maxWidth: .infinity)
-    }
-}
-
-@MainActor
-@Observable
-private final class AddToListViewModel {
-    var lists: [CustomListSummary] = []
-    var ref: MediaRef
-    var isLoading = false
-    var loadingListID: Int?
-    var errorMessage: String?
-
-    private let listRepository: ListRepository
-    private let onUnauthorized: () -> Void
-
-    init(ref: MediaRef, listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
-        self.ref = ref
-        self.listRepository = listRepository
-        self.onUnauthorized = onUnauthorized
-    }
-
-    func load() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            lists = try await listRepository.list(membershipFor: ref)
-        } catch {
-            handle(error)
-        }
-    }
-
-    func toggle(_ list: CustomListSummary) async {
-        guard loadingListID == nil else { return }
-        loadingListID = list.id
-        errorMessage = nil
-        defer { loadingListID = nil }
-
-        do {
-            if list.hasItem == true {
-                guard let itemId = ref.itemId else {
-                    await load()
-                    return
-                }
-                try await listRepository.removeItem(listId: list.id, itemId: itemId)
-            } else {
-                let item = try await listRepository.addItem(listId: list.id, ref: ref)
-                ref = item.ref
-            }
-            await load()
-        } catch {
-            handle(error)
-        }
-    }
-
-    func createAndAdd(name: String) async -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        loadingListID = -1
-        errorMessage = nil
-        defer { loadingListID = nil }
-
-        do {
-            let list = try await listRepository.create(CustomListWriteRequest(
-                name: trimmed,
-                description: "",
-                visibility: "private",
-                isRanked: false
-            ))
-            let item = try await listRepository.addItem(listId: list.id, ref: ref)
-            ref = item.ref
-            await load()
-            return true
-        } catch {
-            handle(error)
-            return false
-        }
-    }
-
-    private func handle(_ error: Error) {
-        errorMessage = error.localizedDescription
-        if case APIError.unauthorized = error {
-            onUnauthorized()
-        }
-    }
-}
-
-private struct AddToListSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var viewModel: AddToListViewModel
-    @State private var searchText = ""
-    @State private var newListName = ""
-    @State private var isCreating = false
-
-    init(ref: MediaRef, listRepository: ListRepository, onUnauthorized: @escaping () -> Void) {
-        _viewModel = State(initialValue: AddToListViewModel(
-            ref: ref,
-            listRepository: listRepository,
-            onUnauthorized: onUnauthorized
-        ))
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    if viewModel.isLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                    } else if let error = viewModel.errorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                    } else if filteredLists.isEmpty {
-                        ContentUnavailableView("No Lists", systemImage: "list.bullet.rectangle")
-                            .listRowBackground(Color.clear)
-                    } else {
-                        ForEach(filteredLists) { list in
-                            Button {
-                                Task {
-                                    await viewModel.toggle(list)
-                                }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(list.name)
-                                            .font(.system(size: 16, weight: .semibold))
-                                        Text("\(list.itemsCount.formatted()) items")
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Group {
-                                        if viewModel.loadingListID == list.id {
-                                            ProgressView()
-                                        } else if list.hasItem == true {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 16, weight: .bold))
-                                                .foregroundStyle(.green)
-                                        }
-                                    }
-                                    .frame(width: 20, height: 20)
-                                    .spineContentTransition(value: listIndicatorPhase(for: list))
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(viewModel.loadingListID != nil)
-                        }
-                    }
-                }
-                .spineContentTransition(value: contentPhase)
-
-                Section {
-                    if isCreating {
-                        HStack {
-                            TextField("New list name", text: $newListName)
-                            Button("Create") {
-                                Task {
-                                    if await viewModel.createAndAdd(name: newListName) {
-                                        newListName = ""
-                                        isCreating = false
-                                    }
-                                }
-                            }
-                            .disabled(newListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.loadingListID != nil)
-                        }
-                    } else {
-                        Button {
-                            isCreating = true
-                        } label: {
-                            Label("Create new list...", systemImage: "plus")
-                        }
-                    }
-                }
-                .spineContentTransition(value: isCreating)
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(Color.black)
-            .navigationTitle("Add to List")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search lists")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-            .task {
-                if viewModel.lists.isEmpty {
-                    await viewModel.load()
-                }
-            }
-        }
-    }
-
-    private var contentPhase: SpineContentPhase {
-        .resolve(
-            isLoading: viewModel.isLoading,
-            hasContent: !filteredLists.isEmpty,
-            hasError: viewModel.errorMessage != nil
-        )
-    }
-
-    private func listIndicatorPhase(for list: CustomListSummary) -> String {
-        if viewModel.loadingListID == list.id { return "loading" }
-        return list.hasItem == true ? "selected" : "empty"
-    }
-
-    private var filteredLists: [CustomListSummary] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return viewModel.lists }
-        return viewModel.lists.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
 }
 

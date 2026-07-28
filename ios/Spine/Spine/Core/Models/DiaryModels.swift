@@ -249,7 +249,38 @@ struct ActivityItem: Codable, Identifiable {
     let createdAt: String?
     let actor: UserSummary
     let media: MediaSummary?
+    let person: ActivityPersonSnapshot?
     let object: ActivityObject
+
+    init(
+        id: Int,
+        type: String,
+        createdAt: String?,
+        actor: UserSummary,
+        media: MediaSummary?,
+        person: ActivityPersonSnapshot? = nil,
+        object: ActivityObject
+    ) {
+        self.id = id
+        self.type = type
+        self.createdAt = createdAt
+        self.actor = actor
+        self.media = media
+        self.person = person
+        self.object = object
+    }
+}
+
+struct ActivityPersonSnapshot: Codable, Hashable {
+    let source: String
+    let id: String
+    let name: String
+    let profileUrl: String?
+    let knownForDepartment: String?
+
+    var ref: PersonRef {
+        PersonRef(source: source, id: id)
+    }
 }
 
 struct ActivityObject: Codable {

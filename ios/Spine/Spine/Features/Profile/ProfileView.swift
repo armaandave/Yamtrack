@@ -492,6 +492,7 @@ struct ProfileView: View {
 
     @State private var viewModel: ProfileViewModel
     @State private var selectedRef: MediaRef?
+    @State private var selectedPerson: PersonRef?
     @State private var isSettingsPresented = false
     @State private var hofPickerSlot: FavoriteSlot?
     @State private var heroCollapseProgress: CGFloat = 0
@@ -504,6 +505,7 @@ struct ProfileView: View {
     private let activityRepository: ActivityRepository
     private let diaryRepository: DiaryRepository
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let importCoordinator: LetterboxdImportCoordinator?
     private let storygraphImportCoordinator: StoryGraphImportCoordinator?
     private let goodreadsImportCoordinator: GoodreadsImportCoordinator?
@@ -528,6 +530,7 @@ struct ProfileView: View {
         trackingRepository: TrackingRepository,
         activityRepository: ActivityRepository,
         listRepository: ListRepository,
+        peopleRepository: PeopleRepository,
         importCoordinator: LetterboxdImportCoordinator? = nil,
         storygraphImportCoordinator: StoryGraphImportCoordinator? = nil,
         goodreadsImportCoordinator: GoodreadsImportCoordinator? = nil,
@@ -554,6 +557,7 @@ struct ProfileView: View {
         self.activityRepository = activityRepository
         self.diaryRepository = diaryRepository
         self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
         self.importCoordinator = importCoordinator
         self.storygraphImportCoordinator = storygraphImportCoordinator
         self.goodreadsImportCoordinator = goodreadsImportCoordinator
@@ -603,6 +607,21 @@ struct ProfileView: View {
             .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
                 MediaDetailView(
                     ref: ref,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    diaryRepository: diaryRepository,
+                    listRepository: listRepository,
+                    peopleRepository: peopleRepository,
+                    currentUserId: currentUserId ?? viewModel.profile?.id,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    onUnauthorized: onUnauthorized
+                )
+            }
+            .fullScreenCover(item: $selectedPerson, onDismiss: { selectedPerson = nil }) { ref in
+                PersonDetailView(
+                    ref: ref,
+                    peopleRepository: peopleRepository,
                     mediaRepository: mediaRepository,
                     trackingRepository: trackingRepository,
                     diaryRepository: diaryRepository,
@@ -1006,6 +1025,7 @@ struct ProfileView: View {
                         ProfileListsView(
                             profileRepository: profileRepository,
                             listRepository: listRepository,
+                            peopleRepository: peopleRepository,
                             mediaRepository: mediaRepository,
                             trackingRepository: trackingRepository,
                             diaryRepository: diaryRepository,
@@ -1048,7 +1068,12 @@ struct ProfileView: View {
                     EmptyProfileCard(title: "No activity yet", systemName: "bolt")
                 } else {
                     RecentActivityRail(items: viewModel.recentActivityItems) { item in
-                        selectedRef = item.media.ref
+                        switch item.subject {
+                        case let .media(media):
+                            selectedRef = media.ref
+                        case let .person(person):
+                            selectedPerson = person.ref
+                        }
                     }
                 }
             }
@@ -1127,6 +1152,7 @@ struct ProfileView: View {
                 ProfileListsView(
                     profileRepository: profileRepository,
                     listRepository: listRepository,
+                    peopleRepository: peopleRepository,
                     mediaRepository: mediaRepository,
                     trackingRepository: trackingRepository,
                     diaryRepository: diaryRepository,
@@ -1718,8 +1744,13 @@ private struct ProfileSection<Content: View>: View {
 }
 
 struct ProfileRecentActivityRailItem: Identifiable {
+    enum Subject {
+        case media(MediaSummary)
+        case person(ActivityPersonSnapshot)
+    }
+
     let activity: ActivityItem
-    let media: MediaSummary
+    let subject: Subject
 
     var id: Int { activity.id }
 }
@@ -1727,8 +1758,13 @@ struct ProfileRecentActivityRailItem: Identifiable {
 enum ProfileRecentActivityRailModel {
     static func items(from activities: [ActivityItem]) -> [ProfileRecentActivityRailItem] {
         activities.compactMap { activity in
-            guard let media = activity.media else { return nil }
-            return ProfileRecentActivityRailItem(activity: activity, media: media)
+            if let person = activity.person {
+                return ProfileRecentActivityRailItem(activity: activity, subject: .person(person))
+            }
+            if let media = activity.media {
+                return ProfileRecentActivityRailItem(activity: activity, subject: .media(media))
+            }
+            return nil
         }
     }
 
@@ -1873,25 +1909,61 @@ private struct RecentActivityPoster: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                MediaArtwork(
-                    url: item.media.displayPosterURL,
-                    title: item.media.title,
-                    slot: .profileRail,
-                    mediaType: item.media.ref.mediaType,
-                    orientation: item.media.posterOrientation
-                )
-
-                metadataLine
-            }
+            subjectContent
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("View \(item.media.title)")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(accessibilityHint)
     }
 
     @ViewBuilder
-    private var metadataLine: some View {
-        if let progressDeltaText = ProfileRecentActivityRailModel.progressDeltaText(for: item.activity, media: item.media) {
+    private var subjectContent: some View {
+        switch item.subject {
+        case let .media(media):
+            VStack(alignment: .leading, spacing: 7) {
+                MediaArtwork(
+                    url: media.displayPosterURL,
+                    title: media.title,
+                    slot: .profileRail,
+                    mediaType: media.ref.mediaType,
+                    orientation: media.posterOrientation
+                )
+                mediaMetadataLine(media)
+            }
+        case let .person(person):
+            VStack(alignment: .center, spacing: 3) {
+                PersonArtwork(
+                    urlString: person.profileUrl,
+                    name: person.name,
+                    size: 64
+                )
+                Text(person.name)
+                    .font(.system(size: 11.5, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(width: PosterSlot.profileRail.size.width, height: 25, alignment: .top)
+                if let department = ActivityFeedPresentation.clean(person.knownForDepartment) {
+                    Text(department)
+                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                        .frame(width: PosterSlot.profileRail.size.width)
+                }
+                if let listName = ActivityFeedPresentation.listName(for: item.activity) {
+                    Text(listName)
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                        .frame(width: PosterSlot.profileRail.size.width)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func mediaMetadataLine(_ media: MediaSummary) -> some View {
+        if let progressDeltaText = ProfileRecentActivityRailModel.progressDeltaText(for: item.activity, media: media) {
             Text(progressDeltaText)
                 .font(.system(size: 12.5, weight: .bold))
                 .foregroundStyle(.white.opacity(0.54))
@@ -1924,6 +1996,24 @@ private struct RecentActivityPoster: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .frame(width: PosterSlot.profileRail.size.width, height: 12.5, alignment: .leading)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch item.subject {
+        case let .media(media):
+            "View \(media.title)"
+        case let .person(person):
+            "View \(person.name)"
+        }
+    }
+
+    private var accessibilityHint: String {
+        switch item.subject {
+        case .media:
+            "Opens media details"
+        case .person:
+            "Opens person details"
         }
     }
 }
