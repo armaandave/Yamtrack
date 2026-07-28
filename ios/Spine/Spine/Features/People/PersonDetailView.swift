@@ -337,6 +337,7 @@ struct PersonDetailView: View {
                     AddToListSheet(
                         target: .person(detail.ref),
                         listRepository: listRepository,
+                        mediaRepository: mediaRepository,
                         onUnauthorized: onUnauthorized
                     )
                 }

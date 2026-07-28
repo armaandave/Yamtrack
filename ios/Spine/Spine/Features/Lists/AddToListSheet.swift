@@ -26,9 +26,9 @@ enum AddToListTarget: Hashable {
     var emptyStateDescription: String {
         switch self {
         case .media:
-            "Create a list below to add this item."
+            "Create a list above to add this item."
         case .person:
-            "Create a people list below to add this person."
+            "Create a people list above to add this person."
         }
     }
 
@@ -150,66 +150,33 @@ final class AddToListViewModel {
         }
     }
 
-    /// Returns true once the list itself exists, even if adding the target then fails.
-    func createAndAdd(name: String) async -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, loadingListID == nil else { return false }
-        loadingListID = -1
+    func addPersonToCreatedList(_ listID: Int) async {
+        guard loadingListID == nil, case let .person(ref) = target else { return }
+        loadingListID = listID
         actionErrorMessage = nil
         defer { loadingListID = nil }
 
-        let list: CustomListSummary
         do {
-            list = try await listRepository.create(CustomListWriteRequest(
-                name: trimmed,
-                description: "",
-                visibility: "private",
-                isRanked: false,
-                listType: target.listType == .people ? .people : nil
-            ))
+            let person = try await listRepository.addPerson(listId: listID, ref: ref)
+            target = .person(person.ref)
         } catch is CancellationError {
-            return false
+            return
         } catch {
-            actionErrorMessage = error.localizedDescription
-            handleUnauthorized(error)
-            return false
-        }
-        if !lists.contains(where: { $0.id == list.id }) {
-            lists.append(list)
-            lists.sort {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-        }
-        CustomListChange.post(listId: list.id, listType: target.listType)
-
-        do {
-            switch target {
-            case let .media(ref):
-                let item = try await listRepository.addItem(listId: list.id, ref: ref)
-                target = .media(item.ref)
-            case let .person(ref):
-                let person = try await listRepository.addPerson(listId: list.id, ref: ref)
-                target = .person(person.ref)
-            }
-        } catch is CancellationError {
-            return true
-        } catch {
-            actionErrorMessage = "The list was created, but this \(target.noun) could not be added. \(error.localizedDescription)"
+            actionErrorMessage = "The list was created, but this person could not be added. \(error.localizedDescription)"
             handleUnauthorized(error)
             try? await refreshLists()
-            return true
+            return
         }
 
-        CustomListChange.post(listId: list.id, listType: target.listType)
+        CustomListChange.post(listId: listID, listType: .people)
         do {
             try await refreshLists()
         } catch is CancellationError {
-            return true
+            return
         } catch {
             actionErrorMessage = "The list was created and updated, but its current status could not be refreshed. \(error.localizedDescription)"
             handleUnauthorized(error)
         }
-        return true
     }
 
     func isMember(of list: CustomListSummary) -> Bool {
@@ -218,6 +185,11 @@ final class AddToListViewModel {
 
     func countLabel(for list: CustomListSummary) -> String {
         target.countLabel(for: list)
+    }
+
+    func useCanonicalMediaReference(_ ref: MediaRef) {
+        guard case .media = target else { return }
+        target = .media(ref)
     }
 
     private func fetchLists() async throws -> [CustomListSummary] {
@@ -245,14 +217,25 @@ struct AddToListSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: AddToListViewModel
     @State private var searchText = ""
-    @State private var newListName = ""
-    @State private var isCreating = false
+    @State private var presentedComposer: ListComposerMode?
+    @State private var pendingCreatedListID: Int?
+
+    private let initialMedia: MediaSummary?
+    private let listRepository: ListRepository
+    private let mediaRepository: MediaRepository
+    private let onUnauthorized: () -> Void
 
     init(
         target: AddToListTarget,
+        initialMedia: MediaSummary? = nil,
         listRepository: ListRepository,
+        mediaRepository: MediaRepository,
         onUnauthorized: @escaping () -> Void
     ) {
+        self.initialMedia = initialMedia
+        self.listRepository = listRepository
+        self.mediaRepository = mediaRepository
+        self.onUnauthorized = onUnauthorized
         _viewModel = State(initialValue: AddToListViewModel(
             target: target,
             listRepository: listRepository,
@@ -263,11 +246,10 @@ struct AddToListSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                listsSection
-                .spineContentTransition(value: contentPhase)
-
                 createSection
-                    .spineContentTransition(value: isCreating)
+
+                listsSection
+                    .spineContentTransition(value: contentPhase)
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
@@ -305,6 +287,21 @@ struct AddToListSheet: View {
                 Text(viewModel.actionErrorMessage ?? "")
             }
             .accessibilityIdentifier("add-to-list.sheet")
+        }
+        .fullScreenCover(item: $presentedComposer, onDismiss: finishCreatingList) { mode in
+            ListComposerView(
+                mode: mode,
+                initialItems: initialMedia.map { [$0] } ?? [],
+                listRepository: listRepository,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            ) { listID, draft in
+                if let initialMedia,
+                   let savedItem = draft.items.first(where: { $0.ref.id == initialMedia.ref.id }) {
+                    viewModel.useCanonicalMediaReference(savedItem.ref)
+                }
+                pendingCreatedListID = listID
+            }
         }
     }
 
@@ -349,31 +346,13 @@ struct AddToListSheet: View {
 
     private var createSection: some View {
         Section {
-            if isCreating {
-                HStack {
-                    TextField("New list name", text: $newListName)
-                        .accessibilityLabel("New list name")
-                    Button("Create") {
-                        Task {
-                            if await viewModel.createAndAdd(name: newListName) {
-                                newListName = ""
-                                isCreating = false
-                            }
-                        }
-                    }
-                    .disabled(
-                        newListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || viewModel.loadingListID != nil
-                    )
-                }
-            } else {
-                Button {
-                    isCreating = true
-                } label: {
-                    Label("Create new list...", systemImage: "plus")
-                }
-                .disabled(viewModel.loadingListID != nil)
+            Button {
+                presentedComposer = .create(viewModel.target.listType)
+            } label: {
+                Label("Create new list...", systemImage: "plus")
             }
+            .disabled(viewModel.loadingListID != nil)
+            .accessibilityIdentifier("add-to-list.create")
         }
     }
 
@@ -386,26 +365,31 @@ struct AddToListSheet: View {
                 await viewModel.toggle(list)
             }
         } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(list.name)
-                        .font(.system(size: 16, weight: .semibold))
-                    Text(viewModel.countLabel(for: list))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Group {
-                    if isUpdating {
-                        ProgressView()
-                    } else if isMember {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(list.name)
+                            .font(.system(size: 16, weight: .semibold))
+                        Text(viewModel.countLabel(for: list))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Group {
+                        if isUpdating {
+                            ProgressView()
+                        } else if isMember {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .frame(width: 20, height: 20)
+                    .spineContentTransition(value: listIndicatorPhase(for: list))
                 }
-                .frame(width: 20, height: 20)
-                .spineContentTransition(value: listIndicatorPhase(for: list))
+
+                CustomListPreviewStrip(list: list)
+                    .accessibilityIdentifier("add-to-list.preview.\(list.id)")
             }
             .contentShape(Rectangle())
         }
@@ -449,5 +433,17 @@ struct AddToListSheet: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return viewModel.lists }
         return viewModel.lists.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func finishCreatingList() {
+        guard let listID = pendingCreatedListID else { return }
+        pendingCreatedListID = nil
+        Task {
+            if viewModel.target.listType == .people {
+                await viewModel.addPersonToCreatedList(listID)
+            } else {
+                await viewModel.load()
+            }
+        }
     }
 }

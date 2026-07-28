@@ -35,16 +35,23 @@ final class CompanyDetailViewModel {
 
         do {
             let loaded = try await companyRepository.detail(ref: ref)
-            detail = loaded
-            filterRevision += 1
-            guard let role = loaded.catalogRoles.first else { return }
-            await loadCatalog(for: role, reset: true)
+            if let existing = detail,
+               ref.isAnimeStudio,
+               profileRichness(existing) > profileRichness(loaded) {
+                detail = existing
+            } else {
+                detail = loaded
+            }
         } catch is CancellationError {
             return
         } catch {
             profileErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
+
+        guard let role = detail?.catalogRoles.first else { return }
+        filterRevision += 1
+        await loadCatalog(for: role, reset: true)
     }
 
     func loadFilterOptions() async {
@@ -60,6 +67,7 @@ final class CompanyDetailViewModel {
     func loadCatalog(for role: CompanyCatalogRole, reset: Bool = false) async {
         guard detail?.catalogRoles.contains(role) == true, reset || mediaByRole[role] == nil else { return }
         let requestRevision = filterRevision
+        guard loadingRevisionByRole[role] != requestRevision else { return }
         let requestFilter = filter
         loadingRevisionByRole[role] = requestRevision
         catalogErrorByRole[role] = nil
@@ -80,6 +88,8 @@ final class CompanyDetailViewModel {
             guard requestRevision == filterRevision, requestFilter == filter else { return }
             mediaByRole[role] = response.results
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+            catalogErrorByRole[role] = nil
+            loadMoreErrorRoles.remove(role)
         } catch is CancellationError {
             return
         } catch {
@@ -114,6 +124,7 @@ final class CompanyDetailViewModel {
             media += response.results.filter { seen.insert($0.id).inserted }
             mediaByRole[role] = media
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+            catalogErrorByRole[role] = nil
             loadMoreErrorRoles.remove(role)
         } catch is CancellationError {
             return
@@ -143,6 +154,7 @@ final class CompanyDetailViewModel {
     }
 
     func retryCatalog(for role: CompanyCatalogRole) async {
+        guard !isLoadingCatalog(for: role), !isLoadingMore(for: role) else { return }
         if loadMoreErrorRoles.contains(role) {
             await loadMore(for: role)
         } else {
@@ -162,6 +174,18 @@ final class CompanyDetailViewModel {
         if case APIError.unauthorized = error {
             onUnauthorized()
         }
+    }
+
+    private func profileRichness(_ detail: CompanyDetail) -> Int {
+        var score = 0
+        if detail.description?.isEmpty == false { score += 1 }
+        if detail.logoUrl?.isEmpty == false { score += 1 }
+        if detail.foundedYear != nil { score += 1 }
+        if detail.status?.isEmpty == false { score += 1 }
+        if detail.companySize?.isEmpty == false { score += 1 }
+        if detail.parent != nil { score += 1 }
+        if !detail.websites.isEmpty { score += 1 }
+        return score
     }
 }
 
@@ -335,7 +359,13 @@ struct CompanyDetailView: View {
                         await viewModel.loadFilterOptions()
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white.opacity(0.86))
+                .padding(.horizontal, 24)
+                .frame(height: 42)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .buttonStyle(.plain)
+                .disabled(viewModel.isLoadingProfile)
                 .accessibilityLabel("Retry loading studio")
             }
             .foregroundStyle(.white)
@@ -582,7 +612,13 @@ struct CompanyDetailView: View {
             Button("Try Again") {
                 Task { await viewModel.retryCatalog(for: role) }
             }
-            .buttonStyle(.borderedProminent)
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(.white.opacity(0.86))
+            .padding(.horizontal, 24)
+            .frame(height: 42)
+            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .buttonStyle(.plain)
+            .disabled(viewModel.isLoadingCatalog(for: role) || viewModel.isLoadingMore(for: role))
             .accessibilityLabel("Retry loading \(role.collectionTitle.lowercased())")
         }
         .foregroundStyle(.white)

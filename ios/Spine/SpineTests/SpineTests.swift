@@ -210,12 +210,21 @@ final class SpineTests: XCTestCase {
             CustomListBackdropSelection.artworkURL(from: [mediaSummary(id: "movie", mediaType: "movie", backdropURL: nil)]),
             nil
         )
+        XCTAssertNil(
+            CustomListBackdropSelection.artworkURL(
+                from: [mediaSummary(id: "blank", mediaType: "movie", backdropURL: "   ")]
+            )
+        )
     }
 
-    func testCustomListHeaderOnlyPullsUpWhenBackdropExists() {
+    func testCustomListHeaderClearsTopControlsWithoutBackdropAndPullsUpWithBackdrop() {
         XCTAssertEqual(
             CustomListHeaderLayout.topPadding(hasBackdrop: false, topSafeAreaInset: 59),
-            32
+            103
+        )
+        XCTAssertEqual(
+            CustomListHeaderLayout.topPadding(hasBackdrop: false, topSafeAreaInset: 0),
+            44
         )
         XCTAssertEqual(
             CustomListHeaderLayout.topPadding(hasBackdrop: true, topSafeAreaInset: 59),
@@ -273,6 +282,39 @@ final class SpineTests: XCTestCase {
         viewModel.undoRemoval()
         XCTAssertEqual(viewModel.draft.items.map(\.id), [second.id, first.id])
         XCTAssertTrue(viewModel.requiresDiscardConfirmation)
+    }
+
+    @MainActor
+    func testListComposerStartsWithSelectedMediaAndSavesIt() async {
+        let repository = ScriptedListComposerRepository()
+        let selected = composerMedia("550")
+        let viewModel = ListComposerViewModel(
+            mode: .create(.media),
+            initialItems: [selected],
+            listRepository: repository,
+            onUnauthorized: {}
+        )
+
+        XCTAssertEqual(viewModel.draft.items, [selected])
+        XCTAssertFalse(viewModel.requiresDiscardConfirmation)
+        viewModel.draft.name = "Favorites"
+        XCTAssertTrue(viewModel.canSave)
+
+        let savedListID = await viewModel.save()
+        XCTAssertEqual(savedListID, 77)
+        XCTAssertEqual(repository.addAttempts, ["550"])
+    }
+
+    @MainActor
+    func testPeopleComposerIgnoresMediaSeed() {
+        let viewModel = ListComposerViewModel(
+            mode: .create(.people),
+            initialItems: [composerMedia("550")],
+            listRepository: ScriptedListComposerRepository(),
+            onUnauthorized: {}
+        )
+
+        XCTAssertTrue(viewModel.draft.items.isEmpty)
     }
 
     @MainActor
@@ -1192,6 +1234,68 @@ final class SpineTests: XCTestCase {
 
         XCTAssertNil(viewModel.catalogErrorByRole[.studio])
         XCTAssertEqual(viewModel.mediaByRole[.studio]?.map(\.title), ["Default studio"])
+    }
+
+    @MainActor
+    func testAnimeStudioDuplicateRetryUsesOneInFlightCatalogRequest() async throws {
+        let repository = ScriptedCompanyRepository()
+        repository.catalogFailuresRemaining = 1
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+        repository.defaultCatalogDelay = .milliseconds(80)
+        let requestCount = repository.requests.count
+
+        let firstRetry = Task { await viewModel.retryCatalog(for: .studio) }
+        try await Task.sleep(for: .milliseconds(10))
+        let duplicateRetry = Task { await viewModel.retryCatalog(for: .studio) }
+        await firstRetry.value
+        await duplicateRetry.value
+
+        XCTAssertEqual(repository.requests.count, requestCount + 1)
+        XCTAssertNil(viewModel.catalogErrorByRole[.studio])
+    }
+
+    @MainActor
+    func testAnimeStudioRefreshRetriesCatalogWhenProfileRefreshFails() async {
+        let repository = ScriptedCompanyRepository()
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+        let requestCount = repository.requests.count
+        repository.profileFailuresRemaining = 1
+
+        await viewModel.load()
+
+        XCTAssertEqual(repository.requests.count, requestCount + 1)
+        XCTAssertNotNil(viewModel.profileErrorMessage)
+        XCTAssertEqual(viewModel.mediaByRole[.studio]?.map(\.title), ["Default studio"])
+    }
+
+    @MainActor
+    func testAnimeStudioRefreshPreservesRicherExistingProfile() async {
+        let repository = ScriptedCompanyRepository()
+        repository.profileDescription = "A complete studio profile."
+        repository.profileLogoURL = "https://example.com/studio.png"
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+        repository.profileDescription = nil
+        repository.profileLogoURL = nil
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.detail?.description, "A complete studio profile.")
+        XCTAssertEqual(viewModel.detail?.logoUrl, "https://example.com/studio.png")
     }
 
     @MainActor
@@ -7045,18 +7149,25 @@ private struct CompanyGameRequest: Equatable {
 private final class ScriptedCompanyRepository: CompanyRepository {
     var requests: [CompanyGameRequest] = []
     var catalogFailuresRemaining = 0
+    var profileFailuresRemaining = 0
     var defaultCatalogDelay: Duration?
     var nextPageURL: String?
+    var profileDescription: String?
+    var profileLogoURL: String?
 
     func detail(ref: CompanyRef) async throws -> CompanyDetail {
+        if profileFailuresRemaining > 0 {
+            profileFailuresRemaining -= 1
+            throw CompanyCatalogTestError.unavailable
+        }
         let isAnime = ref.isAnimeStudio
         return CompanyDetail(
             id: ref.companyId,
             source: ref.source,
             mediaType: isAnime ? "anime" : "game",
             name: isAnime ? "Wit Studio" : "Space Studio",
-            description: nil,
-            logoUrl: nil,
+            description: profileDescription,
+            logoUrl: profileLogoURL,
             logoWidth: nil,
             logoHeight: nil,
             foundedYear: nil,

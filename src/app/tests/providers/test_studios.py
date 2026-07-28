@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 from django.core.cache import cache
@@ -9,6 +9,60 @@ from app.providers import anilist, mal, services
 
 
 class MALStudioProviderTests(TestCase):
+    STUDIO_HTML = """
+        <html>
+          <head>
+            <meta property="og:url"
+                  content="https://myanimelist.net/anime/producer/4/Bones">
+            <meta property="og:title" content="bones - Companies - MyAnimeList.net">
+          </head>
+          <body>
+            <div class="content-left">
+              <div class="logo">
+                <img alt="bones" data-src="https://cdn.example.com/bones-logo.png">
+              </div>
+              <div class="spaceit_pad">
+                Bones creates award-winning animation for television and film.
+              </div>
+              <div class="spaceit_pad">
+                <span class="dark_text">Established:</span> October 1998
+              </div>
+              <div class="user-profile-sns">
+                <a href="https://www.bones.co.jp/">Official Site</a>
+              </div>
+            </div>
+            <div class="js-anime-category-studio js-anime-type-all js-anime-type-1"
+                 data-genre="1">
+              <div class="title"><a href="https://myanimelist.net/anime/10/Alpha">Alpha</a></div>
+              <div class="image"><img data-src="https://cdn.myanimelist.net/images/anime/1/10.jpg"></div>
+              <span class="js-start_date">20010101</span>
+              <span class="js-score">7.5</span>
+              <span class="js-members">1,000</span>
+            </div>
+            <div class="js-anime-category-studio js-anime-type-all js-anime-type-3"
+                 data-genre="1">
+              <div class="title"><a href="https://myanimelist.net/anime/20/Beta">Beta</a></div>
+              <div class="image"><img src="https://cdn.myanimelist.net/images/anime/2/20.webp"></div>
+              <span class="js-start_date">20020101</span>
+              <span class="js-score">8.5</span>
+              <span class="js-members">3,000</span>
+            </div>
+            <div class="js-anime-category-studio js-anime-type-all js-anime-type-5"
+                 data-genre="1">
+              <div class="title"><a href="https://myanimelist.net/anime/30/Gamma">Gamma</a></div>
+              <div class="image"><img src="https://cdn.myanimelist.net/images/anime/3/30.jpg"></div>
+              <span class="js-start_date">20030101</span>
+              <span class="js-score">8.0</span>
+              <span class="js-members">2,000</span>
+            </div>
+            <div class="js-anime-category-producer js-anime-type-1">
+              <div class="title"><a href="https://myanimelist.net/anime/99/Decoy">Decoy</a></div>
+              <span class="js-members">9,999</span>
+            </div>
+          </body>
+        </html>
+    """
+
     def setUp(self):
         cache.clear()
 
@@ -24,6 +78,131 @@ class MALStudioProviderTests(TestCase):
             ],
             seed_id,
         )
+
+    def mal_page_response(self):
+        response = Mock(
+            text=self.STUDIO_HTML,
+            url="https://myanimelist.net/anime/producer/4/Bones",
+        )
+        response.raise_for_status.return_value = None
+        return response
+
+    def test_mal_page_parser_extracts_rich_profile_and_exact_studio_cards(self):
+        data = mal._parse_mal_studio_page(  # noqa: SLF001
+            self.STUDIO_HTML,
+            4,
+            identity={"name": "Bones"},
+        )
+
+        self.assertEqual(
+            data["profile"],
+            {
+                "id": "4",
+                "source": Sources.MAL.value,
+                "name": "Bones",
+                "description": (
+                    "Bones creates award-winning animation for television and film."
+                ),
+                "image": "https://cdn.example.com/bones-logo.png",
+                "founded_year": 1998,
+                "provider_url": (
+                    "https://myanimelist.net/anime/producer/4/Bones"
+                ),
+                "websites": ["https://www.bones.co.jp/"],
+            },
+        )
+        self.assertEqual(
+            [item["media_id"] for item in data["anime"]],
+            ["10", "20", "30"],
+        )
+        self.assertEqual(
+            data["anime"][0]["image"],
+            "https://cdn.myanimelist.net/images/anime/1/10l.jpg",
+        )
+
+    @patch(
+        "app.providers.mal.services.api_request",
+        side_effect=requests.Timeout("Jikan offline"),
+    )
+    def test_studio_profile_uses_public_mal_page_when_jikan_is_offline(
+        self,
+        request_mock,
+    ):
+        self.cache_identity(studio_id="4", name="Bones", seed_id="5114")
+
+        with patch(
+            "app.providers.mal.services.session.get",
+            return_value=self.mal_page_response(),
+        ) as mal_page_mock:
+            result = mal.studio("4")
+
+        self.assertEqual(result["name"], "Bones")
+        self.assertEqual(result["image"], "https://cdn.example.com/bones-logo.png")
+        self.assertEqual(result["founded_year"], 1998)
+        self.assertEqual(result["websites"], ["https://www.bones.co.jp/"])
+        request_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
+
+    @patch(
+        "app.providers.mal._jikan_studio_anime_page",
+        side_effect=requests.Timeout("Jikan offline"),
+    )
+    def test_studio_catalog_uses_sorted_paginated_mal_page_fallback(
+        self,
+        jikan_mock,
+    ):
+        self.cache_identity(studio_id="4", name="Bones", seed_id="5114")
+
+        with (
+            patch(
+                "app.providers.mal.services.session.get",
+                return_value=self.mal_page_response(),
+            ) as mal_page_mock,
+            patch(
+                "app.providers.mal._jikan_anime_genres",
+                return_value=[{"id": 1, "name": "Action"}],
+            ),
+        ):
+            result = mal.studio_anime(
+                "4",
+                page=2,
+                page_size=1,
+                sort="popularity",
+                direction="desc",
+            )
+
+        self.assertEqual(result["provider"], "mal_page")
+        self.assertEqual(result["previous_page"], 1)
+        self.assertEqual(result["next_page"], 3)
+        self.assertEqual(
+            [item["media_id"] for item in result["results"]],
+            ["30"],
+        )
+        jikan_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
+
+    @patch(
+        "app.providers.mal._jikan_anime_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_studio_filter_options_calls_real_provider_function(
+        self,
+        _genres_mock,
+    ):
+        cache.set(
+            f"{mal._studio_cache_prefix(4, 'profile')}:fresh",  # noqa: SLF001
+            {"founded_year": 1998},
+            mal.STUDIO_FRESH_TTL,
+        )
+
+        result = mal.studio_anime_filter_options("4")
+
+        self.assertEqual(
+            result["genres"],
+            [{"value": "Action", "label": "Action"}],
+        )
+        self.assertEqual(result["platforms"], [])
+        self.assertEqual(result["years"][-1], 1998)
 
     @patch("app.providers.mal.services.api_request")
     def test_studio_profile_uses_jikan_and_official_cached_name(self, request_mock):
@@ -61,10 +240,18 @@ class MALStudioProviderTests(TestCase):
         request_mock.assert_called_once()
 
     @patch(
-        "app.providers.mal.services.api_request",
-        side_effect=requests.Timeout("offline"),
+        "app.providers.mal._mal_studio_page_data",
+        side_effect=requests.Timeout("MAL page offline"),
     )
-    def test_studio_profile_falls_back_to_cached_mal_identity(self, request_mock):
+    @patch(
+        "app.providers.mal.services.api_request",
+        side_effect=requests.Timeout("Jikan offline"),
+    )
+    def test_studio_profile_falls_back_to_cached_mal_identity(
+        self,
+        request_mock,
+        mal_page_mock,
+    ):
         self.cache_identity()
 
         result = mal.studio("1")
@@ -78,7 +265,12 @@ class MALStudioProviderTests(TestCase):
             "https://myanimelist.net/anime/producer/1",
         )
         request_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
 
+    @patch(
+        "app.providers.mal._mal_studio_page_data",
+        side_effect=requests.Timeout("MAL page offline"),
+    )
     @patch(
         "app.providers.mal.services.api_request",
         return_value={"data": {}},
@@ -86,6 +278,7 @@ class MALStudioProviderTests(TestCase):
     def test_empty_jikan_profile_sets_failure_marker_before_minimal_fallback(
         self,
         request_mock,
+        mal_page_mock,
     ):
         self.cache_identity()
 
@@ -95,6 +288,7 @@ class MALStudioProviderTests(TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["name"], "Wit Studio")
         request_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
         self.assertTrue(
             cache.get(
                 f"{mal._studio_cache_prefix(1, 'profile')}:failure",  # noqa: SLF001
@@ -253,12 +447,17 @@ class MALStudioProviderTests(TestCase):
     @patch("app.providers.mal.anime")
     @patch("app.providers.anilist.studio_anime_ids")
     @patch(
+        "app.providers.mal._mal_studio_page_anime_page",
+        side_effect=requests.Timeout("MAL page offline"),
+    )
+    @patch(
         "app.providers.mal._jikan_studio_anime_page",
         side_effect=requests.Timeout("offline"),
     )
     def test_anilist_fallback_revalidates_every_result_against_mal(
         self,
         _jikan_mock,
+        _mal_page_mock,
         anilist_mock,
         anime_mock,
     ):
@@ -309,12 +508,17 @@ class MALStudioProviderTests(TestCase):
     )
     @patch("app.providers.anilist.studio_anime_ids")
     @patch(
+        "app.providers.mal._mal_studio_page_anime_page",
+        side_effect=requests.Timeout("MAL page offline"),
+    )
+    @patch(
         "app.providers.mal._jikan_studio_anime_page",
         side_effect=requests.Timeout("Jikan offline"),
     )
     def test_anilist_fallback_rejects_incomplete_mal_metadata(
         self,
         _jikan_mock,
+        _mal_page_mock,
         anilist_mock,
         anime_mock,
     ):
@@ -336,12 +540,17 @@ class MALStudioProviderTests(TestCase):
         side_effect=requests.Timeout("anilist offline"),
     )
     @patch(
+        "app.providers.mal._mal_studio_page_anime_page",
+        side_effect=requests.Timeout("MAL page offline"),
+    )
+    @patch(
         "app.providers.mal._jikan_studio_anime_page",
         side_effect=requests.Timeout("jikan offline"),
     )
     def test_studio_catalog_failure_marker_prevents_provider_hammering(
         self,
         jikan_mock,
+        mal_page_mock,
         anilist_mock,
     ):
         self.cache_identity()
@@ -352,6 +561,7 @@ class MALStudioProviderTests(TestCase):
             mal.studio_anime("1")
 
         jikan_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
         anilist_mock.assert_called_once()
 
     def test_studio_catalog_uses_stale_before_anilist_and_marks_failure(self):
@@ -379,6 +589,10 @@ class MALStudioProviderTests(TestCase):
                 "app.providers.mal._jikan_studio_anime_page",
                 side_effect=requests.Timeout("offline"),
             ) as jikan_mock,
+            patch(
+                "app.providers.mal._mal_studio_page_anime_page",
+                side_effect=requests.Timeout("MAL page offline"),
+            ) as mal_page_mock,
             patch("app.providers.anilist.studio_anime_ids") as anilist_mock,
         ):
             first = mal.studio_anime("1")
@@ -387,6 +601,7 @@ class MALStudioProviderTests(TestCase):
         self.assertEqual(first, stale)
         self.assertEqual(second, stale)
         jikan_mock.assert_called_once()
+        mal_page_mock.assert_called_once()
         anilist_mock.assert_not_called()
         self.assertTrue(cache.get(f"{prefix}:failure"))
 
@@ -394,12 +609,17 @@ class MALStudioProviderTests(TestCase):
         "app.providers.mal._anilist_studio_anime_page",
         side_effect=ValueError("fallback unavailable"),
     )
+    @patch(
+        "app.providers.mal._mal_studio_page_anime_page",
+        side_effect=ValueError("MAL page unavailable"),
+    )
     @patch("app.providers.mal._jikan_anime_genres", return_value=[])
     @patch("app.providers.mal.services.api_request")
     def test_jikan_sparse_page_scan_has_deterministic_ceiling(
         self,
         request_mock,
         _genres_mock,
+        mal_page_mock,
         fallback_mock,
     ):
         def empty_page(*_args, **kwargs):
@@ -427,6 +647,7 @@ class MALStudioProviderTests(TestCase):
             request_mock.call_count,
             mal.STUDIO_CATALOG_SCAN_LIMIT,
         )
+        mal_page_mock.assert_called_once()
         fallback_mock.assert_called_once()
 
     @patch("app.providers.anilist.studio_anime_ids")

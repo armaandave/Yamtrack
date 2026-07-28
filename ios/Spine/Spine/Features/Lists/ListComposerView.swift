@@ -9,7 +9,7 @@ struct ListComposerView: View {
 
     private let mediaRepository: MediaRepository
     private let onUnauthorized: () -> Void
-    private let onSaved: (Int) -> Void
+    private let onSaved: (Int, ListComposerDraft) -> Void
 
     private enum Field: Hashable {
         case name
@@ -18,13 +18,15 @@ struct ListComposerView: View {
 
     init(
         mode: ListComposerMode,
+        initialItems: [MediaSummary] = [],
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
         onUnauthorized: @escaping () -> Void,
-        onSaved: @escaping (Int) -> Void
+        onSaved: @escaping (Int, ListComposerDraft) -> Void
     ) {
         _viewModel = State(initialValue: ListComposerViewModel(
             mode: mode,
+            initialItems: initialItems,
             listRepository: listRepository,
             onUnauthorized: onUnauthorized
         ))
@@ -396,7 +398,7 @@ struct ListComposerView: View {
 
     private func save() async {
         if let listID = await viewModel.save() {
-            onSaved(listID)
+            onSaved(listID, viewModel.draft)
             dismiss()
         }
     }

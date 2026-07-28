@@ -743,7 +743,7 @@ struct ProfileListsView: View {
                 listRepository: listRepository,
                 mediaRepository: mediaRepository,
                 onUnauthorized: onUnauthorized
-            ) { listID in
+            ) { listID, _ in
                 pendingCreatedListID = listID
                 Task { await viewModel.load() }
             }
@@ -895,7 +895,7 @@ struct ProfileListRow: View {
                     .padding(.top, 4)
             }
 
-            posterStrip
+            CustomListPreviewStrip(list: list)
         }
         .padding(12)
         .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -904,68 +904,6 @@ struct ProfileListRow: View {
                 .stroke(.white.opacity(0.045), lineWidth: 1)
         }
         .contentShape(Rectangle())
-    }
-
-    @ViewBuilder
-    private var posterStrip: some View {
-        if list.listType == .people {
-            peopleStrip
-        } else {
-            mediaStrip
-        }
-    }
-
-    @ViewBuilder
-    private var mediaStrip: some View {
-        let media = list.previewItems ?? []
-        if media.isEmpty {
-            Text("No items yet")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.38))
-                .frame(maxWidth: .infinity, minHeight: PosterSlot.listPreview.size.height, alignment: .leading)
-                .padding(.horizontal, 10)
-                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 8) {
-                    ForEach(media) { item in
-                        MediaArtwork(
-                            url: item.displayPosterURL,
-                            title: item.title,
-                            slot: .listPreview,
-                            mediaType: item.ref.mediaType,
-                            orientation: item.posterOrientation
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var peopleStrip: some View {
-        if list.previewPeople.isEmpty {
-            Text("No people yet")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.38))
-                .frame(maxWidth: .infinity, minHeight: PosterSlot.listPreview.size.height, alignment: .leading)
-                .padding(.horizontal, 10)
-                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 8) {
-                    ForEach(list.previewPeople, id: \.entryId) { person in
-                        PersonArtwork(
-                            urlString: person.profileUrl,
-                            name: person.name,
-                            size: PosterSlot.listPreview.size.width
-                        )
-                        .accessibilityLabel(person.name)
-                    }
-                }
-                .frame(minHeight: PosterSlot.listPreview.size.height)
-            }
-        }
     }
 
     private var countLabel: String {
@@ -1444,18 +1382,33 @@ struct ProfileListDetailView: View {
                                 .tint(.white)
                                 .frame(maxWidth: .infinity, minHeight: 320)
                                 .padding(.horizontal, 14)
-                                .padding(.top, 12)
-                        } else if let error = viewModel.errorMessage, viewModel.list == nil {
-                            DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
-                                .padding(.horizontal, 14)
-                                .padding(.top, 12)
-                        } else if let list = viewModel.list {
-                            listHeader(list)
                                 .padding(
                                     .top,
                                     CustomListHeaderLayout.topPadding(
-                                        hasBackdrop: list.listType == .media
-                                            && CustomListBackdropSelection.artworkURL(from: list.items) != nil,
+                                        hasBackdrop: false,
+                                        topSafeAreaInset: topSafeAreaInset
+                                    ) + 12
+                                )
+                        } else if let error = viewModel.errorMessage, viewModel.list == nil {
+                            DiaryStateCard(title: "Could not load list", systemImage: "exclamationmark.triangle", message: error)
+                                .padding(.horizontal, 14)
+                                .padding(
+                                    .top,
+                                    CustomListHeaderLayout.topPadding(
+                                        hasBackdrop: false,
+                                        topSafeAreaInset: topSafeAreaInset
+                                    ) + 12
+                                )
+                        } else if let list = viewModel.list {
+                            let backdropURL = list.listType == .media
+                                ? CustomListBackdropSelection.artworkURL(from: list.items)
+                                : nil
+
+                            listHeader(list, backdropURL: backdropURL)
+                                .padding(
+                                    .top,
+                                    CustomListHeaderLayout.topPadding(
+                                        hasBackdrop: backdropURL != nil,
                                         topSafeAreaInset: topSafeAreaInset
                                     )
                                 )
@@ -1498,7 +1451,7 @@ struct ProfileListDetailView: View {
 
             topButtons
                 .padding(.horizontal, 16)
-                .padding(.top, topSafeAreaInset + 6)
+                .padding(.top, topSafeAreaInset + CustomListHeaderLayout.topControlTopPadding)
         }
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .navigationBar)
@@ -1553,7 +1506,7 @@ struct ProfileListDetailView: View {
                 listRepository: listRepository,
                 mediaRepository: mediaRepository,
                 onUnauthorized: onUnauthorized
-            ) { _ in
+            ) { _, _ in
                 Task { await viewModel.load() }
             }
         }
@@ -1649,12 +1602,8 @@ struct ProfileListDetailView: View {
         }
     }
 
-    private func listHeader(_ list: CustomListDetail) -> some View {
-        let backdropURL = list.listType == .media
-            ? CustomListBackdropSelection.artworkURL(from: list.items)
-            : nil
-
-        return ZStack(alignment: .bottomLeading) {
+    private func listHeader(_ list: CustomListDetail, backdropURL: String?) -> some View {
+        ZStack(alignment: .bottomLeading) {
             if let backdropURL {
                 ProfileListBackdropArtwork(urlString: backdropURL)
             }
@@ -1929,14 +1878,20 @@ enum CustomListBackdropSelection {
     static func artworkURL(from items: [MediaSummary]) -> String? {
         items.lazy.compactMap { item -> String? in
             guard item.ref.mediaType == "movie" || item.ref.mediaType == "tv" else { return nil }
-            return item.displayBackdropURL
+            let url = item.displayBackdropURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return url?.isEmpty == false ? url : nil
         }.first
     }
 }
 
 enum CustomListHeaderLayout {
+    static let topControlTopPadding: CGFloat = 6
+    static let topControlSize: CGFloat = 38
+
     static func topPadding(hasBackdrop: Bool, topSafeAreaInset: CGFloat) -> CGFloat {
-        hasBackdrop ? -(topSafeAreaInset + 32) : 32
+        hasBackdrop
+            ? -(topSafeAreaInset + 32)
+            : topSafeAreaInset + topControlTopPadding + topControlSize
     }
 }
 
@@ -1969,7 +1924,10 @@ private struct ProfileListCircleIconLabel: View {
         Image(systemName: systemName)
             .font(.system(size: 17, weight: .bold))
             .foregroundStyle(.white)
-            .frame(width: 38, height: 38)
+            .frame(
+                width: CustomListHeaderLayout.topControlSize,
+                height: CustomListHeaderLayout.topControlSize
+            )
             .background(.black.opacity(0.34), in: Circle())
     }
 }

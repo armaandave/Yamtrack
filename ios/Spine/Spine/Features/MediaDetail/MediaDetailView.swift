@@ -974,16 +974,16 @@ struct MediaDetailView: View {
 
     var body: some View {
         ZStack {
-            Group {
-                if let browsingContext, browsingContext.refs.count > 1 {
-                    GeometryReader { proxy in
+            GeometryReader { safeAreaProxy in
+                Group {
+                    if let browsingContext, browsingContext.refs.count > 1 {
                         ScrollView(.horizontal) {
                             LazyHStack(spacing: 0) {
                                 ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
                                     detailPage(
                                         ref: pageRef,
                                         shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
-                                        topSafeAreaInset: proxy.safeAreaInsets.top
+                                        topSafeAreaInset: safeAreaProxy.safeAreaInsets.top
                                     )
                                     .containerRelativeFrame(.horizontal)
                                     .id(pageRef.id)
@@ -995,14 +995,18 @@ struct MediaDetailView: View {
                         .scrollTargetBehavior(.paging)
                         .scrollPosition(id: $selectedID)
                         .ignoresSafeArea(edges: .top)
+                    } else {
+                        detailPage(
+                            ref: ref,
+                            shouldLoad: true,
+                            topSafeAreaInset: safeAreaProxy.safeAreaInsets.top
+                        )
                     }
-                } else {
-                    detailPage(ref: ref, shouldLoad: true)
                 }
+                .ignoresSafeArea(edges: .top)
+                .scrollDisabled(presentedPoster != nil)
+                .accessibilityHidden(presentedPoster != nil)
             }
-            .ignoresSafeArea(edges: .top)
-            .scrollDisabled(presentedPoster != nil)
-            .accessibilityHidden(presentedPoster != nil)
 
             if let presentedPoster {
                 PosterViewer(
@@ -1300,7 +1304,9 @@ private struct MediaDetailPageView: View {
                 if let detail = viewModel.detail {
                     AddToListSheet(
                         target: .media(detail.ref),
+                        initialMedia: detail.listSummary,
                         listRepository: listRepository,
+                        mediaRepository: mediaRepository,
                         onUnauthorized: onUnauthorized
                     )
                 }
@@ -2016,6 +2022,7 @@ private struct MediaDetailPageView: View {
                             }
                         }
                     }
+                    .offset(y: max(0, resolvedTopSafeAreaInset - 6))
                 }
         }
     }
@@ -7148,6 +7155,31 @@ private extension Array where Element == String {
     var joinedOrNil: String? {
         let value = joined(separator: ", ")
         return value.isEmpty ? nil : value
+    }
+}
+
+private extension MediaDetail {
+    var listSummary: MediaSummary {
+        MediaSummary(
+            ref: ref,
+            title: title,
+            preferredTitle: preferredTitle,
+            subtitle: subtitle,
+            overview: overview ?? synopsis,
+            imageUrl: imageUrl,
+            posterUrl: posterUrl,
+            customPosterUrl: customPosterUrl,
+            backdropUrl: backdropUrl,
+            customBackdropUrl: customBackdropUrl,
+            posterOrientation: posterOrientation,
+            posterAspectRatio: posterAspectRatio,
+            posterWidth: posterWidth,
+            posterHeight: posterHeight,
+            posterAccentColor: posterAccentColor,
+            releaseDate: releaseDate,
+            defaultSource: defaultSource,
+            userState: userState
+        )
     }
 }
 

@@ -130,7 +130,7 @@ final class AddToListViewModelTests: XCTestCase {
         )
     }
 
-    func testCreateAndAddCreatesPeopleList() async {
+    func testCreatedPeopleListAddsPersonAndRefreshesMembership() async throws {
         let repository = AddToListRepositoryFake()
         repository.peopleListResponses = [[peopleList(hasPerson: true, entryID: 41)]]
         let ref = PersonRef(source: "tmdb", id: "819")
@@ -140,18 +140,14 @@ final class AddToListViewModelTests: XCTestCase {
             onUnauthorized: {}
         )
 
-        let created = await viewModel.createAndAdd(name: "  Favorite Actors  ")
+        await viewModel.addPersonToCreatedList(7)
 
-        XCTAssertTrue(created)
-        XCTAssertEqual(repository.createdRequests.count, 1)
-        XCTAssertEqual(repository.createdRequests.first?.name, "Favorite Actors")
-        XCTAssertEqual(repository.createdRequests.first?.visibility, "private")
-        XCTAssertEqual(repository.createdRequests.first?.isRanked, false)
-        XCTAssertEqual(repository.createdRequests.first?.listType, .people)
         XCTAssertEqual(repository.addedPeople, [.init(listID: 7, ref: ref)])
+        XCTAssertEqual(repository.peopleMembershipRefs, [ref])
+        XCTAssertTrue(try XCTUnwrap(viewModel.lists.first).hasPerson == true)
     }
 
-    func testCreateSuccessAndAddFailureRetainsRefreshedEmptyList() async throws {
+    func testCreatedPeopleListAddFailureRetainsRefreshedEmptyList() async throws {
         let repository = AddToListRepositoryFake()
         repository.addPersonError = AddToListTestError.failed
         repository.peopleListResponses = [[peopleList(hasPerson: false)]]
@@ -161,16 +157,45 @@ final class AddToListViewModelTests: XCTestCase {
             onUnauthorized: {}
         )
 
-        let created = await viewModel.createAndAdd(name: "Favorite Actors")
+        await viewModel.addPersonToCreatedList(7)
 
-        XCTAssertTrue(created)
-        XCTAssertEqual(repository.createdRequests.count, 1)
         XCTAssertEqual(viewModel.lists.map(\.id), [7])
         XCTAssertEqual(viewModel.lists.first?.hasPerson, false)
         XCTAssertEqual(
             viewModel.actionErrorMessage,
             "The list was created, but this person could not be added. Add failed"
         )
+    }
+
+    func testComposerCanonicalMediaReferenceSupportsImmediateRemoval() {
+        let repository = AddToListRepositoryFake()
+        let viewModel = AddToListViewModel(
+            target: .media(MediaRef(
+                itemId: nil,
+                source: "tmdb",
+                mediaType: "movie",
+                mediaId: "550",
+                seasonNumber: nil,
+                episodeNumber: nil
+            )),
+            listRepository: repository,
+            onUnauthorized: {}
+        )
+        let canonical = MediaRef(
+            itemId: 42,
+            source: "tmdb",
+            mediaType: "movie",
+            mediaId: "550",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+
+        viewModel.useCanonicalMediaReference(canonical)
+
+        guard case let .media(ref) = viewModel.target else {
+            return XCTFail("Expected media target")
+        }
+        XCTAssertEqual(ref, canonical)
     }
 
     func testAddFailurePreservesLoadedLists() async throws {
@@ -342,7 +367,6 @@ private final class AddToListRepositoryFake: ListRepository {
     var peopleListResponses: [[CustomListSummary]] = []
     var mediaMembershipRefs: [MediaRef] = []
     var peopleMembershipRefs: [PersonRef] = []
-    var createdRequests: [CustomListWriteRequest] = []
     var addedItems: [AddedItem] = []
     var addedPeople: [AddedPerson] = []
     var removedPeople: [RemovedPerson] = []
@@ -375,7 +399,6 @@ private final class AddToListRepositoryFake: ListRepository {
     }
 
     func create(_ request: CustomListWriteRequest) async throws -> CustomListSummary {
-        createdRequests.append(request)
         return CustomListSummary(
             id: 7,
             name: request.name ?? "",

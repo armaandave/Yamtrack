@@ -117,6 +117,7 @@ final class ListComposerViewModel {
 
     init(
         mode: ListComposerMode,
+        initialItems: [MediaSummary] = [],
         listRepository: ListRepository,
         onUnauthorized: @escaping () -> Void
     ) {
@@ -126,7 +127,10 @@ final class ListComposerViewModel {
 
         switch mode {
         case let .create(type):
-            let draft = ListComposerDraft.empty(type: type)
+            var draft = ListComposerDraft.empty(type: type)
+            if type == .media {
+                draft.items = initialItems
+            }
             self.draft = draft
             initialDraft = draft
             serverListID = nil
