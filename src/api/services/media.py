@@ -98,7 +98,7 @@ BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
 MUSIC_DETAIL_CACHE_VERSION = "v1"
-ANIME_DETAIL_CACHE_VERSION = "v5"
+ANIME_DETAIL_CACHE_VERSION = "v6"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
 DETAIL_RATING_PREPARATION_LOCK_TIMEOUT = 60
@@ -113,6 +113,12 @@ COMPANY_GAME_SORT_OPTIONS = [
     {"value": "popularity", "label": "Popularity"},
     {"value": "release_date", "label": "Release Date"},
     {"value": "average_rating", "label": "IGDB Rating"},
+    {"value": "title", "label": "Title"},
+]
+COMPANY_ANIME_SORT_OPTIONS = [
+    {"value": "popularity", "label": "Popularity"},
+    {"value": "release_date", "label": "Release Date"},
+    {"value": "average_rating", "label": "MAL Rating"},
     {"value": "title", "label": "Title"},
 ]
 COMPANY_GAME_OPTIONS_CACHE_VERSION = "v1"
@@ -1843,15 +1849,7 @@ def person_detail(
     credits_page=1,
 ):
     """Return a provider person profile plus iOS-ready media summaries."""
-    if source not in {
-        Sources.TMDB.value,
-        Sources.HARDCOVER.value,
-        Sources.OPENLIBRARY.value,
-        Sources.MUSICBRAINZ.value,
-        Sources.MAL.value,
-        Sources.MANGAUPDATES.value,
-        "anilist",
-    }:
+    if source not in provider_services.SUPPORTED_PERSON_SOURCES:
         msg = (
             "People pages are only supported for TMDB, Hardcover, OpenLibrary, "
             "MusicBrainz, MAL, MangaUpdates, and AniList in v1."
@@ -2166,12 +2164,38 @@ def book_series_detail(*, source, series_id, request=None, user=None):
 
 
 def company_detail(*, source, company_id):
-    """Return an IGDB company profile for native studio pages."""
-    if source != Sources.IGDB.value:
-        msg = "Company pages are only supported for IGDB in v1."
+    """Return a provider company profile for native studio pages."""
+    if source not in {Sources.IGDB.value, Sources.MAL.value}:
+        msg = "Company pages are only supported for IGDB and MAL in v1."
         raise NotImplementedError(msg)
 
     company = provider_services.get_company(source, company_id)
+    if source == Sources.MAL.value:
+        return {
+            "id": str(company.get("id") or company_id),
+            "source": source,
+            "media_type": MediaTypes.ANIME.value,
+            "name": company.get("name") or "",
+            "description": company.get("description") or None,
+            "logo_url": company.get("image") or None,
+            "logo_width": None,
+            "logo_height": None,
+            "founded_year": company.get("founded_year"),
+            "country_code": None,
+            "status": None,
+            "company_size": None,
+            "parent": None,
+            "igdb_url": None,
+            "provider_url": company.get("provider_url") or None,
+            "websites": company.get("websites") or [],
+            "catalogs": {
+                "studio": {
+                    "available": True,
+                    "count": None,
+                },
+            },
+        }
+
     logo = company.get("logo") or {}
     parent = company.get("parent") or {}
     return {
@@ -2278,6 +2302,126 @@ def company_game_filter_options(*, source, company_id):
     }
     cache.set(cache_key, options, DETAIL_TTL)
     return options
+
+
+def company_anime(
+    *,
+    source,
+    company_id,
+    sort="popularity",
+    direction=None,
+    params=None,
+    request=None,
+    user=None,
+):
+    """Return a nullable-count, provider-paginated MAL studio catalog."""
+    if source != Sources.MAL.value:
+        msg = "Anime studio catalogs are only supported for MAL in v1."
+        raise NotImplementedError(msg)
+    if sort not in COMPANY_SORTS:
+        raise ValueError(
+            "sort must be popularity, release_date, title, or average_rating.",
+        )
+    if direction not in {None, "asc", "desc"}:
+        raise ValueError("direction must be asc or desc.")
+
+    params = params or {}
+    page = _company_int_param(params, "page")
+    page_size = _company_int_param(params, "page_size")
+    page = 1 if page is None else page
+    page_size = 25 if page_size is None else page_size
+    if page < 1:
+        raise ValueError("page must be at least 1.")
+    if not 1 <= page_size <= mal.STUDIO_ANIME_PAGE_SIZE:
+        message = (
+            f"page_size must be between 1 and {mal.STUDIO_ANIME_PAGE_SIZE}."
+        )
+        raise ValueError(message)
+    year = _company_int_param(params, "year")
+    release_status = params.get("release_status")
+    if release_status not in {None, "", "released", "unreleased"}:
+        raise ValueError("release_status must be released or unreleased.")
+    rating_min = _company_decimal_param(params, "rating_min")
+    rating_max = _company_decimal_param(params, "rating_max")
+    if (rating_min is not None and not 0 <= rating_min <= 10) or (
+        rating_max is not None and not 0 <= rating_max <= 10
+    ):
+        raise ValueError("rating_min and rating_max must be between 0 and 10.")
+    if rating_min is not None and rating_max is not None and rating_min > rating_max:
+        raise ValueError(
+            "rating_min must be less than or equal to rating_max.",
+        )
+    if _company_query_values(params, "platform") or _company_query_values(
+        params,
+        "exclude_platform",
+    ):
+        raise ValueError(
+            "platform filters are not supported for anime studio catalogs.",
+        )
+
+    page_data = provider_services.get_company_anime(
+        source,
+        company_id,
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        direction=direction,
+        filters={
+            "year": year,
+            "release_status": release_status or None,
+            "rating_min": rating_min,
+            "rating_max": rating_max,
+            "genres": _company_query_values(params, "genre"),
+            "excluded_genres": _company_query_values(
+                params,
+                "exclude_genre",
+            ),
+        },
+    )
+    return {
+        "count": None,
+        "next": _company_page_link(request, page_data.get("next_page")),
+        "previous": _company_page_link(
+            request,
+            page_data.get("previous_page"),
+        ),
+        "results": [
+            media_summary_from_provider(
+                anime,
+                media_type=MediaTypes.ANIME.value,
+                source=Sources.MAL.value,
+                request=request,
+                user=user,
+            )
+            for anime in page_data.get("results") or []
+        ],
+    }
+
+
+def company_anime_filter_options(*, source, company_id):
+    """Return filter choices for one MAL anime studio catalog."""
+    if source != Sources.MAL.value:
+        msg = "Anime studio catalogs are only supported for MAL in v1."
+        raise NotImplementedError(msg)
+    options = provider_services.get_company_anime_filter_options(
+        source,
+        company_id,
+    )
+    return {
+        "sorts": COMPANY_ANIME_SORT_OPTIONS,
+        "genres": options.get("genres") or [],
+        "languages": [],
+        "platforms": [],
+        "years": options.get("years") or [],
+    }
+
+
+def _company_page_link(request, page):
+    if request is None or page is None:
+        return None
+    query = request.query_params.copy()
+    query["page"] = str(page)
+    return request.build_absolute_uri(f"{request.path}?{query.urlencode()}")
 
 
 def _company_logo_url(logo):

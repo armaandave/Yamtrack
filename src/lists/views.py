@@ -25,7 +25,9 @@ def lists(request):
     page = request.GET.get("page", 1)
     sort_by = request.user.update_preference("lists_sort", request.GET.get("sort"))
 
-    custom_lists = CustomList.objects.get_user_lists(request.user)
+    custom_lists = CustomList.objects.get_user_lists(request.user).filter(
+        list_type=CustomList.ListType.MEDIA,
+    )
 
     if search_query:
         custom_lists = custom_lists.filter(
@@ -93,6 +95,7 @@ def list_detail(request, list_id):
     custom_list = get_object_or_404(
         CustomList.objects.select_related("owner").prefetch_related("collaborators"),
         id=list_id,
+        list_type=CustomList.ListType.MEDIA,
     )
 
     if not custom_list.user_can_view(request.user):
@@ -222,7 +225,11 @@ def create(request):
 def edit(request):
     """Edit an existing custom list."""
     list_id = request.POST.get("list_id")
-    custom_list = get_object_or_404(CustomList, id=list_id)
+    custom_list = get_object_or_404(
+        CustomList,
+        id=list_id,
+        list_type=CustomList.ListType.MEDIA,
+    )
     if custom_list.user_can_edit(request.user):
         form = CustomListForm(request.POST, instance=custom_list)
         if form.is_valid():
@@ -237,7 +244,11 @@ def edit(request):
 def delete(request):
     """Delete a custom list."""
     list_id = request.POST.get("list_id")
-    custom_list = get_object_or_404(CustomList, id=list_id)
+    custom_list = get_object_or_404(
+        CustomList,
+        id=list_id,
+        list_type=CustomList.ListType.MEDIA,
+    )
     if custom_list.user_can_delete(request.user):
         custom_list.delete()
         logger.info("%s list deleted successfully.", custom_list)
@@ -305,6 +316,7 @@ def list_item_toggle(request):
         CustomList.objects.filter(
             Q(owner=request.user) | Q(collaborators=request.user),
             id=custom_list_id,
+            list_type=CustomList.ListType.MEDIA,
         ).distinct(),  # To prevent duplicates, when user is owner and collaborator
     )
 

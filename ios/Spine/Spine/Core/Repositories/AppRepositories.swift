@@ -43,18 +43,18 @@ protocol PeopleRepository {
 
 protocol CompanyRepository {
     func detail(ref: CompanyRef) async throws -> CompanyDetail
-    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse
-    func games(
+    func filterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse
+    func catalog(
         ref: CompanyRef,
         role: CompanyCatalogRole,
         page: String?,
         filter: MediaFilterState
-    ) async throws -> PagedResponse<MediaSummary>
+    ) async throws -> CompanyCatalogPage
 }
 
 extension CompanyRepository {
-    func games(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> PagedResponse<MediaSummary> {
-        try await games(ref: ref, role: role, page: page, filter: MediaFilterState())
+    func catalog(ref: CompanyRef, role: CompanyCatalogRole, page: String?) async throws -> CompanyCatalogPage {
+        try await catalog(ref: ref, role: role, page: page, filter: MediaFilterState())
     }
 }
 
@@ -684,23 +684,25 @@ struct APICompanyRepository: CompanyRepository {
         )
     }
 
-    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
-        try await client.get(
-            "/companies/\(ref.source)/\(ref.companyId)/game-options/",
+    func filterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
+        let endpoint = ref.isAnimeStudio ? "anime-options" : "game-options"
+        return try await client.get(
+            "/companies/\(ref.source)/\(ref.companyId)/\(endpoint)/",
             authenticated: client.tokenProvider.accessToken != nil
         )
     }
 
-    func games(
+    func catalog(
         ref: CompanyRef,
         role: CompanyCatalogRole,
         page: String?,
         filter: MediaFilterState
-    ) async throws -> PagedResponse<MediaSummary> {
-        var query = [URLQueryItem(name: "role", value: role.rawValue)]
+    ) async throws -> CompanyCatalogPage {
+        let isAnimeCatalog = ref.isAnimeStudio && role == .studio
+        var query = isAnimeCatalog ? [] : [URLQueryItem(name: "role", value: role.rawValue)]
         query += filter.queryItems(page: page)
         return try await client.get(
-            "/companies/\(ref.source)/\(ref.companyId)/games/",
+            "/companies/\(ref.source)/\(ref.companyId)/\(isAnimeCatalog ? "anime" : "games")/",
             query: query,
             authenticated: client.tokenProvider.accessToken != nil
         )

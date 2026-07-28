@@ -97,15 +97,60 @@ struct SWStatsRatingChart: View {
     let average: Double?
     let tint: Color
 
+    static func normalizedPoints(from points: [SWStatsRatingPoint]) -> [SWStatsRatingPoint] {
+        let counts = points.reduce(into: [Int: Int]()) { result, point in
+            guard point.rating.isFinite,
+                  (0 ... 10).contains(point.rating),
+                  point.count >= 0 else { return }
+            let index = Int((point.rating * 2).rounded())
+            guard abs(Double(index) / 2 - point.rating) < 0.001 else { return }
+            result[index, default: 0] += point.count
+        }
+        return (0 ... 20).map {
+            SWStatsRatingPoint(rating: Double($0) / 2, count: counts[$0, default: 0])
+        }
+    }
+
+    static func normalizedPoints(
+        from buckets: [StatsRatingBucket],
+        mediaType: String?
+    ) -> [SWStatsRatingPoint] {
+        // ponytail: the API omits rating-scale metadata; infer the app's native five-star types until it carries a scale.
+        let usesFiveStarScale = mediaType.map { ["movie", "music", "book"].contains($0) } == true
+            && !buckets.contains { ($0.numericRating ?? 0) > 5 && $0.count > 0 }
+        let multiplier = usesFiveStarScale ? 2.0 : 1.0
+        return normalizedPoints(from: buckets.compactMap { bucket in
+            guard let rating = bucket.numericRating else { return nil }
+            return SWStatsRatingPoint(rating: rating * multiplier, count: bucket.count)
+        })
+    }
+
+    static func normalizedPoints(from mediaTypes: [StatsMediaTypeSummary]) -> [SWStatsRatingPoint] {
+        normalizedPoints(from: mediaTypes.flatMap {
+            normalizedPoints(from: $0.ratingDistribution, mediaType: $0.mediaType)
+        })
+    }
+
+    static func averageRating(from points: [SWStatsRatingPoint]) -> Double? {
+        let normalized = normalizedPoints(from: points)
+        let count = normalized.reduce(0) { $0 + $1.count }
+        guard count > 0 else { return nil }
+        return normalized.reduce(0) { $0 + $1.rating * Double($1.count) } / Double(count)
+    }
+
+    private var normalizedPoints: [SWStatsRatingPoint] {
+        Self.normalizedPoints(from: points)
+    }
+
     var body: some View {
         Chart {
-            ForEach(points) { point in
+            ForEach(normalizedPoints) { point in
                 BarMark(
-                    x: .value("Rating", point.rating),
+                    x: .value("Rating step", point.rating * 2),
                     y: .value("Count", point.count),
-                    width: .ratio(0.76)
+                    width: .fixed(8)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .cornerRadius(3)
                 .foregroundStyle(
                     LinearGradient(
                         colors: [tint.opacity(0.58), tint],
@@ -116,24 +161,24 @@ struct SWStatsRatingChart: View {
             }
 
             if let average {
-                RuleMark(x: .value("Average", average))
+                RuleMark(x: .value("Average", min(20, max(0, average * 2))))
                     .foregroundStyle(.white.opacity(0.7))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     .annotation(position: .top, alignment: .trailing) {
                         Text("AVG \(average.formatted(.number.precision(.fractionLength(1))))")
                             .font(.system(size: 9, weight: .black))
                             .foregroundStyle(.white.opacity(0.62))
-                    }
+                }
             }
         }
-        .chartXScale(domain: 0...10)
+        .chartXScale(domain: -2 ... 22)
         .chartXAxis {
-            AxisMarks(values: [0, 2, 4, 6, 8, 10]) { value in
+            AxisMarks(values: [0.0, 4.0, 8.0, 12.0, 16.0, 20.0]) { value in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.white.opacity(0.18))
                 AxisValueLabel {
-                    if let rating = value.as(Int.self) {
-                        Text(String(rating))
+                    if let index = value.as(Double.self) {
+                        Text((index / 2).formatted(.number.precision(.fractionLength(0))))
                             .foregroundStyle(.white.opacity(0.42))
                     }
                 }
@@ -150,7 +195,7 @@ struct SWStatsRatingChart: View {
                 }
             }
         }
-        .accessibilityChartDescriptor(StatsRatingChartDescriptor(points: points, average: average))
+        .accessibilityChartDescriptor(StatsRatingChartDescriptor(points: normalizedPoints, average: average))
     }
 }
 
@@ -159,6 +204,7 @@ private struct StatsRatingChartDescriptor: AXChartDescriptorRepresentable {
     let average: Double?
 
     func makeChartDescriptor() -> AXChartDescriptor {
+        let ratedPoints = points.filter { $0.count > 0 }
         let xAxis = AXNumericDataAxisDescriptor(
             title: "Rating",
             range: 0...10,
@@ -166,7 +212,7 @@ private struct StatsRatingChartDescriptor: AXChartDescriptorRepresentable {
         ) { value in
             value.formatted(.number.precision(.fractionLength(0...1)))
         }
-        let maximum = Double(max(1, points.map(\.count).max() ?? 1))
+        let maximum = Double(max(1, ratedPoints.map(\.count).max() ?? 1))
         let yAxis = AXNumericDataAxisDescriptor(
             title: "Titles",
             range: 0...maximum,
@@ -177,7 +223,7 @@ private struct StatsRatingChartDescriptor: AXChartDescriptorRepresentable {
         let series = AXDataSeriesDescriptor(
             name: average.map { "Ratings, average \($0.formatted(.number.precision(.fractionLength(1))))" } ?? "Ratings",
             isContinuous: false,
-            dataPoints: points.map {
+            dataPoints: ratedPoints.map {
                 AXDataPoint(x: $0.rating, y: Double($0.count), label: "\($0.rating) out of 10")
             }
         )
@@ -326,35 +372,76 @@ struct SWStatsYearChart: View {
     let points: [SWStatsYearPoint]
     let tint: Color
 
-    private var sortedPoints: [SWStatsYearPoint] {
-        points.sorted { $0.year < $1.year }
+    struct PlotPoint: Identifiable, Equatable {
+        let index: Int
+        let year: Int
+        let count: Int
+
+        var id: Int { year }
     }
 
-    private var initialYear: Int {
-        max((sortedPoints.last?.year ?? Calendar.current.component(.year, from: Date())) - 10, sortedPoints.first?.year ?? 0)
+    static func plotPoints(from points: [SWStatsYearPoint]) -> [PlotPoint] {
+        Dictionary(grouping: points, by: \.year)
+            .map { year, buckets in
+                SWStatsYearPoint(year: year, count: buckets.reduce(0) { $0 + $1.count })
+            }
+            .sorted { $0.year < $1.year }
+            .enumerated()
+            .map { PlotPoint(index: $0.offset, year: $0.element.year, count: $0.element.count) }
+    }
+
+    private var plotPoints: [PlotPoint] {
+        Self.plotPoints(from: points)
+    }
+
+    private var visibleCount: Int {
+        min(12, max(1, plotPoints.count))
+    }
+
+    private var initialIndex: Double {
+        Double(max(0, plotPoints.count - visibleCount))
+    }
+
+    private var labelStride: Int {
+        max(1, Int(ceil(Double(visibleCount) / 3)))
+    }
+
+    private var tickIndices: [Double] {
+        let lastIndex = plotPoints.count - 1
+        return plotPoints.indices.compactMap { index in
+            index == lastIndex || (index.isMultiple(of: labelStride) && lastIndex - index >= 2)
+                ? Double(index)
+                : nil
+        }
     }
 
     var body: some View {
-        Chart(sortedPoints) { point in
+        Chart(plotPoints) { point in
             BarMark(
-                x: .value("Release year", point.year),
+                x: .value("Release year index", Double(point.index)),
                 y: .value("Titles", point.count),
-                width: .ratio(0.72)
+                width: .fixed(14)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .cornerRadius(3)
             .foregroundStyle(tint.gradient)
         }
-        .chartScrollableAxes(sortedPoints.count > 12 ? .horizontal : [])
-        .chartXVisibleDomain(length: min(12, max(1, sortedPoints.count)))
-        .chartScrollPosition(initialX: initialYear)
+        .chartXScale(domain: -0.5 ... Double(max(1, plotPoints.count)) - 0.5)
+        .chartScrollableAxes(plotPoints.count > visibleCount ? .horizontal : [])
+        .chartXVisibleDomain(length: Double(visibleCount))
+        .chartScrollPosition(initialX: initialIndex)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { value in
+            AxisMarks(values: tickIndices) { value in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.white.opacity(0.16))
                 AxisValueLabel {
-                    if let year = value.as(Int.self) {
-                        Text(String(year))
-                            .foregroundStyle(.white.opacity(0.42))
+                    if let rawIndex = value.as(Double.self) {
+                        let index = Int(rawIndex.rounded())
+                        if plotPoints.indices.contains(index) {
+                            Text("’\(String(plotPoints[index].year).suffix(2))")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .fixedSize()
+                        }
                     }
                 }
             }
@@ -370,56 +457,41 @@ struct SWStatsYearChart: View {
                 }
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Titles by release year")
-        .accessibilityValue(sortedPoints.map { "\($0.year), \($0.count)" }.joined(separator: "; "))
+        .accessibilityChartDescriptor(StatsYearChartDescriptor(points: plotPoints))
     }
 }
 
-struct SWStatsRankedBarItem: Identifiable {
-    let id: String
-    let title: String
-    let value: Int
-}
+private struct StatsYearChartDescriptor: AXChartDescriptorRepresentable {
+    let points: [SWStatsYearChart.PlotPoint]
 
-struct SWStatsRankedBars: View {
-    let items: [SWStatsRankedBarItem]
-    let tint: Color
-
-    private var maximumValue: Int {
-        max(1, items.map(\.value).max() ?? 1)
-    }
-
-    var body: some View {
-        VStack(spacing: 7) {
-            ForEach(items) { item in
-                GeometryReader { proxy in
-                    let progress = CGFloat(item.value) / CGFloat(maximumValue)
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.white.opacity(0.045))
-
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(tint.opacity(0.28))
-                            .frame(width: max(6, proxy.size.width * progress))
-
-                        HStack(spacing: 8) {
-                            Text(item.title)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text(item.value.formatted())
-                                .monospacedDigit()
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.74))
-                        .padding(.horizontal, 9)
-                    }
-                }
-                .frame(height: 28)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(item.title)
-                .accessibilityValue(item.value.formatted())
+    func makeChartDescriptor() -> AXChartDescriptor {
+        let firstYear = Double(points.first?.year ?? 0)
+        let lastYear = Double(points.last?.year ?? 1)
+        let xAxis = AXNumericDataAxisDescriptor(
+            title: "Release year",
+            range: firstYear ... max(firstYear + 1, lastYear),
+            gridlinePositions: []
+        ) { String(Int($0)) }
+        let maximum = Double(max(1, points.map(\.count).max() ?? 1))
+        let yAxis = AXNumericDataAxisDescriptor(
+            title: "Titles",
+            range: 0 ... maximum,
+            gridlinePositions: []
+        ) { Int($0).formatted() }
+        let series = AXDataSeriesDescriptor(
+            name: "Titles by release year",
+            isContinuous: false,
+            dataPoints: points.map {
+                AXDataPoint(x: Double($0.year), y: Double($0.count), label: String($0.year))
             }
-        }
+        )
+        return AXChartDescriptor(
+            title: "Titles by release year",
+            summary: nil,
+            xAxis: xAxis,
+            yAxis: yAxis,
+            additionalAxes: [],
+            series: [series]
+        )
     }
 }

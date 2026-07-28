@@ -30,6 +30,22 @@ class AllMediaSearchUnavailable(exceptions.APIException):
     default_code = "provider_unavailable"
 
 
+class ListTypeMismatch(exceptions.APIException):
+    """A typed list was used through the wrong entry endpoint."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "This endpoint does not support the list's entry type."
+    default_code = "list_type_mismatch"
+
+
+class PersonProviderUnavailable(exceptions.APIException):
+    """A provider returned an unusable person profile."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "The person provider returned an unusable profile."
+    default_code = "provider_unavailable"
+
+
 def _code_for_status(status_code):
     if status_code == status.HTTP_401_UNAUTHORIZED:
         return "authentication_required"

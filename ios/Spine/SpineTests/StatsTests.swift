@@ -46,6 +46,7 @@ final class StatsTests: XCTestCase {
         XCTAssertTrue(summary.range.isAllTime)
         XCTAssertEqual(summary.range.timezone, "America/Los_Angeles")
         XCTAssertEqual(summary.overview.trackedCount, 42)
+        XCTAssertEqual(summary.overview.completedCount, 31)
         XCTAssertEqual(summary.overview.reviewCount, 4)
         XCTAssertEqual(summary.overview.numericAverageRating, 8.25)
         XCTAssertEqual(summary.activity.days.first?.parsedDate, Self.utcDate(year: 2026, month: 7, day: 13))
@@ -211,6 +212,83 @@ final class StatsTests: XCTestCase {
         XCTAssertTrue(summary.isEmpty)
     }
 
+    func testStatsSummaryDoesNotTreatPlannedPausedOrDroppedTitlesAsCompletedContent() {
+        let planned = StatsSummary(
+            overview: StatsOverview(trackedCount: 12, likedCount: 2),
+            mediaTypes: [
+                StatsMediaTypeSummary(
+                    mediaType: "movie",
+                    trackedCount: 12,
+                    likedCount: 2,
+                    statuses: ["planning": 10, "paused": 1, "dropped": 1]
+                ),
+            ]
+        )
+        let completed = StatsSummary(
+            overview: StatsOverview(trackedCount: 12, completedCount: 1),
+            mediaTypes: [
+                StatsMediaTypeSummary(
+                    mediaType: "movie",
+                    trackedCount: 12,
+                    completedCount: 1,
+                    statuses: ["completed": 1, "planning": 11]
+                ),
+            ]
+        )
+
+        XCTAssertTrue(planned.isEmpty)
+        XCTAssertFalse(completed.isEmpty)
+    }
+
+    func testStatsRatingChartNormalizesSparseHalfSteps() {
+        let points = SWStatsRatingChart.normalizedPoints(from: [
+            SWStatsRatingPoint(rating: 3.5, count: 1),
+            SWStatsRatingPoint(rating: 8, count: 2),
+            SWStatsRatingPoint(rating: 8, count: 1),
+            SWStatsRatingPoint(rating: 4.2, count: 99),
+            SWStatsRatingPoint(rating: .nan, count: 99),
+            SWStatsRatingPoint(rating: .infinity, count: 99),
+            SWStatsRatingPoint(rating: 5, count: -1),
+        ])
+
+        XCTAssertEqual(points.count, 21)
+        XCTAssertEqual(points[7].rating, 3.5)
+        XCTAssertEqual(points[7].count, 1)
+        XCTAssertEqual(points[16].rating, 8)
+        XCTAssertEqual(points[16].count, 3)
+        XCTAssertEqual(points.reduce(0) { $0 + $1.count }, 4)
+    }
+
+    func testStatsRatingChartCombinesNativeRatingScalesOnTenPointAxis() {
+        let points = SWStatsRatingChart.normalizedPoints(from: [
+            StatsMediaTypeSummary(
+                mediaType: "book",
+                ratingDistribution: [StatsRatingBucket(rating: "3.5", count: 1)]
+            ),
+            StatsMediaTypeSummary(
+                mediaType: "tv",
+                ratingDistribution: [StatsRatingBucket(rating: "8.0", count: 1)]
+            ),
+        ])
+
+        XCTAssertEqual(points[14].count, 1)
+        XCTAssertEqual(points[16].count, 1)
+        XCTAssertEqual(SWStatsRatingChart.averageRating(from: points), 7.5)
+    }
+
+    func testStatsYearChartUsesAdjacentPlotIndicesForSparseYears() {
+        let points = SWStatsYearChart.plotPoints(from: [
+            SWStatsYearPoint(year: 2022, count: 3),
+            SWStatsYearPoint(year: 1974, count: 1),
+            SWStatsYearPoint(year: 2022, count: 2),
+            SWStatsYearPoint(year: 1999, count: 4),
+        ])
+
+        XCTAssertEqual(points.map(\.index), [0, 1, 2])
+        XCTAssertEqual(points.map(\.year), [1974, 1999, 2022])
+        XCTAssertEqual(points.map(\.count), [1, 4, 5])
+    }
+
     func testYearWithOnlyCurrentLibrarySnapshotIsEmpty() throws {
         let data = Data(
             """
@@ -273,7 +351,7 @@ final class StatsTests: XCTestCase {
     }
 
     func testStatsViewModelLoadsContentAndTracksRequest() async {
-        let expected = Self.summary(trackedCount: 3)
+        let expected = Self.summary(completedCount: 3)
         let repository = StatsProfileRepositoryFake { _, _ in expected }
         let viewModel = StatsViewModel(
             profileRepository: repository,
@@ -324,9 +402,9 @@ final class StatsTests: XCTestCase {
             case .allTime:
                 firstRequestStarted.fulfill()
                 try await Task<Never, Never>.sleep(nanoseconds: 80_000_000)
-                return Self.summary(trackedCount: 1)
+                return Self.summary(completedCount: 1)
             case .year:
-                return Self.summary(trackedCount: 2)
+                return Self.summary(completedCount: 2)
             }
         }
         let viewModel = StatsViewModel(profileRepository: repository, onUnauthorized: {})
@@ -337,7 +415,7 @@ final class StatsTests: XCTestCase {
         await firstLoad.value
 
         XCTAssertEqual(viewModel.selectedPeriod, .year(2026))
-        XCTAssertEqual(viewModel.summary?.overview.trackedCount, 2)
+        XCTAssertEqual(viewModel.summary?.overview.completedCount, 2)
         XCTAssertEqual(repository.requests, [
             StatsFakeRequest(username: nil, period: .allTime),
             StatsFakeRequest(username: nil, period: .year(2026)),
@@ -360,8 +438,8 @@ final class StatsTests: XCTestCase {
         })
     }
 
-    private static func summary(trackedCount: Int) -> StatsSummary {
-        StatsSummary(overview: StatsOverview(trackedCount: trackedCount))
+    private static func summary(completedCount: Int) -> StatsSummary {
+        StatsSummary(overview: StatsOverview(completedCount: completedCount))
     }
 
     private static func utcDate(year: Int, month: Int, day: Int) -> Date? {

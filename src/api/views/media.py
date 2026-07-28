@@ -8,7 +8,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.exceptions import AllMediaSearchUnavailable
+from api.exceptions import AllMediaSearchUnavailable, ListTypeMismatch
 from api.pagination import StandardResultsSetPagination
 from api.services import diary as diary_service
 from api.services import filters as filter_service
@@ -134,6 +134,8 @@ class FilterOptionsView(APIView):
             custom_list = get_object_or_404(CustomList, id=list_id)
             if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
                 return Response(status=status.HTTP_404_NOT_FOUND)
+            if custom_list.list_type != CustomList.ListType.MEDIA:
+                raise ListTypeMismatch
             queryset = CustomListItem.objects.filter(
                 custom_list=custom_list,
                 item__media_type__in=exposure.media_types(),
@@ -440,6 +442,81 @@ class CompanyGameOptionsView(APIView):
         except provider_services.ProviderAPIError as error:
             if error.status_code == status.HTTP_404_NOT_FOUND:
                 return Response({"detail": "Company not found."}, status=status.HTTP_404_NOT_FOUND)
+            raise
+
+
+class CompanyAnimeView(APIView):
+    """Provider-paginated anime credited to a MAL studio."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, company_id):
+        try:
+            return Response(
+                media_service.company_anime(
+                    source=source,
+                    company_id=company_id,
+                    sort=request.query_params.get("sort", "popularity"),
+                    direction=request.query_params.get("direction"),
+                    params=request.query_params,
+                    request=request,
+                    user=(
+                        request.user
+                        if request.user.is_authenticated
+                        else None
+                    ),
+                ),
+            )
+        except NotImplementedError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        except ValueError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response(
+                    {"detail": "Company not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            raise
+
+
+class CompanyAnimeOptionsView(APIView):
+    """Provider-backed filter choices for a MAL studio anime catalog."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request, source, company_id):
+        try:
+            return Response(
+                media_service.company_anime_filter_options(
+                    source=source,
+                    company_id=company_id,
+                ),
+            )
+        except NotImplementedError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        except ValueError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response(
+                    {"detail": "Company not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             raise
 
 

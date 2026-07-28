@@ -306,4 +306,19 @@ struct MediaFilterOptionsResponse: Decodable, Equatable, Hashable {
         languages: [],
         years: []
     )
+
+    static func companyFallback(for ref: CompanyRef) -> MediaFilterOptionsResponse {
+        guard ref.isAnimeStudio else { return .companyFallback }
+        return MediaFilterOptionsResponse(
+            sorts: [
+                FilterChoice(value: MediaFilterSort.popularity.rawValue, label: "Popularity"),
+                FilterChoice(value: MediaFilterSort.releaseDate.rawValue, label: "Release Date"),
+                FilterChoice(value: MediaFilterSort.averageRating.rawValue, label: "MAL Rating"),
+                FilterChoice(value: MediaFilterSort.title.rawValue, label: "Title"),
+            ],
+            genres: [],
+            languages: [],
+            years: []
+        )
+    }
 }

@@ -240,14 +240,12 @@ struct StatsOverview: Decodable, Hashable {
     }
 
     var isEmpty: Bool {
-        trackedCount == 0
-            && completedCount == 0
+        completedCount == 0
             && diaryEntryCount == 0
             && uniqueLoggedCount == 0
             && reviewCount == 0
             && repeatCount == 0
             && ratedCount == 0
-            && likedCount == 0
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -351,18 +349,18 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
     }
 
     var isEmpty: Bool {
-        trackedCount == 0
-            && completedCount == 0
+        completedCount == 0
             && diaryEntryCount == 0
             && uniqueLoggedCount == 0
             && reviewCount == 0
             && repeatCount == 0
             && ratedCount == 0
-            && likedCount == 0
-            && statuses.values.allSatisfy { $0 == 0 }
             && ratingDistribution.allSatisfy { $0.count == 0 }
             && topRated.isEmpty
             && mostLogged.isEmpty
+            && releaseYears.isEmpty
+            && topGenres.isEmpty
+            && topLanguages.isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {

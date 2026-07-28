@@ -318,10 +318,7 @@ struct MediaFilterSheet: View {
     }
 
     private var showsPlatformFilter: Bool {
-        if case .company = scope {
-            return true
-        }
-        return false
+        Self.showsPlatformFilter(for: scope)
     }
 
     private var showsLanguageFilter: Bool {
@@ -339,24 +336,29 @@ struct MediaFilterSheet: View {
     }
 
     private var ratingMinimumLabel: String {
-        switch scope {
-        case .person:
-            return "Minimum Average Rating"
-        case .company:
-            return "Minimum IGDB rating (0–100)"
-        case .tracking, .diary, .list:
-            return "Minimum"
-        }
+        Self.ratingLabels(for: scope).minimum
     }
 
     private var ratingMaximumLabel: String {
+        Self.ratingLabels(for: scope).maximum
+    }
+
+    static func showsPlatformFilter(for scope: MediaFilterScope) -> Bool {
+        guard case let .company(ref) = scope else { return false }
+        return !ref.isAnimeStudio
+    }
+
+    static func ratingLabels(for scope: MediaFilterScope) -> (minimum: String, maximum: String) {
         switch scope {
         case .person:
-            return "Maximum Average Rating"
-        case .company:
-            return "Maximum IGDB rating (0–100)"
+            return ("Minimum Average Rating", "Maximum Average Rating")
+        case let .company(ref):
+            if ref.isAnimeStudio {
+                return ("Minimum MAL rating (0–10)", "Maximum MAL rating (0–10)")
+            }
+            return ("Minimum IGDB rating (0–100)", "Maximum IGDB rating (0–100)")
         case .tracking, .diary, .list:
-            return "Maximum"
+            return ("Minimum", "Maximum")
         }
     }
 

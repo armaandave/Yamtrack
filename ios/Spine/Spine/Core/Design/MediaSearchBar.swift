@@ -159,27 +159,33 @@ private struct MediaSearchLensRail: View {
     var body: some View {
         if fitsAllTypes {
             GeometryReader { proxy in
-                let spacing: CGFloat = 6
-                let width = max(30, (proxy.size.width - spacing * CGFloat(max(availableTypes.count - 1, 0))) / CGFloat(max(availableTypes.count, 1)))
+                let spacing: CGFloat = isCompact ? 3 : 6
+                let width = (proxy.size.width - spacing * CGFloat(max(availableTypes.count - 1, 0)))
+                    / CGFloat(max(availableTypes.count, 1))
                 let diameter = min(isCompact ? 34 : 38, width)
 
-                HStack(spacing: spacing) {
-                    ForEach(availableTypes, id: \.self) { type in
-                        MediaSearchLensOrb(
-                            type: type,
-                            isSelected: selectedType == type,
-                            diameter: diameter,
-                            itemWidth: width,
-                            showsSelectionIndicator: !isCompact,
-                            onTap: {
-                                select(type)
-                            }
-                        )
+                if width >= 44 {
+                    HStack(spacing: spacing) {
+                        ForEach(availableTypes, id: \.self) { type in
+                            MediaSearchLensOrb(
+                                type: type,
+                                isSelected: selectedType == type,
+                                diameter: diameter,
+                                itemWidth: width,
+                                showsSelectionIndicator: !isCompact,
+                                clearOnReselection: allowsEmptySelection,
+                                onTap: {
+                                    select(type)
+                                }
+                            )
+                        }
                     }
+                    .frame(maxWidth: .infinity, minHeight: isCompact ? 44 : 68)
+                } else {
+                    scrollingRail
                 }
-                .frame(maxWidth: .infinity, minHeight: isCompact ? 42 : 68)
             }
-            .frame(height: isCompact ? 42 : 68)
+            .frame(height: isCompact ? 44 : 68)
             .accessibilityLabel("Media type picker")
         } else {
             scrollingRail
@@ -194,6 +200,10 @@ private struct MediaSearchLensRail: View {
                         MediaSearchLensOrb(
                             type: type,
                             isSelected: selectedType == type,
+                            diameter: isCompact ? 34 : 48,
+                            itemWidth: isCompact ? 44 : 52,
+                            showsSelectionIndicator: !isCompact,
+                            clearOnReselection: allowsEmptySelection,
                             onTap: {
                                 select(type)
                             }
@@ -203,9 +213,9 @@ private struct MediaSearchLensRail: View {
                 }
                 .scrollTargetLayout()
                 .padding(.horizontal, 2)
-                .padding(.vertical, 10)
+                .padding(.vertical, isCompact ? 0 : 10)
             }
-            .frame(height: 68)
+            .frame(height: isCompact ? 44 : 68)
             .scrollTargetBehavior(.viewAligned)
             .onAppear {
                 proxy.scrollTo(selectedType, anchor: .center)
@@ -237,6 +247,7 @@ private struct MediaSearchLensOrb: View {
     var diameter: CGFloat = 48
     var itemWidth: CGFloat = 52
     var showsSelectionIndicator = true
+    var clearOnReselection = false
     let onTap: () -> Void
 
     private var theme: MediaTypeTheme {
@@ -260,11 +271,12 @@ private struct MediaSearchLensOrb: View {
                         .frame(width: 12, height: 2)
                 }
             }
-            .frame(width: itemWidth, height: showsSelectionIndicator ? 58 : diameter)
+            .frame(width: max(44, itemWidth), height: max(44, showsSelectionIndicator ? 58 : diameter))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(theme.displayName)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint(isSelected && clearOnReselection ? "Double-tap to show all media" : "")
     }
 }

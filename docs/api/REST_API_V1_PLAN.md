@@ -128,9 +128,12 @@ current page of rows.
 | POST/DELETE | `/api/v1/diary/{id}/like/` | Yes |
 | GET/POST | `/api/v1/lists/` | Yes |
 | GET/PATCH/DELETE | `/api/v1/lists/{id}/` | Yes |
-| POST | `/api/v1/lists/{id}/items/` | Yes |
+| GET/POST | `/api/v1/lists/{id}/items/` | Yes |
 | PATCH | `/api/v1/lists/{id}/items/reorder/` | Yes |
 | DELETE | `/api/v1/lists/{id}/items/{item_id}/` | Yes |
+| GET/POST | `/api/v1/lists/{id}/people/` | Yes |
+| PATCH | `/api/v1/lists/{id}/people/reorder/` | Yes |
+| DELETE | `/api/v1/lists/{id}/people/{entry_id}/` | Yes |
 | POST/DELETE | `/api/v1/lists/{id}/like/` | Yes |
 | GET | `/api/v1/users/search/` | Yes |
 | GET | `/api/v1/users/{username}/` | Optional |
@@ -165,22 +168,105 @@ when other diary entries remain, tracking is retained.
 
 `GET /api/v1/diary/tags/` returns `{ "results": [{ "name": "...", "usage_count": 1 }] }`. By default it is capped to 10 results for autocomplete. Passing `mine=true` limits counts to the authenticated user's diary tags. Passing `all=true` removes the autocomplete cap so native clients can render the full Profile Tags list, ordered by usage count descending and name ascending.
 
-`GET /api/v1/lists/` returns paged list summaries. Summary objects may include
-`preview_items`, capped at 12 media items ordered by the list's item order, using
-the standard `MediaSummary` shape. Native clients use this for poster strips on
-list overview rows; `GET /api/v1/lists/{id}/` remains the source for the full
-item list. List payloads include `is_ranked`.
+Custom lists are homogeneous and have an immutable `list_type` of `media` or
+`people`. Omitting `list_type` when creating a list creates a `media` list,
+which preserves the behavior of existing clients and all existing list rows.
+To create a people list:
+
+```json
+{
+  "name": "Favorite Directors",
+  "list_type": "people",
+  "visibility": "public",
+  "is_ranked": true
+}
+```
+
+`GET /api/v1/lists/` returns media lists by default. Pass
+`list_type=people` for people lists or `list_type=all` for both types. The same
+filter is supported by the featured-lists endpoint. A list's type cannot be
+changed by `PATCH`; attempting to do so returns `400`.
+
+All summary and detail payloads add `list_type` and `entries_count`.
+`entries_count` is the number of entries of the list's declared type and
+`people_count` is the people membership count. The
+legacy `items_count`, `preview_items`, and `items` fields retain their media
+semantics: for a people list they are `0`, `[]`, and `[]`. This makes the
+change additive for older native clients. Summaries include `preview_people`
+(capped at 12), and full details include `people`. The opposite-type array is
+always present and empty when its surrounding response includes previews or
+entries.
+
+A people entry is a stored provider snapshot:
+
+```json
+{
+  "entry_id": 73,
+  "id": "525",
+  "source": "tmdb",
+  "name": "Christopher Nolan",
+  "profile_url": "https://image.example/nolan.jpg",
+  "known_for_department": "Directing",
+  "position": 1,
+  "date_added": "2026-07-28T04:10:00Z"
+}
+```
+
+`entry_id` identifies the list membership and is used for deletion and
+reordering. `id` is the provider's person ID and, together with `source`,
+identifies the person. Supported person sources are `tmdb`, `hardcover`,
+`openlibrary`, `musicbrainz`, `mal`, `mangaupdates`, and `anilist`.
+`profile_url` and `known_for_department` may be null in API responses when the
+provider does not supply them.
 
 For add-to-list flows, `GET /api/v1/lists/` accepts optional media ref query
 params: `ref[source]`, `ref[media_type]`, `ref[media_id]`, plus optional
 `ref[season_number]` and `ref[episode_number]`. When present, each result
-includes `has_item: true|false`.
+includes `has_item: true|false` and only media lists are returned.
+
+The people equivalent accepts `person_ref[source]` and `person_ref[id]`.
+Both are required; each returned people list includes
+`has_person: true|false` and its nullable `person_entry_id`. A request must not
+mix `ref` and `person_ref`.
+Membership queries reject a conflicting explicit `list_type`.
+
+Add a person with:
+
+```http
+POST /api/v1/lists/{id}/people/
+Content-Type: application/json
+
+{"ref": {"source": "tmdb", "id": "525"}}
+```
+
+The backend resolves the provider person once, validates that the person
+exists, and persists the display snapshot. A newly created membership returns
+`201` and `{ "created": true, "person": { ... } }`. Repeating the same
+source/person ID is idempotent: it returns `200`, `created: false`, and the
+existing entry without re-fetching or duplicating it. Provider `404` responses
+become API `404`; other provider failures preserve the standard provider error
+contract. Reads use the stored snapshot and do not depend on the provider being
+available.
+
+`GET /api/v1/lists/{id}/people/` returns the standard paged shape:
+`count`, `next`, `previous`, and `results`. Private-list visibility and
+owner/collaborator edit rules are identical to media lists.
+
+Delete a people membership by its membership ID:
+
+```http
+DELETE /api/v1/lists/{id}/people/{entry_id}/
+```
+
+People endpoints reject media lists, and media item endpoints reject people
+lists, with the typed list-mismatch error. This boundary prevents mixed-content
+lists and protects existing media-list behavior.
 
 `PATCH /api/v1/lists/{id}/` accepts `is_ranked`. Switching from normal to ranked
-assigns contiguous positions in current list order. Switching back to normal
-preserves positions so imported or manually ranked order is not lost. Ranked
-adds append with the next position; normal adds leave `position` null. Ranked
-deletes renumber remaining items.
+assigns contiguous positions in current entry order for either list type.
+Switching back to normal preserves positions so imported or manually ranked
+order is not lost. Ranked adds append with the next position; normal adds leave
+`position` null. Ranked deletes renumber remaining entries.
 
 `PATCH /api/v1/lists/{id}/items/reorder/` accepts:
 
@@ -191,6 +277,25 @@ deletes renumber remaining items.
 `item_ids` must be exactly the full set of current list item IDs in desired
 order. The endpoint writes positions `1..n` and returns the full list detail
 payload.
+
+People-list reordering uses membership IDs:
+
+```http
+PATCH /api/v1/lists/{id}/people/reorder/
+Content-Type: application/json
+
+{"entry_ids": [73, 51, 88]}
+```
+
+`entry_ids` must be exactly the full set of people membership IDs currently in
+the list. The endpoint atomically writes positions `1..n`, touches the list's
+`updated_at`, and returns the full list detail payload.
+
+Adding a person emits the existing `list_item_added` social activity verb with
+`media: null`. The activity object snapshot contains `list_name`,
+`list_type: "people"`, and the stored `person` fields (`id`, `source`, `name`,
+`profile_url`, and `known_for_department`). Feed serialization also exposes the
+list name as `object.name`, preserving the fallback expected by older clients.
 
 ### Stats, Imports, Export
 

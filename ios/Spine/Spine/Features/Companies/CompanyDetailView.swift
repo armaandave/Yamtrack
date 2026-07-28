@@ -5,12 +5,13 @@ import SwiftUI
 @Observable
 final class CompanyDetailViewModel {
     var detail: CompanyDetail?
-    var gamesByRole: [CompanyCatalogRole: [MediaSummary]] = [:]
+    var mediaByRole: [CompanyCatalogRole: [MediaSummary]] = [:]
     var nextPageByRole: [CompanyCatalogRole: String] = [:]
     var filter = MediaFilterState()
-    var filterOptions: MediaFilterOptionsResponse = .companyFallback
-    var isLoading = true
-    var errorMessage: String?
+    var filterOptions: MediaFilterOptionsResponse
+    var isLoadingProfile = true
+    var profileErrorMessage: String?
+    var catalogErrorByRole: [CompanyCatalogRole: String] = [:]
 
     private let ref: CompanyRef
     private let companyRepository: CompanyRepository
@@ -18,35 +19,37 @@ final class CompanyDetailViewModel {
     private var filterRevision = 0
     private var loadingRevisionByRole: [CompanyCatalogRole: Int] = [:]
     private var loadingMoreRevisionByRole: [CompanyCatalogRole: Int] = [:]
+    private var loadMoreErrorRoles = Set<CompanyCatalogRole>()
 
     init(ref: CompanyRef, companyRepository: CompanyRepository, onUnauthorized: @escaping () -> Void) {
         self.ref = ref
         self.companyRepository = companyRepository
         self.onUnauthorized = onUnauthorized
+        filterOptions = .companyFallback(for: ref)
     }
 
     func load() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
+        isLoadingProfile = true
+        profileErrorMessage = nil
+        defer { isLoadingProfile = false }
 
         do {
             let loaded = try await companyRepository.detail(ref: ref)
             detail = loaded
-            let role = preferredRole(for: loaded)
             filterRevision += 1
-            await loadGames(for: role, reset: true)
+            guard let role = loaded.catalogRoles.first else { return }
+            await loadCatalog(for: role, reset: true)
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = error.localizedDescription
+            profileErrorMessage = error.localizedDescription
             handleUnauthorized(error)
         }
     }
 
     func loadFilterOptions() async {
         do {
-            filterOptions = try await companyRepository.gameFilterOptions(ref: ref)
+            filterOptions = try await companyRepository.filterOptions(ref: ref)
         } catch is CancellationError {
             return
         } catch {
@@ -54,11 +57,13 @@ final class CompanyDetailViewModel {
         }
     }
 
-    func loadGames(for role: CompanyCatalogRole, reset: Bool = false) async {
-        guard detail != nil, reset || gamesByRole[role] == nil else { return }
+    func loadCatalog(for role: CompanyCatalogRole, reset: Bool = false) async {
+        guard detail?.catalogRoles.contains(role) == true, reset || mediaByRole[role] == nil else { return }
         let requestRevision = filterRevision
         let requestFilter = filter
         loadingRevisionByRole[role] = requestRevision
+        catalogErrorByRole[role] = nil
+        loadMoreErrorRoles.remove(role)
         defer {
             if loadingRevisionByRole[role] == requestRevision {
                 loadingRevisionByRole[role] = nil
@@ -66,20 +71,20 @@ final class CompanyDetailViewModel {
         }
 
         do {
-            let response = try await companyRepository.games(
+            let response = try await companyRepository.catalog(
                 ref: ref,
                 role: role,
                 page: nil,
                 filter: requestFilter
             )
             guard requestRevision == filterRevision, requestFilter == filter else { return }
-            gamesByRole[role] = response.results
+            mediaByRole[role] = response.results
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
         } catch is CancellationError {
             return
         } catch {
             guard requestRevision == filterRevision else { return }
-            errorMessage = error.localizedDescription
+            catalogErrorByRole[role] = error.localizedDescription
             handleUnauthorized(error)
         }
     }
@@ -89,6 +94,7 @@ final class CompanyDetailViewModel {
         let requestRevision = filterRevision
         let requestFilter = filter
         loadingMoreRevisionByRole[role] = requestRevision
+        catalogErrorByRole[role] = nil
         defer {
             if loadingMoreRevisionByRole[role] == requestRevision {
                 loadingMoreRevisionByRole[role] = nil
@@ -96,23 +102,25 @@ final class CompanyDetailViewModel {
         }
 
         do {
-            let response = try await companyRepository.games(
+            let response = try await companyRepository.catalog(
                 ref: ref,
                 role: role,
                 page: page,
                 filter: requestFilter
             )
             guard requestRevision == filterRevision, requestFilter == filter else { return }
-            var games = gamesByRole[role] ?? []
-            var seen = Set(games.map(\.id))
-            games += response.results.filter { seen.insert($0.id).inserted }
-            gamesByRole[role] = games
+            var media = mediaByRole[role] ?? []
+            var seen = Set(media.map(\.id))
+            media += response.results.filter { seen.insert($0.id).inserted }
+            mediaByRole[role] = media
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+            loadMoreErrorRoles.remove(role)
         } catch is CancellationError {
             return
         } catch {
             guard requestRevision == filterRevision else { return }
-            errorMessage = error.localizedDescription
+            catalogErrorByRole[role] = error.localizedDescription
+            loadMoreErrorRoles.insert(role)
             handleUnauthorized(error)
         }
     }
@@ -120,25 +128,34 @@ final class CompanyDetailViewModel {
     func applyFilter(to roles: Set<CompanyCatalogRole>) async {
         filterRevision += 1
         let applyRevision = filterRevision
-        errorMessage = nil
-        gamesByRole = [:]
+        catalogErrorByRole = [:]
+        mediaByRole = [:]
         nextPageByRole = [:]
-        for role in CompanyCatalogRole.allCases where roles.contains(role) {
+        loadingMoreRevisionByRole = [:]
+        let availableRoles = detail?.catalogRoles ?? []
+        let requestedRoles = roles.isEmpty
+            ? Array(availableRoles.prefix(1))
+            : availableRoles.filter(roles.contains)
+        for role in requestedRoles {
             guard applyRevision == filterRevision else { return }
-            await loadGames(for: role, reset: true)
+            await loadCatalog(for: role, reset: true)
         }
     }
 
-    func isLoadingGames(for role: CompanyCatalogRole) -> Bool {
+    func retryCatalog(for role: CompanyCatalogRole) async {
+        if loadMoreErrorRoles.contains(role) {
+            await loadMore(for: role)
+        } else {
+            await loadCatalog(for: role, reset: true)
+        }
+    }
+
+    func isLoadingCatalog(for role: CompanyCatalogRole) -> Bool {
         loadingRevisionByRole[role] == filterRevision
     }
 
     func isLoadingMore(for role: CompanyCatalogRole) -> Bool {
         loadingMoreRevisionByRole[role] == filterRevision
-    }
-
-    private func preferredRole(for detail: CompanyDetail) -> CompanyCatalogRole {
-        detail.catalogs.developed.count > 0 ? .developed : .published
     }
 
     private func handleUnauthorized(_ error: Error) {
@@ -156,6 +173,7 @@ struct CompanyDetailView: View {
     @State private var selectedCompany: CompanyRef?
     @State private var edgeDragOffset: CGFloat = 0
 
+    private let ref: CompanyRef
     private let companyRepository: CompanyRepository
     private let mediaRepository: MediaRepository
     private let trackingRepository: TrackingRepository
@@ -180,6 +198,7 @@ struct CompanyDetailView: View {
         onSelectTab: @escaping (AppTab) -> Void = { _ in },
         onUnauthorized: @escaping () -> Void = {}
     ) {
+        self.ref = ref
         self.companyRepository = companyRepository
         self.mediaRepository = mediaRepository
         self.trackingRepository = trackingRepository
@@ -278,17 +297,18 @@ struct CompanyDetailView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.isLoading, viewModel.detail == nil {
+        if viewModel.isLoadingProfile, viewModel.detail == nil {
             ProgressView()
                 .tint(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel(ref.isAnimeStudio ? "Loading anime studio" : "Loading game studio")
         } else if let detail = viewModel.detail {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 26) {
                     hero(detail)
                     descriptionSection(detail)
                     studioDetailsSection(detail)
-                    gamesSection(detail)
+                    catalogSection(detail)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 48)
@@ -301,12 +321,23 @@ struct CompanyDetailView: View {
                 await viewModel.load()
                 expandPrimaryRole()
             }
-        } else if let error = viewModel.errorMessage, viewModel.detail == nil {
-            ContentUnavailableView(
-                "Could not load studio",
-                systemImage: "building.2.crop.circle",
-                description: Text(error)
-            )
+        } else if let error = viewModel.profileErrorMessage, viewModel.detail == nil {
+            VStack(spacing: 14) {
+                ContentUnavailableView(
+                    "Could not load studio",
+                    systemImage: "building.2.crop.circle",
+                    description: Text(error)
+                )
+                Button("Try Again") {
+                    Task {
+                        await viewModel.load()
+                        expandPrimaryRole()
+                        await viewModel.loadFilterOptions()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Retry loading studio")
+            }
             .foregroundStyle(.white)
             .padding()
         }
@@ -314,9 +345,9 @@ struct CompanyDetailView: View {
 
     private var contentPhase: SpineContentPhase {
         .resolve(
-            isLoading: viewModel.isLoading,
+            isLoading: viewModel.isLoadingProfile,
             hasContent: viewModel.detail != nil,
-            hasError: viewModel.errorMessage != nil
+            hasError: viewModel.profileErrorMessage != nil
         )
     }
 
@@ -356,12 +387,12 @@ struct CompanyDetailView: View {
         }
     }
 
-    private func gamesSection(_ detail: CompanyDetail) -> some View {
-        let availableRoles = CompanyCatalogRole.allCases.filter { $0.count(in: detail) > 0 }
+    private func catalogSection(_ detail: CompanyDetail) -> some View {
+        let availableRoles = detail.catalogRoles
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                CompanySectionLabel(title: "Games")
+                CompanySectionLabel(title: detail.resolvedMediaType == "anime" ? "Anime" : "Games")
 
                 Spacer()
 
@@ -395,11 +426,11 @@ struct CompanyDetailView: View {
                     }
                 }
                 if isExpanding {
-                    Task { await viewModel.loadGames(for: role) }
+                    Task { await viewModel.loadCatalog(for: role) }
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text("\(role.creditRole) · \(role.count(in: detail).formatted()) games")
+                    Text(roleDisclosureTitle(role, detail: detail))
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white.opacity(0.74))
 
@@ -414,56 +445,83 @@ struct CompanyDetailView: View {
                 .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(roleDisclosureTitle(role, detail: detail))
+            .accessibilityValue(expandedRoles.contains(role) ? "Expanded" : "Collapsed")
 
             if expandedRoles.contains(role) {
-                roleGames(role)
+                roleCatalog(role)
             }
         }
     }
 
     @ViewBuilder
-    private func roleGames(_ role: CompanyCatalogRole) -> some View {
-        let games = viewModel.gamesByRole[role] ?? []
+    private func roleCatalog(_ role: CompanyCatalogRole) -> some View {
+        let media = viewModel.mediaByRole[role] ?? []
+        let error = viewModel.catalogErrorByRole[role]
 
         Group {
-            if viewModel.isLoadingGames(for: role), games.isEmpty, viewModel.errorMessage == nil {
+            if viewModel.isLoadingCatalog(for: role), media.isEmpty, error == nil {
                 ProgressView()
                     .tint(.white)
                     .frame(maxWidth: .infinity, minHeight: 120)
-            } else if games.isEmpty {
+                    .accessibilityLabel("Loading \(role.collectionTitle.lowercased())")
+            } else if let error, media.isEmpty {
+                catalogError(error, role: role)
+            } else if media.isEmpty {
                 ContentUnavailableView(
-                    "No \(role.title.lowercased()) games",
+                    role == .studio ? "No anime" : "No \(role.title.lowercased()) games",
                     systemImage: "square.grid.2x2",
-                    description: Text("Games will appear here when available.")
+                    description: Text(
+                        role == .studio
+                            ? "Anime will appear here when available."
+                            : "Games will appear here when available."
+                    )
                 )
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 180)
             } else {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
-                    ForEach(games) { game in
+                    ForEach(media) { item in
                         Button {
                             selectedMedia = MediaBrowsingSelection(
-                                ref: game.ref,
-                                within: games.map(\.ref)
+                                ref: item.ref,
+                                within: media.map(\.ref)
                             )
                         } label: {
                             MediaArtwork(
-                                url: game.displayPosterURL,
-                                title: game.title,
+                                url: item.displayPosterURL,
+                                title: item.displayTitle,
                                 slot: .tagGrid,
-                                mediaType: game.ref.mediaType,
-                                orientation: game.posterOrientation
+                                mediaType: item.ref.mediaType,
+                                orientation: item.posterOrientation
                             )
                             .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("View \(game.title)")
+                        .accessibilityLabel(
+                            role == .studio
+                                ? "View anime \(item.displayTitle)"
+                                : "View \(item.displayTitle)"
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Group {
-                    if viewModel.nextPageByRole[role] != nil {
+                    if error != nil {
+                        Button {
+                            Task { await viewModel.retryCatalog(for: role) }
+                        } label: {
+                            Text("Try Again")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.86))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Retry loading more \(role.collectionTitle.lowercased())")
+                    } else if viewModel.nextPageByRole[role] != nil {
                         Button {
                             Task { await viewModel.loadMore(for: role) }
                         } label: {
@@ -494,11 +552,11 @@ struct CompanyDetailView: View {
     }
 
     private func roleGamesPhase(_ role: CompanyCatalogRole) -> SpineContentPhase {
-        let games = viewModel.gamesByRole[role] ?? []
+        let media = viewModel.mediaByRole[role] ?? []
         return .resolve(
-            isLoading: viewModel.isLoadingGames(for: role),
-            hasContent: !games.isEmpty,
-            hasError: viewModel.errorMessage != nil
+            isLoading: viewModel.isLoadingCatalog(for: role),
+            hasContent: !media.isEmpty,
+            hasError: viewModel.catalogErrorByRole[role] != nil
         )
     }
 
@@ -509,9 +567,31 @@ struct CompanyDetailView: View {
         return viewModel.nextPageByRole[role] == nil ? "empty" : "available"
     }
 
+    private func roleDisclosureTitle(_ role: CompanyCatalogRole, detail: CompanyDetail) -> String {
+        guard let count = role.count(in: detail) else { return role.creditRole }
+        return "\(role.creditRole) · \(count.formatted()) \(role.itemNoun(count: count))"
+    }
+
+    private func catalogError(_ message: String, role: CompanyCatalogRole) -> some View {
+        VStack(spacing: 12) {
+            ContentUnavailableView(
+                "Could not load \(role.collectionTitle.lowercased())",
+                systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90",
+                description: Text(message)
+            )
+            Button("Try Again") {
+                Task { await viewModel.retryCatalog(for: role) }
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityLabel("Retry loading \(role.collectionTitle.lowercased())")
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, minHeight: 180)
+    }
+
     @ViewBuilder
     private func studioDetailsSection(_ detail: CompanyDetail) -> some View {
-        let website = detail.websites.first ?? detail.igdbUrl
+        let website = detail.websites.first ?? detail.providerUrl ?? detail.igdbUrl
         if detail.parent != nil || website != nil {
             VStack(alignment: .leading, spacing: 12) {
                 CompanySectionLabel(title: "Studio Details")
@@ -577,7 +657,7 @@ struct CompanyDetailView: View {
             expandedRoles = []
             return
         }
-        if let primaryRole = CompanyCatalogRole.allCases.first(where: { $0.count(in: detail) > 0 }) {
+        if let primaryRole = detail.catalogRoles.first {
             expandedRoles = [primaryRole]
         } else {
             expandedRoles = []
@@ -635,9 +715,14 @@ private struct CompanyMetadataChips: View {
     let detail: CompanyDetail
 
     private var chips: [String] {
-        var chips = [
-            detail.catalogs.developed.count > 0 ? "\(detail.catalogs.developed.count.formatted()) developed" : nil,
-            detail.catalogs.published.count > 0 ? "\(detail.catalogs.published.count.formatted()) published" : nil,
+        var chips = detail.catalogRoles.compactMap { role -> String? in
+            guard let count = role.count(in: detail), count > 0 else { return nil }
+            if role == .studio {
+                return "\(count.formatted()) anime"
+            }
+            return "\(count.formatted()) \(role.rawValue)"
+        }
+        chips += [
             detail.foundedYear.map { "Founded \($0)" },
             detail.status,
         ].compactMap { $0 }

@@ -148,8 +148,18 @@ def user_activity_queryset(viewer, target_user):
 
 
 def _media_activity(queryset):
-    """Recent activity is media activity, not every social object event."""
-    return _with_live_targets(queryset.filter(verb__in=MEDIA_ACTIVITY_VERBS, item__isnull=False))
+    """Return supported feed activity, including provider-backed list people."""
+    return _with_live_targets(
+        queryset.filter(
+            Q(verb__in=MEDIA_ACTIVITY_VERBS, item__isnull=False)
+            | Q(
+                verb="list_item_added",
+                target_type=ContentLike.CUSTOM_LIST,
+                item__isnull=True,
+                snapshot__entry_type="person",
+            ),
+        ),
+    )
 
 
 def _with_live_targets(queryset):
@@ -189,6 +199,8 @@ def activity_payload(activity, request=None, viewer=None):
         "id": activity.target_id,
         **snapshot,
     }
+    if activity.verb == "list_item_added" and not object_payload.get("name"):
+        object_payload["name"] = snapshot.get("list_name")
     if activity.verb == "progress_updated":
         object_payload = {
             "type": activity.target_type,
@@ -202,6 +214,7 @@ def activity_payload(activity, request=None, viewer=None):
         "created_at": activity.created_at,
         "actor": user_summary(activity.actor, request=request),
         "media": media_summary_from_item(activity.item, request=request) if activity.item else None,
+        "person": snapshot.get("person"),
         "object": object_payload,
         "viewer": {
             "can_view": True,

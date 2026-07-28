@@ -858,6 +858,26 @@ class MALAnimeMetadataTests(TestCase):
         self.assertEqual(result["display_title"], "Attack on Titan")
         self.assertEqual(result["member_count"], 250)
         self.assertEqual(len(result["posters"]), 2)
+        self.assertEqual(result["details"]["studios"], ["Wit Studio"])
+        self.assertEqual(
+            result["details"]["company_credits"],
+            [
+                {
+                    "id": "1",
+                    "source": Sources.MAL.value,
+                    "name": "Wit Studio",
+                    "roles": ["Studio"],
+                },
+            ],
+        )
+        self.assertEqual(
+            mal.cached_studio_identity("1"),
+            {
+                "id": "1",
+                "name": "Wit Studio",
+                "seed_anime_id": "16498",
+            },
+        )
         self.assertEqual(result["related"]["relations"][0]["relation"], "Prequel")
         self.assertNotIn("relation", result["related"]["recommendations"][0])
         self.assertEqual(

@@ -1,9 +1,11 @@
+import hashlib
 import logging
 import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import date, datetime
+from urllib.parse import urlencode
 from heapq import heappop, heappush
 from zoneinfo import ZoneInfo
 
@@ -25,7 +27,7 @@ MANGA_MATCH_FRESH_TTL = 60 * 60 * 24
 MANGA_MATCH_STALE_TTL = 60 * 60 * 24 * 30
 MANGA_MATCH_FAILURE_TTL = 60 * 5
 PERSON_TTL = 60 * 60 * 24
-ANIME_CACHE_VERSION = "v5"
+ANIME_CACHE_VERSION = "v6"
 ANIME_POSTER_CACHE_VERSION = "v1"
 ANIME_POSTER_TTL = 60 * 60 * 24 * 30
 ANIME_CAST_CACHE_VERSION = "v1"
@@ -39,6 +41,22 @@ ANIME_SERIES_FAILURE_TTL = 60 * 5
 ANIME_SERIES_TIMEOUT = 3
 ANIME_SERIES_BUDGET = 10
 ANIME_SERIES_LIMIT = 100
+STUDIO_CACHE_VERSION = "v1"
+STUDIO_IDENTITY_TTL = 60 * 60 * 24 * 30
+STUDIO_FRESH_TTL = 60 * 60 * 24
+STUDIO_STALE_TTL = 60 * 60 * 24 * 30
+STUDIO_FAILURE_TTL = 60 * 5
+STUDIO_REQUEST_TIMEOUT = 3
+STUDIO_LOCK_TTL = 60 * 4
+STUDIO_ANIME_EARLIEST_YEAR = 1917
+STUDIO_ANIME_PAGE_SIZE = 25
+STUDIO_CATALOG_SCAN_LIMIT = 10
+STUDIO_ANIME_SORT_FIELDS = {
+    "popularity": "members",
+    "release_date": "start_date",
+    "average_rating": "score",
+    "title": "title",
+}
 
 
 def handle_error(error):
@@ -159,6 +177,8 @@ def anime(media_id, *, timeout=None, retry_rate_limits=True):
 
         num_episodes = get_number_of_episodes(response)
 
+        studio_credits = get_studio_credits(response)
+        _cache_studio_identities(studio_credits, media_id)
         data = {
             "media_id": media_id,
             "source": Sources.MAL.value,
@@ -183,6 +203,7 @@ def anime(media_id, *, timeout=None, retry_rate_limits=True):
                 "episodes": num_episodes,
                 "runtime": get_runtime(response),
                 "studios": get_studios(response),
+                "company_credits": studio_credits,
                 "season": get_season(response),
                 "broadcast": get_broadcast(response),
                 "source": get_source(response),
@@ -920,6 +941,855 @@ def _normalize_jikan_anime_cast(entries):
     return cast
 
 
+def studio(studio_id):
+    """Return a cached MAL studio profile enriched through Jikan."""
+    studio_id = _positive_studio_id(studio_id)
+    identity = cached_studio_identity(studio_id)
+    prefix = _studio_cache_prefix(studio_id, "profile")
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    failure_key = f"{prefix}:failure"
+    started_at = time.monotonic()
+    if data := cache.get(fresh_key):
+        _log_studio_profile(studio_id, "jikan", "fresh", started_at)
+        return data
+
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        if stale:
+            _log_studio_profile(studio_id, "jikan", "stale", started_at)
+            return stale
+        if identity:
+            return _minimal_studio_profile(studio_id, identity)
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Cached anime studio profile failure"),
+        )
+
+    lock_key = f"{prefix}:lock"
+    if not cache.add(lock_key, 1, timeout=STUDIO_LOCK_TTL):
+        if stale:
+            return stale
+        if identity:
+            return _minimal_studio_profile(studio_id, identity)
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Anime studio profile refresh is already in progress"),
+        )
+
+    try:
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/producers/{studio_id}/full",
+            timeout=STUDIO_REQUEST_TIMEOUT,
+            retry_rate_limits=False,
+        )
+        producer = response.get("data")
+        if not isinstance(producer, dict) or not producer:
+            if not identity:
+                services.raise_not_found_error(
+                    Sources.MAL.value,
+                    studio_id,
+                    "company",
+                )
+            raise ValueError("Jikan returned no matching anime studio")
+        if (
+            producer.get("mal_id") is not None
+            and int(producer["mal_id"]) != studio_id
+        ):
+            raise ValueError("Jikan returned the wrong anime studio")
+        data = _normalize_jikan_studio(producer, studio_id, identity)
+        if not data["name"]:
+            raise ValueError("Jikan returned an anime studio without a name")
+        _cache_studio_profile_identity(data, identity)
+        cache.set(fresh_key, data, STUDIO_FRESH_TTL)
+        cache.set(stale_key, data, STUDIO_STALE_TTL)
+        cache.delete(failure_key)
+        _log_studio_profile(studio_id, "jikan", "resolved", started_at)
+        return data
+    except services.ProviderAPIError:
+        raise
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        cache.set(failure_key, True, STUDIO_FAILURE_TTL)
+        logger.warning(
+            "anime_studio_profile_failed studio_id=%s elapsed_ms=%s type=%s",
+            studio_id,
+            int((time.monotonic() - started_at) * 1000),
+            type(error).__name__,
+        )
+        if stale:
+            return stale
+        if identity:
+            return _minimal_studio_profile(studio_id, identity)
+        if (
+            isinstance(error, requests.exceptions.HTTPError)
+            and getattr(error.response, "status_code", None)
+            == requests.codes.not_found
+        ):
+            services.raise_not_found_error(
+                Sources.MAL.value,
+                studio_id,
+                "company",
+            )
+        raise services.ProviderAPIError(Sources.MAL.value, error) from error
+    finally:
+        cache.delete(lock_key)
+
+
+def studio_anime(
+    studio_id,
+    *,
+    page=1,
+    page_size=STUDIO_ANIME_PAGE_SIZE,
+    sort="popularity",
+    direction=None,
+    filters=None,
+):
+    """Return one provider-paginated page of verified MAL studio anime."""
+    studio_id = _positive_studio_id(studio_id)
+    page = int(page)
+    page_size = int(page_size)
+    if page < 1:
+        raise ValueError("page must be at least 1.")
+    if not 1 <= page_size <= STUDIO_ANIME_PAGE_SIZE:
+        raise ValueError(
+            f"page_size must be between 1 and {STUDIO_ANIME_PAGE_SIZE}.",
+        )
+    if sort not in STUDIO_ANIME_SORT_FIELDS:
+        raise ValueError(
+            "sort must be popularity, release_date, title, or average_rating.",
+        )
+    if direction not in {None, "asc", "desc"}:
+        raise ValueError("direction must be asc or desc.")
+    direction = direction or ("asc" if sort == "title" else "desc")
+    filters = filters or {}
+
+    cache_token = _studio_catalog_token(
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        direction=direction,
+        filters=filters,
+    )
+    prefix = _studio_cache_prefix(studio_id, f"anime:{cache_token}")
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    failure_key = f"{prefix}:failure"
+    started_at = time.monotonic()
+    if data := cache.get(fresh_key):
+        _log_studio_catalog(studio_id, data, "fresh", started_at)
+        return data
+
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        if stale:
+            _log_studio_catalog(studio_id, stale, "stale", started_at)
+            return stale
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Cached anime studio catalog failure"),
+        )
+
+    lock_key = f"{prefix}:lock"
+    if not cache.add(lock_key, 1, timeout=STUDIO_LOCK_TTL):
+        if stale:
+            return stale
+        raise services.ProviderAPIError(
+            Sources.MAL.value,
+            RuntimeError("Anime studio catalog refresh is already in progress"),
+        )
+
+    try:
+        try:
+            data = _jikan_studio_anime_page(
+                studio_id,
+                page=page,
+                page_size=page_size,
+                sort=sort,
+                direction=direction,
+                filters=filters,
+            )
+        except (
+            requests.RequestException,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as jikan_error:
+            if stale:
+                cache.set(failure_key, True, STUDIO_FAILURE_TTL)
+                logger.warning(
+                    "anime_studio_catalog_jikan_failed studio_id=%s "
+                    "fallback=stale type=%s",
+                    studio_id,
+                    type(jikan_error).__name__,
+                )
+                return stale
+            logger.warning(
+                "anime_studio_catalog_jikan_failed studio_id=%s "
+                "fallback=anilist type=%s",
+                studio_id,
+                type(jikan_error).__name__,
+            )
+            data = _anilist_studio_anime_page(
+                studio_id,
+                page=page,
+                page_size=page_size,
+                sort=sort,
+                direction=direction,
+                filters=filters,
+            )
+
+        cache.set(fresh_key, data, STUDIO_FRESH_TTL)
+        cache.set(stale_key, data, STUDIO_STALE_TTL)
+        cache.delete(failure_key)
+        _log_studio_catalog(studio_id, data, "resolved", started_at)
+        return data
+    except services.ProviderAPIError:
+        cache.set(failure_key, True, STUDIO_FAILURE_TTL)
+        if stale:
+            return stale
+        raise
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        cache.set(failure_key, True, STUDIO_FAILURE_TTL)
+        logger.warning(
+            "anime_studio_catalog_failed studio_id=%s elapsed_ms=%s type=%s",
+            studio_id,
+            int((time.monotonic() - started_at) * 1000),
+            type(error).__name__,
+        )
+        if stale:
+            return stale
+        raise services.ProviderAPIError(Sources.MAL.value, error) from error
+    finally:
+        cache.delete(lock_key)
+
+
+def studio_anime_filter_options(studio_id):
+    """Return deterministic MAL studio-catalog filter choices."""
+    studio_id = _positive_studio_id(studio_id)
+    profile = studio(studio_id)
+    first_year = profile.get("founded_year") or STUDIO_ANIME_EARLIEST_YEAR
+    current_year = datetime.now(tz=ZoneInfo("UTC")).year + 1
+    if first_year > current_year:
+        first_year = STUDIO_ANIME_EARLIEST_YEAR
+    requested_genres = [
+        *(filters.get("genres") or []),
+        *(filters.get("excluded_genres") or []),
+    ]
+    genres = _jikan_anime_genres() if requested_genres else []
+    return {
+        "genres": [
+            {"value": genre["name"], "label": genre["name"]}
+            for genre in genres
+        ],
+        "languages": [],
+        "platforms": [],
+        "years": list(range(current_year, first_year - 1, -1)),
+    }
+
+
+def _jikan_studio_anime_page(
+    studio_id,
+    *,
+    page,
+    page_size,
+    sort,
+    direction,
+    filters,
+):
+    requested_page = page
+    current_page = page
+    role_filtered = 0
+    pages_scanned = 0
+    while True:
+        pages_scanned += 1
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/anime",
+            params=_jikan_studio_anime_params(
+                studio_id,
+                page=current_page,
+                page_size=page_size,
+                sort=sort,
+                direction=direction,
+                filters=filters,
+            ),
+            timeout=STUDIO_REQUEST_TIMEOUT,
+            retry_rate_limits=False,
+        )
+        entries = response.get("data")
+        pagination = response.get("pagination") or {}
+        if not isinstance(entries, list):
+            raise ValueError("Jikan returned a malformed anime studio catalog")
+        studio_entries = [
+            entry
+            for entry in entries
+            if str(studio_id) in _studio_ids_from_media(entry)
+        ]
+        role_filtered += len(entries) - len(studio_entries)
+        matching = [
+            entry
+            for entry in studio_entries
+            if _studio_anime_matches(entry, filters)
+        ]
+        normalized = _normalize_jikan_studio_anime(matching)
+        has_next = bool(pagination.get("has_next_page"))
+        if normalized or not has_next:
+            return {
+                "count": None,
+                "page": current_page,
+                "previous_page": (
+                    requested_page - 1
+                    if requested_page > 1
+                    else None
+                ),
+                "next_page": current_page + 1 if has_next else None,
+                "results": normalized,
+                "provider": "jikan",
+                "role_filtered": role_filtered,
+            }
+        if pages_scanned >= STUDIO_CATALOG_SCAN_LIMIT:
+            raise ValueError(
+                "Jikan studio catalog exceeded the sparse-page scan limit",
+            )
+        next_page = int(pagination.get("current_page") or current_page) + 1
+        if next_page <= current_page:
+            raise ValueError("Jikan returned invalid studio pagination")
+        current_page = next_page
+
+
+def _anilist_studio_anime_page(
+    studio_id,
+    *,
+    page,
+    page_size,
+    sort,
+    direction,
+    filters,
+):
+    from app.providers import anilist  # noqa: PLC0415
+
+    identity = cached_studio_identity(studio_id) or {}
+    studio_name = identity.get("name")
+    seed_anime_id = identity.get("seed_anime_id")
+    if not studio_name or not seed_anime_id:
+        raise ValueError("AniList studio fallback requires a cached MAL identity")
+
+    requested_page = page
+    current_page = page
+    role_filtered = 0
+    pages_scanned = 0
+    while True:
+        pages_scanned += 1
+        payload = anilist.studio_anime_ids(
+            studio_id,
+            studio_name=studio_name,
+            seed_anime_id=seed_anime_id,
+            page=current_page,
+            page_size=page_size,
+            sort=sort,
+            direction=direction,
+            timeout=STUDIO_REQUEST_TIMEOUT,
+        )
+        anime_ids = payload["anime_ids"]
+        metadata = _fetch_studio_anime_metadata(anime_ids)
+        if anime_ids and len(metadata) != len(anime_ids):
+            raise ValueError(
+                "MAL returned incomplete AniList studio fallback metadata",
+            )
+        matching = []
+        for anime_id in anime_ids:
+            item = metadata.get(str(anime_id))
+            if not item or str(studio_id) not in _studio_ids_from_media(item):
+                role_filtered += 1
+                continue
+            if _studio_anime_matches(item, filters):
+                matching.append(item)
+        has_next = payload["has_next_page"]
+        if matching or not has_next:
+            return {
+                "count": None,
+                "page": current_page,
+                "previous_page": (
+                    requested_page - 1
+                    if requested_page > 1
+                    else None
+                ),
+                "next_page": current_page + 1 if has_next else None,
+                "results": matching,
+                "provider": "anilist",
+                "role_filtered": role_filtered,
+            }
+        if pages_scanned >= STUDIO_CATALOG_SCAN_LIMIT:
+            raise ValueError(
+                "AniList studio catalog exceeded the sparse-page scan limit",
+            )
+        current_page += 1
+
+
+def _fetch_studio_anime_metadata(anime_ids):
+    if not anime_ids:
+        return {}
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(anime_ids))) as executor:
+        futures = {
+            executor.submit(
+                anime,
+                anime_id,
+                timeout=STUDIO_REQUEST_TIMEOUT,
+                retry_rate_limits=False,
+            ): str(anime_id)
+            for anime_id in anime_ids
+        }
+        for future in as_completed(futures):
+            anime_id = futures[future]
+            try:
+                results[anime_id] = future.result()
+            except (
+                requests.RequestException,
+                services.ProviderAPIError,
+                AttributeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                logger.warning(
+                    "anime_studio_fallback_member_failed anime_id=%s",
+                    anime_id,
+                )
+    return results
+
+
+def _normalize_jikan_studio_anime(entries):
+    posters = cached_anime_posters(
+        entry.get("mal_id")
+        for entry in entries
+    )
+    results = []
+    for entry in entries:
+        anime_id = str(entry.get("mal_id") or "")
+        if not anime_id:
+            continue
+        images = entry.get("images") or {}
+        image = images.get("jpg") or images.get("webp") or {}
+        studios = [
+            studio
+            for studio in entry.get("studios") or []
+            if studio.get("mal_id") is not None and studio.get("name")
+        ]
+        release_date = ((entry.get("aired") or {}).get("from"))
+        results.append(
+            {
+                "media_id": anime_id,
+                "source": Sources.MAL.value,
+                "source_url": (
+                    entry.get("url")
+                    or f"https://myanimelist.net/anime/{anime_id}"
+                ),
+                "media_type": MediaTypes.ANIME.value,
+                "title": entry.get("title") or "",
+                "display_title": entry.get("title_english") or None,
+                "image": (
+                    posters.get(anime_id)
+                    or image.get("large_image_url")
+                    or image.get("image_url")
+                    or settings.IMG_NONE
+                ),
+                "release_date": release_date,
+                "series_format": entry.get("type"),
+                "max_progress": entry.get("episodes"),
+                "synopsis": entry.get("synopsis"),
+                "genres": [
+                    genre["name"]
+                    for genre in entry.get("genres") or []
+                    if genre.get("name")
+                ],
+                "score": entry.get("score"),
+                "score_count": entry.get("scored_by") or 0,
+                "member_count": entry.get("members"),
+                "details": {
+                    "format": entry.get("type"),
+                    "start_date": release_date,
+                    "episodes": entry.get("episodes"),
+                    "studios": [studio["name"] for studio in studios] or None,
+                    "company_credits": [
+                        {
+                            "id": str(studio["mal_id"]),
+                            "source": Sources.MAL.value,
+                            "name": studio["name"],
+                            "roles": ["Studio"],
+                        }
+                        for studio in studios
+                    ],
+                },
+            },
+        )
+    return results
+
+
+def _jikan_studio_anime_params(
+    studio_id,
+    *,
+    page,
+    page_size,
+    sort,
+    direction,
+    filters,
+):
+    params = {
+        "producers": studio_id,
+        "page": page,
+        "limit": page_size,
+        "order_by": STUDIO_ANIME_SORT_FIELDS[sort],
+        "sort": direction,
+    }
+    year = filters.get("year")
+    if year is not None:
+        params["start_date"] = f"{year:04d}-01-01"
+        params["end_date"] = f"{year:04d}-12-31"
+    if filters.get("rating_min") is not None:
+        params["min_score"] = filters["rating_min"]
+    if filters.get("rating_max") is not None:
+        params["max_score"] = filters["rating_max"]
+
+    genres = _jikan_anime_genres()
+    genre_ids = {
+        genre["name"].casefold(): str(genre["id"])
+        for genre in genres
+    }
+    included = [
+        genre_ids[name.casefold()]
+        for name in filters.get("genres") or []
+        if name.casefold() in genre_ids
+    ]
+    excluded = [
+        genre_ids[name.casefold()]
+        for name in filters.get("excluded_genres") or []
+        if name.casefold() in genre_ids
+    ]
+    if included:
+        params["genres"] = ",".join(included)
+    if excluded:
+        params["genres_exclude"] = ",".join(excluded)
+    return params
+
+
+def _studio_anime_matches(entry, filters):
+    genre_names = {
+        str(
+            genre.get("name") if isinstance(genre, dict) else genre,
+        ).strip().casefold()
+        for genre in entry.get("genres") or []
+        if genre
+    }
+    included = {
+        str(value).strip().casefold()
+        for value in filters.get("genres") or []
+        if value
+    }
+    excluded = {
+        str(value).strip().casefold()
+        for value in filters.get("excluded_genres") or []
+        if value
+    }
+    if included and included.isdisjoint(genre_names):
+        return False
+    if excluded and not excluded.isdisjoint(genre_names):
+        return False
+
+    release_date = _studio_release_date(
+        entry.get("release_date")
+        or ((entry.get("aired") or {}).get("from"))
+        or (entry.get("details") or {}).get("start_date"),
+    )
+    year = filters.get("year")
+    if year is not None and (release_date is None or release_date.year != year):
+        return False
+    release_status = filters.get("release_status")
+    today = datetime.now(tz=ZoneInfo("UTC")).date()
+    if release_status == "released" and (
+        release_date is None or release_date > today
+    ):
+        return False
+    if release_status == "unreleased" and (
+        release_date is None or release_date <= today
+    ):
+        return False
+
+    rating_min = filters.get("rating_min")
+    rating_max = filters.get("rating_max")
+    if rating_min is not None or rating_max is not None:
+        score = entry.get("score")
+        if score in {None, ""}:
+            return False
+        score = float(score)
+        if rating_min is not None and score < float(rating_min):
+            return False
+        if rating_max is not None and score > float(rating_max):
+            return False
+    return True
+
+
+def _studio_ids_from_media(entry):
+    raw_studios = entry.get("studios") or []
+    details = entry.get("details") or {}
+    credits = details.get("company_credits") or []
+    return {
+        str(value)
+        for value in [
+            *[
+                studio.get("mal_id") or studio.get("id")
+                for studio in raw_studios
+                if isinstance(studio, dict)
+            ],
+            *[
+                credit.get("id")
+                for credit in credits
+                if isinstance(credit, dict)
+                and "Studio" in (credit.get("roles") or [])
+            ],
+        ]
+        if value is not None
+    }
+
+
+def _jikan_anime_genres():
+    prefix = f"mal:{STUDIO_CACHE_VERSION}:anime-studio-genres"
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    failure_key = f"{prefix}:failure"
+    if data := cache.get(fresh_key):
+        return data
+    stale = cache.get(stale_key)
+    if cache.get(failure_key):
+        return stale or []
+    lock_key = f"{prefix}:lock"
+    if not cache.add(lock_key, 1, timeout=STUDIO_LOCK_TTL):
+        return stale or []
+    try:
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/genres/anime",
+            params={"filter": "genres"},
+            timeout=STUDIO_REQUEST_TIMEOUT,
+            retry_rate_limits=False,
+        )
+        data = [
+            {"id": genre["mal_id"], "name": str(genre["name"]).strip()}
+            for genre in response.get("data") or []
+            if genre.get("mal_id") is not None
+            and str(genre.get("name") or "").strip()
+        ]
+        data.sort(key=lambda genre: genre["name"].casefold())
+        cache.set(fresh_key, data, STUDIO_FRESH_TTL)
+        cache.set(stale_key, data, STUDIO_STALE_TTL)
+        cache.delete(failure_key)
+        return data
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        cache.set(failure_key, True, STUDIO_FAILURE_TTL)
+        return stale or []
+    finally:
+        cache.delete(lock_key)
+
+
+def _normalize_jikan_studio(producer, studio_id, identity):
+    images = producer.get("images") or {}
+    image = images.get("jpg") or images.get("webp") or {}
+    provider_url = (
+        producer.get("url")
+        or f"https://myanimelist.net/anime/producer/{studio_id}"
+    )
+    websites = []
+    for website in producer.get("external") or []:
+        url = website.get("url") if isinstance(website, dict) else None
+        if url and url != provider_url and url not in websites:
+            websites.append(url)
+    return {
+        "id": str(studio_id),
+        "source": Sources.MAL.value,
+        "name": (
+            (identity or {}).get("name")
+            or _jikan_studio_name(producer)
+            or ""
+        ),
+        "description": helpers.plain_text(producer.get("about")),
+        "image": (
+            image.get("large_image_url")
+            or image.get("image_url")
+        ),
+        "founded_year": _studio_year(producer.get("established")),
+        "provider_url": provider_url,
+        "websites": websites,
+    }
+
+
+def _minimal_studio_profile(studio_id, identity):
+    return {
+        "id": str(studio_id),
+        "source": Sources.MAL.value,
+        "name": identity.get("name") or "",
+        "description": None,
+        "image": None,
+        "founded_year": None,
+        "provider_url": f"https://myanimelist.net/anime/producer/{studio_id}",
+        "websites": [],
+    }
+
+
+def _cache_studio_profile_identity(profile, identity):
+    cache.set(
+        _studio_identity_key(profile["id"]),
+        {
+            "id": profile["id"],
+            "name": profile["name"],
+            "seed_anime_id": (identity or {}).get("seed_anime_id"),
+        },
+        STUDIO_IDENTITY_TTL,
+    )
+
+
+def _jikan_studio_name(producer):
+    titles = producer.get("titles") or []
+    preferred = next(
+        (
+            title.get("title")
+            for title in titles
+            if str(title.get("type") or "").casefold() == "default"
+        ),
+        None,
+    )
+    if preferred:
+        return str(preferred).strip()
+    return next(
+        (
+            str(title.get("title") or "").strip()
+            for title in titles
+            if str(title.get("title") or "").strip()
+        ),
+        str(producer.get("name") or "").strip(),
+    )
+
+
+def _studio_year(value):
+    match = re.search(r"\b(\d{4})\b", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _studio_release_date(value):
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _positive_studio_id(studio_id):
+    try:
+        value = int(studio_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("company_id must be a positive integer.") from error
+    if value < 1:
+        raise ValueError("company_id must be a positive integer.")
+    return value
+
+
+def _studio_cache_prefix(studio_id, kind):
+    return (
+        f"mal:{STUDIO_CACHE_VERSION}:studio:{studio_id}:{kind}"
+    )
+
+
+def _studio_catalog_token(*, page, page_size, sort, direction, filters):
+    values = [
+        ("page", page),
+        ("page_size", page_size),
+        ("sort", sort),
+        ("direction", direction),
+        (
+            "year",
+            filters.get("year")
+            if filters.get("year") is not None
+            else "",
+        ),
+        ("release_status", filters.get("release_status") or ""),
+        (
+            "rating_min",
+            filters.get("rating_min")
+            if filters.get("rating_min") is not None
+            else "",
+        ),
+        (
+            "rating_max",
+            filters.get("rating_max")
+            if filters.get("rating_max") is not None
+            else "",
+        ),
+        *[
+            ("genre", value)
+            for value in sorted(filters.get("genres") or [], key=str.casefold)
+        ],
+        *[
+            ("exclude_genre", value)
+            for value in sorted(
+                filters.get("excluded_genres") or [],
+                key=str.casefold,
+            )
+        ],
+    ]
+    return hashlib.sha256(
+        urlencode(values).encode(),
+    ).hexdigest()[:20]
+
+
+def _log_studio_profile(studio_id, provider, cache_state, started_at):
+    logger.info(
+        "anime_studio_profile studio_id=%s provider=%s cache=%s elapsed_ms=%s",
+        studio_id,
+        provider,
+        cache_state,
+        int((time.monotonic() - started_at) * 1000),
+    )
+
+
+def _log_studio_catalog(studio_id, payload, cache_state, started_at):
+    logger.info(
+        "anime_studio_catalog studio_id=%s provider=%s cache=%s page=%s "
+        "returned=%s role_filtered=%s elapsed_ms=%s",
+        studio_id,
+        payload.get("provider"),
+        cache_state,
+        payload.get("page"),
+        len(payload.get("results") or []),
+        payload.get("role_filtered") or 0,
+        int((time.monotonic() - started_at) * 1000),
+    )
+
+
 def person_page(
     person_id,
     *,
@@ -1256,6 +2126,55 @@ def get_studios(response):
     if response["studios"]:
         return [studio["name"] for studio in response["studios"]]
     return None
+
+
+def get_studio_credits(response):
+    """Return structured MAL studio identities without replacing legacy names."""
+    credits = []
+    seen = set()
+    for studio in response.get("studios") or []:
+        studio_id = studio.get("id")
+        name = str(studio.get("name") or "").strip()
+        if studio_id is None or not name or str(studio_id) in seen:
+            continue
+        seen.add(str(studio_id))
+        credits.append(
+            {
+                "id": str(studio_id),
+                "source": Sources.MAL.value,
+                "name": name,
+                "roles": ["Studio"],
+            },
+        )
+    return credits
+
+
+def cached_studio_identity(studio_id):
+    """Return a recently observed official MAL studio identity."""
+    return cache.get(_studio_identity_key(studio_id))
+
+
+def _cache_studio_identities(credits, media_id):
+    for credit in credits:
+        studio_id = credit["id"]
+        current = cached_studio_identity(studio_id) or {}
+        cache.set(
+            _studio_identity_key(studio_id),
+            {
+                "id": studio_id,
+                "name": credit["name"],
+                "seed_anime_id": str(
+                    current.get("seed_anime_id") or media_id,
+                ),
+            },
+            STUDIO_IDENTITY_TTL,
+        )
+
+
+def _studio_identity_key(studio_id):
+    return (
+        f"mal:{STUDIO_CACHE_VERSION}:studio:{studio_id}:identity"
+    )
 
 
 def get_season(response):

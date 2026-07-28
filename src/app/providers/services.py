@@ -25,6 +25,15 @@ from app.providers import (
 logger = logging.getLogger(__name__)
 RATE_LIMIT_MAX_RETRIES = 3
 RATE_LIMIT_MAX_WAIT_SECONDS = 60
+SUPPORTED_PERSON_SOURCES = (
+    Sources.TMDB.value,
+    Sources.HARDCOVER.value,
+    Sources.OPENLIBRARY.value,
+    Sources.MUSICBRAINZ.value,
+    Sources.MAL.value,
+    Sources.MANGAUPDATES.value,
+    "anilist",
+)
 
 
 def get_redis_client():
@@ -461,6 +470,8 @@ def get_company(source, company_id):
     """Return a provider company profile for native company pages."""
     if source == Sources.IGDB.value:
         return igdb.company(company_id)
+    if source == Sources.MAL.value:
+        return mal.studio(company_id)
     raise_not_found_error(source, company_id, "company")
 
 
@@ -476,3 +487,33 @@ def company_catalog_count(source, company, role):
     if source == Sources.IGDB.value:
         return igdb.company_catalog_count(company, role)
     raise_not_found_error(source, company.get("id"), "company")
+
+
+def get_company_anime(
+    source,
+    company_id,
+    *,
+    page,
+    page_size,
+    sort,
+    direction,
+    filters,
+):
+    """Return one provider-paginated anime studio catalog page."""
+    if source == Sources.MAL.value:
+        return mal.studio_anime(
+            company_id,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+            direction=direction,
+            filters=filters,
+        )
+    raise_not_found_error(source, company_id, "company")
+
+
+def get_company_anime_filter_options(source, company_id):
+    """Return provider-backed anime studio filter choices."""
+    if source == Sources.MAL.value:
+        return mal.studio_anime_filter_options(company_id)
+    raise_not_found_error(source, company_id, "company")

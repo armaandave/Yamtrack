@@ -61,7 +61,8 @@ struct StatsView: View {
         .navigationTitle("Stats")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .task {
             if case .initial = viewModel.state {
@@ -85,37 +86,40 @@ struct StatsView: View {
 
     private var periodPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach([StatsPeriod.allTime] + StatsPeriod.recentYears()) { period in
-                    Button {
-                        Task { await viewModel.selectPeriod(period) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if viewModel.isLoading, viewModel.selectedPeriod == period {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .tint(.white)
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    ForEach([StatsPeriod.allTime] + StatsPeriod.recentYears()) { period in
+                        let isSelected = viewModel.selectedPeriod == period
+
+                        Button {
+                            Task { await viewModel.selectPeriod(period) }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if viewModel.isLoading, isSelected {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .tint(.white)
+                                }
+                                Text(period.title)
                             }
-                            Text(period.title)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white.opacity(isSelected ? 0.96 : 0.52))
+                            .padding(.horizontal, 15)
+                            .frame(minWidth: 44, minHeight: 44)
                         }
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white.opacity(viewModel.selectedPeriod == period ? 0.96 : 0.48))
-                        .padding(.horizontal, 13)
-                        .frame(height: 34)
-                        .background(
-                            viewModel.selectedPeriod == period ? Color.white.opacity(0.13) : Color.white.opacity(0.035),
+                        .buttonStyle(.plain)
+                        .glassEffect(
+                            isSelected
+                                ? .regular.tint(.white.opacity(0.08)).interactive()
+                                : .clear.interactive(),
                             in: Capsule()
                         )
-                        .overlay {
-                            Capsule()
-                                .stroke(.white.opacity(viewModel.selectedPeriod == period ? 0.16 : 0.055), lineWidth: 1)
-                        }
+                        .accessibilityLabel("Show stats for \(period.title)")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Show stats for \(period.title)")
-                    .accessibilityAddTraits(viewModel.selectedPeriod == period ? .isSelected : [])
                 }
             }
+            .padding(.vertical, 2)
         }
     }
 
@@ -147,11 +151,7 @@ struct StatsView: View {
         let accent = StatsPalette.accent(for: selectedMediaType)
 
         return VStack(alignment: .leading, spacing: 26) {
-            StatsHero(summary: summary, period: viewModel.selectedPeriod)
-
-            personSection(summary, accent: StatsPalette.allMedia)
-
-            mediaScopePicker(summary)
+            mediaPicker(summary)
 
             if scope.isEmpty {
                 StatsEmptyView(
@@ -159,17 +159,25 @@ struct StatsView: View {
                     message: "Choose another media type or period to explore your history."
                 )
             } else {
-                scopeOverview(scope, summary: summary, accent: accent)
+                StatsHero(
+                    scope: scope,
+                    period: viewModel.selectedPeriod,
+                    mediaType: selectedMediaType,
+                    accent: accent
+                )
+
+                if selectedMediaType == nil {
+                    personSection(summary, accent: StatsPalette.allMedia)
+                }
 
                 if selectedMediaType == nil {
                     mediaMixSection(summary)
                 }
 
-                statusSection(scope, accent: accent)
                 ratingSection(scope, accent: accent)
                 releaseYearSection(scope, accent: accent)
-                tasteSections(scope, accent: accent)
-                mediaRails(scope, accent: accent)
+                tasteSections(scope)
+                mediaGrids(scope)
             }
         }
     }
@@ -236,81 +244,39 @@ struct StatsView: View {
         }
     }
 
-    private func mediaScopePicker(_ summary: StatsSummary) -> some View {
-        StatsSection(title: "Explore your media", subtitle: "Switch scope without losing your place") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 9) {
-                    StatsScopeButton(
-                        title: "All Media",
-                        count: summary.range.isAllTime ? summary.overview.trackedCount : summary.overview.uniqueLoggedCount,
-                        systemName: "square.grid.2x2.fill",
-                        tint: StatsPalette.allMedia,
-                        isSelected: selectedMediaType == nil
-                    ) {
-                        withAnimation(.snappy(duration: 0.2)) {
-                            selectedMediaType = nil
-                        }
-                    }
+    private func mediaPicker(_ summary: StatsSummary) -> some View {
+        let advertised = summary.mediaTypes.map(\.mediaType)
+        let extra = advertised.filter { !APIConstants.fallbackMediaTypes.contains($0) }
 
-                    ForEach(summary.mediaTypes) { mediaType in
-                        let theme = MediaTypeTheme.theme(for: mediaType.mediaType)
-                        StatsScopeButton(
-                            title: theme.displayName,
-                            count: summary.range.isAllTime ? mediaType.trackedCount : mediaType.uniqueLoggedCount,
-                            mediaTheme: theme,
-                            tint: StatsPalette.accent(for: mediaType.mediaType),
-                            isSelected: selectedMediaType == mediaType.mediaType
-                        ) {
-                            withAnimation(.snappy(duration: 0.2)) {
-                                selectedMediaType = mediaType.mediaType
-                            }
-                        }
-                    }
-                }
+        return MediaSearchLensPicker(
+            selectedType: Binding(
+                get: { selectedMediaType ?? "" },
+                set: { selectedMediaType = $0.isEmpty ? nil : $0 }
+            ),
+            availableTypes: APIConstants.fallbackMediaTypes + extra,
+            horizontalPadding: 0,
+            fitsAllTypes: true,
+            allowsEmptySelection: true,
+            isCompact: true
+        ) { selectedType in
+            withAnimation(.snappy(duration: 0.2)) {
+                selectedMediaType = selectedType.isEmpty ? nil : selectedType
             }
         }
-    }
-
-    private func scopeOverview(_ scope: StatsScopeSnapshot, summary: StatsSummary, accent: Color) -> some View {
-        let primaryTitle = summary.range.isAllTime ? "Tracked" : "Unique logged"
-        let primaryValue = summary.range.isAllTime ? scope.trackedCount : scope.uniqueLoggedCount
-
-        return StatsSection(title: scope.title, subtitle: scope.subtitle) {
-            StatsMetricGrid(items: [
-                StatsMetricItem(title: primaryTitle, value: primaryValue.formatted(), systemName: "rectangle.stack.fill", tint: accent),
-                StatsMetricItem(
-                    title: "Completed",
-                    value: scope.completedCount.formatted(),
-                    detail: summary.range.isAllTime ? nil : "Current library",
-                    systemName: "checkmark.circle.fill",
-                    tint: .green
-                ),
-                StatsMetricItem(title: "Logs", value: scope.diaryEntryCount.formatted(), systemName: "calendar.badge.checkmark", tint: .cyan),
-                StatsMetricItem(
-                    title: "Average rating",
-                    value: scope.numericAverageRating.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—",
-                    detail: scope.ratedCount > 0 ? "\(scope.ratedCount.formatted()) rated" : nil,
-                    systemName: "star.fill",
-                    tint: .yellow
-                ),
-                StatsMetricItem(title: "Rated", value: scope.ratedCount.formatted(), systemName: "star.bubble.fill", tint: .yellow),
-                StatsMetricItem(title: "Reviews", value: scope.reviewCount.formatted(), systemName: "text.bubble.fill", tint: .indigo),
-                StatsMetricItem(title: "Repeat logs", value: scope.repeatCount.formatted(), systemName: "arrow.trianglehead.2.clockwise", tint: .pink),
-                StatsMetricItem(
-                    title: "Likes",
-                    value: scope.likedCount.formatted(),
-                    detail: summary.range.isAllTime ? nil : "Current library",
-                    systemName: "heart.fill",
-                    tint: .red
-                ),
-            ])
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Media type")
+        .accessibilityValue(
+            selectedMediaType.map { MediaTypeTheme.theme(for: $0).displayName } ?? "All Media"
+        )
+        .accessibilityAction(named: "Show All Media") {
+            selectedMediaType = nil
         }
     }
 
     @ViewBuilder
     private func mediaMixSection(_ summary: StatsSummary) -> some View {
         let slices = summary.mediaTypes.compactMap { item -> SWStatsSlice? in
-            let value = summary.range.isAllTime ? item.trackedCount : item.uniqueLoggedCount
+            let value = summary.range.isAllTime ? item.completedCount : item.uniqueLoggedCount
             guard value > 0 else { return nil }
             return SWStatsSlice(
                 id: item.mediaType,
@@ -321,42 +287,25 @@ struct StatsView: View {
         }
 
         if !slices.isEmpty {
-            StatsSection(title: "Media mix", subtitle: summary.range.isAllTime ? "Your tracked library by type" : "Unique logged titles by type") {
-                StatsDonutSurface(slices: slices, centerTitle: "TITLES")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statusSection(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
-        let slices = StatsCopy.statusOrder.compactMap { key -> SWStatsSlice? in
-            guard let value = scope.statuses[key], value > 0 else { return nil }
-            return SWStatsSlice(
-                id: key,
-                title: StatsCopy.statusTitle(key),
-                value: value,
-                color: StatsPalette.status(key, fallback: accent)
-            )
-        }
-
-        if !slices.isEmpty {
-            StatsSection(title: "Current library status", subtitle: "Live tracking state, independent of the selected year") {
-                StatsDonutSurface(slices: slices, centerTitle: "TRACKED")
+            StatsSection(
+                title: "Media mix",
+                subtitle: summary.range.isAllTime ? "Completed titles by type" : "Unique logged titles by type"
+            ) {
+                StatsDonutSurface(slices: slices, centerTitle: summary.range.isAllTime ? "COMPLETED" : "LOGGED")
             }
         }
     }
 
     @ViewBuilder
     private func ratingSection(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
-        let points = scope.ratingDistribution.compactMap { bucket -> SWStatsRatingPoint? in
-            guard let rating = bucket.numericRating else { return nil }
-            return SWStatsRatingPoint(rating: rating, count: bucket.count)
-        }
-
-        if points.contains(where: { $0.count > 0 }) {
+        if scope.ratingPoints.contains(where: { $0.count > 0 }) {
             StatsSection(title: "Your ratings", subtitle: "Every half-step on Spine's 10-point scale") {
                 StatsSurface {
-                    SWStatsRatingChart(points: points, average: scope.numericAverageRating, tint: accent)
+                    SWStatsRatingChart(
+                        points: scope.ratingPoints,
+                        average: scope.numericAverageRating,
+                        tint: accent
+                    )
                         .frame(height: 205)
                 }
             }
@@ -379,26 +328,24 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func tasteSections(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
+    private func tasteSections(_ scope: StatsScopeSnapshot) -> some View {
         if !scope.topGenres.isEmpty || !scope.topLanguages.isEmpty {
             StatsSection(title: "Taste", subtitle: "Patterns from locally stored media metadata") {
                 if !scope.topGenres.isEmpty {
-                    StatsRankedSurface(
-                        title: "TOP GENRES",
+                    StatsTasteGroup(
+                        title: "Genres",
                         items: Array(scope.topGenres.prefix(8)),
                         coverage: scope.metadataCoverage.genreItems,
-                        total: scope.metadataCoverage.totalItems,
-                        tint: accent
+                        total: scope.metadataCoverage.totalItems
                     )
                 }
 
                 if !scope.topLanguages.isEmpty {
-                    StatsRankedSurface(
-                        title: "TOP LANGUAGES",
+                    StatsTasteGroup(
+                        title: "Languages",
                         items: Array(scope.topLanguages.prefix(8)),
                         coverage: scope.metadataCoverage.languageItems,
-                        total: scope.metadataCoverage.totalItems,
-                        tint: StatsPalette.language
+                        total: scope.metadataCoverage.totalItems
                     )
                 }
             }
@@ -406,17 +353,18 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func mediaRails(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
+    private func mediaGrids(_ scope: StatsScopeSnapshot) -> some View {
         if !scope.topRated.isEmpty {
             StatsSection(title: "Top rated", subtitle: "Your highest ratings in this scope") {
-                StatsPosterRail(
+                StatsPosterGrid(
                     items: scope.topRated.map {
                         StatsPosterItem(
                             media: $0.media,
-                            caption: $0.rating.map { "\($0) / 10" } ?? "RATED"
+                            caption: StatsCopy.rating($0.rating, for: $0.media),
+                            systemName: "star.fill",
+                            tint: .yellow
                         )
-                    },
-                    accent: accent
+                    }
                 ) { media in
                     selectedRef = media.ref
                 }
@@ -425,14 +373,15 @@ struct StatsView: View {
 
         if !scope.mostLogged.isEmpty {
             StatsSection(title: "Most logged", subtitle: "The stories you returned to most") {
-                StatsPosterRail(
+                StatsPosterGrid(
                     items: scope.mostLogged.map {
                         StatsPosterItem(
                             media: $0.media,
-                            caption: "\($0.logCount) \($0.logCount == 1 ? "LOG" : "LOGS")"
+                            caption: "\($0.logCount) \($0.logCount == 1 ? "log" : "logs")",
+                            systemName: "arrow.trianglehead.2.clockwise",
+                            tint: .white.opacity(0.82)
                         )
-                    },
-                    accent: accent
+                    }
                 ) { media in
                     selectedRef = media.ref
                 }
@@ -451,7 +400,6 @@ private enum StatsContentPhase: Hashable {
 private struct StatsScopeSnapshot {
     let title: String
     let subtitle: String
-    let trackedCount: Int
     let completedCount: Int
     let diaryEntryCount: Int
     let uniqueLoggedCount: Int
@@ -460,8 +408,7 @@ private struct StatsScopeSnapshot {
     let ratedCount: Int
     let numericAverageRating: Double?
     let likedCount: Int
-    let statuses: [String: Int]
-    let ratingDistribution: [StatsRatingBucket]
+    let ratingPoints: [SWStatsRatingPoint]
     let releaseYears: [StatsReleaseYearBucket]
     let topGenres: [StatsNamedCount]
     let topLanguages: [StatsNamedCount]
@@ -472,45 +419,66 @@ private struct StatsScopeSnapshot {
 
     init(summary: StatsSummary, mediaType: String?) {
         isAllTime = summary.range.isAllTime
-        if let mediaType, let media = summary.mediaTypeSummary(for: mediaType) {
+        if let mediaType {
             let theme = MediaTypeTheme.theme(for: mediaType)
             title = theme.displayName
             subtitle = "A focused view of your \(theme.displayName.lowercased())"
-            trackedCount = media.trackedCount
-            completedCount = media.completedCount
-            diaryEntryCount = media.diaryEntryCount
-            uniqueLoggedCount = media.uniqueLoggedCount
-            reviewCount = media.reviewCount
-            repeatCount = media.repeatCount
-            ratedCount = media.ratedCount
-            numericAverageRating = media.numericAverageRating
-            likedCount = media.likedCount
-            statuses = media.statuses
-            ratingDistribution = media.ratingDistribution
-            releaseYears = media.releaseYears
-            topGenres = media.topGenres
-            topLanguages = media.topLanguages
-            metadataCoverage = media.metadataCoverage
-            topRated = media.topRated
-            mostLogged = media.mostLogged
+            if let media = summary.mediaTypeSummary(for: mediaType) {
+                let points = SWStatsRatingChart.normalizedPoints(
+                    from: media.ratingDistribution,
+                    mediaType: mediaType
+                )
+                completedCount = media.completedCount
+                diaryEntryCount = media.diaryEntryCount
+                uniqueLoggedCount = media.uniqueLoggedCount
+                reviewCount = media.reviewCount
+                repeatCount = media.repeatCount
+                ratedCount = media.ratedCount
+                numericAverageRating = SWStatsRatingChart.averageRating(from: points)
+                likedCount = media.likedCount
+                ratingPoints = points
+                releaseYears = media.releaseYears
+                topGenres = media.topGenres
+                topLanguages = media.topLanguages
+                metadataCoverage = media.metadataCoverage
+                topRated = media.topRated
+                mostLogged = media.mostLogged
+            } else {
+                completedCount = 0
+                diaryEntryCount = 0
+                uniqueLoggedCount = 0
+                reviewCount = 0
+                repeatCount = 0
+                ratedCount = 0
+                numericAverageRating = nil
+                likedCount = 0
+                ratingPoints = []
+                releaseYears = []
+                topGenres = []
+                topLanguages = []
+                metadataCoverage = .empty
+                topRated = []
+                mostLogged = []
+            }
         } else {
+            let typedPoints = SWStatsRatingChart.normalizedPoints(from: summary.mediaTypes)
+            let points = typedPoints.contains { $0.count > 0 }
+                ? typedPoints
+                : SWStatsRatingChart.normalizedPoints(
+                    from: summary.ratingDistribution,
+                    mediaType: nil
+                )
             title = "All Media"
             subtitle = "Your full media life, without mixing incompatible units"
-            trackedCount = summary.overview.trackedCount
             completedCount = summary.overview.completedCount
             diaryEntryCount = summary.overview.diaryEntryCount
             uniqueLoggedCount = summary.overview.uniqueLoggedCount
             reviewCount = summary.overview.reviewCount
             repeatCount = summary.overview.repeatCount
             ratedCount = summary.overview.ratedCount
-            numericAverageRating = summary.overview.numericAverageRating
+            numericAverageRating = SWStatsRatingChart.averageRating(from: points)
             likedCount = summary.overview.likedCount
-            statuses = summary.mediaTypes.reduce(into: [:]) { result, media in
-                for (status, count) in media.statuses {
-                    result[status, default: 0] += count
-                }
-            }
-            ratingDistribution = summary.ratingDistribution
+            ratingPoints = points
             releaseYears = summary.releaseYears
             topGenres = summary.topGenres
             topLanguages = summary.topLanguages
@@ -530,100 +498,124 @@ private struct StatsScopeSnapshot {
                 && topRated.isEmpty
                 && mostLogged.isEmpty
         }
-        return trackedCount == 0
+        return completedCount == 0
             && diaryEntryCount == 0
             && uniqueLoggedCount == 0
             && ratedCount == 0
-            && likedCount == 0
             && topRated.isEmpty
             && mostLogged.isEmpty
     }
 }
 
 private struct StatsHero: View {
-    let summary: StatsSummary
+    let scope: StatsScopeSnapshot
     let period: StatsPeriod
+    let mediaType: String?
+    let accent: Color
 
     private var primaryCount: Int {
-        summary.range.isAllTime ? summary.overview.trackedCount : summary.overview.uniqueLoggedCount
+        scope.isAllTime ? scope.completedCount : scope.uniqueLoggedCount
     }
 
     private var primaryLabel: String {
-        summary.range.isAllTime ? "tracked titles" : "unique titles logged"
+        scope.isAllTime ? "titles completed" : "unique titles logged"
+    }
+
+    private var theme: MediaTypeTheme {
+        MediaTypeTheme.theme(for: mediaType ?? APIConstants.allMedia)
+    }
+
+    private var metrics: [StatsHeroMetricItem] {
+        var items = [
+            StatsHeroMetricItem(title: "Logs", value: scope.diaryEntryCount.formatted()),
+            StatsHeroMetricItem(
+                title: "Average",
+                value: scope.numericAverageRating?.formatted(.number.precision(.fractionLength(1))) ?? "—"
+            ),
+            StatsHeroMetricItem(title: "Rated", value: scope.ratedCount.formatted()),
+            StatsHeroMetricItem(title: "Reviews", value: scope.reviewCount.formatted()),
+            StatsHeroMetricItem(title: "Repeats", value: scope.repeatCount.formatted()),
+        ]
+        if scope.isAllTime {
+            items.append(StatsHeroMetricItem(title: "Likes", value: scope.likedCount.formatted()))
+        }
+        return items
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            StatsPalette.allMedia.opacity(0.3),
-                            Color(red: 0.12, green: 0.12, blue: 0.14),
-                            Color.black.opacity(0.92),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
 
-            Circle()
-                .fill(StatsPalette.allMedia.opacity(0.16))
-                .frame(width: 190, height: 190)
-                .blur(radius: 28)
-                .offset(x: 52, y: 62)
-
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 92, weight: .black))
-                .foregroundStyle(.white.opacity(0.06))
-                .offset(x: -14, y: -12)
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Label(period.title.uppercased(), systemImage: "sparkles")
-                        .font(.system(size: 10, weight: .black))
-                        .tracking(1)
-                        .foregroundStyle(.white.opacity(0.62))
-                    Spacer()
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Your media life")
-                        .font(.system(size: 29, weight: .black))
-                        .foregroundStyle(.white)
-
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(primaryCount.formatted())
-                            .font(.system(size: 42, weight: .black, design: .rounded))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                        Text(primaryLabel)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.5))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 9) {
+                Group {
+                    if mediaType == nil {
+                        Image(systemName: "globe")
+                            .font(.system(size: 14, weight: .bold))
+                    } else {
+                        MediaTypeGlyph(theme: theme, size: 14)
                     }
-                    .foregroundStyle(.white)
+                }
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 30, height: 30)
+                .background(accent.opacity(0.18), in: Circle())
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(scope.title)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text(period.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.42))
                 }
 
-                HStack(spacing: 18) {
-                    StatsHeroMetric(value: summary.overview.diaryEntryCount.formatted(), title: "LOGS")
-                    StatsHeroMetric(
-                        value: summary.overview.numericAverageRating.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—",
-                        title: "AVG RATING"
-                    )
-                    StatsHeroMetric(value: summary.overview.activeDays.formatted(), title: "ACTIVE DAYS")
+                Spacer()
+
+                Text(scope.isAllTime ? "ALL TIME" : "THIS PERIOD")
+                    .font(.system(size: 9, weight: .black))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(primaryCount.formatted())
+                    .font(.system(size: 48, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                Text(primaryLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.52))
+            }
+
+            Divider()
+                .overlay(.white.opacity(0.08))
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
+                alignment: .leading,
+                spacing: 14
+            ) {
+                ForEach(metrics) { metric in
+                    StatsHeroMetric(value: metric.value, title: metric.title)
                 }
             }
-            .padding(20)
         }
-        .frame(minHeight: 242)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(20)
+        .background(.white.opacity(0.025), in: shape)
+        .glassEffect(.regular.tint(.white.opacity(0.035)), in: shape)
         .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(.white.opacity(0.1), lineWidth: 1)
+            shape.strokeBorder(.white.opacity(0.1), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.28), radius: 18, y: 9)
+        .shadow(color: .black.opacity(0.16), radius: 12, y: 6)
         .accessibilityElement(children: .combine)
     }
+}
+
+private struct StatsHeroMetricItem: Identifiable {
+    let title: String
+    let value: String
+
+    var id: String { title }
 }
 
 private struct StatsHeroMetric: View {
@@ -633,13 +625,12 @@ private struct StatsHeroMetric: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.system(size: 17, weight: .black, design: .rounded))
+                .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.9))
                 .monospacedDigit()
             Text(title)
-                .font(.system(size: 8, weight: .black))
-                .foregroundStyle(.white.opacity(0.36))
-                .tracking(0.6)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.4))
         }
     }
 }
@@ -658,9 +649,10 @@ private struct StatsSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 19, weight: .black))
-                    .foregroundStyle(.white.opacity(0.92))
+                Text(title.uppercased())
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .tracking(0.8)
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 12, weight: .medium))
@@ -677,13 +669,15 @@ private struct StatsSurface<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+
         content()
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.white.opacity(0.038), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(.white.opacity(0.022), in: shape)
+            .glassEffect(.regular.tint(.white.opacity(0.025)), in: shape)
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(.white.opacity(0.07), lineWidth: 1)
+                shape.strokeBorder(.white.opacity(0.08), lineWidth: 1)
             }
     }
 }
@@ -700,101 +694,54 @@ private struct StatsMetricItem: Identifiable {
 
 private struct StatsMetricGrid: View {
     let items: [StatsMetricItem]
-    private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+    private let columns = [GridItem(.adaptive(minimum: 148), spacing: 10)]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 10) {
-            ForEach(items) { item in
-                HStack(alignment: .top, spacing: 11) {
-                    Image(systemName: item.systemName)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(item.tint)
-                        .frame(width: 30, height: 30)
-                        .background(item.tint.opacity(0.13), in: Circle())
+        GlassEffectContainer(spacing: 10) {
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(items) { item in
+                    let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.value)
-                            .font(.system(size: 18, weight: .black, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.74)
-                        Text(item.title)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.44))
-                            .lineLimit(1)
-                        if let detail = item.detail {
-                            Text(detail)
-                                .font(.system(size: 8.5, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.28))
+                    HStack(alignment: .top, spacing: 11) {
+                        Image(systemName: item.systemName)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(item.tint)
+                            .frame(width: 30, height: 30)
+                            .background(item.tint.opacity(0.13), in: Circle())
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.value)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .monospacedDigit()
                                 .lineLimit(1)
+                                .minimumScaleFactor(0.74)
+                            Text(item.title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.46))
+                                .lineLimit(1)
+                            if let detail = item.detail {
+                                Text(detail)
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.3))
+                                    .lineLimit(1)
+                            }
                         }
-                    }
 
-                    Spacer(minLength: 0)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+                    .background(.white.opacity(0.025), in: shape)
+                    .glassEffect(.regular.tint(.white.opacity(0.025)), in: shape)
+                    .overlay {
+                        shape.strokeBorder(.white.opacity(0.08), lineWidth: 1)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(item.title), \(item.value)\(item.detail.map { ", \($0)" } ?? "")")
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-                .background(.white.opacity(0.038), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(.white.opacity(0.065), lineWidth: 1)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(item.title), \(item.value)\(item.detail.map { ", \($0)" } ?? "")")
             }
         }
-    }
-}
-
-private struct StatsScopeButton: View {
-    let title: String
-    let count: Int
-    var systemName: String?
-    var mediaTheme: MediaTypeTheme?
-    let tint: Color
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 7) {
-                Group {
-                    if let mediaTheme {
-                        MediaTypeGlyph(theme: mediaTheme, size: 16)
-                    } else if let systemName {
-                        Image(systemName: systemName)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 38, height: 38)
-                .background(isSelected ? tint.opacity(0.36) : Color.white.opacity(0.055), in: Circle())
-                .overlay {
-                    Circle().stroke(isSelected ? tint.opacity(0.7) : .white.opacity(0.06), lineWidth: 1)
-                }
-
-                VStack(spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(.white.opacity(isSelected ? 0.9 : 0.52))
-                        .lineLimit(1)
-                    Text(count.formatted())
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .monospacedDigit()
-                }
-            }
-            .frame(width: 76, height: 86)
-            .background(isSelected ? tint.opacity(0.1) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isSelected ? tint.opacity(0.4) : .white.opacity(0.055), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(count)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -845,57 +792,78 @@ private struct StatsDonutSurface: View {
     }
 }
 
-private struct StatsRankedSurface: View {
+private struct StatsTasteGroup: View {
     let title: String
     let items: [StatsNamedCount]
     let coverage: Int
     let total: Int
-    let tint: Color
 
     var body: some View {
-        StatsSurface {
-            VStack(alignment: .leading, spacing: 13) {
-                HStack {
-                    Text(title)
-                    Spacer()
-                    if total > 0 {
-                        Text("\(coverage.formatted()) / \(total.formatted()) ITEMS")
-                            .monospacedDigit()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title.uppercased())
+                    .tracking(0.6)
+                Spacer()
+                if total > 0 {
+                    Text("\(coverage.formatted()) / \(total.formatted()) TITLES")
+                        .monospacedDigit()
+                }
+            }
+            .font(.system(size: 9, weight: .black))
+            .foregroundStyle(.white.opacity(0.38))
+
+            GlassEffectContainer(spacing: 8) {
+                FlowLayout(spacing: 8) {
+                    ForEach(items) { item in
+                        HStack(spacing: 7) {
+                            Text(item.name)
+                                .lineLimit(1)
+                            Text(item.count.formatted())
+                                .fontWeight(.black)
+                                .foregroundStyle(.white.opacity(0.5))
+                                .monospacedDigit()
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 36)
+                        .background(.white.opacity(0.025), in: Capsule())
+                        .glassEffect(.clear, in: Capsule())
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(item.name), \(item.count)")
                     }
                 }
-                .font(.system(size: 10, weight: .black))
-                .tracking(0.6)
-                .foregroundStyle(.white.opacity(0.38))
-
-                SWStatsRankedBars(
-                    items: items.map { SWStatsRankedBarItem(id: $0.name, title: $0.name, value: $0.count) },
-                    tint: tint
-                )
             }
         }
+        .padding(.vertical, 4)
     }
 }
 
 private struct StatsPosterItem: Identifiable {
     let media: MediaSummary
     let caption: String
+    let systemName: String
+    let tint: Color
 
     var id: MediaSummary.ID { media.id }
 }
 
-private struct StatsPosterRail: View {
+private struct StatsPosterGrid: View {
     let items: [StatsPosterItem]
-    let accent: Color
     let action: (MediaSummary) -> Void
 
+    private let columns = [
+        GridItem(.adaptive(minimum: PosterSlot.carousel.size.width, maximum: 120), spacing: 12),
+    ]
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: 12) {
-                ForEach(items) { item in
-                    Button {
-                        action(item.media)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 7) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+            ForEach(items) { item in
+                Button {
+                    action(item.media)
+                } label: {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ZStack(alignment: .bottomLeading) {
                             MediaArtwork(
                                 url: item.media.displayPosterURL,
                                 title: item.media.title,
@@ -903,36 +871,32 @@ private struct StatsPosterRail: View {
                                 mediaType: item.media.ref.mediaType,
                                 orientation: item.media.posterOrientation
                             )
-                            .overlay(alignment: .bottom) {
-                                LinearGradient(
-                                    colors: [.clear, accent.opacity(0.3)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                                .frame(height: 38)
-                                .clipShape(RoundedRectangle(cornerRadius: PosterSlot.carousel.cornerRadius, style: .continuous))
-                            }
-                            .shadow(color: .black.opacity(0.3), radius: 10, y: 5)
 
-                            Text(item.caption)
+                            Label(item.caption, systemImage: item.systemName)
                                 .font(.system(size: 9, weight: .black))
-                                .foregroundStyle(accent.opacity(0.9))
-                                .tracking(0.5)
+                                .foregroundStyle(item.tint)
                                 .lineLimit(1)
-
-                            Text(item.media.title)
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.68))
-                                .lineLimit(2)
+                                .padding(.horizontal, 7)
+                                .frame(minHeight: 25)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .overlay {
+                                    Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+                                }
+                                .padding(6)
                         }
-                        .frame(width: PosterSlot.carousel.size.width, alignment: .leading)
+                        .shadow(color: .black.opacity(0.26), radius: 8, y: 4)
+
+                        Text(item.media.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .lineLimit(2)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(item.media.title), \(item.caption)")
-                    .accessibilityHint("Opens media details")
+                    .frame(width: PosterSlot.carousel.size.width, alignment: .leading)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(item.media.title), \(item.caption)")
+                .accessibilityHint("Opens media details")
             }
-            .padding(.trailing, 12)
         }
     }
 }
@@ -995,40 +959,22 @@ private struct StatsErrorView: View {
 }
 
 private enum StatsCopy {
-    static let statusOrder = ["completed", "in_progress", "planning", "paused", "dropped"]
-
-    static func statusTitle(_ value: String) -> String {
-        switch value {
-        case "completed": "Completed"
-        case "in_progress": "In Progress"
-        case "planning": "Planning"
-        case "paused": "Paused"
-        case "dropped": "Dropped"
-        default: value.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
     static func days(_ value: Int) -> String {
         "\(value.formatted())d"
+    }
+
+    static func rating(_ rawValue: String?, for media: MediaSummary) -> String {
+        guard let rawValue, let value = Double(rawValue), value.isFinite else { return "Rated" }
+        let usesFiveStarScale = media.ref.usesFiveStarRatingScale && value <= 5
+        let formatted = value.formatted(.number.precision(.fractionLength(0 ... 1)))
+        return "\(formatted) / \(usesFiveStarScale ? 5 : 10)"
     }
 }
 
 private enum StatsPalette {
-    static let allMedia = Color(red: 0.30, green: 0.77, blue: 0.95)
-    static let language = Color(red: 0.99, green: 0.57, blue: 0.23)
+    static let allMedia = Color(red: 0.78, green: 0.80, blue: 0.84)
 
     static func accent(for mediaType: String?) -> Color {
         mediaType.map { MediaTypeTheme.theme(for: $0).statsColor } ?? allMedia
-    }
-
-    static func status(_ status: String, fallback: Color) -> Color {
-        switch status {
-        case "completed": Color(red: 0.28, green: 0.80, blue: 0.52)
-        case "in_progress": Color(red: 0.27, green: 0.69, blue: 0.96)
-        case "planning": Color(red: 0.63, green: 0.48, blue: 0.95)
-        case "paused": Color(red: 0.98, green: 0.67, blue: 0.25)
-        case "dropped": Color(red: 0.91, green: 0.34, blue: 0.36)
-        default: fallback
-        }
     }
 }

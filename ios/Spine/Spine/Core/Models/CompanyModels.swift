@@ -5,6 +5,7 @@ struct CompanyRef: Codable, Hashable, Identifiable {
     let companyId: String
 
     var id: String { "\(source):\(companyId)" }
+    var isAnimeStudio: Bool { source.caseInsensitiveCompare("mal") == .orderedSame }
 
     enum CodingKeys: String, CodingKey {
         case source
@@ -15,6 +16,7 @@ struct CompanyRef: Codable, Hashable, Identifiable {
 struct CompanyDetail: Decodable, Hashable {
     let id: String
     let source: String
+    let mediaType: String?
     let name: String
     let description: String?
     let logoUrl: String?
@@ -26,11 +28,27 @@ struct CompanyDetail: Decodable, Hashable {
     let companySize: String?
     let parent: CompanyParent?
     let igdbUrl: String?
+    let providerUrl: String?
     let websites: [String]
     let catalogs: CompanyCatalogCounts
 
     var ref: CompanyRef {
         CompanyRef(source: source, companyId: id)
+    }
+
+    var resolvedMediaType: String {
+        mediaType ?? (ref.isAnimeStudio ? "anime" : "game")
+    }
+
+    var catalogRoles: [CompanyCatalogRole] {
+        if resolvedMediaType == "anime" {
+            guard catalogs.studio?.available == true else { return [] }
+            return [.studio]
+        }
+        return [.developed, .published].filter {
+            guard let catalog = catalogs.catalog(for: $0), catalog.available else { return false }
+            return (catalog.count ?? 0) > 0
+        }
     }
 }
 
@@ -42,15 +60,81 @@ struct CompanyParent: Decodable, Hashable {
 struct CompanyCatalogCounts: Decodable, Hashable {
     let developed: CompanyCatalogCount
     let published: CompanyCatalogCount
+    let studio: CompanyCatalogCount?
+
+    init(
+        developed: CompanyCatalogCount = .unavailable,
+        published: CompanyCatalogCount = .unavailable,
+        studio: CompanyCatalogCount? = nil
+    ) {
+        self.developed = developed
+        self.published = published
+        self.studio = studio
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case developed
+        case published
+        case studio
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        developed = try container.decodeIfPresent(CompanyCatalogCount.self, forKey: .developed) ?? .unavailable
+        published = try container.decodeIfPresent(CompanyCatalogCount.self, forKey: .published) ?? .unavailable
+        studio = try container.decodeIfPresent(CompanyCatalogCount.self, forKey: .studio)
+    }
+
+    func catalog(for role: CompanyCatalogRole) -> CompanyCatalogCount? {
+        switch role {
+        case .developed: developed
+        case .published: published
+        case .studio: studio
+        }
+    }
 }
 
 struct CompanyCatalogCount: Decodable, Hashable {
-    let count: Int
+    let count: Int?
+    let available: Bool
+
+    init(count: Int?, available: Bool = true) {
+        self.count = count
+        self.available = available
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case count
+        case available
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        count = try container.decodeIfPresent(Int.self, forKey: .count)
+        available = try container.decodeIfPresent(Bool.self, forKey: .available) ?? true
+    }
+
+    static let unavailable = CompanyCatalogCount(count: 0, available: false)
+}
+
+struct CompanyCatalogPage: Decodable {
+    let count: Int?
+    let next: String?
+    let previous: String?
+    let results: [MediaSummary]
+
+    init(count: Int?, next: String?, previous: String?, results: [MediaSummary]) {
+        self.count = count
+        self.next = next
+        self.previous = previous
+        self.results = results
+    }
 }
 
 enum CompanyCatalogRole: String, CaseIterable, Hashable, Identifiable {
     case developed
     case published
+    case studio
 
     var id: String { rawValue }
 
@@ -58,6 +142,7 @@ enum CompanyCatalogRole: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .developed: "Developed"
         case .published: "Published"
+        case .studio: "Studio"
         }
     }
 
@@ -65,14 +150,27 @@ enum CompanyCatalogRole: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .developed: "Developer"
         case .published: "Publisher"
+        case .studio: "Studio"
         }
     }
 
-    func count(in detail: CompanyDetail) -> Int {
-        switch self {
-        case .developed: detail.catalogs.developed.count
-        case .published: detail.catalogs.published.count
+    var mediaType: String {
+        self == .studio ? "anime" : "game"
+    }
+
+    var collectionTitle: String {
+        self == .studio ? "Anime" : "Games"
+    }
+
+    func count(in detail: CompanyDetail) -> Int? {
+        detail.catalogs.catalog(for: self)?.count
+    }
+
+    func itemNoun(count: Int) -> String {
+        if self == .studio {
+            return "anime"
         }
+        return count == 1 ? "game" : "games"
     }
 }
 

@@ -2338,7 +2338,7 @@ private struct MediaDetailPageView: View {
                         maxLogoHeight: 44
                     )
 
-                    if let credits = gameDeveloperCredits(detail) {
+                    if let credits = heroCompanyCredits(detail) {
                         companyCreditBylineView(credits)
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
                         creditBylineView(
@@ -2375,7 +2375,7 @@ private struct MediaDetailPageView: View {
                         maxLogoHeight: 48
                     )
 
-                    if let credits = gameDeveloperCredits(detail) {
+                    if let credits = heroCompanyCredits(detail) {
                         companyCreditBylineView(credits)
                     } else if let credits = MediaCreditPresentation.make(for: detail) {
                         creditBylineView(
@@ -3094,6 +3094,7 @@ private struct MediaDetailPageView: View {
                 DetailFactRow(label: "Aired", value: detailString(detail, "season")),
                 DetailFactRow(label: "Broadcast", value: detailString(detail, "broadcast")),
                 DetailFactRow(label: "Source", value: detailString(detail, "source")),
+                companyDetailRow(label: "Studios", detail: detail, role: .studio),
             ]
         case "manga":
             rows += [
@@ -3143,6 +3144,9 @@ private struct MediaDetailPageView: View {
             ("ISBN", "isbn"),
         ] {
             if mediaType == "book", key == "authors" {
+                continue
+            }
+            if mediaType == "anime", key == "studios" {
                 continue
             }
             let values = detailArray(detail, key)
@@ -3203,9 +3207,21 @@ private struct MediaDetailPageView: View {
     }
 
     @MainActor
-    private func gameDeveloperCredits(_ detail: MediaDetail) -> [MediaCompanyCredit]? {
-        let credits = companyCredits(detail, role: .developed)
-        return credits.isEmpty ? nil : credits
+    private func heroCompanyCredits(_ detail: MediaDetail) -> [MediaCompanyCredit]? {
+        let role: CompanyCatalogRole
+        switch detail.ref.mediaType {
+        case "anime":
+            role = .studio
+        case "game":
+            role = .developed
+        default:
+            return nil
+        }
+        let credits = companyCredits(detail, role: role)
+        guard !credits.isEmpty else { return nil }
+        return detail.ref.mediaType == "anime"
+            ? Array(credits.prefix(1))
+            : credits
     }
 
     @MainActor
@@ -3214,8 +3230,16 @@ private struct MediaDetailPageView: View {
         if !credits.isEmpty {
             return DetailFactRow(label: label, companies: credits)
         }
-        let legacyKey = role == .developed ? "developer" : "publisher"
-        return DetailFactRow(label: label, value: detailString(detail, legacyKey))
+        let legacyValue: String?
+        switch role {
+        case .developed:
+            legacyValue = detailString(detail, "developer")
+        case .published:
+            legacyValue = detailString(detail, "publisher")
+        case .studio:
+            legacyValue = detailArray(detail, "studios").joinedOrNil
+        }
+        return DetailFactRow(label: label, value: legacyValue)
     }
 
     @MainActor

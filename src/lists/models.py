@@ -38,7 +38,10 @@ class CustomListManager(models.Manager):
     def get_user_lists_with_item(self, user, item):
         """Return user lists with item membership status."""
         return (
-            self.filter(Q(owner=user) | Q(collaborators=user))
+            self.filter(
+                Q(owner=user) | Q(collaborators=user),
+                list_type=CustomList.ListType.MEDIA,
+            )
             .annotate(
                 has_item=models.Exists(
                     CustomListItem.objects.filter(
@@ -52,9 +55,43 @@ class CustomListManager(models.Manager):
             .order_by("name")
         )
 
+    def get_user_lists_with_person(self, user, source, person_id):
+        """Return user people lists with person membership status."""
+        return (
+            self.filter(
+                Q(owner=user) | Q(collaborators=user),
+                list_type=CustomList.ListType.PEOPLE,
+            )
+            .annotate(
+                has_person=models.Exists(
+                    PersonListItem.objects.filter(
+                        custom_list_id=models.OuterRef("id"),
+                        source=source,
+                        person_id=person_id,
+                    ),
+                ),
+                person_entry_id=models.Subquery(
+                    PersonListItem.objects.filter(
+                        custom_list_id=models.OuterRef("id"),
+                        source=source,
+                        person_id=person_id,
+                    ).values("id")[:1],
+                ),
+            )
+            .prefetch_related("collaborators")
+            .distinct()
+            .order_by("name")
+        )
+
 
 class CustomList(models.Model):
     """Model for custom lists."""
+
+    class ListType(models.TextChoices):
+        """Content types supported by custom lists."""
+
+        MEDIA = "media", "Media"
+        PEOPLE = "people", "People"
 
     class Visibility(models.TextChoices):
         """Visibility choices for custom lists."""
@@ -76,6 +113,12 @@ class CustomList(models.Model):
     )
     description = models.TextField(blank=True, default="")
     tags = models.JSONField(blank=True, default=list)
+    list_type = models.CharField(
+        max_length=10,
+        choices=ListType.choices,
+        default=ListType.MEDIA,
+        db_default=ListType.MEDIA,
+    )
     visibility = models.CharField(
         max_length=20,
         choices=Visibility.choices,
@@ -119,6 +162,10 @@ class CustomList(models.Model):
                 condition=~Q(import_source_id=""),
                 name="%(app_label)s_customlist_unique_import",
             ),
+            models.CheckConstraint(
+                condition=Q(list_type__in=["media", "people"]),
+                name="%(app_label)s_customlist_valid_list_type",
+            ),
         ]
 
     def __str__(self):
@@ -146,6 +193,13 @@ class CustomList(models.Model):
     @property
     def image(self):
         """Return the image of the first item in the list."""
+        if self.list_type == self.ListType.PEOPLE:
+            first_person = self.person_items.first()
+            return (
+                first_person.profile_url
+                if first_person and first_person.profile_url
+                else settings.IMG_NONE
+            )
         first_item = self.customlistitem_set.select_related("item").first()
         return first_item.item.image if first_item else settings.IMG_NONE
 
@@ -185,3 +239,50 @@ class CustomListItem(models.Model):
     def __str__(self):
         """Return the name of the list item."""
         return self.item.title
+
+
+class PersonListItem(models.Model):
+    """Provider-backed person stored in a people list."""
+
+    class Source(models.TextChoices):
+        """Sources that currently expose person pages."""
+
+        TMDB = "tmdb", "The Movie Database"
+        HARDCOVER = "hardcover", "Hardcover"
+        OPENLIBRARY = "openlibrary", "Open Library"
+        MUSICBRAINZ = "musicbrainz", "MusicBrainz"
+        MAL = "mal", "MyAnimeList"
+        MANGAUPDATES = "mangaupdates", "MangaUpdates"
+        ANILIST = "anilist", "AniList"
+
+    custom_list = models.ForeignKey(
+        CustomList,
+        on_delete=models.CASCADE,
+        related_name="person_items",
+    )
+    source = models.CharField(max_length=32, choices=Source.choices)
+    person_id = models.CharField(max_length=255)
+    name = models.CharField(max_length=255)
+    profile_url = models.URLField(max_length=2048, blank=True, default="")
+    known_for_department = models.CharField(max_length=255, blank=True, default="")
+    position = models.PositiveIntegerField(null=True, blank=True)
+    date_added = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Meta options for people in custom lists."""
+
+        ordering = [
+            models.F("position").asc(nulls_last=True),
+            "date_added",
+            "id",
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["custom_list", "source", "person_id"],
+                name="%(app_label)s_personlistitem_unique_person_list",
+            ),
+        ]
+
+    def __str__(self):
+        """Return the person's name."""
+        return self.name

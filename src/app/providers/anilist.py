@@ -54,6 +54,39 @@ query ($malIds: [Int]) {
 }
 """
 
+STUDIO_ANIME_QUERY = """
+query (
+  $studioId: Int!
+  $seedMalId: Int!
+  $page: Int!
+  $perPage: Int!
+  $sort: [MediaSort]
+) {
+  studio: Studio(id: $studioId) {
+    id
+    name
+    isAnimationStudio
+    media(page: $page, perPage: $perPage, sort: $sort) {
+      pageInfo {
+        currentPage
+        hasNextPage
+      }
+      nodes {
+        idMal
+      }
+    }
+  }
+  seed: Media(idMal: $seedMalId, type: ANIME) {
+    studios {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
 ANIME_QUERY = """
 query ($malId: Int!) {
   Media(idMal: $malId, type: ANIME) {
@@ -533,6 +566,91 @@ def anime_series_nodes(mal_ids, *, timeout=REQUEST_TIMEOUT):
                     "series_links": _series_links(node),
                 }
     return results
+
+
+def studio_anime_ids(
+    studio_id,
+    *,
+    studio_name,
+    seed_anime_id,
+    page,
+    page_size,
+    sort,
+    direction,
+    timeout=REQUEST_TIMEOUT,
+):
+    """Return MAL anime IDs only after validating an AniList studio mapping."""
+    studio_id = int(studio_id)
+    sort_key = {
+        "popularity": "POPULARITY",
+        "release_date": "START_DATE",
+        "average_rating": "SCORE",
+        "title": "TITLE_ROMAJI",
+    }[sort]
+    if direction == "desc":
+        sort_key = f"{sort_key}_DESC"
+    response = services.api_request(
+        "ANILIST",
+        "POST",
+        API_URL,
+        params={
+            "query": STUDIO_ANIME_QUERY,
+            "variables": {
+                "studioId": studio_id,
+                "seedMalId": int(seed_anime_id),
+                "page": int(page),
+                "perPage": int(page_size),
+                "sort": [sort_key],
+            },
+        },
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=timeout,
+        retry_rate_limits=False,
+    )
+    data = response.get("data") or {}
+    studio = data.get("studio")
+    seed = data.get("seed")
+    expected_name = _normalized_studio_name(studio_name)
+    if (
+        not isinstance(studio, dict)
+        or studio.get("id") != studio_id
+        or studio.get("isAnimationStudio") is not True
+        or _normalized_studio_name(studio.get("name")) != expected_name
+        or not expected_name
+    ):
+        raise ValueError("AniList studio did not match the cached MAL identity")
+
+    seed_studios = ((seed or {}).get("studios") or {}).get("nodes") or []
+    if not any(
+        node.get("id") == studio_id
+        and _normalized_studio_name(node.get("name")) == expected_name
+        for node in seed_studios
+        if isinstance(node, dict)
+    ):
+        raise ValueError("AniList studio did not match the cached MAL seed anime")
+
+    connection = studio.get("media") or {}
+    page_info = connection.get("pageInfo") or {}
+    anime_ids = list(
+        dict.fromkeys(
+            str(node["idMal"])
+            for node in connection.get("nodes") or []
+            if isinstance(node, dict) and node.get("idMal")
+        ),
+    )
+    return {
+        "anime_ids": anime_ids,
+        "page": int(page_info.get("currentPage") or page),
+        "has_next_page": bool(page_info.get("hasNextPage")),
+    }
+
+
+def _normalized_studio_name(value):
+    return re.sub(
+        r"[^a-z0-9]+",
+        "",
+        str(value or "").casefold(),
+    )
 
 
 def anime_reviews(mal_id, page):

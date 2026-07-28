@@ -43,7 +43,19 @@ class AnimeDetailEnrichmentTests(TestCase):
             "display_title": None,
             "image": "https://img.example/mal.jpg",
             "synopsis": "MAL synopsis",
-            "details": {"season": "Spring 2013", "episodes": 25},
+            "details": {
+                "season": "Spring 2013",
+                "episodes": 25,
+                "studios": ["Wit Studio"],
+                "company_credits": [
+                    {
+                        "id": "1",
+                        "source": "mal",
+                        "name": "Wit Studio",
+                        "roles": ["Studio"],
+                    },
+                ],
+            },
             "posters": [
                 {
                     "url": "https://img.example/mal.jpg",
@@ -190,6 +202,11 @@ class AnimeDetailEnrichmentTests(TestCase):
         )
         self.assertEqual(result["details"]["series_id"], "100")
         self.assertEqual(result["details"]["series_position"], 2)
+        self.assertEqual(result["details"]["studios"], ["Wit Studio"])
+        self.assertEqual(
+            result["details"]["company_credits"][0]["id"],
+            "1",
+        )
         self.assertEqual(result["related_sections"][0]["title"], "Attack on Titan")
         relations = result["related_sections"][1]["items"]
         self.assertEqual([relation["relation"] for relation in relations], ["Source"])

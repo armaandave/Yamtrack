@@ -1,13 +1,20 @@
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from django.db.models import Max, Q
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.exceptions import ListTypeMismatch, PersonProviderUnavailable
 from api.pagination import StandardResultsSetPagination
+from api.permissions import users_blocked
 from api.serializers.common import (
+    absolute_url,
     find_item,
     get_or_create_item_from_metadata,
     image_url,
@@ -20,19 +27,47 @@ from api.serializers.lists import (
     CustomListWriteSerializer,
     ListItemsReorderSerializer,
     ListItemWriteSerializer,
+    ListPeoplePageSerializer,
+    ListPeopleReorderSerializer,
+    ListPersonWriteResponseSerializer,
+    ListPersonWriteSerializer,
 )
 from api.services import filters as filter_service
 from api.services.social import set_like
 from app import exposure
 from app.providers import services as provider_services
-from lists.models import CustomList, CustomListItem
-from social.models import Activity, ContentLike
+from lists.models import CustomList, CustomListItem, PersonListItem
+from social.models import Activity, ContentLike, SocialAuditLog
 
 LIST_PREVIEW_ITEM_LIMIT = 12
 
 
+def person_list_item_payload(list_person, request=None):
+    """Serialize a stored provider person snapshot."""
+    return {
+        "entry_id": list_person.id,
+        "id": list_person.person_id,
+        "source": list_person.source,
+        "name": list_person.name,
+        "profile_url": absolute_url(request, list_person.profile_url),
+        "known_for_department": list_person.known_for_department or None,
+        "position": list_person.position,
+        "date_added": list_person.date_added,
+    }
+
+
 def list_payload(custom_list, request=None, *, include_items=False, include_preview_items=False):
     """Serialize a custom list."""
+    is_people_list = custom_list.list_type == CustomList.ListType.PEOPLE
+    items_count = (
+        0
+        if is_people_list
+        else custom_list.items.filter(
+            media_type__in=exposure.media_types(),
+        ).count()
+    )
+    entries_count = custom_list.person_items.count() if is_people_list else items_count
+    people_count = entries_count if is_people_list else 0
     data = {
         "id": custom_list.id,
         "name": custom_list.name,
@@ -41,14 +76,15 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
         "tags": custom_list.tags,
         "visibility": custom_list.visibility,
         "is_ranked": custom_list.is_ranked,
+        "list_type": custom_list.list_type,
         "owner": user_summary(custom_list.owner, request=request),
         "collaborators": [
             user_summary(user, request=request) for user in custom_list.collaborators.all()
         ],
         "image_url": image_url(request, custom_list.image),
-        "items_count": custom_list.items.filter(
-            media_type__in=exposure.media_types(),
-        ).count(),
+        "items_count": items_count,
+        "people_count": people_count,
+        "entries_count": entries_count,
         "updated_at": custom_list.updated_at,
         "like_count": ContentLike.objects.filter(
             target_type=ContentLike.CUSTOM_LIST,
@@ -56,33 +92,105 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
         ).count(),
     }
     if include_preview_items or include_items:
-        items = []
-        list_items = custom_list.customlistitem_set.select_related("item").filter(
-            item__media_type__in=exposure.media_types(),
-        )
-        if include_preview_items and not include_items:
-            list_items = list_items[:LIST_PREVIEW_ITEM_LIMIT]
-        for list_item in list_items:
-            item = media_summary_from_item(
-                list_item.item,
-                request=request,
-                user=request.user,
-                include_user_state=False,
+        items, people = [], []
+        if is_people_list:
+            list_people = custom_list.person_items.all()
+            if include_preview_items and not include_items:
+                list_people = list_people[:LIST_PREVIEW_ITEM_LIMIT]
+            people = [
+                person_list_item_payload(list_person, request=request)
+                for list_person in list_people
+            ]
+        else:
+            list_items = custom_list.customlistitem_set.select_related("item").filter(
+                item__media_type__in=exposure.media_types(),
             )
-            item["position"] = list_item.position
-            items.append(item)
+            if include_preview_items and not include_items:
+                list_items = list_items[:LIST_PREVIEW_ITEM_LIMIT]
+            for list_item in list_items:
+                item = media_summary_from_item(
+                    list_item.item,
+                    request=request,
+                    user=request.user,
+                    include_user_state=False,
+                )
+                item["position"] = list_item.position
+                items.append(item)
         if include_preview_items:
             data["preview_items"] = items
+            data["preview_people"] = people
         if include_items:
             data["items"] = items
+            data["people"] = people
     return data
 
 
 def _renumber_list_items(custom_list):
-    list_items = list(custom_list.customlistitem_set.all())
+    if custom_list.list_type == CustomList.ListType.PEOPLE:
+        list_items = list(custom_list.person_items.all())
+        model = PersonListItem
+    else:
+        list_items = list(custom_list.customlistitem_set.all())
+        model = CustomListItem
     for index, list_item in enumerate(list_items, start=1):
         list_item.position = index
-    CustomListItem.objects.bulk_update(list_items, ["position"])
+    model.objects.bulk_update(list_items, ["position"])
+
+
+def _require_list_type(custom_list, list_type):
+    if custom_list.list_type != list_type:
+        raise ListTypeMismatch
+
+
+def _list_type_query(request):
+    value = request.query_params.get("list_type", CustomList.ListType.MEDIA)
+    if value not in {
+        CustomList.ListType.MEDIA,
+        CustomList.ListType.PEOPLE,
+        "all",
+    }:
+        raise ValidationError({
+            "list_type": ["Use media, people, or all."],
+        })
+    return value
+
+
+def _person_snapshot(ref):
+    try:
+        person = provider_services.get_person_page(ref["source"], ref["id"])
+    except provider_services.ProviderAPIError as error:
+        if error.status_code == status.HTTP_404_NOT_FOUND:
+            raise NotFound("Person not found.") from error
+        raise
+
+    person_id = str(person.get("person_id") or ref["id"]).strip()
+    name = str(person.get("name") or "").strip()
+    if not person_id or not name:
+        raise PersonProviderUnavailable
+    return {
+        "source": ref["source"],
+        "person_id": person_id[:255],
+        "name": name[:255],
+        "profile_url": str(
+            person.get("image") or person.get("profile_url") or "",
+        )[:2048],
+        "known_for_department": str(
+            person.get("known_for_department") or "",
+        )[:255],
+    }
+
+
+def _touch_list(custom_list):
+    custom_list.save(update_fields=["updated_at"])
+
+
+def _can_view_list(user, custom_list):
+    if users_blocked(user, custom_list.owner):
+        return False
+    return (
+        custom_list.visibility != CustomList.Visibility.PRIVATE
+        or custom_list.user_can_view(user)
+    )
 
 
 def _item_from_ref(ref):
@@ -106,6 +214,8 @@ class ListsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        requested_list_type = request.query_params.get("list_type")
+        list_type = _list_type_query(request)
         ref_keys = {
             "source": "ref[source]",
             "media_type": "ref[media_type]",
@@ -113,8 +223,23 @@ class ListsView(APIView):
             "season_number": "ref[season_number]",
             "episode_number": "ref[episode_number]",
         }
+        person_ref_keys = {
+            "source": "person_ref[source]",
+            "id": "person_ref[id]",
+        }
         has_ref = any(key in request.query_params for key in ref_keys.values())
+        has_person_ref = any(
+            key in request.query_params for key in person_ref_keys.values()
+        )
+        if has_ref and has_person_ref:
+            raise ValidationError({
+                "non_field_errors": ["Provide either ref or person_ref, not both."],
+            })
         if has_ref:
+            if requested_list_type not in (None, CustomList.ListType.MEDIA):
+                raise ValidationError({
+                    "list_type": ["Media membership requires list_type=media."],
+                })
             serializer = ListItemWriteSerializer(
                 data={
                     "ref": {
@@ -129,6 +254,27 @@ class ListsView(APIView):
                 request.user,
                 _item_from_ref(serializer.validated_data["ref"]),
             )
+        elif has_person_ref:
+            if requested_list_type not in (None, CustomList.ListType.PEOPLE):
+                raise ValidationError({
+                    "list_type": ["Person membership requires list_type=people."],
+                })
+            serializer = ListPersonWriteSerializer(
+                data={
+                    "ref": {
+                        name: request.query_params.get(param)
+                        for name, param in person_ref_keys.items()
+                        if request.query_params.get(param) not in (None, "")
+                    },
+                },
+            )
+            serializer.is_valid(raise_exception=True)
+            ref = serializer.validated_data["ref"]
+            lists = CustomList.objects.get_user_lists_with_person(
+                request.user,
+                ref["source"],
+                ref["id"],
+            )
         else:
             lists = (
                 CustomList.objects.filter(Q(owner=request.user) | Q(collaborators=request.user))
@@ -136,6 +282,8 @@ class ListsView(APIView):
                 .prefetch_related("collaborators")
                 .distinct()
             )
+            if list_type != "all":
+                lists = lists.filter(list_type=list_type)
         query = request.query_params.get("q", "")
         if query:
             lists = lists.filter(Q(name__icontains=query) | Q(description__icontains=query))
@@ -148,6 +296,14 @@ class ListsView(APIView):
                     {
                         **list_payload(custom_list, request=request, include_preview_items=True),
                         **({"has_item": custom_list.has_item} if has_ref else {}),
+                        **(
+                            {
+                                "has_person": custom_list.has_person,
+                                "person_entry_id": custom_list.person_entry_id,
+                            }
+                            if has_person_ref
+                            else {}
+                        ),
                     }
                     for custom_list in lists[:100]
                 ],
@@ -158,14 +314,20 @@ class ListsView(APIView):
         serializer = CustomListWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        custom_list = CustomList.objects.create(
-            owner=request.user,
-            name=data["name"],
-            slug=data.get("slug", ""),
-            description=data.get("description", ""),
-            visibility=data.get("visibility", CustomList.Visibility.PRIVATE),
-            is_ranked=data.get("is_ranked", False),
-        )
+        try:
+            custom_list = CustomList.objects.create(
+                owner=request.user,
+                name=data["name"],
+                slug=data.get("slug", ""),
+                description=data.get("description", ""),
+                visibility=data.get("visibility", CustomList.Visibility.PRIVATE),
+                is_ranked=data.get("is_ranked", False),
+                list_type=data.get("list_type", CustomList.ListType.MEDIA),
+            )
+        except IntegrityError as error:
+            raise ValidationError({
+                "slug": ["You already have a list with this slug."],
+            }) from error
         if "collaborator_usernames" in data:
             users = get_user_model().objects.filter(username__in=data["collaborator_usernames"])
             custom_list.collaborators.set(users)
@@ -175,7 +337,10 @@ class ListsView(APIView):
             target_type="list",
             target_id=custom_list.id,
             visibility=custom_list.visibility,
-            snapshot={"name": custom_list.name},
+            snapshot={
+                "name": custom_list.name,
+                "list_type": custom_list.list_type,
+            },
         )
         return Response(list_payload(custom_list, request=request), status=status.HTTP_201_CREATED)
 
@@ -186,6 +351,7 @@ class FeaturedListsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        list_type = _list_type_query(request)
         lists = (
             CustomList.objects.filter(
                 is_featured=True,
@@ -195,6 +361,8 @@ class FeaturedListsView(APIView):
             .prefetch_related("collaborators")
             .order_by("featured_position", "id")
         )
+        if list_type != "all":
+            lists = lists.filter(list_type=list_type)
         return Response(
             {
                 "count": lists.count(),
@@ -216,17 +384,23 @@ class ListDetailView(APIView):
     def get_object(self, request, list_id, *, include_items=True):
         queryset = CustomList.objects.select_related("owner").prefetch_related("collaborators")
         if include_items:
-            queryset = queryset.prefetch_related("customlistitem_set__item")
+            queryset = queryset.prefetch_related(
+                "customlistitem_set__item",
+                "person_items",
+            )
         custom_list = get_object_or_404(
             queryset,
             id=list_id,
         )
-        if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
+        if not _can_view_list(request.user, custom_list):
             return None
         return custom_list
 
     def get(self, request, list_id):
-        include_items = request.query_params.get("include_items") != "false"
+        include_entries = request.query_params.get("include_entries")
+        if include_entries is None:
+            include_entries = request.query_params.get("include_items")
+        include_items = include_entries != "false"
         custom_list = self.get_object(request, list_id, include_items=include_items)
         if custom_list is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
@@ -239,6 +413,11 @@ class ListDetailView(APIView):
         serializer = CustomListWriteSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        previous_visibility = custom_list.visibility
+        if "list_type" in data:
+            raise ValidationError({
+                "list_type": ["List type cannot be changed."],
+            })
         for field in ["name", "slug", "description", "visibility"]:
             if field in data:
                 setattr(custom_list, field, data[field])
@@ -252,6 +431,18 @@ class ListDetailView(APIView):
                 target_type=ContentLike.CUSTOM_LIST,
                 target_id=custom_list.id,
             ).update(visibility=custom_list.visibility)
+            if custom_list.visibility != previous_visibility:
+                SocialAuditLog.objects.create(
+                    actor=request.user,
+                    action="list_visibility_update",
+                    target_type=ContentLike.CUSTOM_LIST,
+                    target_id=custom_list.id,
+                    metadata={
+                        "previous": previous_visibility,
+                        "current": custom_list.visibility,
+                        "list_type": custom_list.list_type,
+                    },
+                )
         if "collaborator_usernames" in data:
             users = get_user_model().objects.filter(username__in=data["collaborator_usernames"])
             custom_list.collaborators.set(users)
@@ -279,8 +470,9 @@ class ListItemsView(APIView):
             CustomList.objects.select_related("owner").prefetch_related("collaborators"),
             id=list_id,
         )
-        if custom_list.visibility == CustomList.Visibility.PRIVATE and not custom_list.user_can_view(request.user):
+        if not _can_view_list(request.user, custom_list):
             return Response(status=status.HTTP_404_NOT_FOUND)
+        _require_list_type(custom_list, CustomList.ListType.MEDIA)
 
         list_items = CustomListItem.objects.filter(
             custom_list=custom_list,
@@ -339,6 +531,7 @@ class ListItemsView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_edit(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.MEDIA)
         serializer = ListItemWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item = _item_from_ref(serializer.validated_data["ref"])
@@ -371,6 +564,7 @@ class ListItemDetailView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_edit(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.MEDIA)
         item = get_object_or_404(custom_list.items, id=item_id)
         exposure.require_media_type(item.media_type)
         deleted, _ = CustomListItem.objects.filter(custom_list=custom_list, item_id=item_id).delete()
@@ -388,6 +582,7 @@ class ListItemsReorderView(APIView):
         custom_list = get_object_or_404(CustomList, id=list_id)
         if not custom_list.user_can_edit(request.user):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.MEDIA)
         serializer = ListItemsReorderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item_ids = serializer.validated_data["item_ids"]
@@ -405,6 +600,211 @@ class ListItemsReorderView(APIView):
             list_items[item_id].position = index
         CustomListItem.objects.bulk_update(list_items.values(), ["position"])
         return Response(list_payload(custom_list, request=request, include_items=True))
+
+
+class ListPeopleView(APIView):
+    """List or add provider-backed people in a people list."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses=ListPeoplePageSerializer)
+    def get(self, request, list_id):
+        custom_list = get_object_or_404(
+            CustomList.objects.select_related("owner").prefetch_related(
+                "collaborators",
+            ),
+            id=list_id,
+        )
+        if not _can_view_list(request.user, custom_list):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        _require_list_type(custom_list, CustomList.ListType.PEOPLE)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(
+            custom_list.person_items.all(),
+            request,
+            view=self,
+        )
+        return paginator.get_paginated_response([
+            person_list_item_payload(list_person, request=request)
+            for list_person in page
+        ])
+
+    @extend_schema(
+        request=ListPersonWriteSerializer,
+        responses={
+            status.HTTP_200_OK: ListPersonWriteResponseSerializer,
+            status.HTTP_201_CREATED: ListPersonWriteResponseSerializer,
+        },
+    )
+    def post(self, request, list_id):
+        custom_list = get_object_or_404(CustomList, id=list_id)
+        if not custom_list.user_can_edit(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.PEOPLE)
+
+        serializer = ListPersonWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ref = serializer.validated_data["ref"]
+        existing = PersonListItem.objects.filter(
+            custom_list=custom_list,
+            source=ref["source"],
+            person_id=ref["id"],
+        ).first()
+        if existing is not None:
+            return Response({
+                "created": False,
+                "person": person_list_item_payload(existing, request=request),
+            })
+
+        snapshot = _person_snapshot(ref)
+        with transaction.atomic():
+            locked_list = CustomList.objects.select_for_update().get(
+                id=custom_list.id,
+            )
+            defaults = {
+                "name": snapshot["name"],
+                "profile_url": snapshot["profile_url"],
+                "known_for_department": snapshot["known_for_department"],
+            }
+            if locked_list.is_ranked:
+                max_position = (
+                    PersonListItem.objects.filter(
+                        custom_list=locked_list,
+                    ).aggregate(Max("position"))["position__max"]
+                    or 0
+                )
+                defaults["position"] = max_position + 1
+            list_person, created = PersonListItem.objects.get_or_create(
+                custom_list=locked_list,
+                source=snapshot["source"],
+                person_id=snapshot["person_id"],
+                defaults=defaults,
+            )
+            if created:
+                person_snapshot = {
+                    key: value
+                    for key, value in person_list_item_payload(
+                        list_person,
+                        request=request,
+                    ).items()
+                    if key
+                    in {
+                        "id",
+                        "source",
+                        "name",
+                        "profile_url",
+                        "known_for_department",
+                    }
+                }
+                Activity.objects.create(
+                    actor=request.user,
+                    verb="list_item_added",
+                    target_type=ContentLike.CUSTOM_LIST,
+                    target_id=locked_list.id,
+                    visibility=locked_list.visibility,
+                    snapshot={
+                        "name": locked_list.name,
+                        "list_name": locked_list.name,
+                        "list_type": locked_list.list_type,
+                        "entry_type": "person",
+                        "person": person_snapshot,
+                    },
+                )
+                _touch_list(locked_list)
+
+        return Response(
+            {
+                "created": created,
+                "person": person_list_item_payload(
+                    list_person,
+                    request=request,
+                ),
+            },
+            status=(
+                status.HTTP_201_CREATED
+                if created
+                else status.HTTP_200_OK
+            ),
+        )
+
+
+class ListPersonDetailView(APIView):
+    """Remove a person membership from a people list."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={status.HTTP_204_NO_CONTENT: None})
+    def delete(self, request, list_id, entry_id):
+        custom_list = get_object_or_404(CustomList, id=list_id)
+        if not custom_list.user_can_edit(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.PEOPLE)
+
+        with transaction.atomic():
+            locked_list = CustomList.objects.select_for_update().get(
+                id=custom_list.id,
+            )
+            list_person = get_object_or_404(
+                PersonListItem,
+                id=entry_id,
+                custom_list=locked_list,
+            )
+            list_person.delete()
+            if locked_list.is_ranked:
+                _renumber_list_items(locked_list)
+            _touch_list(locked_list)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ListPeopleReorderView(APIView):
+    """Reorder all memberships in a people list."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=ListPeopleReorderSerializer,
+        responses=OpenApiTypes.OBJECT,
+    )
+    def patch(self, request, list_id):
+        custom_list = get_object_or_404(CustomList, id=list_id)
+        if not custom_list.user_can_edit(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        _require_list_type(custom_list, CustomList.ListType.PEOPLE)
+
+        serializer = ListPeopleReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entry_ids = serializer.validated_data["entry_ids"]
+        with transaction.atomic():
+            locked_list = CustomList.objects.select_for_update().get(
+                id=custom_list.id,
+            )
+            list_people = {
+                list_person.id: list_person
+                for list_person in PersonListItem.objects.select_for_update().filter(
+                    custom_list=locked_list,
+                )
+            }
+            if (
+                len(entry_ids) != len(list_people)
+                or set(entry_ids) != set(list_people)
+            ):
+                raise ValidationError({
+                    "entry_ids": [
+                        "Must include exactly all people currently in the list.",
+                    ],
+                })
+            for index, entry_id in enumerate(entry_ids, start=1):
+                list_people[entry_id].position = index
+            PersonListItem.objects.bulk_update(
+                list_people.values(),
+                ["position"],
+            )
+            _touch_list(locked_list)
+
+        return Response(
+            list_payload(locked_list, request=request, include_items=True),
+        )
 
 
 class ListCollaboratorsView(APIView):

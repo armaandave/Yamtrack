@@ -449,7 +449,63 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(detail.ref, CompanyRef(source: "igdb", companyId: "77"))
         XCTAssertEqual(detail.catalogs.developed.count, 24)
+        XCTAssertEqual(detail.catalogRoles, [.developed, .published])
+        XCTAssertEqual(detail.resolvedMediaType, "game")
         XCTAssertEqual(detail.parent?.name, "Parent Co")
+    }
+
+    @MainActor
+    func testCompanyDetailDecodesAnimeStudioWithUnknownCatalogCount() throws {
+        let detail = try JSONDecoder.api.decode(
+            CompanyDetail.self,
+            from: Data(
+                """
+                {
+                  "id": "858",
+                  "source": "mal",
+                  "media_type": "anime",
+                  "name": "Wit Studio",
+                  "description": "Japanese animation studio.",
+                  "logo_url": null,
+                  "logo_width": null,
+                  "logo_height": null,
+                  "founded_year": 2012,
+                  "country_code": null,
+                  "status": null,
+                  "company_size": null,
+                  "parent": null,
+                  "igdb_url": null,
+                  "provider_url": "https://myanimelist.net/anime/producer/858",
+                  "websites": ["https://www.witstudio.co.jp"],
+                  "catalogs": {
+                    "studio": {"available": true, "count": null}
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(detail.ref, CompanyRef(source: "mal", companyId: "858"))
+        XCTAssertEqual(detail.resolvedMediaType, "anime")
+        XCTAssertEqual(detail.providerUrl, "https://myanimelist.net/anime/producer/858")
+        XCTAssertEqual(detail.catalogRoles, [.studio])
+        XCTAssertNil(detail.catalogs.studio?.count)
+        XCTAssertTrue(detail.catalogs.studio?.available == true)
+    }
+
+    @MainActor
+    func testCompanyCatalogPageAllowsNullOrMissingCount() throws {
+        let withNull = try JSONDecoder.api.decode(
+            CompanyCatalogPage.self,
+            from: Data(#"{"count":null,"next":null,"previous":null,"results":[]}"#.utf8)
+        )
+        let withoutCount = try JSONDecoder.api.decode(
+            CompanyCatalogPage.self,
+            from: Data(#"{"next":null,"previous":null,"results":[]}"#.utf8)
+        )
+
+        XCTAssertNil(withNull.count)
+        XCTAssertNil(withoutCount.count)
     }
 
     @MainActor
@@ -466,6 +522,20 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(credit?.hasRole(.published) == true)
     }
 
+    @MainActor
+    func testMediaCompanyCreditParsesStructuredStudioRole() {
+        let credit = MediaCompanyCredit(json: .object([
+            "id": .string("858"),
+            "source": .string("mal"),
+            "name": .string("Wit Studio"),
+            "roles": .array([.string("Studio")]),
+        ]))
+
+        XCTAssertEqual(credit?.ref, CompanyRef(source: "mal", companyId: "858"))
+        XCTAssertTrue(credit?.hasRole(.studio) == true)
+    }
+
+    @MainActor
     func testCompanyFilterOptionsDecodePlatformsAndFallbackMissingPlatforms() throws {
         let options = try JSONDecoder.api.decode(
             MediaFilterOptionsResponse.self,
@@ -490,6 +560,7 @@ final class SpineTests: XCTestCase {
         XCTAssertTrue(legacy.platforms.isEmpty)
     }
 
+    @MainActor
     func testCompanyRepositorySendsSharedFiltersForInitialAndNextPages() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -529,11 +600,12 @@ final class SpineTests: XCTestCase {
         filter.ratingMin = 70
         let ref = CompanyRef(source: "igdb", companyId: "77")
 
-        _ = try await repository.games(ref: ref, role: .developed, page: nil, filter: filter)
-        _ = try await repository.games(ref: ref, role: .developed, page: "2", filter: filter)
+        _ = try await repository.catalog(ref: ref, role: .developed, page: nil, filter: filter)
+        _ = try await repository.catalog(ref: ref, role: .developed, page: "2", filter: filter)
         XCTAssertEqual(requestCount, 2)
     }
 
+    @MainActor
     func testCompanyRepositoryLoadsPublicGameFilterOptions() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestCaptureURLProtocol.self]
@@ -563,10 +635,66 @@ final class SpineTests: XCTestCase {
         }
         defer { RequestCaptureURLProtocol.handler = nil }
 
-        let options = try await repository.gameFilterOptions(ref: CompanyRef(source: "igdb", companyId: "77"))
+        let options = try await repository.filterOptions(ref: CompanyRef(source: "igdb", companyId: "77"))
 
         XCTAssertEqual(options.sorts.map(\.value), ["popularity"])
         XCTAssertEqual(options.platforms.map(\.value), ["PC"])
+    }
+
+    @MainActor
+    func testCompanyRepositoryRoutesAnimeStudioCatalogAndOptions() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestCaptureURLProtocol.self]
+        let client = APIClient(
+            baseURL: URL(string: "https://example.com")!,
+            tokenProvider: KeychainTokenStore.shared,
+            session: URLSession(configuration: config)
+        )
+        let repository = APICompanyRepository(client: client)
+        var paths: [String] = []
+        RequestCaptureURLProtocol.handler = { request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            paths.append(components?.path ?? "")
+            if components?.path.hasSuffix("/anime/") == true {
+                let query = components?.queryItems ?? []
+                XCTAssertNil(query.first { $0.name == "role" })
+                XCTAssertEqual(query.first { $0.name == "rating_min" }?.value, "8.5")
+                XCTAssertEqual(query.first { $0.name == "page" }?.value, "3")
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    #"{"count":null,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
+                )
+            }
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                #"{"sorts":[],"genres":[],"languages":[],"platforms":[],"years":[]}"#.data(using: .utf8)!
+            )
+        }
+        defer { RequestCaptureURLProtocol.handler = nil }
+
+        let ref = CompanyRef(source: "mal", companyId: "858")
+        var filter = MediaFilterState()
+        filter.ratingMin = Decimal(string: "8.5")
+        _ = try await repository.filterOptions(ref: ref)
+        let page = try await repository.catalog(ref: ref, role: .studio, page: "3", filter: filter)
+
+        XCTAssertEqual(paths, [
+            "/api/v1/companies/mal/858/anime-options/",
+            "/api/v1/companies/mal/858/anime/",
+        ])
+        XCTAssertNil(page.count)
+    }
+
+    @MainActor
+    func testCompanyFilterPresentationUsesMALScaleAndHidesPlatforms() {
+        let malScope = MediaFilterScope.company(ref: CompanyRef(source: "mal", companyId: "858"))
+        let igdbScope = MediaFilterScope.company(ref: CompanyRef(source: "igdb", companyId: "77"))
+
+        XCTAssertFalse(MediaFilterSheet.showsPlatformFilter(for: malScope))
+        XCTAssertTrue(MediaFilterSheet.showsPlatformFilter(for: igdbScope))
+        XCTAssertEqual(MediaFilterSheet.ratingLabels(for: malScope).minimum, "Minimum MAL rating (0–10)")
+        XCTAssertEqual(MediaFilterSheet.ratingLabels(for: malScope).maximum, "Maximum MAL rating (0–10)")
+        XCTAssertEqual(MediaFilterSheet.ratingLabels(for: igdbScope).minimum, "Minimum IGDB rating (0–100)")
     }
 
     @MainActor
@@ -1030,17 +1158,117 @@ final class SpineTests: XCTestCase {
 
         viewModel.filter.sort = .title
         let staleTask = Task {
-            await viewModel.applyFilter(to: [.developed, .published])
+            await viewModel.applyFilter(to: Set(CompanyCatalogRole.allCases))
         }
         try await Task.sleep(for: .milliseconds(10))
         viewModel.filter.sort = .releaseDate
-        await viewModel.applyFilter(to: [.developed, .published])
+        await viewModel.applyFilter(to: Set(CompanyCatalogRole.allCases))
         await staleTask.value
 
-        XCTAssertEqual(viewModel.gamesByRole[.developed]?.map(\.title), ["Fresh developed"])
-        XCTAssertEqual(viewModel.gamesByRole[.published]?.map(\.title), ["Fresh published"])
+        XCTAssertEqual(viewModel.mediaByRole[.developed]?.map(\.title), ["Fresh developed"])
+        XCTAssertEqual(viewModel.mediaByRole[.published]?.map(\.title), ["Fresh published"])
         let freshRequests = repository.requests.filter { $0.filter.sort == .releaseDate }
-        XCTAssertEqual(Set(freshRequests.map(\.role)), Set(CompanyCatalogRole.allCases))
+        XCTAssertEqual(Set(freshRequests.map(\.role)), Set([.developed, .published]))
+    }
+
+    @MainActor
+    func testAnimeStudioViewModelKeepsProfileWhenCatalogFailsAndRetriesCatalog() async {
+        let repository = ScriptedCompanyRepository()
+        repository.catalogFailuresRemaining = 1
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.detail?.name, "Wit Studio")
+        XCTAssertNil(viewModel.profileErrorMessage)
+        XCTAssertNotNil(viewModel.catalogErrorByRole[.studio])
+        XCTAssertTrue(viewModel.mediaByRole[.studio]?.isEmpty != false)
+
+        await viewModel.retryCatalog(for: .studio)
+
+        XCTAssertNil(viewModel.catalogErrorByRole[.studio])
+        XCTAssertEqual(viewModel.mediaByRole[.studio]?.map(\.title), ["Default studio"])
+    }
+
+    @MainActor
+    func testCompanyFilterDuringInitialLoadStillLoadsPrimaryCatalog() async throws {
+        let repository = ScriptedCompanyRepository()
+        repository.defaultCatalogDelay = .milliseconds(80)
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+
+        let initialLoad = Task { await viewModel.load() }
+        try await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = .releaseDate
+        await viewModel.applyFilter(to: [])
+        await initialLoad.value
+
+        XCTAssertEqual(viewModel.mediaByRole[.studio]?.map(\.title), ["Fresh studio"])
+    }
+
+    @MainActor
+    func testCompanyRetryAfterRefreshFailureReloadsFirstPage() async {
+        let repository = ScriptedCompanyRepository()
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+        repository.catalogFailuresRemaining = 1
+
+        await viewModel.load()
+        await viewModel.retryCatalog(for: .studio)
+
+        XCTAssertNil(viewModel.catalogErrorByRole[.studio])
+        XCTAssertNil(repository.requests.last?.page)
+    }
+
+    @MainActor
+    func testNewFilterCanLoadMoreWhileObsoleteLoadMoreIsRunning() async throws {
+        let repository = ScriptedCompanyRepository()
+        repository.nextPageURL = "https://spine.test/api/v1/companies/igdb/77/games/?page=2"
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "igdb", companyId: "77"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        viewModel.filter.sort = .title
+        let obsoleteLoadMore = Task { await viewModel.loadMore(for: .developed) }
+        try await Task.sleep(for: .milliseconds(10))
+        viewModel.filter.sort = .releaseDate
+        await viewModel.applyFilter(to: [.developed])
+        await viewModel.loadMore(for: .developed)
+        await obsoleteLoadMore.value
+
+        XCTAssertTrue(repository.requests.contains {
+            $0.role == .developed
+                && $0.page == "2"
+                && $0.filter.sort == .releaseDate
+        })
+    }
+
+    @MainActor
+    func testAnimeStudioViewModelUsesMALFallbackFilterLabels() {
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "mal", companyId: "858"),
+            companyRepository: ScriptedCompanyRepository(),
+            onUnauthorized: {}
+        )
+
+        XCTAssertEqual(
+            viewModel.filterOptions.sorts.first { $0.value == MediaFilterSort.averageRating.rawValue }?.label,
+            "MAL Rating"
+        )
     }
 
     @MainActor
@@ -4134,6 +4362,7 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(detail.replacingHasLiked(true).music?.representativeRelease?.releaseMbid, "release-1")
     }
 
+    @MainActor
     func testRichMediaDetailAndReviewDecoding() throws {
         let detail = try JSONDecoder.api.decode(
             MediaDetail.self,
@@ -4175,6 +4404,14 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(anime.displayBackdropURL, "https://img.example/banner.jpg")
         XCTAssertEqual(anime.cast?.first?.name, "Yuki Kaji")
         XCTAssertEqual(anime.characters?.first?.role, "Main")
+        let studioCredits: [MediaCompanyCredit]
+        if case let .array(values)? = anime.details?["company_credits"] {
+            studioCredits = values.compactMap(MediaCompanyCredit.init(json:))
+        } else {
+            studioCredits = []
+        }
+        XCTAssertEqual(studioCredits.map(\.name), ["Sunrise", "Bones"])
+        XCTAssertTrue(studioCredits.allSatisfy { $0.hasRole(.studio) })
         XCTAssertEqual(anime.relatedSections?.first?.items.first?.relation, "Sequel")
         XCTAssertEqual(anime.relatedSections?.first?.items.first?.displayTitle, "Attack on Titan: The Final Season")
         XCTAssertEqual(anime.externalRatings?.first?.url, "https://myanimelist.net/anime/1")
@@ -6801,12 +7038,17 @@ private struct CompanyGameRequest: Equatable {
 @MainActor
 private final class ScriptedCompanyRepository: CompanyRepository {
     var requests: [CompanyGameRequest] = []
+    var catalogFailuresRemaining = 0
+    var defaultCatalogDelay: Duration?
+    var nextPageURL: String?
 
     func detail(ref: CompanyRef) async throws -> CompanyDetail {
-        CompanyDetail(
+        let isAnime = ref.isAnimeStudio
+        return CompanyDetail(
             id: ref.companyId,
             source: ref.source,
-            name: "Space Studio",
+            mediaType: isAnime ? "anime" : "game",
+            name: isAnime ? "Wit Studio" : "Space Studio",
             description: nil,
             logoUrl: nil,
             logoWidth: nil,
@@ -6817,42 +7059,61 @@ private final class ScriptedCompanyRepository: CompanyRepository {
             companySize: nil,
             parent: nil,
             igdbUrl: nil,
+            providerUrl: nil,
             websites: [],
-            catalogs: CompanyCatalogCounts(
-                developed: CompanyCatalogCount(count: 2),
-                published: CompanyCatalogCount(count: 2)
-            )
+            catalogs: isAnime
+                ? CompanyCatalogCounts(studio: CompanyCatalogCount(count: nil))
+                : CompanyCatalogCounts(
+                    developed: CompanyCatalogCount(count: 2),
+                    published: CompanyCatalogCount(count: 2)
+                )
         )
     }
 
-    func gameFilterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
-        .companyFallback
+    func filterOptions(ref: CompanyRef) async throws -> MediaFilterOptionsResponse {
+        .companyFallback(for: ref)
     }
 
-    func games(
+    func catalog(
         ref: CompanyRef,
         role: CompanyCatalogRole,
         page: String?,
         filter: MediaFilterState
-    ) async throws -> PagedResponse<MediaSummary> {
+    ) async throws -> CompanyCatalogPage {
         requests.append(CompanyGameRequest(role: role, page: page, filter: filter))
+        if catalogFailuresRemaining > 0 {
+            catalogFailuresRemaining -= 1
+            throw CompanyCatalogTestError.unavailable
+        }
+        if filter.sort == nil, let defaultCatalogDelay {
+            try await Task.sleep(for: defaultCatalogDelay)
+        }
         if filter.sort == .title {
             try await Task.sleep(for: .milliseconds(80))
         }
         let prefix = filter.sort == .releaseDate ? "Fresh" : filter.sort == .title ? "Stale" : "Default"
-        let game = MediaSummary(
+        let item = MediaSummary(
             ref: MediaRef(
                 itemId: nil,
-                source: "igdb",
-                mediaType: "game",
+                source: ref.source,
+                mediaType: role.mediaType,
                 mediaId: "\(prefix)-\(role.rawValue)",
                 seasonNumber: nil,
                 episodeNumber: nil
             ),
             title: "\(prefix) \(role.rawValue)"
         )
-        return PagedResponse(count: 1, next: nil, previous: nil, results: [game])
+        return CompanyCatalogPage(
+            count: 1,
+            next: page == nil ? nextPageURL : nil,
+            previous: nil,
+            results: [item]
+        )
     }
+}
+
+private enum CompanyCatalogTestError: Error {
+    case unavailable
 }
 
 private final class ScriptedLibraryTrackingRepository: TrackingRepository {
@@ -8457,7 +8718,11 @@ private enum TestFixtures {
         "status": "Finished Airing",
         "episodes": 26,
         "runtime": "24m",
-        "studios": ["Sunrise"],
+        "studios": ["Sunrise", "Bones"],
+        "company_credits": [
+          { "id": "14", "source": "mal", "name": "Sunrise", "roles": ["Studio"] },
+          { "id": "4", "source": "mal", "name": "Bones", "roles": ["Studio"] }
+        ],
         "season": "Spring 2013",
         "broadcast": "Saturdays at 01:00",
         "source": "Original",
