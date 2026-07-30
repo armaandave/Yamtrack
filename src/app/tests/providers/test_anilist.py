@@ -173,6 +173,76 @@ class AniListProviderTests(TestCase):
         )
         request_mock.assert_called_once()
 
+    @patch("app.providers.anilist.services.api_request")
+    def test_anime_genre_page_returns_only_mal_addressable_media(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Page": {
+                    "pageInfo": {
+                        "total": 2,
+                        "perPage": 25,
+                        "currentPage": 1,
+                        "lastPage": 1,
+                        "hasNextPage": False,
+                    },
+                    "media": [
+                        {
+                            "idMal": 16498,
+                            "startDate": {
+                                "year": 2013,
+                                "month": 4,
+                                "day": 7,
+                            },
+                        },
+                        {
+                            "idMal": None,
+                            "startDate": {},
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = anilist.anime_genre_page(
+            "Action",
+            page=1,
+            page_size=25,
+            include_adult=False,
+        )
+
+        self.assertEqual(
+            result["media"],
+            [
+                {
+                    "idMal": 16498,
+                    "startDate": {
+                        "year": 2013,
+                        "month": 4,
+                        "day": 7,
+                    },
+                    "release_date": "2013-04-07",
+                },
+            ],
+        )
+        request = request_mock.call_args
+        self.assertEqual(request.args[0], "ANILIST")
+        self.assertEqual(request.args[1], "POST")
+        self.assertEqual(request.args[2], "https://graphql.anilist.co")
+        self.assertEqual(
+            request.kwargs["params"]["variables"],
+            {
+                "genres": ["Action"],
+                "page": 1,
+                "perPage": 25,
+                "isAdult": False,
+            },
+        )
+        self.assertEqual(request.kwargs["timeout"], 3)
+        self.assertFalse(request.kwargs["retry_rate_limits"])
+
     def test_rating_distribution_sorts_merges_and_rejects_invalid_buckets(self):
         result = anilist._normalize_score_distribution(
             [

@@ -1371,6 +1371,12 @@ struct ProfileListDetailView: View {
     }
 
     var body: some View {
+        let backdropURL = viewModel.list.flatMap { list in
+            list.listType == .media
+                ? CustomListBackdropSelection.artworkURL(from: list.items)
+                : nil
+        }
+
         ZStack(alignment: .top) {
             SpinePageBackground()
 
@@ -1400,10 +1406,6 @@ struct ProfileListDetailView: View {
                                     ) + 12
                                 )
                         } else if let list = viewModel.list {
-                            let backdropURL = list.listType == .media
-                                ? CustomListBackdropSelection.artworkURL(from: list.items)
-                                : nil
-
                             listHeader(list, backdropURL: backdropURL)
                                 .padding(
                                     .top,
@@ -1447,7 +1449,11 @@ struct ProfileListDetailView: View {
                 await viewModel.load()
             }
             .scrollContentBackground(.hidden)
-            .ignoresSafeArea(edges: .top)
+            .ignoresSafeArea(
+                edges: CustomListHeaderLayout.ignoredSafeAreaEdges(
+                    hasBackdrop: backdropURL != nil
+                )
+            )
 
             topButtons
                 .padding(.horizontal, 16)
@@ -1762,10 +1768,14 @@ struct ProfileListDetailView: View {
     }
 
     private func peopleGrid(_ people: [PersonListEntry]) -> some View {
-        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 3
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: columnCount)
+        let isAccessibilitySize = dynamicTypeSize.isAccessibilitySize
+        let columnCount = PeopleListGridLayout.columnCount(isAccessibilitySize: isAccessibilitySize)
+        let columns = Array(
+            repeating: GridItem(.flexible(), spacing: isAccessibilitySize ? 12 : 8),
+            count: columnCount
+        )
 
-        return LazyVGrid(columns: columns, spacing: 18) {
+        return LazyVGrid(columns: columns, spacing: isAccessibilitySize ? 18 : 14) {
             ForEach(people, id: \.entryId) { person in
                 Button {
                     selectedPerson = person.ref
@@ -1775,7 +1785,9 @@ struct ProfileListDetailView: View {
                             PersonArtwork(
                                 urlString: person.profileUrl,
                                 name: person.name,
-                                size: dynamicTypeSize.isAccessibilitySize ? 104 : 88
+                                size: PeopleListGridLayout.artworkSize(
+                                    isAccessibilitySize: isAccessibilitySize
+                                )
                             )
                             .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
 
@@ -1790,7 +1802,7 @@ struct ProfileListDetailView: View {
                         }
 
                         Text(person.name)
-                            .font(.system(size: 14, weight: .heavy, design: .rounded))
+                            .font(.system(size: isAccessibilitySize ? 14 : 12, weight: .heavy, design: .rounded))
                             .foregroundStyle(.white.opacity(0.94))
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
@@ -1798,7 +1810,7 @@ struct ProfileListDetailView: View {
 
                         if let department = person.knownForDepartment {
                             Text(department)
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .font(.system(size: isAccessibilitySize ? 11 : 10, weight: .semibold, design: .rounded))
                                 .foregroundStyle(.white.opacity(0.5))
                                 .lineLimit(1)
                         }
@@ -1888,10 +1900,24 @@ enum CustomListHeaderLayout {
     static let topControlTopPadding: CGFloat = 6
     static let topControlSize: CGFloat = 38
 
+    static func ignoredSafeAreaEdges(hasBackdrop: Bool) -> Edge.Set {
+        hasBackdrop ? .top : []
+    }
+
     static func topPadding(hasBackdrop: Bool, topSafeAreaInset: CGFloat) -> CGFloat {
         hasBackdrop
             ? -(topSafeAreaInset + 32)
             : topSafeAreaInset + topControlTopPadding + topControlSize
+    }
+}
+
+enum PeopleListGridLayout {
+    static func columnCount(isAccessibilitySize: Bool) -> Int {
+        isAccessibilitySize ? 2 : 4
+    }
+
+    static func artworkSize(isAccessibilitySize: Bool) -> CGFloat {
+        isAccessibilitySize ? 104 : 76
     }
 }
 

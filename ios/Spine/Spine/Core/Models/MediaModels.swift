@@ -388,6 +388,7 @@ struct MediaDiscoverRequest: Hashable, Identifiable {
         switch (mediaType, filter) {
         case ("movie", .genre), ("movie", .year),
              ("tv", .genre), ("tv", .year),
+             ("anime", .genre),
              ("book", .genre), ("book", .year),
              ("game", .genre), ("game", .year), ("game", .platform),
              ("music", .genre):

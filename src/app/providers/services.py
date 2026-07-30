@@ -394,6 +394,19 @@ def search(
 
 def discover(media_type, *, source=None, page=1, page_size=None, genre=None, year=None, platform=None, sort="vote_count"):
     """Browse provider metadata by supported media attributes."""
+    if source == Sources.MAL.value and media_type == MediaTypes.ANIME.value:
+        if year:
+            msg = "year discovery is not supported for anime."
+            raise ValueError(msg)
+        if platform:
+            msg = "platform discovery is only supported for games."
+            raise ValueError(msg)
+        return mal.discover_anime(
+            page=page,
+            page_size=page_size,
+            genre=genre,
+        )
+
     if source == Sources.TMDB.value and media_type in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
         if platform:
             msg = "platform discovery is only supported for games."

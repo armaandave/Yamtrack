@@ -600,6 +600,47 @@ class ServicesTests(TestCase):
 
         mock_search.assert_called_once_with("test", 1)
 
+    @patch("app.providers.services.mal.discover_anime")
+    def test_discover_mal_anime_genre(self, discover):
+        discover.return_value = {"results": [{"title": "Cowboy Bebop"}]}
+
+        result = services.discover(
+            MediaTypes.ANIME.value,
+            source=Sources.MAL.value,
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+        self.assertEqual(result, discover.return_value)
+        discover.assert_called_once_with(
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+    def test_discover_mal_anime_rejects_other_filters(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "year discovery is not supported for anime.",
+        ):
+            services.discover(
+                MediaTypes.ANIME.value,
+                source=Sources.MAL.value,
+                genre="Action",
+                year="2024",
+            )
+        with self.assertRaisesMessage(
+            ValueError,
+            "platform discovery is only supported for games.",
+        ):
+            services.discover(
+                MediaTypes.ANIME.value,
+                source=Sources.MAL.value,
+                genre="Action",
+                platform="TV",
+            )
+
     @patch("app.providers.musicbrainz.search")
     def test_search_music(self, mock_search):
         mock_search.return_value = [{"title": "Year Zero"}]

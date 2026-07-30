@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import Spine
 
 final class SpineTests: XCTestCase {
@@ -218,6 +219,12 @@ final class SpineTests: XCTestCase {
     }
 
     func testCustomListHeaderClearsTopControlsWithoutBackdropAndPullsUpWithBackdrop() {
+        XCTAssertFalse(
+            CustomListHeaderLayout.ignoredSafeAreaEdges(hasBackdrop: false).contains(.top)
+        )
+        XCTAssertTrue(
+            CustomListHeaderLayout.ignoredSafeAreaEdges(hasBackdrop: true).contains(.top)
+        )
         XCTAssertEqual(
             CustomListHeaderLayout.topPadding(hasBackdrop: false, topSafeAreaInset: 59),
             103
@@ -230,6 +237,13 @@ final class SpineTests: XCTestCase {
             CustomListHeaderLayout.topPadding(hasBackdrop: true, topSafeAreaInset: 59),
             -91
         )
+    }
+
+    func testPeopleListGridUsesFourColumnsAtStandardSizesAndTwoForAccessibility() {
+        XCTAssertEqual(PeopleListGridLayout.columnCount(isAccessibilitySize: false), 4)
+        XCTAssertEqual(PeopleListGridLayout.artworkSize(isAccessibilitySize: false), 76)
+        XCTAssertEqual(PeopleListGridLayout.columnCount(isAccessibilitySize: true), 2)
+        XCTAssertEqual(PeopleListGridLayout.artworkSize(isAccessibilitySize: true), 104)
     }
 
     func testHomeAtmosphereUsesAlbumCoverWithoutInventingBackdrop() {
@@ -1957,6 +1971,45 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(year?.mediaType, "book")
         XCTAssertEqual(year?.source, "openlibrary")
         XCTAssertEqual(year?.filter, .year("1965"))
+        XCTAssertNil(platform)
+    }
+
+    func testMediaDiscoverRequestBuildsAnimeGenreDetailPillRequest() {
+        let ref = MediaRef(
+            itemId: nil,
+            source: "mal",
+            mediaType: "anime",
+            mediaId: "5114",
+            seasonNumber: nil,
+            episodeNumber: nil
+        )
+        let genre = MediaDiscoverRequest.detailPillRequest(
+            ref: ref,
+            filter: .genre("Action")
+        )
+        let year = MediaDiscoverRequest.detailPillRequest(
+            ref: ref,
+            filter: .year("2009")
+        )
+        let platform = MediaDiscoverRequest.detailPillRequest(
+            ref: ref,
+            filter: .platform("TV")
+        )
+        let query = Dictionary(
+            uniqueKeysWithValues: (genre?.queryItems ?? []).map {
+                ($0.name, $0.value)
+            }
+        )
+
+        XCTAssertEqual(genre?.mediaType, "anime")
+        XCTAssertEqual(genre?.source, "mal")
+        XCTAssertEqual(genre?.filter, .genre("Action"))
+        XCTAssertEqual(genre?.title, "Action · Anime")
+        XCTAssertEqual(query["media_type"]!, "anime")
+        XCTAssertEqual(query["source"]!, "mal")
+        XCTAssertEqual(query["genre"]!, "Action")
+        XCTAssertEqual(query["sort"]!, "vote_count")
+        XCTAssertNil(year)
         XCTAssertNil(platform)
     }
 

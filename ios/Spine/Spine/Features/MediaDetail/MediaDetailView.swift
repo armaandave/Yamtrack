@@ -977,24 +977,30 @@ struct MediaDetailView: View {
             GeometryReader { safeAreaProxy in
                 Group {
                     if let browsingContext, browsingContext.refs.count > 1 {
-                        ScrollView(.horizontal) {
-                            LazyHStack(spacing: 0) {
-                                ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
-                                    detailPage(
-                                        ref: pageRef,
-                                        shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
-                                        topSafeAreaInset: safeAreaProxy.safeAreaInsets.top
-                                    )
-                                    .containerRelativeFrame(.horizontal)
-                                    .id(pageRef.id)
+                        ScrollViewReader { scrollProxy in
+                            ScrollView(.horizontal) {
+                                LazyHStack(spacing: 0) {
+                                    ForEach(Array(browsingContext.refs.enumerated()), id: \.element.id) { index, pageRef in
+                                        detailPage(
+                                            ref: pageRef,
+                                            shouldLoad: abs(index - selectedIndex(in: browsingContext)) <= 1,
+                                            topSafeAreaInset: safeAreaProxy.safeAreaInsets.top
+                                        )
+                                        .containerRelativeFrame(.horizontal)
+                                        .id(pageRef.id)
+                                    }
                                 }
+                                .scrollTargetLayout()
                             }
-                            .scrollTargetLayout()
+                            .scrollIndicators(.hidden)
+                            .scrollTargetBehavior(.paging)
+                            .scrollPosition(id: $selectedID, anchor: .center)
+                            .task(id: browsingContext.selectedID) {
+                                await Task.yield()
+                                scrollProxy.scrollTo(browsingContext.selectedID, anchor: .center)
+                            }
+                            .ignoresSafeArea(edges: .top)
                         }
-                        .scrollIndicators(.hidden)
-                        .scrollTargetBehavior(.paging)
-                        .scrollPosition(id: $selectedID)
-                        .ignoresSafeArea(edges: .top)
                     } else {
                         detailPage(
                             ref: ref,

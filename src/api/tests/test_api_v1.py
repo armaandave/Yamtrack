@@ -2853,11 +2853,81 @@ class ApiV1FoundationTests(TestCase):
         self.assertIn("sort", invalid.data)
         self.assertIn("page", invalid.data)
 
+    @patch("api.services.media.provider_services.discover")
+    def test_media_discover_anime_genre_contract(self, discover_mock):
+        user = get_user_model().objects.create_user(
+            username="anime-discoverer",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        item = Item.objects.create(
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            media_id="5114",
+            title="Fullmetal Alchemist: Brotherhood",
+            image="https://example.com/default.jpg",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom.jpg",
+        )
+        discover_mock.return_value = {
+            "per_page": 25,
+            "total_results": 26,
+            "results": [
+                {
+                    "media_id": "5114",
+                    "source": Sources.MAL.value,
+                    "media_type": MediaTypes.ANIME.value,
+                    "title": "Hagane no Renkinjutsushi: Fullmetal Alchemist",
+                    "display_title": "Fullmetal Alchemist: Brotherhood",
+                    "image": "https://example.com/fullmetal.jpg",
+                    "release_date": "2009-04-05",
+                    "genres": ["Action"],
+                },
+            ],
+        }
+
+        response = self.client.get(
+            "/api/v1/media/discover/"
+            "?media_type=anime&source=mal&genre=Action",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 26)
+        self.assertIsNotNone(response.data["next"])
+        anime = response.data["results"][0]
+        self.assertEqual(anime["ref"]["source"], Sources.MAL.value)
+        self.assertEqual(
+            anime["ref"]["media_type"],
+            MediaTypes.ANIME.value,
+        )
+        self.assertEqual(anime["ref"]["media_id"], "5114")
+        self.assertEqual(
+            anime["display_title"],
+            "Fullmetal Alchemist: Brotherhood",
+        )
+        self.assertEqual(
+            anime["custom_poster_url"],
+            "https://example.com/custom.jpg",
+        )
+        discover_mock.assert_called_once_with(
+            MediaTypes.ANIME.value,
+            source=Sources.MAL.value,
+            page=1,
+            page_size=25,
+            genre="Action",
+            year=None,
+            platform=None,
+            sort="vote_count",
+        )
+
     def test_media_discover_unsupported_media_type_fails_clearly(self):
         user = get_user_model().objects.create_user(username="unsupported-discover", password="strong-password-123")
         self.client.force_authenticate(user)
 
-        response = self.client.get("/api/v1/media/discover/?media_type=anime&genre=Drama")
+        response = self.client.get("/api/v1/media/discover/?media_type=manga&genre=Drama")
 
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertIn("Discovery is not supported", response.data["detail"])

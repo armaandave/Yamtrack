@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import requests
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from app.models import MediaTypes, Sources
 from app.providers import (
@@ -49,6 +49,204 @@ class Search(TestCase):
         response = mal.search(MediaTypes.ANIME.value, "q", 1)
 
         self.assertEqual(response["results"], [])
+
+    @override_settings(MAL_NSFW=False)
+    @patch(
+        "app.providers.mal.cached_anime_posters",
+        return_value={"5114": "https://cdn.myanimelist.net/canonical.jpg"},
+    )
+    @patch("app.providers.mal.services.api_request")
+    def test_anime_discover_by_genre(
+        self,
+        api_request,
+        _cached_posters,
+    ):
+        cache.clear()
+        api_request.side_effect = [
+            {
+                "data": [
+                    {"mal_id": 62, "name": "Isekai"},
+                ],
+            },
+            {
+                "pagination": {
+                    "last_visible_page": 2,
+                    "has_next_page": True,
+                    "items": {
+                        "count": 1,
+                        "total": 26,
+                        "per_page": 25,
+                    },
+                },
+                "data": [
+                    {
+                        "mal_id": 5114,
+                        "url": "https://myanimelist.net/anime/5114",
+                        "title": "Hagane no Renkinjutsushi: Fullmetal Alchemist",
+                        "title_english": "Fullmetal Alchemist: Brotherhood",
+                        "images": {
+                            "jpg": {
+                                "large_image_url": "https://cdn.jikan.moe/5114.jpg",
+                            },
+                        },
+                        "aired": {"from": "2009-04-05T00:00:00+00:00"},
+                        "type": "TV",
+                        "episodes": 64,
+                        "synopsis": "Two brothers search for the Philosopher's Stone.",
+                        "genres": [{"name": "Action"}],
+                        "score": 9.1,
+                        "scored_by": 2_000_000,
+                        "members": 3_000_000,
+                        "studios": [
+                            {"mal_id": 4, "name": "Bones"},
+                        ],
+                    },
+                ],
+            },
+        ]
+
+        result = mal.discover_anime(
+            page=1,
+            page_size=25,
+            genre="isekai",
+        )
+
+        genre_request = api_request.call_args_list[0]
+        self.assertEqual(
+            genre_request.args[2],
+            "https://api.jikan.moe/v4/genres/anime",
+        )
+        self.assertEqual(genre_request.kwargs["params"], {})
+
+        discover_request = api_request.call_args_list[1]
+        self.assertEqual(
+            discover_request.args[2],
+            "https://api.jikan.moe/v4/anime",
+        )
+        self.assertEqual(
+            discover_request.kwargs["params"],
+            {
+                "genres": "62",
+                "page": 1,
+                "limit": 25,
+                "order_by": "scored_by",
+                "sort": "desc",
+                "sfw": True,
+            },
+        )
+        self.assertEqual(discover_request.kwargs["timeout"], 3)
+        self.assertFalse(discover_request.kwargs["retry_rate_limits"])
+        self.assertEqual(result["total_results"], 26)
+        self.assertEqual(result["per_page"], 25)
+        self.assertEqual(result["results"][0]["media_id"], "5114")
+        self.assertEqual(result["results"][0]["source"], Sources.MAL.value)
+        self.assertEqual(
+            result["results"][0]["display_title"],
+            "Fullmetal Alchemist: Brotherhood",
+        )
+        self.assertEqual(
+            result["results"][0]["image"],
+            "https://cdn.myanimelist.net/canonical.jpg",
+        )
+
+    @patch("app.providers.mal.services.api_request")
+    @patch(
+        "app.providers.mal._jikan_anime_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_anime_discover_rejects_unknown_genre(
+        self,
+        _genres,
+        api_request,
+    ):
+        with self.assertRaisesMessage(
+            ValueError,
+            "Unknown MAL anime genre: Not A Genre",
+        ):
+            mal.discover_anime(genre="Not A Genre")
+
+        api_request.assert_not_called()
+
+    @override_settings(MAL_NSFW=False)
+    @patch(
+        "app.providers.mal.cached_anime_posters",
+        return_value={"16498": "https://cdn.myanimelist.net/aot.jpg"},
+    )
+    @patch("app.providers.anilist.anime_genre_page")
+    @patch(
+        "app.providers.mal._jikan_anime_discovery_page",
+        side_effect=requests.Timeout("Jikan unavailable"),
+    )
+    @patch(
+        "app.providers.mal._jikan_anime_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_anime_discover_falls_back_to_anilist(
+        self,
+        _genres,
+        _jikan_discover,
+        anilist_discover,
+        _cached_posters,
+    ):
+        cache.clear()
+        anilist_discover.return_value = {
+            "page_info": {
+                "total": 100,
+                "perPage": 25,
+                "currentPage": 2,
+                "lastPage": 4,
+                "hasNextPage": True,
+            },
+            "media": [
+                {
+                    "idMal": 16498,
+                    "title": {
+                        "english": "Attack on Titan",
+                        "romaji": "Shingeki no Kyojin",
+                        "native": "進撃の巨人",
+                    },
+                    "coverImage": {
+                        "extraLarge": "https://img.anilist.co/aot.jpg",
+                    },
+                    "release_date": "2013-04-07",
+                    "format": "TV",
+                    "episodes": 25,
+                    "description": "Humanity fights for survival.",
+                    "genres": ["Action", "Drama"],
+                    "averageScore": 84,
+                    "popularity": 800_000,
+                },
+            ],
+        }
+
+        result = mal.discover_anime(
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+        anilist_discover.assert_called_once_with(
+            "Action",
+            page=2,
+            page_size=25,
+            include_adult=False,
+            timeout=3,
+        )
+        self.assertEqual(result["total_results"], 100)
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(result["results"][0]["media_id"], "16498")
+        self.assertEqual(result["results"][0]["source"], Sources.MAL.value)
+        self.assertEqual(
+            result["results"][0]["display_title"],
+            "Attack on Titan",
+        )
+        self.assertEqual(
+            result["results"][0]["image"],
+            "https://cdn.myanimelist.net/aot.jpg",
+        )
+        self.assertTrue(
+            cache.get(mal.ANIME_DISCOVER_JIKAN_FAILURE_KEY),
+        )
 
     @requires_provider_network
     def test_mangaupdates(self):

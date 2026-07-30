@@ -45,8 +45,20 @@ struct StatsView: View {
         ZStack {
             SpinePageBackground()
 
+            RadialGradient(
+                colors: [
+                    StatsPalette.accent(for: selectedMediaType).opacity(0.13),
+                    .clear,
+                ],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 390
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 22) {
+                LazyVStack(alignment: .leading, spacing: 26) {
                     periodPicker
                     stateContent
                 }
@@ -85,7 +97,9 @@ struct StatsView: View {
     }
 
     private var periodPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let accent = StatsPalette.accent(for: selectedMediaType)
+
+        return ScrollView(.horizontal, showsIndicators: false) {
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
                     ForEach([StatsPeriod.allTime] + StatsPeriod.recentYears()) { period in
@@ -110,7 +124,7 @@ struct StatsView: View {
                         .buttonStyle(.plain)
                         .glassEffect(
                             isSelected
-                                ? .regular.tint(.white.opacity(0.08)).interactive()
+                                ? .regular.tint(accent.opacity(0.14)).interactive()
                                 : .clear.interactive(),
                             in: Capsule()
                         )
@@ -150,7 +164,7 @@ struct StatsView: View {
         let scope = StatsScopeSnapshot(summary: summary, mediaType: selectedMediaType)
         let accent = StatsPalette.accent(for: selectedMediaType)
 
-        return VStack(alignment: .leading, spacing: 26) {
+        return VStack(alignment: .leading, spacing: 30) {
             mediaPicker(summary)
 
             if scope.isEmpty {
@@ -167,55 +181,51 @@ struct StatsView: View {
                 )
 
                 if selectedMediaType == nil {
-                    personSection(summary, accent: StatsPalette.allMedia)
+                    personSection(summary)
                 }
 
                 if selectedMediaType == nil {
                     mediaMixSection(summary)
                 }
 
-                ratingSection(scope, accent: accent)
-                releaseYearSection(scope, accent: accent)
-                tasteSections(scope)
+                ratingSection(scope)
+                releaseYearSection(scope)
+                tasteSections(scope, accent: accent)
                 mediaGrids(scope)
             }
         }
     }
 
     @ViewBuilder
-    private func personSection(_ summary: StatsSummary, accent: Color) -> some View {
+    private func personSection(_ summary: StatsSummary) -> some View {
         let activityPoints = summary.activity.days.compactMap { day -> SWStatsActivityPoint? in
             guard let date = day.parsedDate else { return nil }
             return SWStatsActivityPoint(date: date, count: day.count)
         }
         let weekday = summary.activity.mostActiveWeekday
 
-        StatsSection(title: "Your rhythm", subtitle: "Diary activity for \(viewModel.selectedPeriod.title)") {
+        StatsSection(title: "Your rhythm") {
             StatsMetricGrid(items: [
                 StatsMetricItem(
                     title: "Active days",
                     value: summary.overview.activeDays.formatted(),
-                    systemName: "calendar",
-                    tint: accent
+                    systemName: "calendar"
                 ),
                 StatsMetricItem(
                     title: "Current streak",
                     value: StatsCopy.days(summary.overview.currentStreakDays),
-                    systemName: "flame.fill",
-                    tint: .orange
+                    systemName: "flame.fill"
                 ),
                 StatsMetricItem(
                     title: "Longest streak",
                     value: StatsCopy.days(summary.overview.longestStreakDays),
-                    systemName: "trophy.fill",
-                    tint: .yellow
+                    systemName: "trophy.fill"
                 ),
                 StatsMetricItem(
                     title: "Most active",
                     value: weekday?.name ?? "—",
                     detail: weekday.map { "\($0.percentage.formatted(.number.precision(.fractionLength(0...1))))% of active days" },
-                    systemName: "clock.fill",
-                    tint: .mint
+                    systemName: "clock.fill"
                 ),
             ])
 
@@ -234,7 +244,7 @@ struct StatsView: View {
 
                         SWStatsActivityHeatmap(
                             points: activityPoints,
-                            tint: accent,
+                            tint: StatsPalette.activity,
                             startDate: summary.range.parsedStartDate,
                             endDate: summary.range.parsedEndDate ?? (summary.range.isAllTime ? .now : nil)
                         )
@@ -275,36 +285,35 @@ struct StatsView: View {
 
     @ViewBuilder
     private func mediaMixSection(_ summary: StatsSummary) -> some View {
-        let slices = summary.mediaTypes.compactMap { item -> SWStatsSlice? in
+        let populatedMedia = summary.mediaTypes.filter {
+            summary.range.isAllTime ? $0.completedCount > 0 : $0.uniqueLoggedCount > 0
+        }
+        let slices = populatedMedia.map { item -> SWStatsSlice in
             let value = summary.range.isAllTime ? item.completedCount : item.uniqueLoggedCount
-            guard value > 0 else { return nil }
             return SWStatsSlice(
                 id: item.mediaType,
                 title: MediaTypeTheme.theme(for: item.mediaType).displayName,
                 value: value,
-                color: StatsPalette.accent(for: item.mediaType)
+                color: StatsPalette.mediaMixColor(for: item.mediaType)
             )
         }
 
         if !slices.isEmpty {
-            StatsSection(
-                title: "Media mix",
-                subtitle: summary.range.isAllTime ? "Completed titles by type" : "Unique logged titles by type"
-            ) {
+            StatsSection(title: "Media mix") {
                 StatsDonutSurface(slices: slices, centerTitle: summary.range.isAllTime ? "COMPLETED" : "LOGGED")
             }
         }
     }
 
     @ViewBuilder
-    private func ratingSection(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
+    private func ratingSection(_ scope: StatsScopeSnapshot) -> some View {
         if scope.ratingPoints.contains(where: { $0.count > 0 }) {
-            StatsSection(title: "Your ratings", subtitle: "Every half-step on Spine's 10-point scale") {
+            StatsSection(title: "Your ratings") {
                 StatsSurface {
                     SWStatsRatingChart(
                         points: scope.ratingPoints,
                         average: scope.numericAverageRating,
-                        tint: accent
+                        tint: StatsPalette.rating
                     )
                         .frame(height: 205)
                 }
@@ -313,13 +322,13 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func releaseYearSection(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
+    private func releaseYearSection(_ scope: StatsScopeSnapshot) -> some View {
         if !scope.releaseYears.isEmpty {
-            StatsSection(title: "Across the years", subtitle: "Release years represented in your logs") {
+            StatsSection(title: "Across the years") {
                 StatsSurface {
                     SWStatsYearChart(
                         points: scope.releaseYears.map { SWStatsYearPoint(year: $0.year, count: $0.count) },
-                        tint: accent
+                        tint: StatsPalette.timeline
                     )
                     .frame(height: 190)
                 }
@@ -328,15 +337,16 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func tasteSections(_ scope: StatsScopeSnapshot) -> some View {
+    private func tasteSections(_ scope: StatsScopeSnapshot, accent: Color) -> some View {
         if !scope.topGenres.isEmpty || !scope.topLanguages.isEmpty {
-            StatsSection(title: "Taste", subtitle: "Patterns from locally stored media metadata") {
+            StatsSection(title: "Taste") {
                 if !scope.topGenres.isEmpty {
                     StatsTasteGroup(
                         title: "Genres",
                         items: Array(scope.topGenres.prefix(8)),
                         coverage: scope.metadataCoverage.genreItems,
-                        total: scope.metadataCoverage.totalItems
+                        total: scope.metadataCoverage.totalItems,
+                        tint: accent
                     )
                 }
 
@@ -345,7 +355,8 @@ struct StatsView: View {
                         title: "Languages",
                         items: Array(scope.topLanguages.prefix(8)),
                         coverage: scope.metadataCoverage.languageItems,
-                        total: scope.metadataCoverage.totalItems
+                        total: scope.metadataCoverage.totalItems,
+                        tint: accent
                     )
                 }
             }
@@ -355,14 +366,15 @@ struct StatsView: View {
     @ViewBuilder
     private func mediaGrids(_ scope: StatsScopeSnapshot) -> some View {
         if !scope.topRated.isEmpty {
-            StatsSection(title: "Top rated", subtitle: "Your highest ratings in this scope") {
+            StatsSection(title: "Top rated") {
                 StatsPosterGrid(
                     items: scope.topRated.map {
                         StatsPosterItem(
                             media: $0.media,
                             caption: StatsCopy.rating($0.rating, for: $0.media),
+                            accessibilityCaption: StatsCopy.rating($0.rating, for: $0.media),
                             systemName: "star.fill",
-                            tint: .yellow
+                            tint: StatsPalette.rating
                         )
                     }
                 ) { media in
@@ -372,14 +384,15 @@ struct StatsView: View {
         }
 
         if !scope.mostLogged.isEmpty {
-            StatsSection(title: "Most logged", subtitle: "The stories you returned to most") {
+            StatsSection(title: "Most logged") {
                 StatsPosterGrid(
                     items: scope.mostLogged.map {
                         StatsPosterItem(
                             media: $0.media,
-                            caption: "\($0.logCount) \($0.logCount == 1 ? "log" : "logs")",
+                            caption: "\($0.logCount)×",
+                            accessibilityCaption: "\($0.logCount) \($0.logCount == 1 ? "log" : "logs")",
                             systemName: "arrow.trianglehead.2.clockwise",
-                            tint: .white.opacity(0.82)
+                            tint: StatsPalette.activity
                         )
                     }
                 ) { media in
@@ -399,7 +412,6 @@ private enum StatsContentPhase: Hashable {
 
 private struct StatsScopeSnapshot {
     let title: String
-    let subtitle: String
     let completedCount: Int
     let diaryEntryCount: Int
     let uniqueLoggedCount: Int
@@ -422,7 +434,6 @@ private struct StatsScopeSnapshot {
         if let mediaType {
             let theme = MediaTypeTheme.theme(for: mediaType)
             title = theme.displayName
-            subtitle = "A focused view of your \(theme.displayName.lowercased())"
             if let media = summary.mediaTypeSummary(for: mediaType) {
                 let points = SWStatsRatingChart.normalizedPoints(
                     from: media.ratingDistribution,
@@ -469,7 +480,6 @@ private struct StatsScopeSnapshot {
                     mediaType: nil
                 )
             title = "All Media"
-            subtitle = "Your full media life, without mixing incompatible units"
             completedCount = summary.overview.completedCount
             diaryEntryCount = summary.overview.diaryEntryCount
             uniqueLoggedCount = summary.overview.uniqueLoggedCount
@@ -601,7 +611,19 @@ private struct StatsHero: View {
             }
         }
         .padding(20)
-        .background(.white.opacity(0.025), in: shape)
+        .background {
+            shape.fill(
+                LinearGradient(
+                    colors: [
+                        accent.opacity(0.13),
+                        .white.opacity(0.025),
+                        .clear,
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
         .glassEffect(.regular.tint(.white.opacity(0.035)), in: shape)
         .overlay {
             shape.strokeBorder(.white.opacity(0.1), lineWidth: 1)
@@ -637,28 +659,19 @@ private struct StatsHeroMetric: View {
 
 private struct StatsSection<Content: View>: View {
     let title: String
-    let subtitle: String?
     @ViewBuilder let content: () -> Content
 
-    init(title: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
-        self.subtitle = subtitle
         self.content = content
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title.uppercased())
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .tracking(0.8)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-            }
+            Text(title.uppercased())
+                .font(.system(size: 13, weight: .black))
+                .foregroundStyle(.white.opacity(0.72))
+                .tracking(0.8)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -674,8 +687,7 @@ private struct StatsSurface<Content: View>: View {
         content()
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.white.opacity(0.022), in: shape)
-            .glassEffect(.regular.tint(.white.opacity(0.025)), in: shape)
+            .background(.white.opacity(0.028), in: shape)
             .overlay {
                 shape.strokeBorder(.white.opacity(0.08), lineWidth: 1)
             }
@@ -687,7 +699,6 @@ private struct StatsMetricItem: Identifiable {
     let value: String
     var detail: String? = nil
     let systemName: String
-    let tint: Color
 
     var id: String { title }
 }
@@ -697,17 +708,15 @@ private struct StatsMetricGrid: View {
     private let columns = [GridItem(.adaptive(minimum: 148), spacing: 10)]
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
+        StatsSurface {
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(items) { item in
-                    let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
-
                     HStack(alignment: .top, spacing: 11) {
                         Image(systemName: item.systemName)
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(item.tint)
+                            .foregroundStyle(.white.opacity(0.62))
                             .frame(width: 30, height: 30)
-                            .background(item.tint.opacity(0.13), in: Circle())
+                            .background(.white.opacity(0.065), in: Circle())
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.value)
@@ -730,13 +739,8 @@ private struct StatsMetricGrid: View {
 
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
+                    .padding(.vertical, 7)
                     .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-                    .background(.white.opacity(0.025), in: shape)
-                    .glassEffect(.regular.tint(.white.opacity(0.025)), in: shape)
-                    .overlay {
-                        shape.strokeBorder(.white.opacity(0.08), lineWidth: 1)
-                    }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("\(item.title), \(item.value)\(item.detail.map { ", \($0)" } ?? "")")
                 }
@@ -797,51 +801,81 @@ private struct StatsTasteGroup: View {
     let items: [StatsNamedCount]
     let coverage: Int
     let total: Int
+    let tint: Color
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
+
+    private var maximumCount: Int {
+        max(1, items.map(\.count).max() ?? 1)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(title.uppercased())
-                    .tracking(0.6)
-                Spacer()
-                if total > 0 {
-                    Text("\(coverage.formatted()) / \(total.formatted()) TITLES")
-                        .monospacedDigit()
+        StatsSurface {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(title.uppercased())
+                        .tracking(0.6)
+                    Spacer()
+                    if total > 0 {
+                        Text("\(coverage.formatted()) / \(total.formatted()) TITLES")
+                            .monospacedDigit()
+                    }
                 }
-            }
-            .font(.system(size: 9, weight: .black))
-            .foregroundStyle(.white.opacity(0.38))
+                .font(.system(size: 9, weight: .black))
+                .foregroundStyle(.white.opacity(0.42))
 
-            GlassEffectContainer(spacing: 8) {
-                FlowLayout(spacing: 8) {
-                    ForEach(items) { item in
-                        HStack(spacing: 7) {
-                            Text(item.name)
-                                .lineLimit(1)
-                            Text(item.count.formatted())
-                                .fontWeight(.black)
-                                .foregroundStyle(.white.opacity(0.5))
-                                .monospacedDigit()
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack(spacing: 6) {
+                                Text(String(index + 1))
+                                    .font(.system(size: 9, weight: .black, design: .rounded))
+                                    .foregroundStyle(tint.opacity(0.88))
+                                    .frame(width: 12, alignment: .leading)
+
+                                Text(item.name)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.78))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+
+                                Spacer(minLength: 4)
+
+                                Text(item.count.formatted())
+                                    .font(.system(size: 10, weight: .black, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .monospacedDigit()
+                            }
+
+                            GeometryReader { proxy in
+                                Capsule()
+                                    .fill(.white.opacity(0.055))
+                                    .overlay(alignment: .leading) {
+                                        Capsule()
+                                            .fill(tint.gradient)
+                                            .frame(
+                                                width: proxy.size.width
+                                                    * CGFloat(item.count)
+                                                    / CGFloat(maximumCount)
+                                            )
+                                    }
+                            }
+                            .frame(height: 3)
                         }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.78))
-                        .padding(.horizontal, 11)
-                        .frame(minHeight: 36)
-                        .background(.white.opacity(0.025), in: Capsule())
-                        .glassEffect(.clear, in: Capsule())
+                        .frame(minHeight: 32)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(item.name), \(item.count)")
                     }
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 }
 
 private struct StatsPosterItem: Identifiable {
     let media: MediaSummary
     let caption: String
+    let accessibilityCaption: String
     let systemName: String
     let tint: Color
 
@@ -852,52 +886,50 @@ private struct StatsPosterGrid: View {
     let items: [StatsPosterItem]
     let action: (MediaSummary) -> Void
 
-    private let columns = [
-        GridItem(.adaptive(minimum: PosterSlot.carousel.size.width, maximum: 120), spacing: 12),
-    ]
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
 
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
             ForEach(items) { item in
                 Button {
                     action(item.media)
                 } label: {
-                    VStack(alignment: .leading, spacing: 7) {
-                        ZStack(alignment: .bottomLeading) {
-                            MediaArtwork(
-                                url: item.media.displayPosterURL,
-                                title: item.media.title,
-                                slot: .carousel,
-                                mediaType: item.media.ref.mediaType,
-                                orientation: item.media.posterOrientation
-                            )
+                    ZStack(alignment: .bottomLeading) {
+                        MediaArtwork(
+                            url: item.media.displayPosterURL,
+                            title: item.media.title,
+                            slot: .tagGrid,
+                            mediaType: item.media.ref.mediaType,
+                            orientation: item.media.posterOrientation
+                        )
 
-                            Label(item.caption, systemImage: item.systemName)
-                                .font(.system(size: 9, weight: .black))
+                        HStack(spacing: 3) {
+                            Image(systemName: item.systemName)
                                 .foregroundStyle(item.tint)
-                                .lineLimit(1)
-                                .padding(.horizontal, 7)
-                                .frame(minHeight: 25)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .overlay {
-                                    Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                                }
-                                .padding(6)
+                            Text(item.caption)
+                                .foregroundStyle(.white.opacity(0.94))
+                                .monospacedDigit()
                         }
-                        .shadow(color: .black.opacity(0.26), radius: 8, y: 4)
-
-                        Text(item.media.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .lineLimit(2)
+                        .font(.system(size: 9, weight: .black))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                        .padding(.horizontal, 6)
+                        .frame(maxWidth: 70, minHeight: 23)
+                        .background(.black.opacity(0.62), in: Capsule())
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                        }
+                        .padding(5)
                     }
-                    .frame(width: PosterSlot.carousel.size.width, alignment: .leading)
+                    .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(item.media.title), \(item.caption)")
+                .accessibilityLabel("\(item.media.title), \(item.accessibilityCaption)")
                 .accessibilityHint("Opens media details")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -972,9 +1004,16 @@ private enum StatsCopy {
 }
 
 private enum StatsPalette {
-    static let allMedia = Color(red: 0.78, green: 0.80, blue: 0.84)
+    static let allMedia = Color(red: 0.64, green: 0.70, blue: 0.80)
+    static let activity = Color(red: 0.33, green: 0.82, blue: 0.68)
+    static let rating = Color(red: 0.98, green: 0.72, blue: 0.28)
+    static let timeline = Color(red: 0.45, green: 0.61, blue: 0.98)
 
     static func accent(for mediaType: String?) -> Color {
         mediaType.map { MediaTypeTheme.theme(for: $0).statsColor } ?? allMedia
+    }
+
+    static func mediaMixColor(for mediaType: String) -> Color {
+        MediaTypeTheme.theme(for: mediaType).statsColor.opacity(0.82)
     }
 }

@@ -87,6 +87,54 @@ query (
 }
 """
 
+ANIME_GENRE_QUERY = """
+query (
+  $genres: [String]
+  $page: Int!
+  $perPage: Int!
+  $isAdult: Boolean
+) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      total
+      perPage
+      currentPage
+      lastPage
+      hasNextPage
+    }
+    media(
+      type: ANIME
+      genre_in: $genres
+      isAdult: $isAdult
+      sort: [POPULARITY_DESC, SCORE_DESC]
+    ) {
+      idMal
+      title {
+        english
+        romaji
+        native
+      }
+      coverImage {
+        extraLarge
+        large
+        medium
+      }
+      startDate {
+        year
+        month
+        day
+      }
+      format
+      episodes
+      description(asHtml: false)
+      genres
+      averageScore
+      popularity
+    }
+  }
+}
+"""
+
 ANIME_QUERY = """
 query ($malId: Int!) {
   Media(idMal: $malId, type: ANIME) {
@@ -642,6 +690,50 @@ def studio_anime_ids(
         "anime_ids": anime_ids,
         "page": int(page_info.get("currentPage") or page),
         "has_next_page": bool(page_info.get("hasNextPage")),
+    }
+
+
+def anime_genre_page(
+    genre,
+    *,
+    page,
+    page_size,
+    include_adult,
+    timeout=REQUEST_TIMEOUT,
+):
+    """Return one AniList anime genre page with MAL-addressable IDs."""
+    response = services.api_request(
+        "ANILIST",
+        "POST",
+        API_URL,
+        params={
+            "query": ANIME_GENRE_QUERY,
+            "variables": {
+                "genres": [str(genre)],
+                "page": int(page),
+                "perPage": int(page_size),
+                "isAdult": None if include_adult else False,
+            },
+        },
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=timeout,
+        retry_rate_limits=False,
+    )
+    connection = ((response.get("data") or {}).get("Page") or {})
+    page_info = connection.get("pageInfo")
+    media = connection.get("media")
+    if not isinstance(page_info, dict) or not isinstance(media, list):
+        raise ValueError("AniList returned malformed anime discovery data")
+    return {
+        "page_info": page_info,
+        "media": [
+            {
+                **node,
+                "release_date": _fuzzy_date(node.get("startDate")),
+            }
+            for node in media
+            if isinstance(node, dict) and node.get("idMal")
+        ],
     }
 
 
