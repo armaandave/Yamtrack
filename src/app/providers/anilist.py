@@ -24,10 +24,30 @@ PERSON_PAGE_LIMIT = 20
 PERSON_LOCK_TTL = REQUEST_TIMEOUT + 2
 PERSON_REFRESH_MARKER_TTL = 60
 PERSON_POSTER_CACHE_VERSION = "v2"
+PERSON_COMPLETION_CACHE_VERSION = "v1"
 REVIEWS_CACHE_VERSION = "v1"
 REVIEWS_FRESH_TTL = 60 * 60
 REVIEWS_STALE_TTL = 60 * 60 * 24
 REVIEWS_PAGE_SIZE = 25
+
+PERSON_SEARCH_QUERY = """
+query ($search: String!, $page: Int!, $perPage: Int!) {
+  Page(page: $page, perPage: $perPage) {
+    staff(search: $search, sort: [SEARCH_MATCH, FAVOURITES_DESC]) {
+      id
+      name {
+        full
+        native
+      }
+      image {
+        large
+        medium
+      }
+      primaryOccupations
+    }
+  }
+}
+"""
 
 ANIME_SERIES_QUERY = """
 query ($malIds: [Int]) {
@@ -126,6 +146,55 @@ query (
       }
       format
       episodes
+      description(asHtml: false)
+      genres
+      averageScore
+      popularity
+    }
+  }
+}
+"""
+
+MANGA_GENRE_QUERY = """
+query (
+  $genres: [String]
+  $page: Int!
+  $perPage: Int!
+  $isAdult: Boolean
+) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      total
+      perPage
+      currentPage
+      lastPage
+      hasNextPage
+    }
+    media(
+      type: MANGA
+      genre_in: $genres
+      isAdult: $isAdult
+      sort: [POPULARITY_DESC, SCORE_DESC]
+    ) {
+      idMal
+      title {
+        english
+        romaji
+        native
+      }
+      coverImage {
+        extraLarge
+        large
+        medium
+      }
+      startDate {
+        year
+        month
+        day
+      }
+      format
+      chapters
+      volumes
       description(asHtml: false)
       genres
       averageScore
@@ -702,12 +771,53 @@ def anime_genre_page(
     timeout=REQUEST_TIMEOUT,
 ):
     """Return one AniList anime genre page with MAL-addressable IDs."""
+    return _media_genre_page(
+        ANIME_GENRE_QUERY,
+        "anime",
+        genre,
+        page=page,
+        page_size=page_size,
+        include_adult=include_adult,
+        timeout=timeout,
+    )
+
+
+def manga_genre_page(
+    genre,
+    *,
+    page,
+    page_size,
+    include_adult,
+    timeout=REQUEST_TIMEOUT,
+):
+    """Return one AniList manga genre page with MAL-addressable IDs."""
+    return _media_genre_page(
+        MANGA_GENRE_QUERY,
+        "manga",
+        genre,
+        page=page,
+        page_size=page_size,
+        include_adult=include_adult,
+        timeout=timeout,
+    )
+
+
+def _media_genre_page(
+    query,
+    media_type,
+    genre,
+    *,
+    page,
+    page_size,
+    include_adult,
+    timeout,
+):
     response = services.api_request(
         "ANILIST",
         "POST",
         API_URL,
         params={
-            "query": ANIME_GENRE_QUERY,
+            "query": query,
             "variables": {
                 "genres": [str(genre)],
                 "page": int(page),
@@ -723,7 +833,9 @@ def anime_genre_page(
     page_info = connection.get("pageInfo")
     media = connection.get("media")
     if not isinstance(page_info, dict) or not isinstance(media, list):
-        raise ValueError("AniList returned malformed anime discovery data")
+        raise ValueError(
+            f"AniList returned malformed {media_type} discovery data",
+        )
     return {
         "page_info": page_info,
         "media": [
@@ -809,7 +921,13 @@ def anime_reviews(mal_id, page):
         raise services.ProviderAPIError("anilist", error) from error
 
 
-def person_page(person_id, *, page=1):
+def person_page(
+    person_id,
+    *,
+    page=1,
+    enrich_credit_images=True,
+    request_session=None,
+):
     """Return a cumulative, lazily paged AniList staff profile."""
     page = int(page)
     if not 1 <= page <= PERSON_PAGE_LIMIT:
@@ -817,7 +935,11 @@ def person_page(person_id, *, page=1):
 
     pages = []
     for page_number in range(1, page + 1):
-        payload = _person_staff_page(person_id, page_number)
+        payload = _person_staff_page(
+            person_id,
+            page_number,
+            request_session=request_session,
+        )
         pages.append(payload)
         if not payload["has_next_page"]:
             break
@@ -841,14 +963,58 @@ def person_page(person_id, *, page=1):
         ],
     )
     current_page = len(pages)
+    provider_has_more = pages[-1]["has_next_page"]
     data["credits_page"] = current_page
     data["credits_next_page"] = (
         current_page + 1
-        if current_page < PERSON_PAGE_LIMIT and pages[-1]["has_next_page"]
+        if current_page < PERSON_PAGE_LIMIT and provider_has_more
         else None
     )
-    _apply_mal_anime_credit_images(person_id, pages[0]["staff"], data)
+    data["credits_complete"] = not provider_has_more
+    data["credits_truncated"] = (
+        current_page == PERSON_PAGE_LIMIT and provider_has_more
+    )
+    if enrich_credit_images:
+        _apply_mal_anime_credit_images(person_id, pages[0]["staff"], data)
     return data
+
+
+def search_people(query, *, limit=10, timeout=None):
+    """Search AniList staff and return normalized person references."""
+    response = services.api_request(
+        "ANILIST",
+        "POST",
+        API_URL,
+        params={
+            "query": PERSON_SEARCH_QUERY,
+            "variables": {
+                "search": query,
+                "page": 1,
+                "perPage": limit,
+            },
+        },
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=timeout or REQUEST_TIMEOUT,
+        retry_rate_limits=False,
+        request_session=services.person_search_session,
+    )
+    results = []
+    staff = ((response.get("data") or {}).get("Page") or {}).get("staff") or []
+    for person in staff:
+        name = person.get("name") or {}
+        display_name = name.get("full") or name.get("native")
+        if person.get("id") is None or not display_name:
+            continue
+        image = person.get("image") or {}
+        occupations = person.get("primaryOccupations") or []
+        results.append({
+            "source": "anilist",
+            "person_id": str(person["id"]),
+            "name": display_name,
+            "profile_url": image.get("large") or image.get("medium") or None,
+            "known_for_department": occupations[0] if occupations else None,
+        })
+    return results[:limit]
 
 
 def refresh_person_page(person_id, page):
@@ -893,7 +1059,46 @@ def refresh_person_credit_images(
     return mal_images
 
 
-def _person_staff_page(person_id, page):
+def person_completion_credits(person_id, person):
+    """Return one cached, fully enumerated MAL match for AniList staff."""
+    cached = cache.get(_person_completion_key(person_id))
+    if cached is not None:
+        return cached.get("credits") if cached["complete"] else None
+    if cache.get(_person_completion_failure_key(person_id)):
+        return None
+
+    try:
+        from app.providers import mal  # noqa: PLC0415
+
+        mal_person = mal.person_page_by_name(
+            person.get("name"),
+            person.get("alternative_names"),
+            person.get("birth_date"),
+            timeout=REQUEST_TIMEOUT,
+            request_session=services.person_search_session,
+            strict=True,
+        )
+    except (
+        requests.RequestException,
+        services.ProviderAPIError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.warning(
+            "MAL completion match unavailable for AniList person %s: %s",
+            person_id,
+            error,
+        )
+        cache.set(_person_completion_failure_key(person_id), True, FAILURE_TTL)
+        return None
+
+    payload = _cache_person_completion(person_id, mal_person)
+    return payload.get("credits") if payload["complete"] else None
+
+
+def _person_staff_page(person_id, page, *, request_session=None):
     fresh_key, stale_key, failure_key, _ = _person_page_keys(person_id, page)
     if data := cache.get(fresh_key):
         return data
@@ -908,10 +1113,14 @@ def _person_staff_page(person_id, page):
             "anilist",
             RuntimeError("Cached AniList person failure"),
         )
-    return _refresh_person_staff_page(person_id, page)
+    return _refresh_person_staff_page(
+        person_id,
+        page,
+        request_session=request_session,
+    )
 
 
-def _refresh_person_staff_page(person_id, page):
+def _refresh_person_staff_page(person_id, page, *, request_session=None):
     fresh_key, stale_key, failure_key, lock_key = _person_page_keys(person_id, page)
     stale = cache.get(stale_key)
     if not cache.add(lock_key, 1, timeout=PERSON_LOCK_TTL):
@@ -946,7 +1155,7 @@ def _refresh_person_staff_page(person_id, page):
             retry_rate_limits=False,
             # Person pages must fail inside the native client's request budget.
             # A provider 429 is cached below instead of occupying a web worker.
-            request_session=requests,
+            request_session=request_session or requests,
         )
         current = (response.get("data") or {}).get("Staff")
         if not isinstance(current, dict):
@@ -1022,6 +1231,31 @@ def _person_poster_key(person_id):
     )
 
 
+def _person_completion_key(person_id):
+    return (
+        f"anilist:{PERSON_COMPLETION_CACHE_VERSION}:person:{person_id}:"
+        "completion-credits"
+    )
+
+
+def _person_completion_failure_key(person_id):
+    return f"{_person_completion_key(person_id)}:failure"
+
+
+def _cache_person_completion(person_id, mal_person):
+    payload = {
+        "complete": mal_person is not None,
+        "credits": list((mal_person or {}).get("credits") or []),
+    }
+    cache.set(
+        _person_completion_key(person_id),
+        payload,
+        STALE_TTL if payload["complete"] else FRESH_TTL,
+    )
+    cache.delete(_person_completion_failure_key(person_id))
+    return payload
+
+
 def _schedule_person_page_refresh(person_id, page):
     marker = (
         f"anilist:{PERSON_CACHE_VERSION}:person:{person_id}:page:{page}:refresh"
@@ -1061,6 +1295,11 @@ def _apply_mal_anime_credit_images(person_id, staff, person):
             _alternative_staff_names(name),
             _fuzzy_date(staff.get("dateOfBirth")),
         )
+    completion = cache.get(_person_completion_key(person_id))
+    if completion and completion["complete"]:
+        person["_completion_credits"] = completion["credits"]
+    if not anime_credits:
+        return
     cached_images = mal.cached_anime_posters(
         credit.get("media_id") for credit in anime_credits
     )

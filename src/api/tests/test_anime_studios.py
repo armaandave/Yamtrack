@@ -49,14 +49,25 @@ class AnimeStudioAPITests(TestCase):
         self.assertEqual(response.data["founded_year"], 2012)
         self.assertEqual(
             response.data["catalogs"],
-            {"studio": {"available": True, "count": None}},
+            {
+                "studio": {
+                    "available": True,
+                    "count": None,
+                    "completion": None,
+                },
+            },
         )
         self.assertIsNone(response.data["igdb_url"])
 
+    @patch(
+        "api.services.media.mal.studio_anime_completion_catalog",
+        return_value={"complete": False, "results": []},
+    )
     @patch("api.services.media.provider_services.get_company_anime")
     def test_anime_catalog_returns_nullable_count_and_user_poster(
         self,
         catalog_mock,
+        _completion_catalog_mock,
     ):
         catalog_mock.return_value = {
             "count": None,
@@ -256,7 +267,7 @@ class AnimeStudioAPITests(TestCase):
         self.assertEqual(
             response.data["catalogs"],
             {
-                "developed": {"count": 24},
-                "published": {"count": 8},
+                "developed": {"count": 24, "completion": None},
+                "published": {"count": 8, "completion": None},
             },
         )

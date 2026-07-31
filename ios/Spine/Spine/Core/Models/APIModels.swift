@@ -2,17 +2,51 @@ import Foundation
 
 struct EmptyResponse: Codable, Equatable {}
 
+struct CompletionProgress: Codable, Equatable, Hashable {
+    let completedCount: Int
+    let totalCount: Int
+
+    var normalizedCompletedCount: Int {
+        min(max(completedCount, 0), max(totalCount, 0))
+    }
+
+    var isVisible: Bool {
+        totalCount > 0
+    }
+
+    var percentage: Int {
+        guard totalCount > 0 else { return 0 }
+        return Int((Double(normalizedCompletedCount) * 100 / Double(totalCount)).rounded())
+    }
+
+    var percentageText: String {
+        "\(percentage)%"
+    }
+
+    var countText: String {
+        "\(normalizedCompletedCount) of \(max(totalCount, 0))"
+    }
+}
+
 struct PagedResponse<T: Decodable>: Decodable {
     let count: Int
     let next: String?
     let previous: String?
     let results: [T]
+    let completion: CompletionProgress?
 
-    init(count: Int, next: String?, previous: String?, results: [T]) {
+    init(
+        count: Int,
+        next: String?,
+        previous: String?,
+        results: [T],
+        completion: CompletionProgress? = nil
+    ) {
         self.count = count
         self.next = next
         self.previous = previous
         self.results = results
+        self.completion = completion
     }
 }
 

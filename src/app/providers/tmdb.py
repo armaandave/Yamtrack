@@ -136,6 +136,45 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
     return data
 
 
+def search_people(query, *, limit=10, timeout=None):
+    """Search TMDB people and return normalized person references."""
+    params = {
+        **base_params,
+        "query": query,
+        "page": 1,
+    }
+    if settings.TMDB_NSFW:
+        params["include_adult"] = "true"
+    try:
+        response = services.api_request(
+            Sources.TMDB.value,
+            "GET",
+            f"{base_url}/search/person",
+            params=params,
+            timeout=timeout,
+            retry_rate_limits=False,
+            request_session=services.person_search_session,
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+
+    return [
+        {
+            "source": Sources.TMDB.value,
+            "person_id": str(person["id"]),
+            "name": person.get("name") or "",
+            "profile_url": (
+                f"https://image.tmdb.org/t/p/w500{person['profile_path']}"
+                if person.get("profile_path")
+                else None
+            ),
+            "known_for_department": person.get("known_for_department") or None,
+        }
+        for person in (response.get("results") or [])[:limit]
+        if person.get("id") is not None and person.get("name")
+    ]
+
+
 def _normalize_name(value):
     return slugify(str(value or "")).casefold()
 

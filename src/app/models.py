@@ -353,6 +353,56 @@ class ExternalRating(models.Model):
         ]
 
 
+class MediaSeries(models.Model):
+    """A complete provider-backed series or collection."""
+
+    source = models.CharField(max_length=20, choices=Sources)
+    series_id = models.CharField(max_length=255)
+    media_type = models.CharField(max_length=10, choices=MediaTypes)
+    name = models.TextField()
+    item_count = models.PositiveIntegerField(default=0)
+    items = models.ManyToManyField(
+        Item,
+        through="MediaSeriesItem",
+        related_name="media_series",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["source", "media_type", "series_id"],
+                name="app_mediaseries_identity_uniq",
+            ),
+        ]
+        ordering = ["name", "id"]
+
+
+class MediaSeriesItem(models.Model):
+    """One ordered member of a complete provider-backed series."""
+
+    series = models.ForeignKey(
+        MediaSeries,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    item = models.ForeignKey(
+        Item,
+        on_delete=models.CASCADE,
+        related_name="series_memberships",
+    )
+    position = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["series", "item"],
+                name="app_mediaseriesitem_member_uniq",
+            ),
+        ]
+        ordering = ["position", "id"]
+
+
 class ItemFilterFacet(models.Model):
     """Indexed multi-value filter facets for stored media items."""
 

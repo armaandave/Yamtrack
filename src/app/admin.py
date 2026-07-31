@@ -255,6 +255,8 @@ SpecialModels = [
     "DiaryEntryTag",
     "BookSession",
     "MediaLike",
+    "MediaSeries",
+    "MediaSeriesItem",
     "ItemFilterFacet",
     "BookCreditOverride",
     "UserMessage",

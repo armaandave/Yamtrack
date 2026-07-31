@@ -14,6 +14,7 @@ from api.serializers.tracking import (
     EpisodeWatchSerializer,
     TrackingWriteSerializer,
 )
+from api.services import completion as completion_service
 from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services import tracking as tracking_service
@@ -64,6 +65,10 @@ class TrackingListView(MediaExposureMixin, APIView):
                 },
                 rating_scope_queryset=rating_scope_queryset,
             )
+        completion = completion_service.completion_for_items(
+            request.user,
+            queryset.values_list("item_id", flat=True),
+        )
         paginator = StandardResultsSetPagination()
         page = list(paginator.paginate_queryset(queryset, request, view=self))
         BasicMedia.objects.annotate_max_progress(page, media_type)
@@ -72,7 +77,7 @@ class TrackingListView(MediaExposureMixin, APIView):
             request.user,
             media_by_item={media.item_id: media for media in page},
         )
-        return paginator.get_paginated_response(
+        response = paginator.get_paginated_response(
             [
                 {
                     "media": media_summary_from_item(media.item, request=request, user=request.user),
@@ -81,6 +86,8 @@ class TrackingListView(MediaExposureMixin, APIView):
                 for media in page
             ],
         )
+        response.data["completion"] = completion
+        return response
 
 
 class TrackingDetailView(MediaExposureMixin, APIView):

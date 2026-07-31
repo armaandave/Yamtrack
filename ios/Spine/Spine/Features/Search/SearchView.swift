@@ -456,6 +456,9 @@ private struct SearchViewContent: View {
                     loadRecentMedia()
                 }
                 .task { await loadFeaturedLists() }
+                .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+                    Task { await loadFeaturedLists() }
+                }
                 .onChange(of: recentMediaData) { _, _ in loadRecentMedia() }
                 .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { notification in
                     guard allowsAllMediaSearch,
@@ -720,12 +723,16 @@ private struct FeaturedListsDiscovery: View {
             List {
                 Section("Featured Lists") {
                     ForEach(lists) { list in
-                        Button {
-                            onSelect(list.id)
-                        } label: {
-                            ProfileListRow(list: list)
+                        ProfileListRowContainer(list: list) {
+                            Button {
+                                onSelect(list.id)
+                            } label: {
+                                ProfileListRow(list: list)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(list.name), \(list.itemsCount.formatted()) items")
+                            .accessibilityHint("Opens list")
                         }
-                        .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)

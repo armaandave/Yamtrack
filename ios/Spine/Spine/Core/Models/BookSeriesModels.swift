@@ -19,6 +19,7 @@ struct MediaSeriesSummary: Decodable, Hashable, Identifiable {
     let name: String
     let itemCount: Int
     let posterUrls: [String]
+    let completion: CompletionProgress?
 
     var ref: SeriesRef {
         SeriesRef(source: source, id: id, mediaType: mediaType)
@@ -34,6 +35,7 @@ struct MediaSeriesSummary: Decodable, Hashable, Identifiable {
         case itemCount
         case bookCount
         case posterUrls
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -46,6 +48,7 @@ struct MediaSeriesSummary: Decodable, Hashable, Identifiable {
             ?? container.decodeIfPresent(Int.self, forKey: .bookCount)
             ?? 0
         posterUrls = try container.decodeIfPresent([String].self, forKey: .posterUrls) ?? []
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 
@@ -58,6 +61,7 @@ struct SeriesDetail: Decodable, Hashable, Identifiable {
     let name: String
     let itemCount: Int
     let items: [MediaSummary]
+    let completion: CompletionProgress?
 
     var id: String { seriesId }
 
@@ -78,6 +82,7 @@ struct SeriesDetail: Decodable, Hashable, Identifiable {
         case items
         case bookCount
         case books
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -97,5 +102,6 @@ struct SeriesDetail: Decodable, Hashable, Identifiable {
             ?? container.decodeIfPresent(Int.self, forKey: .bookCount)
             ?? decodedItems.count
         items = decodedItems
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }

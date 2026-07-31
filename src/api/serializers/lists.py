@@ -1,6 +1,9 @@
 from rest_framework import serializers
 
-from api.serializers.common import MediaRefSerializer
+from api.serializers.common import (
+    CompletionProgressSerializer,
+    MediaRefSerializer,
+)
 from app.providers import services as provider_services
 from lists.models import CustomList
 
@@ -74,6 +77,7 @@ class PersonListEntrySerializer(serializers.Serializer):
     known_for_department = serializers.CharField(allow_null=True)
     position = serializers.IntegerField(allow_null=True)
     date_added = serializers.DateTimeField()
+    completion = CompletionProgressSerializer(required=False, allow_null=True)
 
 
 class ListPersonWriteResponseSerializer(serializers.Serializer):

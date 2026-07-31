@@ -742,6 +742,7 @@ struct ProfileListsView: View {
                 mode: mode,
                 listRepository: listRepository,
                 mediaRepository: mediaRepository,
+                peopleRepository: peopleRepository,
                 onUnauthorized: onUnauthorized
             ) { listID, _ in
                 pendingCreatedListID = listID
@@ -757,6 +758,9 @@ struct ProfileListsView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .customListsDidChange)) { _ in
+            Task { await viewModel.load() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
             Task { await viewModel.load() }
         }
     }
@@ -781,31 +785,35 @@ struct ProfileListsView: View {
             )
         } else {
             ForEach(filteredLists) { list in
-                NavigationLink {
-                    ProfileListDetailView(
-                        listId: list.id,
-                        profileRepository: profileRepository,
-                        listRepository: listRepository,
-                        peopleRepository: peopleRepository,
-                        mediaRepository: mediaRepository,
-                        trackingRepository: trackingRepository,
-                        diaryRepository: diaryRepository,
-                        activityRepository: activityRepository,
-                        importCoordinator: importCoordinator,
-                        storygraphImportCoordinator: storygraphImportCoordinator,
-                        goodreadsImportCoordinator: goodreadsImportCoordinator,
-                        currentUserId: currentUserId,
-                        onLogout: onLogout,
-                        onOpenDiary: onOpenDiary,
-                        onOpenLibrary: onOpenLibrary,
-                        selectedTab: selectedTab,
-                        onSelectTab: onSelectTab,
-                        onUnauthorized: onUnauthorized
-                    )
-                } label: {
-                    ProfileListRow(list: list)
+                ProfileListRowContainer(list: list) {
+                    NavigationLink {
+                        ProfileListDetailView(
+                            listId: list.id,
+                            profileRepository: profileRepository,
+                            listRepository: listRepository,
+                            peopleRepository: peopleRepository,
+                            mediaRepository: mediaRepository,
+                            trackingRepository: trackingRepository,
+                            diaryRepository: diaryRepository,
+                            activityRepository: activityRepository,
+                            importCoordinator: importCoordinator,
+                            storygraphImportCoordinator: storygraphImportCoordinator,
+                            goodreadsImportCoordinator: goodreadsImportCoordinator,
+                            currentUserId: currentUserId,
+                            onLogout: onLogout,
+                            onOpenDiary: onOpenDiary,
+                            onOpenLibrary: onOpenLibrary,
+                            selectedTab: selectedTab,
+                            onSelectTab: onSelectTab,
+                            onUnauthorized: onUnauthorized
+                        )
+                    } label: {
+                        ProfileListRow(list: list)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(list.accessibilityLabel)
+                    .accessibilityHint("Opens list")
                 }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -897,21 +905,56 @@ struct ProfileListRow: View {
 
             CustomListPreviewStrip(list: list)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var countLabel: String {
+        list.countLabel
+    }
+}
+
+struct ProfileListRowContainer<PrimaryControl: View>: View {
+    let list: CustomListSummary
+    private let primaryControl: PrimaryControl
+
+    init(list: CustomListSummary, @ViewBuilder primaryControl: () -> PrimaryControl) {
+        self.list = list
+        self.primaryControl = primaryControl()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            primaryControl
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if list.listType == .media,
+               let completion = list.completion,
+               completion.isVisible {
+                SWCompletionProgressButton(progress: completion)
+                    .accessibilityLabel("\(list.name) completion")
+            }
+        }
         .padding(12)
         .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(.white.opacity(0.045), lineWidth: 1)
         }
-        .contentShape(Rectangle())
     }
+}
 
-    private var countLabel: String {
-        let count = list.listType == .people ? list.entriesCount : list.itemsCount
-        let noun = list.listType == .people
+private extension CustomListSummary {
+    var countLabel: String {
+        let count = listType == .people ? entriesCount : itemsCount
+        let noun = listType == .people
             ? (count == 1 ? "person" : "people")
             : (count == 1 ? "item" : "items")
         return "\(count.formatted()) \(noun)"
+    }
+
+    var accessibilityLabel: String {
+        "\(name), \(countLabel)"
     }
 }
 
@@ -923,6 +966,7 @@ final class ProfileListDetailViewModel {
     var filterOptions: MediaFilterOptionsResponse = .empty
     var filteredItems: [MediaSummary] = []
     var people: [PersonListEntry] = []
+    var personCompletionByRef: [PersonRef: CompletionProgress] = [:]
     var isLoading = true
     var isLoadingFilteredItems = false
     var isSaving = false
@@ -931,19 +975,23 @@ final class ProfileListDetailViewModel {
 
     private let listId: Int
     private let listRepository: ListRepository
+    private let peopleRepository: PeopleRepository
     private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
+    private var requestedPersonCompletionRefs = Set<PersonRef>()
 
     init(
         listId: Int,
         listRepository: ListRepository,
+        peopleRepository: PeopleRepository,
         filterOptionsRepository: FilterOptionsRepository? = nil,
         onUnauthorized: @escaping () -> Void
     ) {
         self.listId = listId
         self.listRepository = listRepository
+        self.peopleRepository = peopleRepository
         self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
     }
@@ -956,9 +1004,15 @@ final class ProfileListDetailViewModel {
         people
     }
 
+    func completion(for person: PersonListEntry) -> CompletionProgress? {
+        person.completion ?? personCompletionByRef[person.ref]
+    }
+
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
+        personCompletionByRef = [:]
+        requestedPersonCompletionRefs = []
         isLoading = list == nil
         isLoadingFilteredItems = false
         errorMessage = nil
@@ -1070,6 +1124,31 @@ final class ProfileListDetailViewModel {
             return
         }
         await loadNextPeoplePage()
+    }
+
+    func loadPersonCompletionIfNeeded(_ person: PersonListEntry) async {
+        let ref = person.ref
+        guard person.completion == nil,
+              personCompletionByRef[ref] == nil,
+              requestedPersonCompletionRefs.insert(ref).inserted else {
+            return
+        }
+        let generation = requestGeneration
+
+        do {
+            let completion = try await peopleRepository.completion(ref: ref)
+            guard generation == requestGeneration,
+                  let completion else {
+                return
+            }
+            personCompletionByRef[ref] = completion
+        } catch is CancellationError {
+            return
+        } catch {
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
     }
 
     func retryNextPage() async {
@@ -1274,7 +1353,8 @@ private extension CustomListDetail {
             updatedAt: updatedAt,
             likeCount: likeCount,
             items: items,
-            people: people
+            people: people,
+            completion: completion
         )
     }
 
@@ -1296,7 +1376,8 @@ private extension CustomListDetail {
             updatedAt: updatedAt,
             likeCount: likeCount,
             items: items,
-            people: people
+            people: people,
+            completion: completion
         )
     }
 }
@@ -1367,7 +1448,12 @@ struct ProfileListDetailView: View {
         self.selectedTab = selectedTab
         self.onSelectTab = onSelectTab
         self.onUnauthorized = onUnauthorized
-        _viewModel = State(initialValue: ProfileListDetailViewModel(listId: listId, listRepository: listRepository, onUnauthorized: onUnauthorized))
+        _viewModel = State(initialValue: ProfileListDetailViewModel(
+            listId: listId,
+            listRepository: listRepository,
+            peopleRepository: peopleRepository,
+            onUnauthorized: onUnauthorized
+        ))
     }
 
     var body: some View {
@@ -1511,6 +1597,7 @@ struct ProfileListDetailView: View {
                 mode: mode,
                 listRepository: listRepository,
                 mediaRepository: mediaRepository,
+                peopleRepository: peopleRepository,
                 onUnauthorized: onUnauthorized
             ) { _, _ in
                 Task { await viewModel.load() }
@@ -1536,6 +1623,13 @@ struct ProfileListDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .customListsDidChange)) { notification in
             guard CustomListChange.listId(from: notification) == viewModel.list?.id,
                   !viewModel.isSaving else { return }
+            Task { await viewModel.load() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { notification in
+            guard let changedRef = notification.userInfo?["ref"] as? MediaRef else { return }
+            let containsMedia = viewModel.displayedItems.contains { $0.ref.id == changedRef.id }
+            let isViewingPerson = viewModel.list?.listType == .people && selectedPerson != nil
+            guard containsMedia || isViewingPerson else { return }
             Task { await viewModel.load() }
         }
     }
@@ -1686,6 +1780,14 @@ struct ProfileListDetailView: View {
                     .font(.system(size: 12, weight: .heavy))
                     .foregroundStyle(.white.opacity(0.72))
 
+                if list.listType == .media,
+                   let completion = list.completion,
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(list.name) completion")
+                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                }
+
                 if list.listType == .people {
                     Text("People")
                         .font(.system(size: 11, weight: .heavy))
@@ -1777,50 +1879,60 @@ struct ProfileListDetailView: View {
 
         return LazyVGrid(columns: columns, spacing: isAccessibilitySize ? 18 : 14) {
             ForEach(people, id: \.entryId) { person in
-                Button {
-                    selectedPerson = person.ref
-                } label: {
-                    VStack(spacing: 7) {
-                        ZStack(alignment: .topLeading) {
-                            PersonArtwork(
-                                urlString: person.profileUrl,
-                                name: person.name,
-                                size: PeopleListGridLayout.artworkSize(
-                                    isAccessibilitySize: isAccessibilitySize
+                VStack(spacing: 7) {
+                    Button {
+                        selectedPerson = person.ref
+                    } label: {
+                        VStack(spacing: 7) {
+                            ZStack(alignment: .topLeading) {
+                                PersonArtwork(
+                                    urlString: person.profileUrl,
+                                    name: person.name,
+                                    size: PeopleListGridLayout.artworkSize(
+                                        isAccessibilitySize: isAccessibilitySize
+                                    )
                                 )
-                            )
-                            .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
+                                .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
 
-                            if viewModel.list?.isRanked == true, let position = person.position {
-                                Text("#\(position)")
-                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 7)
-                                    .frame(height: 22)
-                                    .background(.white, in: Capsule())
+                                if viewModel.list?.isRanked == true, let position = person.position {
+                                    Text("#\(position)")
+                                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 7)
+                                        .frame(height: 22)
+                                        .background(.white, in: Capsule())
+                                }
+                            }
+
+                            Text(person.name)
+                                .font(.system(size: isAccessibilitySize ? 14 : 12, weight: .heavy, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.94))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity)
+
+                            if let department = person.knownForDepartment {
+                                Text(department)
+                                    .font(.system(size: isAccessibilitySize ? 11 : 10, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .lineLimit(1)
                             }
                         }
-
-                        Text(person.name)
-                            .font(.system(size: isAccessibilitySize ? 14 : 12, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.94))
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity)
-
-                        if let department = person.knownForDepartment {
-                            Text(department)
-                                .font(.system(size: isAccessibilitySize ? 11 : 10, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.5))
-                                .lineLimit(1)
-                        }
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .contentShape(Rectangle())
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(personAccessibilityLabel(person))
+                    .accessibilityHint("Opens person details")
+
+                    if let completion = viewModel.completion(for: person), completion.isVisible {
+                        SWCompletionProgressButton(progress: completion)
+                            .accessibilityLabel("\(person.name) filmography completion")
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(personAccessibilityLabel(person))
-                .accessibilityHint("Opens person details")
+                .task {
+                    await viewModel.loadPersonCompletionIfNeeded(person)
+                }
                 .task {
                     await viewModel.loadNextPeoplePageIfNeeded(currentPerson: person)
                 }

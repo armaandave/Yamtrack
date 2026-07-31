@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor, wait
+
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Max, Q
@@ -32,7 +34,9 @@ from api.serializers.lists import (
     ListPersonWriteResponseSerializer,
     ListPersonWriteSerializer,
 )
+from api.services import completion as completion_service
 from api.services import filters as filter_service
+from api.services import media as media_service
 from api.services.social import set_like
 from app import exposure
 from app.providers import services as provider_services
@@ -40,9 +44,12 @@ from lists.models import CustomList, CustomListItem, PersonListItem
 from social.models import Activity, ContentLike, SocialAuditLog
 
 LIST_PREVIEW_ITEM_LIMIT = 12
+PERSON_COMPLETION_BATCH_LIMIT = 25
+PERSON_COMPLETION_WORKERS = 8
+PERSON_COMPLETION_TIMEOUT = 25
 
 
-def person_list_item_payload(list_person, request=None):
+def person_list_item_payload(list_person, request=None, completion=None):
     """Serialize a stored provider person snapshot."""
     return {
         "entry_id": list_person.id,
@@ -53,6 +60,7 @@ def person_list_item_payload(list_person, request=None):
         "known_for_department": list_person.known_for_department or None,
         "position": list_person.position,
         "date_added": list_person.date_added,
+        "completion": completion,
     }
 
 
@@ -90,6 +98,16 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             target_type=ContentLike.CUSTOM_LIST,
             target_id=custom_list.id,
         ).count(),
+        "completion": (
+            completion_service.completion_for_items(
+                request.user,
+                custom_list.items.filter(
+                    media_type__in=exposure.media_types(),
+                ),
+            )
+            if not is_people_list and request is not None
+            else None
+        ),
     }
     if include_preview_items or include_items:
         items, people = [], []
@@ -97,10 +115,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             list_people = custom_list.person_items.all()
             if include_preview_items and not include_items:
                 list_people = list_people[:LIST_PREVIEW_ITEM_LIMIT]
-            people = [
-                person_list_item_payload(list_person, request=request)
-                for list_person in list_people
-            ]
+            people = _person_list_payloads(list(list_people), request)
         else:
             list_items = custom_list.customlistitem_set.select_related("item").filter(
                 item__media_type__in=exposure.media_types(),
@@ -123,6 +138,66 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             data["items"] = items
             data["people"] = people
     return data
+
+
+def _person_list_payloads(list_people, request):
+    """Serialize people with bounded, opt-in provider completion lookups."""
+    if (
+        request is None
+        or request.query_params.get("include_completion") != "true"
+    ):
+        return [
+            person_list_item_payload(list_person, request=request)
+            for list_person in list_people
+        ]
+
+    cache = getattr(request, "_person_completion_cache", None)
+    if cache is None:
+        cache = {}
+        request._person_completion_cache = cache
+        request._person_completion_remaining = PERSON_COMPLETION_BATCH_LIMIT
+
+    unresolved = []
+    for list_person in list_people:
+        key = (list_person.source, list_person.person_id)
+        if key not in cache and request._person_completion_remaining > 0:
+            unresolved.append((key, list_person))
+            request._person_completion_remaining -= 1
+
+    if unresolved:
+        completion_service.completed_item_ids(request.user)
+        executor = ThreadPoolExecutor(
+            max_workers=min(PERSON_COMPLETION_WORKERS, len(unresolved)),
+        )
+        futures = {
+            executor.submit(
+                media_service.person_completion,
+                source=list_person.source,
+                person_id=list_person.person_id,
+                user=request.user,
+            ): key
+            for key, list_person in unresolved
+        }
+        done, pending = wait(futures, timeout=PERSON_COMPLETION_TIMEOUT)
+        for future in done:
+            key = futures[future]
+            try:
+                cache[key] = future.result()
+            except Exception:  # noqa: BLE001 - one provider must not fail the page
+                cache[key] = None
+        for future in pending:
+            cache[futures[future]] = None
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    return [
+        person_list_item_payload(
+            list_person,
+            request=request,
+            completion=cache.get((list_person.source, list_person.person_id)),
+        )
+        for list_person in list_people
+    ]
 
 
 def _renumber_list_items(custom_list):
@@ -508,7 +583,7 @@ class ListItemsView(APIView):
         paginator = StandardResultsSetPagination()
         page = list(paginator.paginate_queryset(list_items, request, view=self))
         prime_collection_items([list_item.item for list_item in page], request.user)
-        return paginator.get_paginated_response(
+        response = paginator.get_paginated_response(
             [
                 {
                     **media_summary_from_item(
@@ -526,6 +601,13 @@ class ListItemsView(APIView):
                 for list_item in page
             ],
         )
+        response.data["completion"] = completion_service.completion_for_items(
+            request.user,
+            custom_list.items.filter(
+                media_type__in=exposure.media_types(),
+            ),
+        )
+        return response
 
     def post(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)
@@ -625,10 +707,9 @@ class ListPeopleView(APIView):
             request,
             view=self,
         )
-        return paginator.get_paginated_response([
-            person_list_item_payload(list_person, request=request)
-            for list_person in page
-        ])
+        return paginator.get_paginated_response(
+            _person_list_payloads(list(page), request),
+        )
 
     @extend_schema(
         request=ListPersonWriteSerializer,

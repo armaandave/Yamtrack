@@ -7,6 +7,7 @@ final class CompanyDetailViewModel {
     var detail: CompanyDetail?
     var mediaByRole: [CompanyCatalogRole: [MediaSummary]] = [:]
     var nextPageByRole: [CompanyCatalogRole: String] = [:]
+    var completionByRole: [CompanyCatalogRole: CompletionProgress] = [:]
     var filter = MediaFilterState()
     var filterOptions: MediaFilterOptionsResponse
     var isLoadingProfile = true
@@ -66,6 +67,9 @@ final class CompanyDetailViewModel {
 
     func loadCatalog(for role: CompanyCatalogRole, reset: Bool = false) async {
         guard detail?.catalogRoles.contains(role) == true, reset || mediaByRole[role] == nil else { return }
+        if reset {
+            completionByRole[role] = nil
+        }
         let requestRevision = filterRevision
         guard loadingRevisionByRole[role] != requestRevision else { return }
         let requestFilter = filter
@@ -88,6 +92,11 @@ final class CompanyDetailViewModel {
             guard requestRevision == filterRevision, requestFilter == filter else { return }
             mediaByRole[role] = response.results
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+            if let completion = response.completion {
+                completionByRole[role] = completion
+            } else if response.next == nil {
+                completionByRole[role] = Self.completion(from: response.results)
+            }
             catalogErrorByRole[role] = nil
             loadMoreErrorRoles.remove(role)
         } catch is CancellationError {
@@ -124,6 +133,11 @@ final class CompanyDetailViewModel {
             media += response.results.filter { seen.insert($0.id).inserted }
             mediaByRole[role] = media
             nextPageByRole[role] = APIPageCursor.nextPage(from: response.next)
+            if let completion = response.completion {
+                completionByRole[role] = completion
+            } else if response.next == nil {
+                completionByRole[role] = Self.completion(from: media)
+            }
             catalogErrorByRole[role] = nil
             loadMoreErrorRoles.remove(role)
         } catch is CancellationError {
@@ -142,6 +156,7 @@ final class CompanyDetailViewModel {
         catalogErrorByRole = [:]
         mediaByRole = [:]
         nextPageByRole = [:]
+        completionByRole = [:]
         loadingMoreRevisionByRole = [:]
         let availableRoles = detail?.catalogRoles ?? []
         let requestedRoles = roles.isEmpty
@@ -170,6 +185,17 @@ final class CompanyDetailViewModel {
         loadingMoreRevisionByRole[role] == filterRevision
     }
 
+    func completion(
+        for role: CompanyCatalogRole,
+        in detail: CompanyDetail
+    ) -> CompletionProgress? {
+        if let completion = completionByRole[role] {
+            return completion
+        }
+        guard mediaByRole[role] == nil, !filter.isActive else { return nil }
+        return detail.catalogs.catalog(for: role)?.completion
+    }
+
     private func handleUnauthorized(_ error: Error) {
         if case APIError.unauthorized = error {
             onUnauthorized()
@@ -186,6 +212,15 @@ final class CompanyDetailViewModel {
         if detail.parent != nil { score += 1 }
         if !detail.websites.isEmpty { score += 1 }
         return score
+    }
+
+    private static func completion(from media: [MediaSummary]) -> CompletionProgress {
+        CompletionProgress(
+            completedCount: media.lazy.filter {
+                $0.userState?.status == "Completed"
+            }.count,
+            totalCount: media.count
+        )
     }
 }
 
@@ -299,6 +334,20 @@ struct CompanyDetailView: View {
             await viewModel.load()
             expandPrimaryRole()
             await viewModel.loadFilterOptions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { notification in
+            guard let changedRef = notification.userInfo?["ref"] as? MediaRef else { return }
+            let affectedRoles = viewModel.mediaByRole.compactMap { role, media in
+                media.contains(where: { $0.ref.id == changedRef.id }) ? role : nil
+            }
+            guard !affectedRoles.isEmpty else { return }
+            Task {
+                await viewModel.load()
+                let primaryRole = viewModel.detail?.catalogRoles.first
+                for role in affectedRoles where role != primaryRole {
+                    await viewModel.loadCatalog(for: role, reset: true)
+                }
+            }
         }
     }
 
@@ -424,6 +473,11 @@ struct CompanyDetailView: View {
             HStack {
                 CompanySectionLabel(title: detail.resolvedMediaType == "anime" ? "Anime" : "Games")
 
+                if let completion = catalogCompletion(detail), completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(detail.name) catalog completion")
+                }
+
                 Spacer()
 
                 MediaFilterButton(
@@ -446,37 +500,46 @@ struct CompanyDetailView: View {
 
     private func roleDisclosureRow(_ role: CompanyCatalogRole, detail: CompanyDetail) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                let isExpanding = !expandedRoles.contains(role)
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    if isExpanding {
-                        expandedRoles.insert(role)
-                    } else {
-                        expandedRoles.remove(role)
+            HStack(spacing: 8) {
+                Button {
+                    let isExpanding = !expandedRoles.contains(role)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if isExpanding {
+                            expandedRoles.insert(role)
+                        } else {
+                            expandedRoles.remove(role)
+                        }
                     }
-                }
-                if isExpanding {
-                    Task { await viewModel.loadCatalog(for: role) }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Text(roleDisclosureTitle(role, detail: detail))
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.74))
+                    if isExpanding {
+                        Task { await viewModel.loadCatalog(for: role) }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(roleDisclosureTitle(role, detail: detail))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.74))
 
-                    Spacer()
+                        Spacer()
 
-                    Image(systemName: expandedRoles.contains(role) ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.44))
+                        Image(systemName: expandedRoles.contains(role) ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.44))
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 42)
+                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 42)
-                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                .buttonStyle(.plain)
+                .accessibilityLabel(roleDisclosureTitle(role, detail: detail))
+                .accessibilityValue(expandedRoles.contains(role) ? "Expanded" : "Collapsed")
+
+                if let completion = viewModel.completion(for: role, in: detail),
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(role.creditRole) completion")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(roleDisclosureTitle(role, detail: detail))
-            .accessibilityValue(expandedRoles.contains(role) ? "Expanded" : "Collapsed")
 
             if expandedRoles.contains(role) {
                 roleCatalog(role)
@@ -686,6 +749,17 @@ struct CompanyDetailView: View {
     private func clean(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
+    }
+
+    private func catalogCompletion(_ detail: CompanyDetail) -> CompletionProgress? {
+        if let completion = detail.completion {
+            return completion
+        }
+        guard detail.catalogRoles.count == 1,
+              let role = detail.catalogRoles.first else {
+            return nil
+        }
+        return viewModel.completion(for: role, in: detail)
     }
 
     private func expandPrimaryRole() {

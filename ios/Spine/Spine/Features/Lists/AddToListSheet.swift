@@ -223,6 +223,7 @@ struct AddToListSheet: View {
     private let initialMedia: MediaSummary?
     private let listRepository: ListRepository
     private let mediaRepository: MediaRepository
+    private let peopleRepository: PeopleRepository
     private let onUnauthorized: () -> Void
 
     init(
@@ -230,11 +231,13 @@ struct AddToListSheet: View {
         initialMedia: MediaSummary? = nil,
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
+        peopleRepository: PeopleRepository,
         onUnauthorized: @escaping () -> Void
     ) {
         self.initialMedia = initialMedia
         self.listRepository = listRepository
         self.mediaRepository = mediaRepository
+        self.peopleRepository = peopleRepository
         self.onUnauthorized = onUnauthorized
         _viewModel = State(initialValue: AddToListViewModel(
             target: target,
@@ -294,6 +297,7 @@ struct AddToListSheet: View {
                 initialItems: initialMedia.map { [$0] } ?? [],
                 listRepository: listRepository,
                 mediaRepository: mediaRepository,
+                peopleRepository: peopleRepository,
                 onUnauthorized: onUnauthorized
             ) { listID, draft in
                 if let initialMedia,
@@ -360,53 +364,63 @@ struct AddToListSheet: View {
         let isMember = viewModel.isMember(of: list)
         let isUpdating = viewModel.loadingListID == list.id
 
-        return Button {
-            Task {
-                await viewModel.toggle(list)
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(list.name)
-                            .font(.system(size: 16, weight: .semibold))
-                        Text(viewModel.countLabel(for: list))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Group {
-                        if isUpdating {
-                            ProgressView()
-                        } else if isMember {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 16, weight: .bold))
-                                .foregroundStyle(.green)
-                        }
-                    }
-                    .frame(width: 20, height: 20)
-                    .spineContentTransition(value: listIndicatorPhase(for: list))
+        return HStack(alignment: .top, spacing: 8) {
+            Button {
+                Task {
+                    await viewModel.toggle(list)
                 }
+            } label: {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(list.name)
+                                .font(.system(size: 16, weight: .semibold))
+                            Text(viewModel.countLabel(for: list))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Group {
+                            if isUpdating {
+                                ProgressView()
+                            } else if isMember {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        .frame(width: 20, height: 20)
+                        .spineContentTransition(value: listIndicatorPhase(for: list))
+                    }
 
-                CustomListPreviewStrip(list: list)
-                    .accessibilityIdentifier("add-to-list.preview.\(list.id)")
+                    CustomListPreviewStrip(list: list)
+                        .accessibilityIdentifier("add-to-list.preview.\(list.id)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(viewModel.loadingListID != nil)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(list.name)
+            .accessibilityValue(
+                "\(viewModel.countLabel(for: list)), \(isUpdating ? "updating" : (isMember ? "added" : "not added"))"
+            )
+            .accessibilityHint(
+                isMember
+                    ? "Removes the \(viewModel.target.noun) from this list"
+                    : "Adds the \(viewModel.target.noun) to this list"
+            )
+            .accessibilityAddTraits(isMember ? .isSelected : [])
+            .accessibilityIdentifier("add-to-list.list.\(list.id)")
+
+            if list.listType == .media,
+               let completion = list.completion,
+               completion.isVisible {
+                SWCompletionProgressButton(progress: completion)
+                    .accessibilityLabel("\(list.name) completion")
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(viewModel.loadingListID != nil)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(list.name)
-        .accessibilityValue(
-            "\(viewModel.countLabel(for: list)), \(isUpdating ? "updating" : (isMember ? "added" : "not added"))"
-        )
-        .accessibilityHint(
-            isMember
-                ? "Removes the \(viewModel.target.noun) from this list"
-                : "Adds the \(viewModel.target.noun) to this list"
-        )
-        .accessibilityAddTraits(isMember ? .isSelected : [])
-        .accessibilityIdentifier("add-to-list.list.\(list.id)")
     }
 
     private var emptyStateDescription: String {

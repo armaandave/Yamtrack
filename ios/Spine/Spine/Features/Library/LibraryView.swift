@@ -65,6 +65,7 @@ final class LibraryViewModel {
     var shelf: LibraryShelf = .tracked
     var items: [LibraryItem] = []
     var totalCount = 0
+    var completion: CompletionProgress?
     var isBootstrapping = true
     var isLoadingInitial = false
     var isLoadingNextPage = false
@@ -203,6 +204,7 @@ final class LibraryViewModel {
         if !preservesLastGoodContent {
             items = []
             totalCount = 0
+            completion = nil
             nextPage = nil
         }
         presentedScope = scope
@@ -267,6 +269,7 @@ final class LibraryViewModel {
 
     private func apply(_ response: PagedResponse<LibraryItem>, replacingItems: Bool) {
         totalCount = response.count
+        completion = response.completion
         nextPage = APIPageCursor.nextPage(from: response.next)
 
         if replacingItems {
@@ -321,6 +324,7 @@ final class LibraryViewModel {
         presentedScope = scope
         items = []
         totalCount = 0
+        completion = nil
         nextPage = nil
         errorMessage = nil
         nextPageErrorMessage = nil
@@ -483,10 +487,18 @@ struct LibraryView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
                 Text("Library")
                     .font(.system(size: 32, weight: .black))
                     .foregroundStyle(.white)
+
+                Spacer()
+
+                if viewModel.shelf == .tracked,
+                   let completion = viewModel.completion,
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                }
             }
 
             mediaPicker

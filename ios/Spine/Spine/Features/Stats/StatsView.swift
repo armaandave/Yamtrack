@@ -81,6 +81,12 @@ struct StatsView: View {
                 await viewModel.load()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
+            Task { await viewModel.reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .customListsDidChange)) { _ in
+            Task { await viewModel.reload() }
+        }
         .fullScreenCover(item: $selectedRef, onDismiss: { selectedRef = nil }) { ref in
             MediaDetailView(
                 ref: ref,
@@ -163,35 +169,119 @@ struct StatsView: View {
     private func statsContent(_ summary: StatsSummary) -> some View {
         let scope = StatsScopeSnapshot(summary: summary, mediaType: selectedMediaType)
         let accent = StatsPalette.accent(for: selectedMediaType)
+        let seriesProgress = summary.seriesProgress.filter {
+            selectedMediaType == nil || $0.mediaType == selectedMediaType
+        }
+        let hasProgressContent = scope.completion?.isVisible == true
+            || (selectedMediaType == nil && !summary.listProgress.isEmpty)
+            || !seriesProgress.isEmpty
 
         return VStack(alignment: .leading, spacing: 30) {
             mediaPicker(summary)
 
-            if scope.isEmpty {
+            if scope.isEmpty && !hasProgressContent {
                 StatsEmptyView(
                     title: "No \(scope.title.lowercased()) stats yet",
                     message: "Choose another media type or period to explore your history."
                 )
             } else {
-                StatsHero(
-                    scope: scope,
-                    period: viewModel.selectedPeriod,
-                    mediaType: selectedMediaType,
-                    accent: accent
-                )
+                if !scope.isEmpty {
+                    StatsHero(
+                        scope: scope,
+                        period: viewModel.selectedPeriod,
+                        mediaType: selectedMediaType,
+                        accent: accent
+                    )
+                }
+
+                completionSection(scope)
 
                 if selectedMediaType == nil {
+                    progressSection(
+                        title: "List progress",
+                        items: summary.listProgress.map {
+                            StatsCompletionDisplayItem(
+                                id: "list:\($0.id)",
+                                name: $0.name,
+                                detail: "List",
+                                posterUrls: $0.posterUrls,
+                                completion: $0.completion
+                            )
+                        }
+                    )
+                }
+
+                progressSection(
+                    title: "Series & collection progress",
+                    items: seriesProgress.compactMap { series in
+                        guard let completion = series.completion else { return nil }
+                        return StatsCompletionDisplayItem(
+                            id: "series:\(series.source):\(series.mediaType):\(series.id)",
+                            name: series.name,
+                            detail: MediaTypeTheme.theme(for: series.mediaType).displayName,
+                            posterUrls: series.posterUrls,
+                            completion: completion
+                        )
+                    }
+                )
+
+                if selectedMediaType == nil, !scope.isEmpty {
                     personSection(summary)
                 }
 
-                if selectedMediaType == nil {
+                if selectedMediaType == nil, !scope.isEmpty {
                     mediaMixSection(summary)
                 }
 
-                ratingSection(scope)
-                releaseYearSection(scope)
-                tasteSections(scope, accent: accent)
-                mediaGrids(scope)
+                if !scope.isEmpty {
+                    ratingSection(scope)
+                    releaseYearSection(scope)
+                    tasteSections(scope, accent: accent)
+                    mediaGrids(scope)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func completionSection(_ scope: StatsScopeSnapshot) -> some View {
+        if let completion = scope.completion, completion.isVisible {
+            StatsSection(title: "Completion") {
+                StatsSurface {
+                    HStack(spacing: 14) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.green.opacity(0.84))
+                            .frame(width: 38, height: 38)
+                            .background(.green.opacity(0.1), in: Circle())
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(scope.title)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.9))
+                            Text("Completed titles")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.44))
+                        }
+
+                        Spacer()
+
+                        SWCompletionProgressButton(progress: completion)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func progressSection(
+        title: String,
+        items: [StatsCompletionDisplayItem]
+    ) -> some View {
+        let visibleItems = items.filter(\.completion.isVisible)
+        if !visibleItems.isEmpty {
+            StatsSection(title: title) {
+                StatsCompletionRows(items: Array(visibleItems.prefix(8)))
             }
         }
     }
@@ -343,7 +433,7 @@ struct StatsView: View {
                 if !scope.topGenres.isEmpty {
                     StatsTasteGroup(
                         title: "Genres",
-                        items: Array(scope.topGenres.prefix(8)),
+                        items: Array(scope.topGenres.prefix(10)),
                         coverage: scope.metadataCoverage.genreItems,
                         total: scope.metadataCoverage.totalItems,
                         tint: accent
@@ -353,7 +443,7 @@ struct StatsView: View {
                 if !scope.topLanguages.isEmpty {
                     StatsTasteGroup(
                         title: "Languages",
-                        items: Array(scope.topLanguages.prefix(8)),
+                        items: Array(scope.topLanguages.prefix(10)),
                         coverage: scope.metadataCoverage.languageItems,
                         total: scope.metadataCoverage.totalItems,
                         tint: accent
@@ -427,6 +517,7 @@ private struct StatsScopeSnapshot {
     let metadataCoverage: StatsMetadataCoverage
     let topRated: [StatsTopRatedItem]
     let mostLogged: [StatsMostLoggedItem]
+    let completion: CompletionProgress?
     let isAllTime: Bool
 
     init(summary: StatsSummary, mediaType: String?) {
@@ -454,6 +545,7 @@ private struct StatsScopeSnapshot {
                 metadataCoverage = media.metadataCoverage
                 topRated = media.topRated
                 mostLogged = media.mostLogged
+                completion = media.completion
             } else {
                 completedCount = 0
                 diaryEntryCount = 0
@@ -470,6 +562,7 @@ private struct StatsScopeSnapshot {
                 metadataCoverage = .empty
                 topRated = []
                 mostLogged = []
+                completion = nil
             }
         } else {
             let typedPoints = SWStatsRatingChart.normalizedPoints(from: summary.mediaTypes)
@@ -495,6 +588,7 @@ private struct StatsScopeSnapshot {
             metadataCoverage = summary.metadataCoverage
             topRated = summary.topRated
             mostLogged = summary.mostLogged
+            completion = summary.overview.completion
         }
     }
 
@@ -694,6 +788,87 @@ private struct StatsSurface<Content: View>: View {
     }
 }
 
+private struct StatsCompletionDisplayItem: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    let posterUrls: [String]
+    let completion: CompletionProgress
+}
+
+private struct StatsCompletionRows: View {
+    let items: [StatsCompletionDisplayItem]
+
+    var body: some View {
+        StatsSurface {
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    HStack(spacing: 12) {
+                        StatsProgressArtwork(urls: item.posterUrls)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.name)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .lineLimit(2)
+                            Text(item.detail)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+
+                        Spacer(minLength: 8)
+
+                        SWCompletionProgressButton(progress: item.completion)
+                    }
+                    .padding(.vertical, 9)
+
+                    if index < items.count - 1 {
+                        Divider().overlay(.white.opacity(0.06))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct StatsProgressArtwork: View {
+    let urls: [String]
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if urls.isEmpty {
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.36))
+                    .frame(width: 46, height: 46)
+                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                ForEach(Array(urls.prefix(3).enumerated()), id: \.offset) { index, url in
+                    SpineAsyncImage(url: URL(string: url)) { phase in
+                        if case let .success(image) = phase {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Color.white.opacity(0.06)
+                        }
+                    }
+                    .frame(width: 30, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(.black.opacity(0.45), lineWidth: 1)
+                    }
+                    .offset(x: CGFloat(index) * 9)
+                    .zIndex(Double(3 - index))
+                }
+            }
+        }
+        .frame(width: 50, height: 46, alignment: .leading)
+        .accessibilityHidden(true)
+    }
+}
+
 private struct StatsMetricItem: Identifiable {
     let title: String
     let value: String
@@ -803,8 +978,6 @@ private struct StatsTasteGroup: View {
     let total: Int
     let tint: Color
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
-
     private var maximumCount: Int {
         max(1, items.map(\.count).max() ?? 1)
     }
@@ -824,51 +997,63 @@ private struct StatsTasteGroup: View {
                 .font(.system(size: 9, weight: .black))
                 .foregroundStyle(.white.opacity(0.42))
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack(spacing: 6) {
-                                Text(String(index + 1))
-                                    .font(.system(size: 9, weight: .black, design: .rounded))
-                                    .foregroundStyle(tint.opacity(0.88))
-                                    .frame(width: 12, alignment: .leading)
-
-                                Text(item.name)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.78))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
-
-                                Spacer(minLength: 4)
-
-                                Text(item.count.formatted())
-                                    .font(.system(size: 10, weight: .black, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.5))
-                                    .monospacedDigit()
+                HStack(alignment: .top, spacing: 16) {
+                    ForEach([0, 5], id: \.self) { start in
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(
+                                Array(items.dropFirst(start).prefix(5).enumerated()),
+                                id: \.element.id
+                            ) { offset, item in
+                                tasteRow(item, rank: start + offset + 1)
                             }
-
-                            GeometryReader { proxy in
-                                Capsule()
-                                    .fill(.white.opacity(0.055))
-                                    .overlay(alignment: .leading) {
-                                        Capsule()
-                                            .fill(tint.gradient)
-                                            .frame(
-                                                width: proxy.size.width
-                                                    * CGFloat(item.count)
-                                                    / CGFloat(maximumCount)
-                                            )
-                                    }
-                            }
-                            .frame(height: 3)
                         }
-                        .frame(minHeight: 32)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(item.name), \(item.count)")
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
         }
+    }
+
+    private func tasteRow(_ item: StatsNamedCount, rank: Int) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(String(rank))
+                    .font(.system(size: 9, weight: .black, design: .rounded))
+                    .foregroundStyle(tint.opacity(0.88))
+                    .frame(width: 12, alignment: .leading)
+
+                Text(item.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: 4)
+
+                Text(item.count.formatted())
+                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .monospacedDigit()
+            }
+
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(.white.opacity(0.055))
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(tint.gradient)
+                            .frame(
+                                width: proxy.size.width
+                                    * CGFloat(item.count)
+                                    / CGFloat(maximumCount)
+                            )
+                    }
+            }
+            .frame(height: 3)
+        }
+        .frame(minHeight: 32)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.name), \(item.count)")
     }
 }
 

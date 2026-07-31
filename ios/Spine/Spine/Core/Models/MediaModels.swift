@@ -389,12 +389,13 @@ struct MediaDiscoverRequest: Hashable, Identifiable {
         case ("movie", .genre), ("movie", .year),
              ("tv", .genre), ("tv", .year),
              ("anime", .genre),
+             ("manga", .genre),
              ("book", .genre), ("book", .year),
              ("game", .genre), ("game", .year), ("game", .platform),
              ("music", .genre):
             return MediaDiscoverRequest(
                 mediaType: mediaType,
-                source: ref.source,
+                source: mediaType == "manga" ? "mal" : ref.source,
                 filter: filter,
                 page: nil,
                 pageSize: nil
@@ -862,6 +863,7 @@ struct MediaDetail: Decodable, Identifiable {
     let relatedSections: [RelatedMediaSection]?
     let episodes: [EpisodeSummary]?
     let seasons: [SeasonSummary]?
+    let completion: CompletionProgress?
     let customPosterUrl: String?
     let customBackdropUrl: String?
     let customLogoUrl: String?
@@ -929,6 +931,7 @@ struct MediaDetail: Decodable, Identifiable {
         case relatedSections
         case episodes
         case seasons
+        case completion
         case customPosterUrl
         case customBackdropUrl
         case customLogoUrl
@@ -971,6 +974,7 @@ struct MediaDetail: Decodable, Identifiable {
         relatedSections: [RelatedMediaSection]? = nil,
         episodes: [EpisodeSummary]? = nil,
         seasons: [SeasonSummary]? = nil,
+        completion: CompletionProgress? = nil,
         customPosterUrl: String? = nil,
         customBackdropUrl: String? = nil,
         customLogoUrl: String? = nil
@@ -1011,6 +1015,7 @@ struct MediaDetail: Decodable, Identifiable {
         self.relatedSections = relatedSections
         self.episodes = episodes
         self.seasons = seasons
+        self.completion = completion
         self.customPosterUrl = customPosterUrl
         self.customBackdropUrl = customBackdropUrl
         self.customLogoUrl = customLogoUrl
@@ -1059,6 +1064,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: try container.decodeIfPresent([RelatedMediaSection].self, forKey: .relatedSections),
             episodes: try container.decodeIfPresent([EpisodeSummary].self, forKey: .episodes),
             seasons: try container.decodeIfPresent([SeasonSummary].self, forKey: .seasons),
+            completion: try container.decodeIfPresent(CompletionProgress.self, forKey: .completion),
             customPosterUrl: try container.decodeIfPresent(String.self, forKey: .customPosterUrl),
             customBackdropUrl: try container.decodeIfPresent(String.self, forKey: .customBackdropUrl),
             customLogoUrl: try container.decodeIfPresent(String.self, forKey: .customLogoUrl)
@@ -1103,6 +1109,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: response.customPosterUrl ?? response.posterUrl,
             customBackdropUrl: customBackdropUrl,
             customLogoUrl: customLogoUrl
@@ -1147,6 +1154,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: customPosterUrl,
             customBackdropUrl: response.customBackdropUrl ?? response.backdropUrl,
             customLogoUrl: customLogoUrl
@@ -1191,6 +1199,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: customPosterUrl,
             customBackdropUrl: customBackdropUrl,
             customLogoUrl: response.customLogoUrl
@@ -1235,6 +1244,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: customPosterUrl,
             customBackdropUrl: customBackdropUrl,
             customLogoUrl: customLogoUrl
@@ -1279,6 +1289,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: customPosterUrl,
             customBackdropUrl: customBackdropUrl,
             customLogoUrl: customLogoUrl
@@ -1327,6 +1338,7 @@ struct MediaDetail: Decodable, Identifiable {
             relatedSections: relatedSections,
             episodes: episodes,
             seasons: seasons,
+            completion: completion,
             customPosterUrl: customPosterUrl,
             customBackdropUrl: customBackdropUrl,
             customLogoUrl: customLogoUrl
@@ -1783,6 +1795,19 @@ struct RelatedMediaSection: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let items: [MediaSummary]
+    let completion: CompletionProgress?
+
+    init(
+        id: String,
+        title: String,
+        items: [MediaSummary],
+        completion: CompletionProgress? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.items = items
+        self.completion = completion
+    }
 }
 
 struct EpisodeSummary: Codable, Identifiable, Hashable {
@@ -1803,6 +1828,7 @@ struct SeasonSummary: Codable, Identifiable, Hashable {
     let episodeCount: Int?
     let imageUrl: String?
     let releaseDate: String?
+    let completion: CompletionProgress?
 
     var id: Int { seasonNumber }
 }

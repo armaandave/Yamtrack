@@ -289,6 +289,14 @@ final class StatsTests: XCTestCase {
         XCTAssertEqual(points.map(\.count), [1, 4, 5])
     }
 
+    func testStatsChartSelectionRoundsAndClampsPlotIndices() {
+        XCTAssertEqual(SWStatsChartSelection.index(for: -2, count: 10), 0)
+        XCTAssertEqual(SWStatsChartSelection.index(for: 4.6, count: 10), 5)
+        XCTAssertEqual(SWStatsChartSelection.index(for: 20, count: 10), 9)
+        XCTAssertNil(SWStatsChartSelection.index(for: .nan, count: 10))
+        XCTAssertNil(SWStatsChartSelection.index(for: 3, count: 0))
+    }
+
     func testYearWithOnlyCurrentLibrarySnapshotIsEmpty() throws {
         let data = Data(
             """

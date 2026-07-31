@@ -31,6 +31,47 @@ struct CompanyDetail: Decodable, Hashable {
     let providerUrl: String?
     let websites: [String]
     let catalogs: CompanyCatalogCounts
+    let completion: CompletionProgress?
+
+    init(
+        id: String,
+        source: String,
+        mediaType: String?,
+        name: String,
+        description: String?,
+        logoUrl: String?,
+        logoWidth: Int?,
+        logoHeight: Int?,
+        foundedYear: Int?,
+        countryCode: Int?,
+        status: String?,
+        companySize: String?,
+        parent: CompanyParent?,
+        igdbUrl: String?,
+        providerUrl: String?,
+        websites: [String],
+        catalogs: CompanyCatalogCounts,
+        completion: CompletionProgress? = nil
+    ) {
+        self.id = id
+        self.source = source
+        self.mediaType = mediaType
+        self.name = name
+        self.description = description
+        self.logoUrl = logoUrl
+        self.logoWidth = logoWidth
+        self.logoHeight = logoHeight
+        self.foundedYear = foundedYear
+        self.countryCode = countryCode
+        self.status = status
+        self.companySize = companySize
+        self.parent = parent
+        self.igdbUrl = igdbUrl
+        self.providerUrl = providerUrl
+        self.websites = websites
+        self.catalogs = catalogs
+        self.completion = completion
+    }
 
     var ref: CompanyRef {
         CompanyRef(source: source, companyId: id)
@@ -97,21 +138,29 @@ struct CompanyCatalogCounts: Decodable, Hashable {
 struct CompanyCatalogCount: Decodable, Hashable {
     let count: Int?
     let available: Bool
+    let completion: CompletionProgress?
 
-    init(count: Int?, available: Bool = true) {
+    init(
+        count: Int?,
+        available: Bool = true,
+        completion: CompletionProgress? = nil
+    ) {
         self.count = count
         self.available = available
+        self.completion = completion
     }
 
     private enum CodingKeys: String, CodingKey {
         case count
         case available
+        case completion
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         count = try container.decodeIfPresent(Int.self, forKey: .count)
         available = try container.decodeIfPresent(Bool.self, forKey: .available) ?? true
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 
     static let unavailable = CompanyCatalogCount(count: 0, available: false)
@@ -122,12 +171,20 @@ struct CompanyCatalogPage: Decodable {
     let next: String?
     let previous: String?
     let results: [MediaSummary]
+    let completion: CompletionProgress?
 
-    init(count: Int?, next: String?, previous: String?, results: [MediaSummary]) {
+    init(
+        count: Int?,
+        next: String?,
+        previous: String?,
+        results: [MediaSummary],
+        completion: CompletionProgress? = nil
+    ) {
         self.count = count
         self.next = next
         self.previous = previous
         self.results = results
+        self.completion = completion
     }
 }
 

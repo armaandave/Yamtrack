@@ -243,6 +243,77 @@ class AniListProviderTests(TestCase):
         self.assertEqual(request.kwargs["timeout"], 3)
         self.assertFalse(request.kwargs["retry_rate_limits"])
 
+    @patch("app.providers.anilist.services.api_request")
+    def test_manga_genre_page_returns_only_mal_addressable_media(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Page": {
+                    "pageInfo": {
+                        "total": 2,
+                        "perPage": 25,
+                        "currentPage": 1,
+                        "lastPage": 1,
+                        "hasNextPage": False,
+                    },
+                    "media": [
+                        {
+                            "idMal": 2,
+                            "startDate": {
+                                "year": 1989,
+                                "month": 8,
+                                "day": 25,
+                            },
+                        },
+                        {
+                            "idMal": None,
+                            "startDate": {},
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = anilist.manga_genre_page(
+            "Action",
+            page=1,
+            page_size=25,
+            include_adult=False,
+        )
+
+        self.assertEqual(
+            result["media"],
+            [
+                {
+                    "idMal": 2,
+                    "startDate": {
+                        "year": 1989,
+                        "month": 8,
+                        "day": 25,
+                    },
+                    "release_date": "1989-08-25",
+                },
+            ],
+        )
+        request = request_mock.call_args
+        self.assertEqual(
+            request.kwargs["params"]["variables"],
+            {
+                "genres": ["Action"],
+                "page": 1,
+                "perPage": 25,
+                "isAdult": False,
+            },
+        )
+        self.assertIn("type: MANGA", request.kwargs["params"]["query"])
+        self.assertIn("genre_in: $genres", request.kwargs["params"]["query"])
+        self.assertIn("chapters", request.kwargs["params"]["query"])
+        self.assertIn("volumes", request.kwargs["params"]["query"])
+        self.assertEqual(request.kwargs["timeout"], 3)
+        self.assertFalse(request.kwargs["retry_rate_limits"])
+
     def test_rating_distribution_sorts_merges_and_rejects_invalid_buckets(self):
         result = anilist._normalize_score_distribution(
             [
@@ -743,8 +814,12 @@ class AniListProviderTests(TestCase):
         self.assertEqual(request_mock.call_count, 2)
         self.assertEqual(first_page["credits_page"], 1)
         self.assertEqual(first_page["credits_next_page"], 2)
+        self.assertFalse(first_page["credits_complete"])
+        self.assertFalse(first_page["credits_truncated"])
         self.assertEqual(result["credits_page"], 2)
         self.assertIsNone(result["credits_next_page"])
+        self.assertTrue(result["credits_complete"])
+        self.assertFalse(result["credits_truncated"])
         self.assertEqual(result["alternative_names"], ["梶裕貴", "Kaji Yuki"])
         self.assertEqual(result["known_for_department"], "Voice Actor")
         self.assertEqual(len(result["credits"]), 2)
@@ -773,6 +848,100 @@ class AniListProviderTests(TestCase):
             "1985-09-03",
             timeout=1,
             request_session=requests,
+        )
+
+    @patch("app.providers.anilist._apply_mal_anime_credit_images")
+    @patch("app.providers.anilist._person_staff_page")
+    def test_person_page_marks_provider_overflow_as_truncated(
+        self,
+        staff_page_mock,
+        _poster_mock,
+    ):
+        staff_page_mock.return_value = {
+            "staff": {
+                "id": 1,
+                "name": {"full": "Prolific Person"},
+            },
+            "manga_edges": [],
+            "anime_staff_edges": [],
+            "anime_voice_edges": [],
+            "has_next_page": True,
+        }
+
+        result = anilist.person_page(
+            "1",
+            page=anilist.PERSON_PAGE_LIMIT,
+        )
+
+        self.assertEqual(
+            staff_page_mock.call_count,
+            anilist.PERSON_PAGE_LIMIT,
+        )
+        self.assertEqual(result["credits_page"], anilist.PERSON_PAGE_LIMIT)
+        self.assertIsNone(result["credits_next_page"])
+        self.assertFalse(result["credits_complete"])
+        self.assertTrue(result["credits_truncated"])
+
+    @patch("app.providers.mal.person_page_by_name")
+    def test_person_completion_credits_use_and_cache_full_mal_match(
+        self,
+        mal_person_mock,
+    ):
+        credits = [{
+            "media_id": "1",
+            "media_type": MediaTypes.ANIME.value,
+            "source": Sources.MAL.value,
+        }]
+        mal_person_mock.return_value = {"credits": credits}
+        person = {
+            "name": "Person",
+            "alternative_names": ["Other Name"],
+            "birth_date": "2000-01-01",
+        }
+
+        first = anilist.person_completion_credits("11", person)
+        second = anilist.person_completion_credits("11", person)
+
+        self.assertEqual(first, credits)
+        self.assertEqual(second, credits)
+        mal_person_mock.assert_called_once_with(
+            "Person",
+            ["Other Name"],
+            "2000-01-01",
+            timeout=anilist.REQUEST_TIMEOUT,
+            request_session=services.person_search_session,
+            strict=True,
+        )
+
+    @patch("app.providers.mal.person_page_by_name")
+    def test_loose_poster_match_does_not_seed_completion_cache(
+        self,
+        mal_person_mock,
+    ):
+        mal_person_mock.return_value = {
+            "credits": [{
+                "media_id": "1",
+                "media_type": MediaTypes.ANIME.value,
+                "image": "https://example.com/anime.jpg",
+            }],
+        }
+
+        images = anilist.refresh_person_credit_images(
+            "11",
+            "Alex Smith",
+        )
+
+        self.assertEqual(
+            images,
+            {
+                (
+                    MediaTypes.ANIME.value,
+                    "1",
+                ): "https://example.com/anime.jpg",
+            },
+        )
+        self.assertIsNone(
+            cache.get(anilist._person_completion_key("11")),  # noqa: SLF001
         )
 
     @patch("app.providers.mal.cached_anime_posters", return_value={})
@@ -1144,6 +1313,52 @@ class MALAnimeMetadataTests(TestCase):
         self.assertEqual(request_mock.call_args.kwargs["timeout"], 1)
         self.assertFalse(request_mock.call_args.kwargs["retry_rate_limits"])
         self.assertIs(request_mock.call_args.kwargs["request_session"], requests)
+
+    @patch("app.providers.mal.person_page")
+    @patch("app.providers.mal.services.api_request")
+    def test_strict_person_match_rejects_wrong_birthday(
+        self,
+        request_mock,
+        person_mock,
+    ):
+        request_mock.return_value = {
+            "data": [{
+                "mal_id": 1,
+                "name": "Alex Smith",
+                "birthday": "1980-01-01T00:00:00+00:00",
+            }],
+        }
+
+        result = mal.person_page_by_name(
+            "Alex Smith",
+            birth_date="1990-01-01",
+            strict=True,
+        )
+
+        self.assertIsNone(result)
+        person_mock.assert_not_called()
+
+    @patch("app.providers.mal.person_page")
+    @patch("app.providers.mal.services.api_request")
+    def test_strict_person_match_rejects_ambiguous_name(
+        self,
+        request_mock,
+        person_mock,
+    ):
+        request_mock.return_value = {
+            "data": [
+                {"mal_id": 1, "name": "Alex Smith"},
+                {"mal_id": 2, "name": "Smith Alex"},
+            ],
+        }
+
+        result = mal.person_page_by_name(
+            "Alex Smith",
+            strict=True,
+        )
+
+        self.assertIsNone(result)
+        person_mock.assert_not_called()
 
     @patch("app.providers.mal.services.api_request")
     def test_anime_cast_uses_japanese_voice_actor_and_merges_characters(

@@ -110,6 +110,49 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     return data
 
 
+def search_people(query, *, limit=10, timeout=None):
+    """Search MangaUpdates authors and return normalized person references."""
+    try:
+        response = services.api_request(
+            Sources.MANGAUPDATES.value,
+            "POST",
+            f"{base_url}/authors/search",
+            params={
+                "search": query,
+                "page": 1,
+                "perpage": limit,
+            },
+            timeout=timeout,
+            retry_rate_limits=False,
+            request_session=services.person_search_session,
+        )
+    except requests.exceptions.HTTPError as error:
+        response = handle_error(error)
+
+    results = []
+    for hit in response.get("results") or []:
+        author = hit.get("record") or hit
+        person_id = author.get("author_id") or author.get("id")
+        if person_id is None or not author.get("name"):
+            continue
+        image = author.get("image") or {}
+        image_urls = image.get("url") if isinstance(image, dict) else {}
+        results.append({
+            "source": Sources.MANGAUPDATES.value,
+            "person_id": str(person_id),
+            "name": author["name"],
+            "profile_url": (
+                image_urls.get("original")
+                or image_urls.get("thumb")
+                or None
+                if isinstance(image_urls, dict)
+                else None
+            ),
+            "known_for_department": author.get("type") or "Author",
+        })
+    return results[:limit]
+
+
 def manga(media_id):
     """Get metadata for a manga from MangaUpdates."""
     return asyncio.run(async_manga(media_id))

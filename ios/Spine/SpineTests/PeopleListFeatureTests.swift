@@ -24,6 +24,7 @@ final class PeopleListFeatureTests: XCTestCase {
         let viewModel = ProfileListDetailViewModel(
             listId: 77,
             listRepository: repository,
+            peopleRepository: PeopleListCompletionRepository(completions: [:]),
             filterOptionsRepository: filters,
             onUnauthorized: {}
         )
@@ -70,6 +71,67 @@ final class PeopleListFeatureTests: XCTestCase {
         XCTAssertEqual(repository.itemCalls, 0)
     }
 
+    func testPeopleCardFallbackUsesDedicatedCompletionAndReloadsFreshValue() async {
+        let person = person(entryId: 1, name: "Creator", source: "anilist")
+        let listRepository = PeopleListFeatureRepository(
+            people: [person],
+            nextPageResults: []
+        )
+        let peopleRepository = PeopleListCompletionRepository(completions: [
+            person.ref: CompletionProgress(completedCount: 1, totalCount: 2),
+        ])
+        let viewModel = ProfileListDetailViewModel(
+            listId: 77,
+            listRepository: listRepository,
+            peopleRepository: peopleRepository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadPersonCompletionIfNeeded(person)
+
+        XCTAssertEqual(peopleRepository.requestedRefs, [person.ref])
+        XCTAssertEqual(peopleRepository.detailCalls, 0)
+        XCTAssertEqual(viewModel.completion(for: person)?.countText, "1 of 2")
+
+        peopleRepository.completions[person.ref] = CompletionProgress(
+            completedCount: 2,
+            totalCount: 2
+        )
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.completion(for: person))
+
+        await viewModel.loadPersonCompletionIfNeeded(person)
+
+        XCTAssertEqual(peopleRepository.requestedRefs, [person.ref, person.ref])
+        XCTAssertEqual(peopleRepository.detailCalls, 0)
+        XCTAssertEqual(viewModel.completion(for: person)?.countText, "2 of 2")
+    }
+
+    func testPeopleCardFallbackCachesUnavailableDedicatedCompletion() async {
+        let person = person(entryId: 1, name: "Actor")
+        let listRepository = PeopleListFeatureRepository(
+            people: [person],
+            nextPageResults: []
+        )
+        let peopleRepository = PeopleListCompletionRepository(completions: [:])
+        let viewModel = ProfileListDetailViewModel(
+            listId: 77,
+            listRepository: listRepository,
+            peopleRepository: peopleRepository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadPersonCompletionIfNeeded(person)
+        await viewModel.loadPersonCompletionIfNeeded(person)
+
+        XCTAssertEqual(peopleRepository.requestedRefs, [person.ref])
+        XCTAssertEqual(peopleRepository.detailCalls, 0)
+        XCTAssertNil(viewModel.completion(for: person))
+    }
+
     func testPeopleEditRetriesRemovalThenSendsCompleteOrderAndNeverChangesType() async {
         let first = person(entryId: 1, name: "First", position: 1)
         let second = person(entryId: 2, name: "Second", position: 2)
@@ -108,12 +170,13 @@ final class PeopleListFeatureTests: XCTestCase {
     private func person(
         entryId: Int,
         name: String,
+        source: String = "tmdb",
         position: Int? = nil
     ) -> PersonListEntry {
         PersonListEntry(
             entryId: entryId,
             personId: String(entryId * 10),
-            source: "tmdb",
+            source: source,
             name: name,
             profileUrl: nil,
             knownForDepartment: "Acting",
@@ -151,13 +214,40 @@ final class PeopleListFeatureTests: XCTestCase {
 
 private enum PeopleListFeatureError: LocalizedError {
     case nextPage
+    case personDetail
     case removal
 
     var errorDescription: String? {
         switch self {
         case .nextPage: "Next page failed"
+        case .personDetail: "Person detail missing"
         case .removal: "Removal failed"
         }
+    }
+}
+
+@MainActor
+private final class PeopleListCompletionRepository: PeopleRepository {
+    var completions: [PersonRef: CompletionProgress]
+    var requestedRefs: [PersonRef] = []
+    var detailCalls = 0
+
+    init(completions: [PersonRef: CompletionProgress]) {
+        self.completions = completions
+    }
+
+    func search(query: String) async throws -> PersonSearchResponse {
+        PersonSearchResponse(count: 0, results: [])
+    }
+
+    func detail(ref: PersonRef) async throws -> PersonDetail {
+        detailCalls += 1
+        throw PeopleListFeatureError.personDetail
+    }
+
+    func completion(ref: PersonRef) async throws -> CompletionProgress? {
+        requestedRefs.append(ref)
+        return completions[ref]
     }
 }
 

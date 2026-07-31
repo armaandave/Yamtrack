@@ -32,7 +32,9 @@ protocol MusicRepository {
 }
 
 protocol PeopleRepository {
+    func search(query: String) async throws -> PersonSearchResponse
     func detail(ref: PersonRef) async throws -> PersonDetail
+    func completion(ref: PersonRef) async throws -> CompletionProgress?
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail
     func detail(
         ref: PersonRef,
@@ -59,6 +61,10 @@ extension CompanyRepository {
 }
 
 extension PeopleRepository {
+    func completion(ref: PersonRef) async throws -> CompletionProgress? {
+        nil
+    }
+
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
         try await detail(ref: ref)
     }
@@ -651,11 +657,31 @@ struct APIMusicRepository: MusicRepository {
     }
 }
 
+private struct PersonCompletionResponse: Decodable {
+    let completion: CompletionProgress?
+}
+
 struct APIPeopleRepository: PeopleRepository {
     let client: APIClient
 
+    func search(query: String) async throws -> PersonSearchResponse {
+        try await client.get(
+            "/people/search/",
+            query: [URLQueryItem(name: "q", value: query)],
+            authenticated: true
+        )
+    }
+
     func detail(ref: PersonRef) async throws -> PersonDetail {
         try await detail(ref: ref, filter: MediaFilterState())
+    }
+
+    func completion(ref: PersonRef) async throws -> CompletionProgress? {
+        let response: PersonCompletionResponse = try await client.get(
+            "/people/\(ref.source)/\(ref.id)/completion/",
+            authenticated: client.tokenProvider.accessToken != nil
+        )
+        return response.completion
     }
 
     func detail(ref: PersonRef, filter: MediaFilterState) async throws -> PersonDetail {
@@ -1175,9 +1201,13 @@ struct APIListRepository: ListRepository {
     }
 
     func people(listId: Int, page: String?) async throws -> PagedResponse<PersonListEntry> {
-        try await client.get(
+        var query: [URLQueryItem] = []
+        if let page {
+            query.append(URLQueryItem(name: "page", value: page))
+        }
+        return try await client.get(
             "/lists/\(listId)/people/",
-            query: page.map { [URLQueryItem(name: "page", value: $0)] } ?? [],
+            query: query,
             authenticated: true
         )
     }

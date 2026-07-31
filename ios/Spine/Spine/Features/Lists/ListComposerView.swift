@@ -8,6 +8,7 @@ struct ListComposerView: View {
     @FocusState private var focusedField: Field?
 
     private let mediaRepository: MediaRepository
+    private let peopleRepository: PeopleRepository
     private let onUnauthorized: () -> Void
     private let onSaved: (Int, ListComposerDraft) -> Void
 
@@ -21,6 +22,7 @@ struct ListComposerView: View {
         initialItems: [MediaSummary] = [],
         listRepository: ListRepository,
         mediaRepository: MediaRepository,
+        peopleRepository: PeopleRepository,
         onUnauthorized: @escaping () -> Void,
         onSaved: @escaping (Int, ListComposerDraft) -> Void
     ) {
@@ -31,6 +33,7 @@ struct ListComposerView: View {
             onUnauthorized: onUnauthorized
         ))
         self.mediaRepository = mediaRepository
+        self.peopleRepository = peopleRepository
         self.onUnauthorized = onUnauthorized
         self.onSaved = onSaved
     }
@@ -54,6 +57,7 @@ struct ListComposerView: View {
                     .padding(.bottom, 28)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .disabled(viewModel.isSaving)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -75,12 +79,21 @@ struct ListComposerView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: removedEntryID)
-        .fullScreenCover(item: $presentedSheet) { _ in
-            ListMediaPickerView(
-                viewModel: viewModel,
-                mediaRepository: mediaRepository,
-                onUnauthorized: onUnauthorized
-            )
+        .fullScreenCover(item: $presentedSheet) { sheet in
+            switch sheet {
+            case .mediaPicker:
+                ListMediaPickerView(
+                    viewModel: viewModel,
+                    mediaRepository: mediaRepository,
+                    onUnauthorized: onUnauthorized
+                )
+            case .peoplePicker:
+                ListPeoplePickerView(
+                    viewModel: viewModel,
+                    peopleRepository: peopleRepository,
+                    onUnauthorized: onUnauthorized
+                )
+            }
         }
         .interactiveDismissDisabled(viewModel.requiresDiscardConfirmation || viewModel.isSaving)
         .alert("Discard Changes?", isPresented: $showsDiscardConfirmation) {
@@ -212,13 +225,27 @@ struct ListComposerView: View {
 
     private var peopleSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Your People")
-                    .font(.system(size: 16, weight: .heavy, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("\(viewModel.draft.people.count) selected")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.46))
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your People")
+                        .font(.system(size: 16, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("\(viewModel.draft.people.count) selected")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+
+                Spacer()
+
+                Button(action: presentPeoplePicker) {
+                    Label("Add People", systemImage: "plus")
+                        .font(.system(size: 13, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .frame(height: 36)
+                        .background(.white, in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 2)
 
@@ -230,7 +257,7 @@ struct ListComposerView: View {
                     Text("No people added yet")
                         .font(.system(size: 17, weight: .heavy, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("Add people from the menu on any person page.")
+                    Text("Search for people or add them from any person page.")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.5))
                         .multilineTextAlignment(.center)
@@ -407,12 +434,23 @@ struct ListComposerView: View {
         focusedField = nil
         presentedSheet = .mediaPicker
     }
+
+    private func presentPeoplePicker() {
+        focusedField = nil
+        presentedSheet = .peoplePicker
+    }
 }
 
 private enum ListComposerSheet: Identifiable {
     case mediaPicker
+    case peoplePicker
 
-    var id: String { "media-picker" }
+    var id: String {
+        switch self {
+        case .mediaPicker: "media-picker"
+        case .peoplePicker: "people-picker"
+        }
+    }
 }
 
 private struct ListComposerReorderRows: View {

@@ -61,6 +61,8 @@ struct StatsSummary: Decodable, Hashable {
     let metadataCoverage: StatsMetadataCoverage
     let topRated: [StatsTopRatedItem]
     let mostLogged: [StatsMostLoggedItem]
+    let listProgress: [StatsListProgressItem]
+    let seriesProgress: [MediaSeriesSummary]
 
     init(
         schemaVersion: Int = 1,
@@ -74,7 +76,9 @@ struct StatsSummary: Decodable, Hashable {
         topLanguages: [StatsNamedCount] = [],
         metadataCoverage: StatsMetadataCoverage = .empty,
         topRated: [StatsTopRatedItem] = [],
-        mostLogged: [StatsMostLoggedItem] = []
+        mostLogged: [StatsMostLoggedItem] = [],
+        listProgress: [StatsListProgressItem] = [],
+        seriesProgress: [MediaSeriesSummary] = []
     ) {
         self.schemaVersion = schemaVersion
         self.range = range
@@ -88,6 +92,8 @@ struct StatsSummary: Decodable, Hashable {
         self.metadataCoverage = metadataCoverage
         self.topRated = topRated
         self.mostLogged = mostLogged
+        self.listProgress = listProgress
+        self.seriesProgress = seriesProgress
     }
 
     var isEmpty: Bool {
@@ -104,6 +110,8 @@ struct StatsSummary: Decodable, Hashable {
             && topLanguages.isEmpty
             && topRated.isEmpty
             && mostLogged.isEmpty
+            && listProgress.isEmpty
+            && seriesProgress.isEmpty
         if !range.isAllTime {
             return periodDataIsEmpty
         }
@@ -130,6 +138,8 @@ struct StatsSummary: Decodable, Hashable {
         case diaryTopRated
         case topRated
         case mostLogged
+        case listProgress
+        case seriesProgress
     }
 
     init(from decoder: Decoder) throws {
@@ -148,7 +158,9 @@ struct StatsSummary: Decodable, Hashable {
             topRated: try container.decodeIfPresent([StatsTopRatedItem].self, forKey: .diaryTopRated)
                 ?? container.decodeIfPresent([StatsTopRatedItem].self, forKey: .topRated)
                 ?? [],
-            mostLogged: try container.decodeIfPresent([StatsMostLoggedItem].self, forKey: .mostLogged) ?? []
+            mostLogged: try container.decodeIfPresent([StatsMostLoggedItem].self, forKey: .mostLogged) ?? [],
+            listProgress: try container.decodeIfPresent([StatsListProgressItem].self, forKey: .listProgress) ?? [],
+            seriesProgress: try container.decodeIfPresent([MediaSeriesSummary].self, forKey: .seriesProgress) ?? []
         )
     }
 }
@@ -204,6 +216,7 @@ struct StatsOverview: Decodable, Hashable {
     let activeDays: Int
     let currentStreakDays: Int
     let longestStreakDays: Int
+    let completion: CompletionProgress?
 
     static let empty = StatsOverview()
 
@@ -223,7 +236,8 @@ struct StatsOverview: Decodable, Hashable {
         likedCount: Int = 0,
         activeDays: Int = 0,
         currentStreakDays: Int = 0,
-        longestStreakDays: Int = 0
+        longestStreakDays: Int = 0,
+        completion: CompletionProgress? = nil
     ) {
         self.trackedCount = trackedCount
         self.completedCount = completedCount
@@ -237,6 +251,7 @@ struct StatsOverview: Decodable, Hashable {
         self.activeDays = activeDays
         self.currentStreakDays = currentStreakDays
         self.longestStreakDays = longestStreakDays
+        self.completion = completion
     }
 
     var isEmpty: Bool {
@@ -261,6 +276,7 @@ struct StatsOverview: Decodable, Hashable {
         case activeDays
         case currentStreakDays
         case longestStreakDays
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -277,7 +293,8 @@ struct StatsOverview: Decodable, Hashable {
             likedCount: try container.decodeIfPresent(Int.self, forKey: .likedCount) ?? 0,
             activeDays: try container.decodeIfPresent(Int.self, forKey: .activeDays) ?? 0,
             currentStreakDays: try container.decodeIfPresent(Int.self, forKey: .currentStreakDays) ?? 0,
-            longestStreakDays: try container.decodeIfPresent(Int.self, forKey: .longestStreakDays) ?? 0
+            longestStreakDays: try container.decodeIfPresent(Int.self, forKey: .longestStreakDays) ?? 0,
+            completion: try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
         )
     }
 }
@@ -301,6 +318,7 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
     let topGenres: [StatsNamedCount]
     let topLanguages: [StatsNamedCount]
     let metadataCoverage: StatsMetadataCoverage
+    let completion: CompletionProgress?
 
     var id: String { mediaType }
 
@@ -326,7 +344,8 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
         releaseYears: [StatsReleaseYearBucket] = [],
         topGenres: [StatsNamedCount] = [],
         topLanguages: [StatsNamedCount] = [],
-        metadataCoverage: StatsMetadataCoverage = .empty
+        metadataCoverage: StatsMetadataCoverage = .empty,
+        completion: CompletionProgress? = nil
     ) {
         self.mediaType = mediaType
         self.trackedCount = trackedCount
@@ -346,6 +365,7 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
         self.topGenres = topGenres
         self.topLanguages = topLanguages
         self.metadataCoverage = metadataCoverage
+        self.completion = completion
     }
 
     var isEmpty: Bool {
@@ -382,6 +402,7 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
         case topGenres
         case topLanguages
         case metadataCoverage
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -404,7 +425,8 @@ struct StatsMediaTypeSummary: Decodable, Hashable, Identifiable {
             releaseYears: try container.decodeIfPresent([StatsReleaseYearBucket].self, forKey: .releaseYears) ?? [],
             topGenres: try container.decodeIfPresent([StatsNamedCount].self, forKey: .topGenres) ?? [],
             topLanguages: try container.decodeIfPresent([StatsNamedCount].self, forKey: .topLanguages) ?? [],
-            metadataCoverage: try container.decodeIfPresent(StatsMetadataCoverage.self, forKey: .metadataCoverage) ?? .empty
+            metadataCoverage: try container.decodeIfPresent(StatsMetadataCoverage.self, forKey: .metadataCoverage) ?? .empty,
+            completion: try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
         )
     }
 }
@@ -565,4 +587,12 @@ struct StatsMostLoggedItem: Decodable, Hashable, Identifiable {
     let logCount: Int
 
     var id: MediaSummary.ID { media.id }
+}
+
+struct StatsListProgressItem: Decodable, Hashable, Identifiable {
+    let id: Int
+    let name: String
+    let mediaType: String?
+    let posterUrls: [String]
+    let completion: CompletionProgress
 }

@@ -127,6 +127,31 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     )
 
 
+def search_people(query, *, limit=10, timeout=None):
+    """Search MusicBrainz for human artists."""
+    response = _musicbrainz_request(
+        "artist",
+        {
+            "query": f'artist:"{escape_lucene(query)}" AND type:person',
+            "limit": limit,
+        },
+        timeout=timeout,
+        max_attempts=1,
+        retry_rate_limits=False,
+    )
+    return [
+        {
+            "source": Sources.MUSICBRAINZ.value,
+            "person_id": str(artist["id"]),
+            "name": artist.get("name") or "",
+            "profile_url": None,
+            "known_for_department": "Artist",
+        }
+        for artist in response.get("artists") or []
+        if artist.get("id") and artist.get("name")
+    ]
+
+
 def discover(*, page=1, page_size=None, genre=None):
     """Discover popular official release groups carrying an exact genre."""
     genre = " ".join(str(genre or "").split()).casefold()
@@ -1209,10 +1234,19 @@ def _external_links(relations, source_url):
     return links
 
 
-def _musicbrainz_request(path, params, *, timeout=None):
+def _musicbrainz_request(
+    path,
+    params,
+    *,
+    timeout=None,
+    max_attempts=MAX_ATTEMPTS,
+    retry_rate_limits=True,
+):
     params = {"fmt": "json", **params}
     request_options = {"timeout": timeout} if timeout is not None else {}
-    for attempt in range(MAX_ATTEMPTS):
+    if not retry_rate_limits:
+        request_options["retry_rate_limits"] = False
+    for attempt in range(max_attempts):
         try:
             return services.api_request(
                 Sources.MUSICBRAINZ.value,
@@ -1231,13 +1265,13 @@ def _musicbrainz_request(path, params, *, timeout=None):
             ) from error
         except requests.exceptions.HTTPError as error:
             status_code = getattr(error.response, "status_code", None)
-            if status_code == requests.codes.service_unavailable and attempt < MAX_ATTEMPTS - 1:
+            if status_code == requests.codes.service_unavailable and attempt < max_attempts - 1:
                 continue
             raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
         except requests.exceptions.Timeout as error:
             raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
         except requests.ConnectionError as error:
-            if attempt < MAX_ATTEMPTS - 1:
+            if attempt < max_attempts - 1:
                 continue
             raise services.ProviderAPIError(Sources.MUSICBRAINZ.value, error) from error
         except requests.RequestException as error:

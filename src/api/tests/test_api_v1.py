@@ -2923,11 +2923,87 @@ class ApiV1FoundationTests(TestCase):
             sort="vote_count",
         )
 
+    @patch("api.services.media.provider_services.discover")
+    def test_media_discover_manga_genre_contract(self, discover_mock):
+        user = get_user_model().objects.create_user(
+            username="manga-discoverer",
+            password="strong-password-123",
+        )
+        self.client.force_authenticate(user)
+        item = Item.objects.create(
+            source=Sources.MAL.value,
+            media_type=MediaTypes.MANGA.value,
+            media_id="23390",
+            title="Shingeki no Kyojin",
+            image="https://example.com/default.jpg",
+        )
+        CustomPosterPreference.objects.create(
+            user=user,
+            item=item,
+            custom_image_url="https://example.com/custom-manga.jpg",
+        )
+        discover_mock.return_value = {
+            "per_page": 25,
+            "total_results": 76,
+            "results": [
+                {
+                    "media_id": "23390",
+                    "source": Sources.MAL.value,
+                    "media_type": MediaTypes.MANGA.value,
+                    "title": "Shingeki no Kyojin",
+                    "display_title": "Attack on Titan",
+                    "image": "https://example.com/manga-default.jpg",
+                    "release_date": "2009-09-09",
+                    "genres": ["Action"],
+                },
+            ],
+        }
+
+        response = self.client.get(
+            "/api/v1/media/discover/"
+            "?media_type=manga&source=mal&genre=Action&page=2",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 76)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNotNone(response.data["previous"])
+        manga = response.data["results"][0]
+        self.assertEqual(manga["ref"]["source"], Sources.MAL.value)
+        self.assertEqual(
+            manga["ref"]["media_type"],
+            MediaTypes.MANGA.value,
+        )
+        self.assertEqual(manga["ref"]["media_id"], "23390")
+        self.assertEqual(manga["title"], "Shingeki no Kyojin")
+        self.assertEqual(manga["display_title"], "Attack on Titan")
+        self.assertEqual(
+            manga["poster_url"],
+            "https://example.com/manga-default.jpg",
+        )
+        self.assertEqual(
+            manga["custom_poster_url"],
+            "https://example.com/custom-manga.jpg",
+        )
+        discover_mock.assert_called_once_with(
+            MediaTypes.MANGA.value,
+            source=Sources.MAL.value,
+            page=2,
+            page_size=25,
+            genre="Action",
+            year=None,
+            platform=None,
+            sort="vote_count",
+        )
+
     def test_media_discover_unsupported_media_type_fails_clearly(self):
         user = get_user_model().objects.create_user(username="unsupported-discover", password="strong-password-123")
         self.client.force_authenticate(user)
 
-        response = self.client.get("/api/v1/media/discover/?media_type=manga&genre=Drama")
+        response = self.client.get(
+            "/api/v1/media/discover/"
+            "?media_type=manga&source=mangaupdates&genre=Drama",
+        )
 
         self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertIn("Discovery is not supported", response.data["detail"])
@@ -3984,7 +4060,13 @@ class ApiV1FoundationTests(TestCase):
             "https://images.igdb.com/igdb/image/upload/t_logo_med/studio-logo.png",
         )
         self.assertEqual(response.data["founded_year"], 1993)
-        self.assertEqual(response.data["catalogs"], {"developed": {"count": 24}, "published": {"count": 8}})
+        self.assertEqual(
+            response.data["catalogs"],
+            {
+                "developed": {"count": 24, "completion": None},
+                "published": {"count": 8, "completion": None},
+            },
+        )
 
     @patch("api.services.media.provider_services.get_company_catalog")
     def test_company_games_are_role_scoped_sorted_and_paginated(self, catalog_mock):

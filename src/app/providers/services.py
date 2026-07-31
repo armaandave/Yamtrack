@@ -1,9 +1,11 @@
+import hashlib
 import logging
 import time
 
 import requests
 from defusedxml import ElementTree
 from django.conf import settings
+from django.core.cache import cache
 from pyrate_limiter import RedisBucket
 from redis import Redis
 from requests.adapters import HTTPAdapter
@@ -34,6 +36,8 @@ SUPPORTED_PERSON_SOURCES = (
     Sources.MANGAUPDATES.value,
     "anilist",
 )
+PERSON_SEARCH_CACHE_VERSION = "v1"
+PERSON_SEARCH_TTL = 60 * 60
 
 
 def get_redis_client():
@@ -64,6 +68,12 @@ musicbrainz_session = LimiterSession(
     bucket_class=RedisBucket,
     bucket_kwargs={"redis": redis_db, "bucket_key": musicbrainz_bucket_key},
     limit_statuses=(requests.codes.service_unavailable,),
+)
+
+person_search_session = LimiterSession(
+    per_second=5,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": bucket_key},
 )
 
 session.mount("http://", HTTPAdapter(max_retries=3))
@@ -108,6 +118,23 @@ session.mount(
 session.mount(
     "https://store.steampowered.com/",
     LimiterAdapter(per_second=3),
+)
+
+person_search_session.mount(
+    "https://graphql.anilist.co",
+    LimiterAdapter(per_minute=85),
+)
+person_search_session.mount(
+    "https://api.jikan.moe",
+    LimiterAdapter(per_second=3),
+)
+person_search_session.mount(
+    "https://openlibrary.org",
+    LimiterAdapter(per_minute=20),
+)
+person_search_session.mount(
+    "https://api.hardcover.app/v1/graphql",
+    LimiterAdapter(per_minute=50),
 )
 
 
@@ -407,6 +434,19 @@ def discover(media_type, *, source=None, page=1, page_size=None, genre=None, yea
             genre=genre,
         )
 
+    if source == Sources.MAL.value and media_type == MediaTypes.MANGA.value:
+        if year:
+            msg = "year discovery is not supported for manga."
+            raise ValueError(msg)
+        if platform:
+            msg = "platform discovery is only supported for games."
+            raise ValueError(msg)
+        return mal.discover_manga(
+            page=page,
+            page_size=page_size,
+            genre=genre,
+        )
+
     if source == Sources.TMDB.value and media_type in [MediaTypes.MOVIE.value, MediaTypes.TV.value]:
         if platform:
             msg = "platform discovery is only supported for games."
@@ -463,6 +503,40 @@ def get_person_page(source, person_id, *, page=None):
             else anilist.person_page(person_id)
         )
     raise_not_found_error(source, person_id, "person")
+
+
+def search_people(source, query, *, limit=10, timeout=3):
+    """Search one supported provider for normalized people."""
+    query = " ".join(str(query or "").split())
+    if source not in SUPPORTED_PERSON_SOURCES:
+        raise ValueError(f"Unsupported person source: {source}")
+    if not query:
+        raise ValueError("query is required")
+    limit = min(max(int(limit), 1), 25)
+    digest = hashlib.sha256(query.casefold().encode()).hexdigest()[:24]
+    cache_key = (
+        f"people-search:{PERSON_SEARCH_CACHE_VERSION}:{source}:{digest}:{limit}"
+    )
+    results = cache.get(cache_key)
+    if results is not None:
+        return results
+
+    if source == "anilist":
+        from app.providers import anilist  # noqa: PLC0415
+
+        results = anilist.search_people(query, limit=limit, timeout=timeout)
+    else:
+        handlers = {
+            Sources.TMDB.value: tmdb.search_people,
+            Sources.HARDCOVER.value: hardcover.search_people,
+            Sources.OPENLIBRARY.value: openlibrary.search_people,
+            Sources.MUSICBRAINZ.value: musicbrainz.search_people,
+            Sources.MAL.value: mal.search_people,
+            Sources.MANGAUPDATES.value: mangaupdates.search_people,
+        }
+        results = handlers[source](query, limit=limit, timeout=timeout)
+    cache.set(cache_key, results, PERSON_SEARCH_TTL)
+    return results
 
 
 def get_book_series(source, series_id):

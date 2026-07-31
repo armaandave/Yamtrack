@@ -248,6 +248,263 @@ class Search(TestCase):
             cache.get(mal.ANIME_DISCOVER_JIKAN_FAILURE_KEY),
         )
 
+    @override_settings(MAL_NSFW=False)
+    @patch(
+        "app.providers.mal.cached_manga_posters",
+        return_value={"2": "https://cdn.myanimelist.net/berserk.jpg"},
+    )
+    @patch("app.providers.mal.services.api_request")
+    def test_manga_discover_by_genre(
+        self,
+        api_request,
+        _cached_posters,
+    ):
+        cache.clear()
+        api_request.side_effect = [
+            {
+                "data": [
+                    {"mal_id": 1, "name": "Action"},
+                    {"mal_id": 40, "name": "Isekai"},
+                    {"mal_id": 27, "name": "Seinen"},
+                ],
+            },
+            {
+                "pagination": {
+                    "last_visible_page": 2,
+                    "has_next_page": True,
+                    "items": {
+                        "count": 1,
+                        "total": 26,
+                        "per_page": 25,
+                    },
+                },
+                "data": [
+                    {
+                        "mal_id": 2,
+                        "url": "https://myanimelist.net/manga/2",
+                        "title": "Berserk",
+                        "title_english": "Berserk",
+                        "images": {
+                            "jpg": {
+                                "large_image_url": (
+                                    "https://cdn.jikan.moe/berserk.jpg"
+                                ),
+                            },
+                        },
+                        "published": {
+                            "from": "1989-08-25T00:00:00+00:00",
+                        },
+                        "type": "Manga",
+                        "chapters": 380,
+                        "volumes": 42,
+                        "synopsis": "A lone swordsman seeks revenge.",
+                        "genres": [{"name": "Action"}],
+                        "themes": [{"name": "Military"}],
+                        "demographics": [{"name": "Seinen"}],
+                        "score": 9.47,
+                        "scored_by": 400_000,
+                        "members": 700_000,
+                    },
+                ],
+            },
+        ]
+
+        result = mal.discover_manga(
+            page=1,
+            page_size=25,
+            genre="seinen",
+        )
+
+        genre_request = api_request.call_args_list[0]
+        self.assertEqual(
+            genre_request.args[2],
+            "https://api.jikan.moe/v4/genres/manga",
+        )
+        self.assertEqual(genre_request.kwargs["params"], {})
+
+        discover_request = api_request.call_args_list[1]
+        self.assertEqual(
+            discover_request.args[2],
+            "https://api.jikan.moe/v4/manga",
+        )
+        self.assertEqual(
+            discover_request.kwargs["params"],
+            {
+                "genres": "27",
+                "page": 1,
+                "limit": 25,
+                "order_by": "scored_by",
+                "sort": "desc",
+                "sfw": True,
+            },
+        )
+        self.assertEqual(discover_request.kwargs["timeout"], 3)
+        self.assertFalse(discover_request.kwargs["retry_rate_limits"])
+        self.assertEqual(result["total_results"], 26)
+        self.assertEqual(result["per_page"], 25)
+        manga = result["results"][0]
+        self.assertEqual(manga["media_id"], "2")
+        self.assertEqual(manga["source"], Sources.MAL.value)
+        self.assertEqual(manga["media_type"], MediaTypes.MANGA.value)
+        self.assertEqual(manga["title"], "Berserk")
+        self.assertEqual(manga["display_title"], "Berserk")
+        self.assertEqual(
+            manga["image"],
+            "https://cdn.myanimelist.net/berserk.jpg",
+        )
+        self.assertEqual(
+            manga["genres"],
+            ["Action", "Military", "Seinen"],
+        )
+        self.assertEqual(manga["max_progress"], 380)
+        self.assertEqual(manga["details"]["number_of_volumes"], 42)
+
+    @patch("app.providers.mal.services.api_request")
+    @patch(
+        "app.providers.mal._jikan_manga_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_manga_discover_rejects_unknown_genre(
+        self,
+        _genres,
+        api_request,
+    ):
+        with self.assertRaisesMessage(
+            ValueError,
+            "Unknown MAL manga genre: Not A Genre",
+        ):
+            mal.discover_manga(genre="Not A Genre")
+
+        api_request.assert_not_called()
+
+    @override_settings(MAL_NSFW=False)
+    @patch(
+        "app.providers.mal.cached_manga_posters",
+        return_value={"2": "https://cdn.myanimelist.net/berserk.jpg"},
+    )
+    @patch("app.providers.anilist.manga_genre_page")
+    @patch(
+        "app.providers.mal._jikan_manga_discovery_page",
+        side_effect=requests.Timeout("Jikan unavailable"),
+    )
+    @patch(
+        "app.providers.mal._jikan_manga_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_manga_discover_falls_back_to_anilist(
+        self,
+        _genres,
+        _jikan_discover,
+        anilist_discover,
+        _cached_posters,
+    ):
+        cache.clear()
+        anilist_discover.return_value = {
+            "page_info": {
+                "total": 100,
+                "perPage": 25,
+                "currentPage": 2,
+                "lastPage": 4,
+                "hasNextPage": True,
+            },
+            "media": [
+                {
+                    "idMal": 2,
+                    "title": {
+                        "english": "Berserk",
+                        "romaji": "Berserk",
+                        "native": "ベルセルク",
+                    },
+                    "coverImage": {
+                        "extraLarge": "https://img.anilist.co/berserk.jpg",
+                    },
+                    "release_date": "1989-08-25",
+                    "format": "MANGA",
+                    "chapters": 380,
+                    "volumes": 42,
+                    "description": "A lone swordsman seeks revenge.",
+                    "genres": ["Action", "Drama"],
+                    "averageScore": 93,
+                    "popularity": 700_000,
+                },
+                {
+                    "idMal": None,
+                    "title": {"english": "AniList only"},
+                },
+            ],
+        }
+
+        result = mal.discover_manga(
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+        anilist_discover.assert_called_once_with(
+            "Action",
+            page=2,
+            page_size=25,
+            include_adult=False,
+            timeout=3,
+        )
+        self.assertEqual(result["total_results"], 100)
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(len(result["results"]), 1)
+        manga = result["results"][0]
+        self.assertEqual(manga["media_id"], "2")
+        self.assertEqual(manga["source"], Sources.MAL.value)
+        self.assertEqual(manga["media_type"], MediaTypes.MANGA.value)
+        self.assertEqual(manga["display_title"], "Berserk")
+        self.assertEqual(
+            manga["image"],
+            "https://cdn.myanimelist.net/berserk.jpg",
+        )
+        self.assertEqual(manga["details"]["number_of_chapters"], 380)
+        self.assertEqual(manga["details"]["number_of_volumes"], 42)
+        self.assertTrue(
+            cache.get(mal.MANGA_DISCOVER_JIKAN_FAILURE_KEY),
+        )
+
+    @patch(
+        "app.providers.anilist.manga_genre_page",
+        side_effect=RuntimeError("AniList unavailable"),
+    )
+    @patch(
+        "app.providers.mal._jikan_manga_discovery_page",
+        side_effect=requests.Timeout("Jikan unavailable"),
+    )
+    @patch(
+        "app.providers.mal._jikan_manga_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_manga_discover_returns_empty_page_when_both_providers_fail(
+        self,
+        _genres,
+        _jikan_discover,
+        _anilist_discover,
+    ):
+        cache.clear()
+
+        result = mal.discover_manga(
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "page": 2,
+                "per_page": 25,
+                "total_results": 0,
+                "total_pages": 0,
+                "results": [],
+            },
+        )
+        self.assertTrue(
+            cache.get(mal.MANGA_DISCOVER_JIKAN_FAILURE_KEY),
+        )
+
     @requires_provider_network
     def test_mangaupdates(self):
         """Test the search method for manga.

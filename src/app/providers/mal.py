@@ -46,6 +46,10 @@ ANIME_DISCOVER_TIMEOUT = 3
 ANIME_DISCOVER_MAX_PAGE_SIZE = 25
 ANIME_DISCOVER_JIKAN_FAILURE_TTL = 60 * 5
 ANIME_DISCOVER_JIKAN_FAILURE_KEY = "mal:v1:anime-discover:jikan-failure"
+MANGA_CACHE_VERSION = "v3"
+MANGA_POSTER_CACHE_VERSION = "v1"
+MANGA_POSTER_TTL = 60 * 60 * 24 * 30
+MANGA_DISCOVER_JIKAN_FAILURE_KEY = "mal:v1:manga-discover:jikan-failure"
 STUDIO_CACHE_VERSION = "v2"
 STUDIO_IDENTITY_TTL = 60 * 60 * 24 * 30
 STUDIO_FRESH_TTL = 60 * 60 * 24
@@ -134,6 +138,9 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
         if media_type == MediaTypes.ANIME.value:
             for result in results:
                 _cache_anime_poster(result["media_id"], result["image"])
+        elif media_type == MediaTypes.MANGA.value:
+            for result in results:
+                _cache_manga_poster(result["media_id"], result["image"])
         results = rank_results(
             query,
             results,
@@ -151,6 +158,46 @@ def search(media_type, query, page, *, preserve_ranking_fields=False, timeout=No
         cache.set(cache_key, data)
 
     return data
+
+
+def search_people(query, *, limit=10, timeout=None):
+    """Search Jikan's MAL people index."""
+    try:
+        response = services.api_request(
+            Sources.MAL.value,
+            "GET",
+            f"{jikan_base_url}/people",
+            params={
+                "q": query,
+                "limit": limit,
+                "order_by": "favorites",
+                "sort": "desc",
+            },
+            timeout=timeout,
+            retry_rate_limits=False,
+            request_session=services.person_search_session,
+        )
+    except requests.exceptions.HTTPError as error:
+        response = handle_error(error)
+
+    results = []
+    for person in response.get("data") or []:
+        if person.get("mal_id") is None or not person.get("name"):
+            continue
+        images = person.get("images") or {}
+        image = images.get("jpg") or images.get("webp") or {}
+        results.append({
+            "source": Sources.MAL.value,
+            "person_id": str(person["mal_id"]),
+            "name": person["name"],
+            "profile_url": (
+                image.get("large_image_url")
+                or image.get("image_url")
+                or None
+            ),
+            "known_for_department": None,
+        })
+    return results[:limit]
 
 
 def discover_anime(*, page=1, page_size=None, genre=None):
@@ -338,6 +385,197 @@ def _anilist_anime_discovery_page(*, genre, page, page_size):
     }
 
 
+def discover_manga(*, page=1, page_size=None, genre=None):
+    """Discover MAL-addressable manga by genre."""
+    page = int(page)
+    page_size = int(page_size or settings.PER_PAGE)
+    genre = str(genre or "").strip()
+    if page < 1:
+        raise ValueError("page must be at least 1.")
+    if not 1 <= page_size <= ANIME_DISCOVER_MAX_PAGE_SIZE:
+        raise ValueError(
+            f"page_size must be between 1 and {ANIME_DISCOVER_MAX_PAGE_SIZE}.",
+        )
+    if not genre:
+        raise ValueError("genre is required for MAL manga discovery.")
+
+    genres = _jikan_manga_genres(include_all=True)
+    genre_ids = {
+        item["name"].casefold(): str(item["id"])
+        for item in genres
+    }
+    genre_id = genre_ids.get(genre.casefold())
+    if genres and genre_id is None:
+        raise ValueError(f"Unknown MAL manga genre: {genre}")
+
+    if (
+        genre_id is not None
+        and not cache.get(MANGA_DISCOVER_JIKAN_FAILURE_KEY)
+    ):
+        try:
+            data = _jikan_manga_discovery_page(
+                page=page,
+                page_size=page_size,
+                genre_id=genre_id,
+            )
+            cache.delete(MANGA_DISCOVER_JIKAN_FAILURE_KEY)
+            return data
+        except (
+            requests.RequestException,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logger.warning(
+                "manga_genre_discovery_jikan_failed genre=%s page=%s "
+                "fallback=anilist type=%s",
+                genre,
+                page,
+                type(error).__name__,
+            )
+            cache.set(
+                MANGA_DISCOVER_JIKAN_FAILURE_KEY,
+                True,
+                ANIME_DISCOVER_JIKAN_FAILURE_TTL,
+            )
+
+    try:
+        return _anilist_manga_discovery_page(
+            genre=genre,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as error:  # noqa: BLE001 - discovery stays available
+        logger.warning(
+            "manga_genre_discovery_anilist_failed genre=%s page=%s type=%s",
+            genre,
+            page,
+            type(error).__name__,
+        )
+        return {
+            "page": page,
+            "per_page": page_size,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+
+
+def _jikan_manga_discovery_page(*, page, page_size, genre_id):
+    params = {
+        "genres": genre_id,
+        "page": page,
+        "limit": page_size,
+        "order_by": "scored_by",
+        "sort": "desc",
+    }
+    if not settings.MAL_NSFW:
+        params["sfw"] = True
+    response = services.api_request(
+        Sources.MAL.value,
+        "GET",
+        f"{jikan_base_url}/manga",
+        params=params,
+        timeout=ANIME_DISCOVER_TIMEOUT,
+        retry_rate_limits=False,
+    )
+    entries = response.get("data")
+    pagination = response.get("pagination")
+    if not isinstance(entries, list) or not isinstance(pagination, dict):
+        raise ValueError("Jikan returned malformed manga discovery data.")
+
+    results = _normalize_jikan_manga(entries)
+    pagination_items = pagination.get("items") or {}
+    try:
+        total_results = int(pagination_items["total"])
+    except (KeyError, TypeError, ValueError):
+        total_results = (
+            (page - 1) * page_size
+            + len(results)
+            + (1 if pagination.get("has_next_page") else 0)
+        )
+    try:
+        per_page = int(pagination_items["per_page"])
+    except (KeyError, TypeError, ValueError):
+        per_page = page_size
+
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total_results": total_results,
+        "total_pages": pagination.get("last_visible_page"),
+        "results": results,
+    }
+
+
+def _anilist_manga_discovery_page(*, genre, page, page_size):
+    from app.providers import anilist  # noqa: PLC0415
+
+    payload = anilist.manga_genre_page(
+        genre,
+        page=page,
+        page_size=page_size,
+        include_adult=settings.MAL_NSFW,
+        timeout=ANIME_DISCOVER_TIMEOUT,
+    )
+    page_info = payload["page_info"]
+    entries = []
+    for node in payload["media"]:
+        if not node.get("idMal"):
+            continue
+        title = node.get("title") or {}
+        cover = node.get("coverImage") or {}
+        average_score = node.get("averageScore")
+        entries.append(
+            {
+                "mal_id": node["idMal"],
+                "url": f"https://myanimelist.net/manga/{node['idMal']}",
+                "title": (
+                    title.get("romaji")
+                    or title.get("english")
+                    or title.get("native")
+                    or ""
+                ),
+                "title_english": title.get("english"),
+                "images": {
+                    "jpg": {
+                        "large_image_url": (
+                            cover.get("extraLarge")
+                            or cover.get("large")
+                            or cover.get("medium")
+                        ),
+                    },
+                },
+                "published": {"from": node.get("release_date")},
+                "type": node.get("format"),
+                "chapters": node.get("chapters"),
+                "volumes": node.get("volumes"),
+                "synopsis": helpers.plain_text(node.get("description")),
+                "genres": [
+                    {"name": value}
+                    for value in node.get("genres") or []
+                    if value
+                ],
+                "score": (
+                    average_score / 10
+                    if isinstance(average_score, (int, float))
+                    else None
+                ),
+                "scored_by": 0,
+                "members": node.get("popularity"),
+            },
+        )
+    results = _normalize_jikan_manga(entries)
+    return {
+        "page": int(page_info.get("currentPage") or page),
+        "per_page": int(page_info.get("perPage") or page_size),
+        "total_results": int(page_info.get("total") or len(results)),
+        "total_pages": page_info.get("lastPage"),
+        "results": results,
+    }
+
+
 def anime(media_id, *, timeout=None, retry_rate_limits=True):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
     cache_key = (
@@ -461,6 +699,53 @@ def _cache_anime_poster(media_id, image):
             f"mal:{ANIME_POSTER_CACHE_VERSION}:anime-poster:{media_id}",
             image,
             ANIME_POSTER_TTL,
+        )
+
+
+def cached_manga_posters(media_ids):
+    """Return cached canonical posters for many MAL manga in two reads."""
+    media_ids = {
+        str(media_id)
+        for media_id in media_ids
+        if media_id not in {None, ""}
+    }
+    if not media_ids:
+        return {}
+    poster_keys = {
+        media_id: f"mal:{MANGA_POSTER_CACHE_VERSION}:manga-poster:{media_id}"
+        for media_id in media_ids
+    }
+    cached = cache.get_many(poster_keys.values())
+    posters = {
+        media_id: cached[key]
+        for media_id, key in poster_keys.items()
+        if cached.get(key)
+    }
+    missing = media_ids - posters.keys()
+    if not missing:
+        return posters
+    detail_keys = {
+        media_id: (
+            f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_"
+            f"{MANGA_CACHE_VERSION}"
+        )
+        for media_id in missing
+    }
+    details = cache.get_many(detail_keys.values())
+    for media_id, key in detail_keys.items():
+        data = details.get(key)
+        image = data.get("image") if isinstance(data, dict) else None
+        if image and image != settings.IMG_NONE:
+            posters[media_id] = image
+    return posters
+
+
+def _cache_manga_poster(media_id, image):
+    if image and image != settings.IMG_NONE:
+        cache.set(
+            f"mal:{MANGA_POSTER_CACHE_VERSION}:manga-poster:{media_id}",
+            image,
+            MANGA_POSTER_TTL,
         )
 
 
@@ -786,7 +1071,10 @@ def _log_anime_series(cache_state, data, started_at=None):
 
 def manga(media_id):
     """Return the metadata for the selected anime or manga from MyAnimeList."""
-    cache_key = f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_v3"
+    cache_key = (
+        f"{Sources.MAL.value}_{MediaTypes.MANGA.value}_{media_id}_"
+        f"{MANGA_CACHE_VERSION}"
+    )
     data = cache.get(cache_key)
 
     if data is None:
@@ -860,6 +1148,7 @@ def manga(media_id):
 
         cache.set(cache_key, data)
 
+    _cache_manga_poster(media_id, data.get("image"))
     return data
 
 
@@ -1401,6 +1690,54 @@ def studio_anime(
         cache.delete(lock_key)
 
 
+def studio_anime_completion_catalog(studio_id, *, filters=None):
+    """Return the full filtered studio catalog when MAL can prove it."""
+    studio_id = _positive_studio_id(studio_id)
+    filters = filters or {}
+    cache_token = _studio_catalog_token(
+        page=0,
+        page_size=0,
+        sort="completion",
+        direction="",
+        filters=filters,
+    )
+    cache_key = _studio_cache_prefix(
+        studio_id,
+        f"anime-completion:{cache_token}",
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        results = [
+            {
+                "media_id": item["media_id"],
+                "source": Sources.MAL.value,
+                "media_type": MediaTypes.ANIME.value,
+            }
+            for item in _mal_studio_anime_catalog(studio_id, filters)
+        ]
+        payload = {"complete": True, "results": results}
+        cache.set(cache_key, payload, STUDIO_FRESH_TTL)
+        return payload
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logger.warning(
+            "anime_studio_completion_unavailable studio_id=%s type=%s",
+            studio_id,
+            type(error).__name__,
+        )
+        payload = {"complete": False, "results": []}
+        cache.set(cache_key, payload, STUDIO_FAILURE_TTL)
+        return payload
+
+
 def studio_anime_filter_options(studio_id):
     """Return deterministic MAL studio-catalog filter choices."""
     studio_id = _positive_studio_id(studio_id)
@@ -1671,6 +2008,63 @@ def _normalize_jikan_anime(entries):
     return results
 
 
+def _normalize_jikan_manga(entries):
+    posters = cached_manga_posters(
+        entry.get("mal_id")
+        for entry in entries
+    )
+    results = []
+    for entry in entries:
+        manga_id = str(entry.get("mal_id") or "")
+        if not manga_id:
+            continue
+        images = entry.get("images") or {}
+        image = images.get("jpg") or images.get("webp") or {}
+        release_date = (entry.get("published") or {}).get("from")
+        resolved_image = (
+            posters.get(manga_id)
+            or image.get("large_image_url")
+            or image.get("image_url")
+            or settings.IMG_NONE
+        )
+        _cache_manga_poster(manga_id, resolved_image)
+        genres = []
+        for field in ("genres", "themes", "demographics"):
+            for value in entry.get(field) or []:
+                name = value.get("name")
+                if name and name not in genres:
+                    genres.append(name)
+        results.append(
+            {
+                "media_id": manga_id,
+                "source": Sources.MAL.value,
+                "source_url": (
+                    entry.get("url")
+                    or f"https://myanimelist.net/manga/{manga_id}"
+                ),
+                "media_type": MediaTypes.MANGA.value,
+                "title": entry.get("title") or "",
+                "display_title": entry.get("title_english") or None,
+                "image": resolved_image,
+                "release_date": release_date,
+                "series_format": entry.get("type"),
+                "max_progress": entry.get("chapters"),
+                "synopsis": entry.get("synopsis"),
+                "genres": genres,
+                "score": entry.get("score"),
+                "score_count": entry.get("scored_by") or 0,
+                "member_count": entry.get("members"),
+                "details": {
+                    "format": entry.get("type"),
+                    "start_date": release_date,
+                    "number_of_chapters": entry.get("chapters"),
+                    "number_of_volumes": entry.get("volumes"),
+                },
+            },
+        )
+    return results
+
+
 def _jikan_studio_anime_params(
     studio_id,
     *,
@@ -1925,6 +2319,9 @@ def _parse_mal_studio_page(
             "websites": websites,
         },
         "anime": anime,
+        "catalog_complete": soup.select_one(
+            'a[rel~="next"], .pagination a.next, .pagination .link.next',
+        ) is None,
     }
 
 
@@ -2037,31 +2434,7 @@ def _mal_studio_page_anime_page(
     direction,
     filters,
 ):
-    identity = cached_studio_identity(studio_id) or {}
-    data = _mal_studio_page_data(studio_id, identity)
-    genre_map = {
-        str(genre["id"]): genre["name"]
-        for genre in _jikan_anime_genres()
-    }
-    requested_genres = [
-        *(filters.get("genres") or []),
-        *(filters.get("excluded_genres") or []),
-    ]
-    if requested_genres and not genre_map:
-        raise ValueError("MAL anime genre mapping is unavailable")
-
-    anime = []
-    for raw_item in data["anime"]:
-        item = {
-            **raw_item,
-            "genres": [
-                genre_map[genre_id]
-                for genre_id in raw_item.get("genre_ids") or []
-                if genre_id in genre_map
-            ],
-        }
-        if _studio_anime_matches(item, filters):
-            anime.append(item)
+    anime = _mal_studio_anime_catalog(studio_id, filters)
 
     value_key = {
         "popularity": lambda item: item.get("member_count"),
@@ -2089,6 +2462,37 @@ def _mal_studio_page_anime_page(
     }
 
 
+def _mal_studio_anime_catalog(studio_id, filters):
+    identity = cached_studio_identity(studio_id) or {}
+    data = _mal_studio_page_data(studio_id, identity)
+    if data.get("catalog_complete") is False:
+        raise ValueError("MAL studio page did not contain the full catalog")
+    genre_map = {
+        str(genre["id"]): genre["name"]
+        for genre in _jikan_anime_genres()
+    }
+    requested_genres = [
+        *(filters.get("genres") or []),
+        *(filters.get("excluded_genres") or []),
+    ]
+    if requested_genres and not genre_map:
+        raise ValueError("MAL anime genre mapping is unavailable")
+
+    anime = []
+    for raw_item in data["anime"]:
+        item = {
+            **raw_item,
+            "genres": [
+                genre_map[genre_id]
+                for genre_id in raw_item.get("genre_ids") or []
+                if genre_id in genre_map
+            ],
+        }
+        if _studio_anime_matches(item, filters):
+            anime.append(item)
+    return anime
+
+
 def _mal_large_image_url(url):
     if not url or "cdn.myanimelist.net/images/anime/" not in url:
         return url
@@ -2101,8 +2505,16 @@ def _mal_large_image_url(url):
 
 
 def _jikan_anime_genres(*, include_all=False):
+    return _jikan_media_genres(MediaTypes.ANIME.value, include_all=include_all)
+
+
+def _jikan_manga_genres(*, include_all=False):
+    return _jikan_media_genres(MediaTypes.MANGA.value, include_all=include_all)
+
+
+def _jikan_media_genres(media_type, *, include_all=False):
     scope = "all" if include_all else "genres"
-    prefix = f"mal:{STUDIO_CACHE_VERSION}:anime-genres:{scope}"
+    prefix = f"mal:{STUDIO_CACHE_VERSION}:{media_type}-genres:{scope}"
     fresh_key = f"{prefix}:fresh"
     stale_key = f"{prefix}:stale"
     failure_key = f"{prefix}:failure"
@@ -2118,7 +2530,7 @@ def _jikan_anime_genres(*, include_all=False):
         response = services.api_request(
             Sources.MAL.value,
             "GET",
-            f"{jikan_base_url}/genres/anime",
+            f"{jikan_base_url}/genres/{media_type}",
             params={} if include_all else {"filter": "genres"},
             timeout=STUDIO_REQUEST_TIMEOUT,
             retry_rate_limits=False,
@@ -2408,6 +2820,7 @@ def person_page_by_name(
     *,
     timeout=1,
     request_session=None,
+    strict=False,
 ):
     """Find the matching MAL person and return their full Jikan profile."""
     if not str(name or "").strip():
@@ -2443,13 +2856,30 @@ def person_page_by_name(
     if not candidates:
         return None
     birthday = str(birth_date or "")[:10]
-    match = max(
-        candidates,
-        key=lambda candidate: (
-            bool(birthday and str(candidate.get("birthday") or "")[:10] == birthday),
-            candidate.get("favorites") or 0,
-        ),
-    )
+    if strict:
+        strict_matches = (
+            [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("birthday") or "")[:10] == birthday
+            ]
+            if birthday
+            else candidates
+        )
+        if len(strict_matches) != 1:
+            return None
+        match = strict_matches[0]
+    else:
+        match = max(
+            candidates,
+            key=lambda candidate: (
+                bool(
+                    birthday
+                    and str(candidate.get("birthday") or "")[:10] == birthday
+                ),
+                candidate.get("favorites") or 0,
+            ),
+        )
     person_id = match.get("mal_id")
     return (
         person_page(
@@ -2799,6 +3229,9 @@ def get_related(related_medias, media_type):
         if media_type == MediaTypes.ANIME.value:
             for result in results:
                 _cache_anime_poster(result["media_id"], result["image"])
+        elif media_type == MediaTypes.MANGA.value:
+            for result in results:
+                _cache_manga_poster(result["media_id"], result["image"])
         return results
     return []
 

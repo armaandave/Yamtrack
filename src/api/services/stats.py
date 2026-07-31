@@ -30,9 +30,19 @@ from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
 from api.serializers.common import media_summary_from_item
+from api.services import completion as completion_service
 from app import config, exposure
-from app.models import DiaryEntry, Item, ItemFilterFacet, MediaLike, MediaTypes, Status
+from app.models import (
+    DiaryEntry,
+    Item,
+    ItemFilterFacet,
+    MediaLike,
+    MediaSeries,
+    MediaTypes,
+    Status,
+)
 from app.templatetags import app_tags
+from lists.models import CustomList
 from social.models import Follow, FollowStatus
 
 TV_DIARY_TYPES = [
@@ -58,6 +68,7 @@ SINGLE_WEIGHT_MEDIA_TYPES = {
 TOP_LEVEL_MEDIA_LIMIT = 12
 MEDIA_TYPE_MEDIA_LIMIT = 6
 FACET_LIMIT = 10
+PROGRESS_COLLECTION_LIMIT = 25
 
 
 def _primary_media_types():
@@ -169,6 +180,10 @@ def build_stats_payload(*, user, viewer, request, stats_range):
         "current_streak_days": activity["current_streak_days"],
         "longest_streak_days": activity["longest_streak_days"],
     }
+    overview["completion"] = completion_service.completion_payload(
+        overview["completed_count"],
+        overview["tracked_count"],
+    )
     if lifetime_book_reads or tracking_by_type[MediaTypes.BOOK.value]["tracked_count"]:
         overview["book_read_count"] = lifetime_book_reads
 
@@ -180,6 +195,10 @@ def build_stats_payload(*, user, viewer, request, stats_range):
             "media_type": media_type,
             "tracked_count": tracking_values["tracked_count"],
             "completed_count": tracking_values["completed_count"],
+            "completion": completion_service.completion_payload(
+                tracking_values["completed_count"],
+                tracking_values["tracked_count"],
+            ),
             **diary_values,
             "liked_count": likes_by_type[media_type],
             "statuses": tracking_values["statuses"],
@@ -197,6 +216,8 @@ def build_stats_payload(*, user, viewer, request, stats_range):
             media_payload["read_count"] = lifetime_book_reads
         media_types.append(media_payload)
 
+    list_progress = _list_progress(user=user, viewer=viewer, request=request)
+    series_progress = _series_progress(user=user, request=request)
     return {
         "schema_version": 1,
         "range": stats_range.payload(),
@@ -210,7 +231,122 @@ def build_stats_payload(*, user, viewer, request, stats_range):
         "top_genres": facets[ItemFilterFacet.FacetType.GENRE],
         "top_languages": facets[ItemFilterFacet.FacetType.LANGUAGE],
         "metadata_coverage": coverage,
+        "list_progress": list_progress,
+        "series_progress": series_progress,
     }
+
+
+def _list_progress(*, user, viewer, request):
+    """Return completion for visible owned and featured media lists."""
+    lists = (
+        CustomList.objects.filter(list_type=CustomList.ListType.MEDIA)
+        .filter(
+            Q(owner=user)
+            | Q(
+                is_featured=True,
+                visibility=CustomList.Visibility.PUBLIC,
+            ),
+        )
+        .select_related("owner")
+        .prefetch_related("items")
+        .distinct()
+    )
+    if viewer != user:
+        lists = lists.exclude(
+            owner=user,
+            visibility=CustomList.Visibility.PRIVATE,
+        ).exclude(
+            owner=user,
+            visibility=CustomList.Visibility.UNLISTED,
+        )
+
+    progress = []
+    for custom_list in lists:
+        items = [
+            item
+            for item in custom_list.items.all()
+            if item.media_type in exposure.media_types()
+        ]
+        completion = completion_service.completion_for_items(user, items)
+        if not completion or completion["total_count"] == 0:
+            continue
+        media_types = {item.media_type for item in items}
+        posters = []
+        for item in items[:3]:
+            summary = media_summary_from_item(
+                item,
+                request=request,
+                user=user,
+                include_user_state=False,
+            )
+            poster = summary.get("custom_poster_url") or summary.get("poster_url")
+            if poster:
+                posters.append(poster)
+        progress.append({
+            "id": custom_list.id,
+            "name": custom_list.name,
+            "media_type": (
+                next(iter(media_types))
+                if len(media_types) == 1
+                else None
+            ),
+            "poster_urls": posters,
+            "completion": completion,
+        })
+    return _sorted_progress(progress)[:PROGRESS_COLLECTION_LIMIT]
+
+
+def _series_progress(*, user, request):
+    """Return completion for persisted series touched by the stats subject."""
+    tracked_ids = completion_service.tracked_item_ids(user)
+    if not tracked_ids:
+        return []
+    series_rows = (
+        MediaSeries.objects.filter(items__id__in=tracked_ids)
+        .prefetch_related("memberships__item")
+        .distinct()
+    )
+    progress = []
+    for series in series_rows:
+        memberships = list(series.memberships.all())
+        items = [membership.item for membership in memberships]
+        completion = completion_service.completion_for_items(user, items)
+        if not completion or completion["total_count"] == 0:
+            continue
+        posters = []
+        for item in items[:3]:
+            summary = media_summary_from_item(
+                item,
+                request=request,
+                user=user,
+                include_user_state=False,
+            )
+            poster = summary.get("custom_poster_url") or summary.get("poster_url")
+            if poster:
+                posters.append(poster)
+        progress.append({
+            "id": series.series_id,
+            "source": series.source,
+            "media_type": series.media_type,
+            "name": series.name,
+            "item_count": completion["total_count"],
+            "poster_urls": posters,
+            "completion": completion,
+        })
+    return _sorted_progress(progress)[:PROGRESS_COLLECTION_LIMIT]
+
+
+def _sorted_progress(progress):
+    return sorted(
+        progress,
+        key=lambda value: (
+            -(
+                value["completion"]["completed_count"]
+                / value["completion"]["total_count"]
+            ),
+            value["name"].casefold(),
+        ),
+    )
 
 
 def legacy_score_distribution(native_payload):

@@ -114,6 +114,7 @@ final class ListComposerViewModel {
     private var serverItemsByRefID: [String: MediaSummary]
     private var serverPeopleByEntryID: [Int: PersonListEntry]
     private var needsReconciliation = false
+    private var nextTemporaryPersonEntryID = -1
 
     init(
         mode: ListComposerMode,
@@ -253,10 +254,37 @@ final class ListComposerViewModel {
         clearFailure()
     }
 
+    func contains(_ person: PersonSearchResult) -> Bool {
+        draft.people.contains { $0.ref == person.ref }
+    }
+
+    func toggleSelection(_ person: PersonSearchResult) {
+        if let index = draft.people.firstIndex(where: { $0.ref == person.ref }) {
+            draft.people.remove(at: index)
+        } else {
+            draft.people.append(
+                PersonListEntry(
+                    entryId: nextTemporaryPersonEntryID,
+                    personId: person.ref.id,
+                    source: person.ref.source,
+                    name: person.name,
+                    profileUrl: person.profileUrl,
+                    knownForDepartment: person.knownForDepartment,
+                    position: nil,
+                    dateAdded: ""
+                )
+            )
+            nextTemporaryPersonEntryID -= 1
+        }
+        removedItem = nil
+        removedPerson = nil
+        clearFailure()
+    }
+
     func undoPersonRemoval() {
         guard let removedPerson else { return }
         let index = min(removedPerson.index, draft.people.endIndex)
-        guard !draft.people.contains(where: { $0.entryId == removedPerson.person.entryId }) else {
+        guard !draft.people.contains(where: { $0.ref == removedPerson.person.ref }) else {
             self.removedPerson = nil
             return
         }
@@ -407,8 +435,31 @@ final class ListComposerViewModel {
     }
 
     private func savePeopleEntries(listID: Int) async -> Bool {
-        let desiredEntryIDs = Set(draft.people.map(\.entryId))
-        let removals = serverPeopleByEntryID.values.filter { !desiredEntryIDs.contains($0.entryId) }
+        let savedPeopleByRef = peopleByRef(serverPeopleByEntryID.values)
+        let additions = draft.people.filter { savedPeopleByRef[$0.ref] == nil }
+        var addFailures: [String] = []
+        for (offset, person) in additions.enumerated() {
+            phase = .adding(current: offset + 1, total: additions.count)
+            do {
+                let savedPerson = try await listRepository.addPerson(listId: listID, ref: person.ref)
+                serverPeopleByEntryID[savedPerson.entryId] = savedPerson
+                replaceDraftPerson(selectedRef: person.ref, with: savedPerson)
+                CustomListChange.post(listId: listID, listType: .people)
+            } catch {
+                addFailures.append(person.name)
+                handleUnauthorized(error)
+            }
+        }
+        if !addFailures.isEmpty {
+            fail(
+                message: "Some people could not be added. Your list was kept so you can retry.",
+                itemTitles: addFailures
+            )
+            return false
+        }
+
+        let desiredRefs = Set(draft.people.map(\.ref))
+        let removals = serverPeopleByEntryID.values.filter { !desiredRefs.contains($0.ref) }
         var removeFailures: [String] = []
         for (offset, person) in removals.enumerated() {
             phase = .removing(current: offset + 1, total: removals.count)
@@ -429,8 +480,9 @@ final class ListComposerViewModel {
             return false
         }
 
-        let entryIDs = draft.people.map(\.entryId)
-        guard entryIDs.allSatisfy({ serverPeopleByEntryID[$0] != nil }) else {
+        let currentPeopleByRef = peopleByRef(serverPeopleByEntryID.values)
+        let entryIDs = draft.people.compactMap { currentPeopleByRef[$0.ref]?.entryId }
+        guard entryIDs.count == draft.people.count else {
             fail(message: "Spine could not determine the saved people order. Retry to reconcile the list.")
             return false
         }
@@ -486,12 +538,32 @@ final class ListComposerViewModel {
         } while page != nil
 
         serverPeopleByEntryID = Dictionary(uniqueKeysWithValues: people.map { ($0.entryId, $0) })
-        draft.people = draft.people.compactMap { serverPeopleByEntryID[$0.entryId] }
+        let serverPeopleByRef = peopleByRef(people)
+        draft.people = draft.people.map { serverPeopleByRef[$0.ref] ?? $0 }
     }
 
     private func replaceDraftItem(_ savedItem: MediaSummary) {
         guard let index = draft.items.firstIndex(where: { $0.ref.id == savedItem.ref.id }) else { return }
         draft.items[index] = savedItem
+    }
+
+    private func replaceDraftPerson(
+        selectedRef: PersonRef,
+        with savedPerson: PersonListEntry
+    ) {
+        guard let index = draft.people.firstIndex(where: { $0.ref == selectedRef }) else { return }
+        if draft.people.indices.contains(where: {
+            $0 != index && draft.people[$0].ref == savedPerson.ref
+        }) {
+            draft.people.remove(at: index)
+        } else {
+            draft.people[index] = savedPerson
+        }
+    }
+
+    private func peopleByRef<S: Sequence>(_ people: S) -> [PersonRef: PersonListEntry]
+    where S.Element == PersonListEntry {
+        Dictionary(people.map { ($0.ref, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     private func fail(message: String, itemTitles: [String] = []) {

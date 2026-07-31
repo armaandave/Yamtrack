@@ -181,6 +181,62 @@ class MALStudioProviderTests(TestCase):
         jikan_mock.assert_called_once()
         mal_page_mock.assert_called_once()
 
+    def test_completion_catalog_returns_and_caches_all_studio_anime(self):
+        self.cache_identity(studio_id="4", name="Bones", seed_id="5114")
+
+        with (
+            patch(
+                "app.providers.mal.services.session.get",
+                return_value=self.mal_page_response(),
+            ) as mal_page_mock,
+            patch(
+                "app.providers.mal._jikan_anime_genres",
+                return_value=[{"id": 1, "name": "Action"}],
+            ),
+        ):
+            first = mal.studio_anime_completion_catalog(
+                "4",
+                filters={"genres": ["Action"]},
+            )
+            second = mal.studio_anime_completion_catalog(
+                "4",
+                filters={"genres": ["Action"]},
+            )
+
+        self.assertTrue(first["complete"])
+        self.assertEqual(first, second)
+        self.assertEqual(
+            [item["media_id"] for item in first["results"]],
+            ["10", "20", "30"],
+        )
+        mal_page_mock.assert_called_once()
+
+    @patch(
+        "app.providers.mal._jikan_anime_genres",
+        return_value=[{"id": 1, "name": "Action"}],
+    )
+    def test_completion_catalog_rejects_paginated_mal_page(
+        self,
+        _genres_mock,
+    ):
+        data = mal._parse_mal_studio_page(  # noqa: SLF001
+            self.STUDIO_HTML.replace(
+                "</body>",
+                '<div class="pagination"><a rel="next" href="?page=2">Next</a></div></body>',
+            ),
+            4,
+            identity={"name": "Bones"},
+        )
+
+        with patch(
+            "app.providers.mal._mal_studio_page_data",
+            return_value=data,
+        ):
+            result = mal.studio_anime_completion_catalog("4")
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["results"], [])
+
     @patch(
         "app.providers.mal._jikan_anime_genres",
         return_value=[{"id": 1, "name": "Action"}],

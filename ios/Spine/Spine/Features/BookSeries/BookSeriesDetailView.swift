@@ -113,6 +113,12 @@ struct SeriesDetailView: View {
                     await viewModel.load()
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { notification in
+                guard let changedRef = notification.userInfo?["ref"] as? MediaRef,
+                      viewModel.detail?.items.contains(where: { $0.ref.id == changedRef.id }) == true
+                else { return }
+                Task { await viewModel.load() }
+            }
         }
         .background(Color.black)
         .offset(x: edgeDragOffset)
@@ -157,6 +163,19 @@ struct SeriesDetailView: View {
             )
         } else if let detail = viewModel.detail {
             ScrollView {
+                HStack(spacing: 12) {
+                    Text(itemCountTitle(for: detail))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.56))
+
+                    Spacer()
+
+                    if let completion = detail.completion, completion.isVisible {
+                        SWCompletionProgressButton(progress: completion)
+                    }
+                }
+                .padding(.horizontal, 16)
+
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
                     spacing: 10
@@ -188,9 +207,20 @@ struct SeriesDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.top, 14)
+                .padding(.top, 4)
             }
         }
+    }
+
+    private func itemCountTitle(for detail: SeriesDetail) -> String {
+        let count = detail.itemCount
+        let noun = switch detail.mediaType {
+        case "movie": count == 1 ? "movie" : "movies"
+        case "game": count == 1 ? "game" : "games"
+        case "anime": "anime"
+        default: count == 1 ? "book" : "books"
+        }
+        return "\(count.formatted()) \(noun)"
     }
 
     private func emptyTitle(for mediaType: String) -> String {

@@ -17,6 +17,7 @@ final class PersonDetailTests: XCTestCase {
           "popularity": 42.7,
           "credits_page": 1,
           "credits_next_page": 2,
+          "credits_complete": false,
           "credits": {
             "cast": [
               {
@@ -50,6 +51,7 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.knownForDepartment, "Acting")
         XCTAssertEqual(detail.creditsPage, 1)
         XCTAssertEqual(detail.creditsNextPage, 2)
+        XCTAssertEqual(detail.creditsComplete, false)
         XCTAssertEqual(detail.filmography.map(\.title), ["Fight Club"])
     }
 
@@ -111,6 +113,7 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertEqual(detail.filmography.first?.title, "I Am Not a Serial Killer")
         XCTAssertEqual(detail.bookSeries.first?.ref, SeriesRef(source: "hardcover", id: "1185"))
         XCTAssertEqual(detail.bookSeries.first?.posterUrls.count, 2)
+        XCTAssertNil(detail.creditsComplete)
     }
 
     func testBookSeriesDetailDecodesPrimaryBookOrder() throws {
@@ -433,18 +436,35 @@ final class PersonDetailTests: XCTestCase {
     }
 
     @MainActor
-    func testPersonDetailViewModelLoadsNextCumulativeCreditPage() async {
+    func testPersonDetailViewModelMergesNextCreditPageAndCompletion() async {
         let ref = PersonRef(source: "anilist", id: "950")
         let repository = ScriptedPeopleRepository(results: [
             .success(personDetail(
-                filmography: [mediaSummary(id: "1", title: "First")],
+                filmography: [
+                    mediaSummary(
+                        id: "1",
+                        title: "First",
+                        creditRoles: ["Actor"],
+                        isCompleted: true
+                    ),
+                ],
                 creditsPage: 1,
                 creditsNextPage: 2
             )),
             .success(personDetail(
                 filmography: [
-                    mediaSummary(id: "1", title: "First"),
-                    mediaSummary(id: "2", title: "Second"),
+                    mediaSummary(
+                        id: "2",
+                        title: "Second",
+                        creditRoles: ["Actor"]
+                    ),
+                    mediaSummary(
+                        id: "3",
+                        title: "Third",
+                        mediaType: "tv",
+                        creditRoles: ["Director"],
+                        isCompleted: true
+                    ),
                 ],
                 creditsPage: 2
             )),
@@ -459,9 +479,195 @@ final class PersonDetailTests: XCTestCase {
         await viewModel.loadNextPage()
 
         XCTAssertEqual(repository.creditPages, [1, 2])
-        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second", "Third"])
+        XCTAssertEqual(viewModel.detail?.completion?.countText, "2 of 3")
+        XCTAssertEqual(viewModel.detail?.mediaTypeCompletions?["movie"]?.countText, "1 of 2")
+        XCTAssertEqual(viewModel.detail?.mediaTypeCompletions?["tv"]?.countText, "1 of 1")
+        XCTAssertEqual(
+            viewModel.detail?.roleCompletions?["movie"]?["Actor"]?.countText,
+            "1 of 2"
+        )
+        XCTAssertEqual(
+            viewModel.detail?.roleCompletions?["tv"]?["Director"]?.countText,
+            "1 of 1"
+        )
         XCTAssertFalse(viewModel.canLoadMore)
         XCTAssertFalse(viewModel.isLoadingNextPage)
+    }
+
+    @MainActor
+    func testPersonDetailViewModelDeduplicatesCumulativeCreditPage() async {
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(
+                        id: "1",
+                        title: "First",
+                        creditRoles: ["Actor"],
+                        isCompleted: true
+                    ),
+                ],
+                creditsPage: 1,
+                creditsNextPage: 2
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(
+                        id: "1",
+                        title: "First Again",
+                        creditRoles: ["Actor"],
+                        isCompleted: true
+                    ),
+                    mediaSummary(
+                        id: "2",
+                        title: "Second",
+                        creditRoles: ["Actor"]
+                    ),
+                ],
+                creditsPage: 2
+            )),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "anilist", id: "950"),
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertEqual(viewModel.detail?.completion?.countText, "1 of 2")
+        XCTAssertEqual(
+            viewModel.detail?.roleCompletions?["movie"]?["Actor"]?.countText,
+            "1 of 2"
+        )
+    }
+
+    @MainActor
+    func testPersonDetailViewModelHidesSynthesizedCompletionUntilFinalCreditPage() async {
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "1", title: "First", isCompleted: true),
+                ],
+                creditsPage: 1,
+                creditsNextPage: 2
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "2", title: "Second"),
+                ],
+                creditsPage: 2,
+                creditsNextPage: 3
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "3", title: "Third", isCompleted: true),
+                ],
+                creditsPage: 3
+            )),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "anilist", id: "950"),
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertNil(viewModel.detail?.completion)
+        XCTAssertNil(viewModel.detail?.mediaTypeCompletions)
+        XCTAssertNil(viewModel.detail?.roleCompletions)
+
+        await viewModel.loadNextPage()
+
+        XCTAssertEqual(viewModel.detail?.completion?.countText, "2 of 3")
+    }
+
+    @MainActor
+    func testPersonDetailViewModelDoesNotSynthesizeCompletionForIncompleteCredits() async {
+        let repository = ScriptedPeopleRepository(results: [
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "1", title: "First", isCompleted: true),
+                ],
+                creditsPage: 1,
+                creditsNextPage: 2
+            )),
+            .success(personDetail(
+                filmography: [
+                    mediaSummary(id: "2", title: "Second"),
+                ],
+                creditsPage: 2,
+                creditsComplete: false
+            )),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "anilist", id: "950"),
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+
+        XCTAssertNil(viewModel.detail?.completion)
+        XCTAssertNil(viewModel.detail?.mediaTypeCompletions)
+        XCTAssertNil(viewModel.detail?.roleCompletions)
+        XCTAssertEqual(viewModel.detail?.creditsComplete, false)
+    }
+
+    @MainActor
+    func testPersonDetailViewModelReloadPreservesLoadedPagesAndRefreshesCompletion() async {
+        let pageOne = { (completed: Bool) in
+            self.personDetail(
+                filmography: [
+                    self.mediaSummary(
+                        id: "1",
+                        title: "First",
+                        creditRoles: ["Actor"],
+                        isCompleted: completed
+                    ),
+                ],
+                creditsPage: 1,
+                creditsNextPage: 2
+            )
+        }
+        let pageTwo = { (completed: Bool) in
+            self.personDetail(
+                filmography: [
+                    self.mediaSummary(
+                        id: "2",
+                        title: "Second",
+                        creditRoles: ["Actor"],
+                        isCompleted: completed
+                    ),
+                ],
+                creditsPage: 2
+            )
+        }
+        let repository = ScriptedPeopleRepository(results: [
+            .success(pageOne(false)),
+            .success(pageTwo(true)),
+            .success(pageOne(true)),
+            .success(pageTwo(true)),
+        ])
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "anilist", id: "950"),
+            peopleRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+        await viewModel.loadNextPage()
+        await viewModel.reloadLoadedPages()
+
+        XCTAssertEqual(repository.creditPages, [1, 2, 1, 2])
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertEqual(viewModel.detail?.completion?.countText, "2 of 2")
     }
 
     @MainActor
@@ -593,6 +799,61 @@ final class PersonDetailTests: XCTestCase {
     }
 
     @MainActor
+    func testPersonDetailViewModelDoesNotRegressWhenStalePollFinishesAfterNextPage() async throws {
+        let pending = PersonRatingPreparation(
+            ratingSource: "imdb",
+            state: .pending,
+            total: 2,
+            ready: 1,
+            unavailable: 0,
+            failed: 0
+        )
+        let ready = PersonRatingPreparation(
+            ratingSource: "imdb",
+            state: .ready,
+            total: 2,
+            ready: 2,
+            unavailable: 0,
+            failed: 0
+        )
+        let pageOne = personDetail(
+            filmography: [mediaSummary(id: "1", title: "First")],
+            ratingPreparation: pending,
+            creditsPage: 1,
+            creditsNextPage: 2
+        )
+        let pageTwo = personDetail(
+            filmography: [mediaSummary(id: "2", title: "Second")],
+            ratingPreparation: ready,
+            creditsPage: 2
+        )
+        let repository = PollingRacePeopleRepository(
+            initial: pageOne,
+            stalePageOne: pageOne,
+            pageTwo: pageTwo
+        )
+        let viewModel = PersonDetailViewModel(
+            ref: PersonRef(source: "anilist", id: "950"),
+            peopleRepository: repository,
+            onUnauthorized: {},
+            pollInterval: .milliseconds(1),
+            maxPollAttempts: 4
+        )
+        viewModel.filter.sort = MediaFilterSort(rawValue: "rating:imdb")
+
+        await viewModel.load()
+        for _ in 0..<30 where repository.creditPages.count < 2 {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await viewModel.loadNextPage()
+        try await Task.sleep(for: .milliseconds(60))
+
+        XCTAssertEqual(viewModel.detail?.creditsPage, 2)
+        XCTAssertEqual(viewModel.filmography.map(\.title), ["First", "Second"])
+        XCTAssertFalse(viewModel.canLoadMore)
+    }
+
+    @MainActor
     func testPersonDetailViewModelCancelsPreparationPolling() async throws {
         let pending = PersonRatingPreparation(
             ratingSource: "imdb",
@@ -650,7 +911,8 @@ final class PersonDetailTests: XCTestCase {
         filterOptions: MediaFilterOptionsResponse? = nil,
         ratingPreparation: PersonRatingPreparation? = nil,
         creditsPage: Int? = nil,
-        creditsNextPage: Int? = nil
+        creditsNextPage: Int? = nil,
+        creditsComplete: Bool? = true
     ) -> PersonDetail {
         PersonDetail(
             id: "819",
@@ -667,6 +929,7 @@ final class PersonDetailTests: XCTestCase {
             ratingPreparation: ratingPreparation,
             creditsPage: creditsPage,
             creditsNextPage: creditsNextPage,
+            creditsComplete: creditsComplete,
             credits: PersonCredits(cast: filmography)
         )
     }
@@ -677,7 +940,8 @@ final class PersonDetailTests: XCTestCase {
         source: String = "tmdb",
         mediaType: String = "movie",
         genres: [String] = [],
-        creditRoles: [String] = []
+        creditRoles: [String] = [],
+        isCompleted: Bool = false
     ) -> MediaSummary {
         MediaSummary(
             ref: MediaRef(
@@ -692,7 +956,10 @@ final class PersonDetailTests: XCTestCase {
             posterUrl: "https://example.com/\(id).jpg",
             genres: genres,
             creditRoles: creditRoles,
-            defaultSource: source
+            defaultSource: source,
+            userState: isCompleted
+                ? UserMediaState(isTracked: true, status: "Completed")
+                : nil
         )
     }
 }
@@ -709,6 +976,10 @@ private final class ScriptedPeopleRepository: PeopleRepository {
 
     init(results: [Result<PersonDetail, Error>]) {
         self.results = results
+    }
+
+    func search(query: String) async throws -> PersonSearchResponse {
+        PersonSearchResponse(count: 0, results: [])
     }
 
     func detail(ref: PersonRef) async throws -> PersonDetail {
@@ -740,6 +1011,10 @@ private final class DelayedPersonRepository: PeopleRepository {
         self.fast = fast
     }
 
+    func search(query: String) async throws -> PersonSearchResponse {
+        PersonSearchResponse(count: 0, results: [])
+    }
+
     func detail(ref: PersonRef) async throws -> PersonDetail {
         fast
     }
@@ -751,5 +1026,42 @@ private final class DelayedPersonRepository: PeopleRepository {
         }
         try await Task.sleep(for: .milliseconds(1))
         return fast
+    }
+}
+
+private final class PollingRacePeopleRepository: PeopleRepository {
+    let initial: PersonDetail
+    let stalePageOne: PersonDetail
+    let pageTwo: PersonDetail
+    var creditPages: [Int?] = []
+
+    init(initial: PersonDetail, stalePageOne: PersonDetail, pageTwo: PersonDetail) {
+        self.initial = initial
+        self.stalePageOne = stalePageOne
+        self.pageTwo = pageTwo
+    }
+
+    func search(query: String) async throws -> PersonSearchResponse {
+        PersonSearchResponse(count: 0, results: [])
+    }
+
+    func detail(ref: PersonRef) async throws -> PersonDetail {
+        initial
+    }
+
+    func detail(
+        ref: PersonRef,
+        filter: MediaFilterState,
+        creditsPage: Int?
+    ) async throws -> PersonDetail {
+        creditPages.append(creditsPage)
+        if creditPages.count == 1 {
+            return initial
+        }
+        if creditsPage == 1 {
+            try await Task.sleep(for: .milliseconds(35))
+            return stalePageOne
+        }
+        return pageTwo
     }
 }

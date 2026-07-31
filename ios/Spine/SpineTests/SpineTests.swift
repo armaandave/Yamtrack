@@ -553,7 +553,20 @@ final class SpineTests: XCTestCase {
     func testCompanyCatalogPageAllowsNullOrMissingCount() throws {
         let withNull = try JSONDecoder.api.decode(
             CompanyCatalogPage.self,
-            from: Data(#"{"count":null,"next":null,"previous":null,"results":[]}"#.utf8)
+            from: Data(
+                """
+                {
+                  "count": null,
+                  "next": null,
+                  "previous": null,
+                  "results": [],
+                  "completion": {
+                    "completed_count": 3,
+                    "total_count": 6
+                  }
+                }
+                """.utf8
+            )
         )
         let withoutCount = try JSONDecoder.api.decode(
             CompanyCatalogPage.self,
@@ -562,6 +575,8 @@ final class SpineTests: XCTestCase {
 
         XCTAssertNil(withNull.count)
         XCTAssertNil(withoutCount.count)
+        XCTAssertEqual(withNull.completion?.countText, "3 of 6")
+        XCTAssertNil(withoutCount.completion)
     }
 
     @MainActor
@@ -1225,6 +1240,57 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(viewModel.mediaByRole[.published]?.map(\.title), ["Fresh published"])
         let freshRequests = repository.requests.filter { $0.filter.sort == .releaseDate }
         XCTAssertEqual(Set(freshRequests.map(\.role)), Set([.developed, .published]))
+    }
+
+    @MainActor
+    func testCompanyViewModelUsesCatalogCompletion() async {
+        let repository = ScriptedCompanyRepository()
+        repository.nextPageURL = "https://spine.test/api/v1/companies/igdb/77/games/?page=2"
+        repository.catalogCompletion = CompletionProgress(
+            completedCount: 3,
+            totalCount: 6
+        )
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "igdb", companyId: "77"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+
+        await viewModel.load()
+
+        let detail = try? XCTUnwrap(viewModel.detail)
+        XCTAssertEqual(
+            detail.flatMap { viewModel.completion(for: .developed, in: $0) }?.countText,
+            "3 of 6"
+        )
+    }
+
+    @MainActor
+    func testCompanyViewModelClearsStaleCompletionUntilPagedRefreshFinishes() async {
+        let repository = ScriptedCompanyRepository()
+        repository.detailCatalogCompletion = CompletionProgress(completedCount: 3, totalCount: 6)
+        repository.catalogCompletion = CompletionProgress(completedCount: 3, totalCount: 6)
+        let viewModel = CompanyDetailViewModel(
+            ref: CompanyRef(source: "igdb", companyId: "77"),
+            companyRepository: repository,
+            onUnauthorized: {}
+        )
+        await viewModel.load()
+
+        repository.catalogCompletion = nil
+        repository.nextPageURL = "https://spine.test/api/v1/companies/igdb/77/games/?page=2"
+        viewModel.filter.status = "Completed"
+        await viewModel.applyFilter(to: [.developed])
+
+        let detail = try? XCTUnwrap(viewModel.detail)
+        XCTAssertNil(detail.flatMap { viewModel.completion(for: .developed, in: $0) })
+
+        await viewModel.loadMore(for: .developed)
+
+        XCTAssertEqual(
+            detail.flatMap { viewModel.completion(for: .developed, in: $0) }?.countText,
+            "0 of 1"
+        )
     }
 
     @MainActor
@@ -2011,6 +2077,39 @@ final class SpineTests: XCTestCase {
         XCTAssertEqual(query["sort"]!, "vote_count")
         XCTAssertNil(year)
         XCTAssertNil(platform)
+    }
+
+    func testMediaDiscoverRequestBuildsMangaGenreDetailPillRequests() {
+        for source in ["mal", "mangaupdates"] {
+            let ref = MediaRef(
+                itemId: nil,
+                source: source,
+                mediaType: "manga",
+                mediaId: source == "mal" ? "13" : "12345",
+                seasonNumber: nil,
+                episodeNumber: nil
+            )
+            let genre = MediaDiscoverRequest.detailPillRequest(
+                ref: ref,
+                filter: .genre("Drama")
+            )
+            let query = Dictionary(
+                uniqueKeysWithValues: (genre?.queryItems ?? []).map {
+                    ($0.name, $0.value)
+                }
+            )
+
+            XCTAssertEqual(genre?.mediaType, "manga")
+            XCTAssertEqual(genre?.source, "mal")
+            XCTAssertEqual(genre?.filter, .genre("Drama"))
+            XCTAssertEqual(genre?.title, "Drama · Manga")
+            XCTAssertEqual(query["media_type"]!, "manga")
+            XCTAssertEqual(query["source"]!, "mal")
+            XCTAssertEqual(query["genre"]!, "Drama")
+            XCTAssertEqual(query["sort"]!, "vote_count")
+            XCTAssertNil(MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .year("2001")))
+            XCTAssertNil(MediaDiscoverRequest.detailPillRequest(ref: ref, filter: .platform("Print")))
+        }
     }
 
     func testMediaDiscoverRequestBuildsMusicGenreDetailPillRequest() {
@@ -4145,12 +4244,15 @@ final class SpineTests: XCTestCase {
             if method == "GET", path.hasSuffix("/lists/9/") || path.hasSuffix("/lists/9") {
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 XCTAssertEqual(query.first { $0.name == "include_items" }?.value, "false")
+                XCTAssertNil(query.first { $0.name == "include_completion" })
                 return (
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     TestFixtures.customListDetailJSON(id: 9, name: "Watch").data(using: .utf8)!
                 )
             }
             if method == "GET", path.hasSuffix("/lists/featured/") || path.hasSuffix("/lists/featured") {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                XCTAssertNil(query.first { $0.name == "include_completion" })
                 return (
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     """
@@ -4163,6 +4265,7 @@ final class SpineTests: XCTestCase {
                 XCTAssertEqual(query.first { $0.name == "ref[source]" }?.value, "tmdb")
                 XCTAssertEqual(query.first { $0.name == "ref[media_type]" }?.value, "movie")
                 XCTAssertEqual(query.first { $0.name == "ref[media_id]" }?.value, "550")
+                XCTAssertNil(query.first { $0.name == "include_completion" })
                 return (
                     HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     #"{"count":0,"next":null,"previous":null,"results":[]}"#.data(using: .utf8)!
@@ -7207,6 +7310,8 @@ private final class ScriptedCompanyRepository: CompanyRepository {
     var nextPageURL: String?
     var profileDescription: String?
     var profileLogoURL: String?
+    var detailCatalogCompletion: CompletionProgress?
+    var catalogCompletion: CompletionProgress?
 
     func detail(ref: CompanyRef) async throws -> CompanyDetail {
         if profileFailuresRemaining > 0 {
@@ -7234,9 +7339,16 @@ private final class ScriptedCompanyRepository: CompanyRepository {
             catalogs: isAnime
                 ? CompanyCatalogCounts(studio: CompanyCatalogCount(count: nil))
                 : CompanyCatalogCounts(
-                    developed: CompanyCatalogCount(count: 2),
-                    published: CompanyCatalogCount(count: 2)
-                )
+                    developed: CompanyCatalogCount(
+                        count: 2,
+                        completion: detailCatalogCompletion
+                    ),
+                    published: CompanyCatalogCount(
+                        count: 2,
+                        completion: detailCatalogCompletion
+                    )
+                ),
+            completion: nil
         )
     }
 
@@ -7277,7 +7389,8 @@ private final class ScriptedCompanyRepository: CompanyRepository {
             count: 1,
             next: page == nil ? nextPageURL : nil,
             previous: nil,
-            results: [item]
+            results: [item],
+            completion: catalogCompletion
         )
     }
 }

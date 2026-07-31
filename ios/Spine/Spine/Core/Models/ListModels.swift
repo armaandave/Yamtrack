@@ -14,6 +14,7 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
     let knownForDepartment: String?
     let position: Int?
     let dateAdded: String
+    let completion: CompletionProgress?
 
     var id: Int {
         entryId
@@ -32,6 +33,42 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
         case knownForDepartment
         case position
         case dateAdded
+        case completion
+    }
+
+    init(
+        entryId: Int,
+        personId: String,
+        source: String,
+        name: String,
+        profileUrl: String?,
+        knownForDepartment: String?,
+        position: Int?,
+        dateAdded: String,
+        completion: CompletionProgress? = nil
+    ) {
+        self.entryId = entryId
+        self.personId = personId
+        self.source = source
+        self.name = name
+        self.profileUrl = profileUrl
+        self.knownForDepartment = knownForDepartment
+        self.position = position
+        self.dateAdded = dateAdded
+        self.completion = completion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entryId = try container.decode(Int.self, forKey: .entryId)
+        personId = try container.decode(String.self, forKey: .personId)
+        source = try container.decode(String.self, forKey: .source)
+        name = try container.decode(String.self, forKey: .name)
+        profileUrl = try container.decodeIfPresent(String.self, forKey: .profileUrl)
+        knownForDepartment = try container.decodeIfPresent(String.self, forKey: .knownForDepartment)
+        position = try container.decodeIfPresent(Int.self, forKey: .position)
+        dateAdded = try container.decode(String.self, forKey: .dateAdded)
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 
@@ -56,6 +93,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
     let entriesCount: Int
     let updatedAt: String?
     let likeCount: Int
+    let completion: CompletionProgress?
 
     init(
         id: Int,
@@ -77,7 +115,8 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         peopleCount: Int = 0,
         entriesCount: Int? = nil,
         updatedAt: String? = nil,
-        likeCount: Int
+        likeCount: Int,
+        completion: CompletionProgress? = nil
     ) {
         self.id = id
         self.name = name
@@ -99,6 +138,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         self.entriesCount = entriesCount ?? (listType == .people ? peopleCount : itemsCount)
         self.updatedAt = updatedAt
         self.likeCount = likeCount
+        self.completion = completion
     }
 
     enum CodingKeys: String, CodingKey {
@@ -122,6 +162,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         case entriesCount
         case updatedAt
         case likeCount
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -147,6 +188,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
             ?? itemsCount
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         likeCount = try container.decode(Int.self, forKey: .likeCount)
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 
@@ -168,6 +210,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
     let likeCount: Int
     let items: [MediaSummary]
     let people: [PersonListEntry]
+    let completion: CompletionProgress?
 
     init(
         id: Int,
@@ -186,7 +229,8 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         updatedAt: String? = nil,
         likeCount: Int,
         items: [MediaSummary],
-        people: [PersonListEntry] = []
+        people: [PersonListEntry] = [],
+        completion: CompletionProgress? = nil
     ) {
         self.id = id
         self.name = name
@@ -205,6 +249,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         self.likeCount = likeCount
         self.items = items
         self.people = people
+        self.completion = completion
     }
 
     enum CodingKeys: String, CodingKey {
@@ -225,6 +270,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         case likeCount
         case items
         case people
+        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -247,6 +293,7 @@ struct CustomListDetail: Codable, Identifiable, Hashable {
         likeCount = try container.decode(Int.self, forKey: .likeCount)
         items = try container.decodeIfPresent([MediaSummary].self, forKey: .items) ?? []
         people = try container.decodeIfPresent([PersonListEntry].self, forKey: .people) ?? []
+        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 

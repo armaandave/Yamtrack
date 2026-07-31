@@ -346,6 +346,7 @@ final class MediaDetailViewModel {
                     onUnauthorized()
                 }
             }
+            MediaStateChange.post(ref: detail.ref)
             return true
         } catch {
             quickActionErrorMessage = error.localizedDescription
@@ -1313,6 +1314,7 @@ private struct MediaDetailPageView: View {
                         initialMedia: detail.listSummary,
                         listRepository: listRepository,
                         mediaRepository: mediaRepository,
+                        peopleRepository: peopleRepository,
                         onUnauthorized: onUnauthorized
                     )
                 }
@@ -1579,8 +1581,25 @@ private struct MediaDetailPageView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { notification in
             guard let changedRef = notification.userInfo?["ref"] as? MediaRef,
-                  changedRef.id == ref.id else { return }
+                  let detail = viewModel.detail,
+                  completionMayHaveChanged(in: detail, for: changedRef)
+            else { return }
             Swift.Task<Void, Never> { await viewModel.load() }
+        }
+    }
+
+    private func completionMayHaveChanged(in detail: MediaDetail, for changedRef: MediaRef) -> Bool {
+        if changedRef.id == ref.id {
+            return true
+        }
+        if ["tv", "season"].contains(detail.ref.mediaType),
+           detail.ref.source == changedRef.source,
+           detail.ref.mediaId == changedRef.mediaId {
+            return true
+        }
+        return (detail.relatedSections ?? []).contains { section in
+            section.completion?.isVisible == true
+                && section.items.contains { $0.ref.id == changedRef.id }
         }
     }
 
@@ -2638,7 +2657,10 @@ private struct MediaDetailPageView: View {
                     }
                 )
                 if detail.ref.mediaType == "season" {
-                    EpisodesSection(episodes: detail.episodes ?? []) { episode in
+                    EpisodesSection(
+                        episodes: detail.episodes ?? [],
+                        completion: detail.completion
+                    ) { episode in
                         presentEpisode(episode, from: detail)
                     }
                 }
@@ -2790,7 +2812,10 @@ private struct MediaDetailPageView: View {
     }
 
     private func seasonsSection(_ detail: MediaDetail) -> some View {
-        SeasonsSection(seasons: detail.seasons ?? []) { season in
+        SeasonsSection(
+            seasons: detail.seasons ?? [],
+            completion: detail.completion
+        ) { season in
             presentedRef = MediaRef(
                 itemId: nil,
                 source: detail.ref.source,
@@ -6343,40 +6368,54 @@ private enum CreditTab {
 
 private struct SeasonsSection: View {
     let seasons: [SeasonSummary]
+    let completion: CompletionProgress?
     let onSelect: (SeasonSummary) -> Void
 
     var body: some View {
         if !seasons.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                SectionLabel(title: "Seasons")
+                HStack(spacing: 12) {
+                    SectionLabel(title: "Seasons")
+                    Spacer()
+                    if let completion, completion.isVisible {
+                        SWCompletionProgressButton(progress: completion)
+                    }
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(seasons) { season in
-                            Button {
-                                onSelect(season)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    MediaArtwork(
-                                        url: season.imageUrl,
-                                        title: season.title,
-                                        slot: .seasonCard,
-                                        mediaType: "season"
-                                    )
-                                    Text(season.title)
-                                        .font(.system(size: 12, weight: .heavy))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(2)
-                                    if let count = season.episodeCount {
-                                        Text("\(count) episodes")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.55))
-                                            .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Button {
+                                    onSelect(season)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        MediaArtwork(
+                                            url: season.imageUrl,
+                                            title: season.title,
+                                            slot: .seasonCard,
+                                            mediaType: "season"
+                                        )
+                                        Text(season.title)
+                                            .font(.system(size: 12, weight: .heavy))
+                                            .foregroundStyle(.white)
+                                            .lineLimit(2)
+                                        if let count = season.episodeCount {
+                                            Text("\(count) episodes")
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .foregroundStyle(.white.opacity(0.55))
+                                                .lineLimit(1)
+                                        }
                                     }
+                                    .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
                                 }
-                                .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Open \(season.title)")
+
+                                if let completion = season.completion, completion.isVisible {
+                                    SWCompletionProgressButton(progress: completion)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Open \(season.title)")
+                            .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
                         }
                     }
                 }
@@ -6387,11 +6426,18 @@ private struct SeasonsSection: View {
 
 private struct EpisodesSection: View {
     let episodes: [EpisodeSummary]
+    let completion: CompletionProgress?
     let onSelect: (EpisodeSummary) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionLabel(title: "Episodes")
+            HStack(spacing: 12) {
+                SectionLabel(title: "Episodes")
+                Spacer()
+                if let completion, completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                }
+            }
             if episodes.isEmpty {
                 ContentUnavailableView(
                     "No episodes available",
@@ -6654,22 +6700,32 @@ private struct RecommendationsSection: View {
     var body: some View {
         ForEach(sections.filter { !$0.items.isEmpty }) { section in
             VStack(alignment: .leading, spacing: 18) {
-                if (section.id == "series" || section.id == "collection"),
-                   let onSelectSection {
-                    Button {
-                        onSelectSection(section)
-                    } label: {
-                        HStack(spacing: 6) {
-                            SectionLabel(title: section.title)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 9, weight: .heavy))
-                                .foregroundStyle(.white.opacity(0.42))
+                HStack(spacing: 12) {
+                    if (section.id == "series" || section.id == "collection"),
+                       let onSelectSection {
+                        Button {
+                            onSelectSection(section)
+                        } label: {
+                            HStack(spacing: 6) {
+                                SectionLabel(title: section.title)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .heavy))
+                                    .foregroundStyle(.white.opacity(0.42))
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(section.title) series")
+                    } else {
+                        SectionLabel(title: section.title)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("View \(section.title) series")
-                } else {
-                    SectionLabel(title: section.title)
+
+                    Spacer()
+
+                    if Self.completionSectionIDs.contains(section.id),
+                       let completion = section.completion,
+                       completion.isVisible {
+                        SWCompletionProgressButton(progress: completion)
+                    }
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -6718,6 +6774,18 @@ private struct RecommendationsSection: View {
             }
         }
     }
+
+    private static let completionSectionIDs: Set<String> = [
+        "series",
+        "collection",
+        "relations",
+        "dlcs",
+        "expansions",
+        "standalone_expansions",
+        "remasters",
+        "remakes",
+        "expanded_games",
+    ]
 }
 
 private extension JSONValue {

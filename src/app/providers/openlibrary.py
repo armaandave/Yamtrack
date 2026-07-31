@@ -83,6 +83,42 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     return data
 
 
+def search_people(query, *, limit=10, timeout=None):
+    """Search Open Library authors and return normalized person references."""
+    try:
+        response = services.api_request(
+            Sources.OPENLIBRARY.value,
+            "GET",
+            "https://openlibrary.org/search/authors.json",
+            params={"q": query, "limit": limit},
+            headers=headers,
+            timeout=timeout,
+            retry_rate_limits=False,
+            request_session=services.person_search_session,
+        )
+    except requests.RequestException as error:
+        handle_error(error)
+
+    results = []
+    for author in response.get("docs") or []:
+        person_id = extract_openlibrary_id(author.get("key"))
+        if not person_id or not author.get("name"):
+            continue
+        photos = author.get("photos") or []
+        results.append({
+            "source": Sources.OPENLIBRARY.value,
+            "person_id": person_id,
+            "name": author["name"],
+            "profile_url": (
+                f"https://covers.openlibrary.org/a/id/{photos[0]}-M.jpg"
+                if photos
+                else None
+            ),
+            "known_for_department": "Author",
+        })
+    return results[:limit]
+
+
 def lookup_book_by_isbn(isbn):
     """Return the exact Open Library edition identified by an ISBN."""
     normalized = str(isbn or "").strip().upper()

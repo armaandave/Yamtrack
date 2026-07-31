@@ -3,13 +3,20 @@ from django.db.models import Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils.http import urlencode
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.exceptions import AllMediaSearchUnavailable, ListTypeMismatch
+from api.exceptions import (
+    AllMediaSearchUnavailable,
+    ListTypeMismatch,
+    PeopleSearchUnavailable,
+)
 from api.pagination import StandardResultsSetPagination
+from api.serializers.common import PersonCompletionResponseSerializer
+from api.services import completion as completion_service
 from api.services import diary as diary_service
 from api.services import filters as filter_service
 from api.services import media as media_service
@@ -95,6 +102,42 @@ class MediaSourcesView(APIView):
 
     def get(self, request):
         return Response(exposure.source_map())
+
+
+class PeopleSearchView(APIView):
+    """Search all supported provider-backed people."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [SearchRateThrottle]
+
+    def get(self, request):
+        query = " ".join(request.query_params.get("q", "").split())
+        if not query:
+            return Response(
+                {"q": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(query) > 100:
+            return Response(
+                {"q": ["Ensure this field has no more than 100 characters."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if request.query_params.get("page", "1") != "1":
+            return Response(
+                {"page": ["People search only supports the first page."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = media_service.search_people(query=query)
+        if not payload["completed_sources"]:
+            raise PeopleSearchUnavailable
+        return Response({
+            "count": len(payload["results"]),
+            "next": None,
+            "previous": None,
+            "results": payload["results"],
+            "unavailable_sources": payload["unavailable_sources"],
+        })
 
 
 class FilterOptionsView(APIView):
@@ -350,6 +393,35 @@ class PersonDetailView(APIView):
             return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 
+class PersonCompletionView(APIView):
+    """Viewer completion for one provider person's full filmography."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [SearchRateThrottle]
+
+    @extend_schema(responses=PersonCompletionResponseSerializer)
+    def get(self, request, source, person_id):
+        try:
+            completion = media_service.person_completion(
+                source=source,
+                person_id=person_id,
+                user=request.user,
+            )
+        except NotImplementedError as error:
+            return Response(
+                {"detail": str(error)},
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+        except provider_services.ProviderAPIError as error:
+            if error.status_code == status.HTTP_404_NOT_FOUND:
+                return Response(
+                    {"detail": "Person not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            raise
+        return Response({"completion": completion})
+
+
 class BookSeriesDetailView(APIView):
     """Provider-backed media series for native clients."""
 
@@ -385,7 +457,18 @@ class CompanyDetailView(APIView):
 
     def get(self, request, source, company_id):
         try:
-            return Response(media_service.company_detail(source=source, company_id=company_id))
+            return Response(
+                media_service.company_detail(
+                    source=source,
+                    company_id=company_id,
+                    request=request,
+                    user=(
+                        request.user
+                        if request.user.is_authenticated
+                        else None
+                    ),
+                ),
+            )
         except NotImplementedError as error:
             return Response({"detail": str(error)}, status=status.HTTP_501_NOT_IMPLEMENTED)
         except ValueError as error:
@@ -425,7 +508,12 @@ class CompanyGamesView(APIView):
 
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(games, request, view=self)
-        return paginator.get_paginated_response(page)
+        response = paginator.get_paginated_response(page)
+        response.data["completion"] = completion_service.completion_for_summaries(
+            request.user if request.user.is_authenticated else None,
+            games,
+        )
+        return response
 
 
 class CompanyGameOptionsView(APIView):

@@ -46,6 +46,7 @@ from api.serializers.common import (
     seasons_from_metadata,
     synopsis_from_payload,
 )
+from api.services import completion as completion_service
 from api.services.filters import (
     apply_person_credit_filters,
     person_rating_source,
@@ -82,13 +83,15 @@ from app.models import (
 )
 from app.providers import anilist, googlebooks, mal, musicbrainz
 from app.providers import services as provider_services
-from app.providers.search_rank import rank_mixed_results
+from app.providers.search_rank import normalize_search_text, rank_mixed_results
 from app.utils.color import build_accent_palette, compute_and_store_poster_accent
 
 SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
 MUSIC_SEARCH_CACHE_VERSION = "v5"
 ALL_MEDIA_SEARCH_TIMEOUT = 8
+PEOPLE_SEARCH_TIMEOUT = 4
+PEOPLE_SEARCH_PROVIDER_LIMIT = 10
 ALL_MEDIA_CANDIDATE_STALE_TTL = 60 * 60 * 24 * 7
 ALL_MEDIA_REFRESH_SCHEDULE_TTL = 60
 DISCOVER_TTL = 60 * 60 * 6
@@ -592,6 +595,107 @@ def search_all_media(*, media_types, query, request=None, user=None):
     }
 
 
+def search_people(*, query):
+    """Search every supported person provider with one response deadline."""
+    started_at = time.monotonic()
+    normalized_query = normalize_search_text(query)
+    query_hash = hashlib.sha256(normalized_query.encode()).hexdigest()[:24]
+    sources = provider_services.SUPPORTED_PERSON_SOURCES
+    executor = ThreadPoolExecutor(max_workers=len(sources))
+    futures = {
+        source: executor.submit(
+            provider_services.search_people,
+            source,
+            query,
+            limit=PEOPLE_SEARCH_PROVIDER_LIMIT,
+            timeout=PEOPLE_SEARCH_TIMEOUT - 1,
+        )
+        for source in sources
+    }
+    done, pending = wait(futures.values(), timeout=PEOPLE_SEARCH_TIMEOUT)
+    completed = []
+    unavailable = []
+    candidates = []
+    seen = set()
+
+    for source_index, source in enumerate(sources):
+        future = futures[source]
+        if future not in done:
+            unavailable.append(source)
+            future.cancel()
+            continue
+        try:
+            provider_results = future.result()
+        except Exception as error:  # noqa: BLE001 - one provider must not discard the others
+            unavailable.append(source)
+            logger.warning(
+                "people_search_provider_unavailable query=%s source=%s type=%s",
+                query_hash,
+                source,
+                type(error).__name__,
+            )
+            continue
+
+        completed.append(source)
+        for provider_rank, person in enumerate(provider_results):
+            person_id = str(person.get("person_id") or "").strip()
+            name = str(person.get("name") or "").strip()
+            identity = (source, person_id)
+            if not person_id or not name or identity in seen:
+                continue
+            seen.add(identity)
+            normalized_name = normalize_search_text(name)
+            match_rank = (
+                0
+                if normalized_name == normalized_query
+                else 1
+                if normalized_name.startswith(normalized_query)
+                else 2
+                if normalized_query in normalized_name
+                else 3
+            )
+            candidates.append((
+                match_rank,
+                provider_rank,
+                source_index,
+                normalized_name,
+                {
+                    "ref": {"source": source, "id": person_id},
+                    "name": name,
+                    "profile_url": (
+                        None
+                        if person.get("profile_url") == settings.IMG_NONE
+                        else person.get("profile_url") or None
+                    ),
+                    "known_for_department": (
+                        str(person["known_for_department"]).strip()
+                        if person.get("known_for_department")
+                        else None
+                    ),
+                },
+            ))
+
+    for future in pending:
+        future.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+    candidates.sort(key=lambda candidate: candidate[:4])
+    logger.info(
+        "people_search_summary query=%s completed=%s unavailable=%s elapsed_ms=%s",
+        query_hash,
+        len(completed),
+        len(unavailable),
+        int((time.monotonic() - started_at) * 1000),
+    )
+    return {
+        "results": [
+            candidate[4]
+            for candidate in candidates[: settings.PER_PAGE]
+        ],
+        "completed_sources": completed,
+        "unavailable_sources": unavailable,
+    }
+
+
 def discover_media(
     *,
     media_type,
@@ -664,7 +768,7 @@ def _external_rating_item(ref, metadata):
     return get_or_create_item_from_metadata(ref, metadata)
 
 
-def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):  # noqa: C901, PLR0912
+def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):  # noqa: C901, PLR0912, PLR0915
     """Fetch provider metadata and normalize it for the API."""
     if media_type == MediaTypes.EPISODE.value and (
         season_number in (None, "") or episode_number in (None, "")
@@ -760,6 +864,55 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         rating_payload,
         metadata.get("_google_books"),
     )
+    _persist_detail_series(metadata, source=source, media_type=media_type)
+    seasons = (
+        seasons_from_metadata(
+            metadata,
+            request=request,
+            user=user,
+        )
+        if media_type == MediaTypes.TV.value
+        else []
+    )
+    enriched_episode_metadata = (
+        enrich_episodes(metadata, source, user)
+        if media_type == MediaTypes.SEASON.value
+        else None
+    )
+    episodes = (
+        episodes_from_metadata(enriched_episode_metadata, request=request)
+        if enriched_episode_metadata is not None
+        else []
+    )
+    related_sections = related_sections_from_payload(
+        metadata.get("related", {}),
+        media_type=media_type,
+        source=source,
+        request=request,
+        user=user,
+    )
+    completion = None
+    if user and user.is_authenticated and media_type == MediaTypes.TV.value:
+        completion = completion_service.completion_payload(
+            sum(
+                (season.get("completion") or {}).get("completed_count", 0)
+                for season in seasons
+            ),
+            sum(
+                (season.get("completion") or {}).get("total_count", 0)
+                for season in seasons
+            ),
+        )
+    elif (
+        user
+        and user.is_authenticated
+        and media_type == MediaTypes.SEASON.value
+    ):
+        raw_episodes = enriched_episode_metadata.get("episodes") or []
+        completion = completion_service.completion_payload(
+            sum(bool(episode.get("history")) for episode in raw_episodes),
+            len(episodes),
+        )
     return {
         **summary,
         "overview": synopsis,
@@ -786,20 +939,13 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
             else {}
         ),
         "crew": crew_from_metadata(metadata, request=request),
-        "seasons": seasons_from_metadata(metadata, request=request) if media_type == MediaTypes.TV.value else [],
-        "episodes": episodes_from_metadata(enrich_episodes(metadata, source, user), request=request)
-        if media_type == MediaTypes.SEASON.value
-        else [],
+        "seasons": seasons,
+        "episodes": episodes,
+        "completion": completion,
         "custom_backdrop_url": custom_backdrop_url,
         "custom_poster_url": custom_poster_url_for_user(user, ref, request=request),
         "related": metadata.get("related", {}),
-        "related_sections": related_sections_from_payload(
-            metadata.get("related", {}),
-            media_type=media_type,
-            source=source,
-            request=request,
-            user=user,
-        ),
+        "related_sections": related_sections,
         "providers": watch_providers_for_user(metadata, user),
         "community": community_stats(
             source=source,
@@ -810,6 +956,42 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
         ),
         **rating_payload,
     }
+
+
+def _persist_detail_series(metadata, *, source, media_type):
+    """Persist a complete canonical series already present in detail metadata."""
+    details = metadata.get("details") or {}
+    series_id = details.get("series_id")
+    if not series_id:
+        return None
+
+    related = metadata.get("related") or {}
+    if media_type == MediaTypes.ANIME.value:
+        members = related.get("series") or []
+    elif media_type == MediaTypes.GAME.value:
+        members = related.get("collection") or []
+    elif media_type == MediaTypes.BOOK.value:
+        members = related.get(details.get("series_name")) or []
+    elif media_type == MediaTypes.MOVIE.value:
+        members = next(
+            (
+                values
+                for key, values in related.items()
+                if key not in {"recommendations", "similar"} and values
+            ),
+            [],
+        )
+    else:
+        members = []
+
+    return completion_service.persist_complete_series({
+        "series_id": series_id,
+        "source": details.get("series_source") or source,
+        "media_type": details.get("series_media_type") or media_type,
+        "name": details.get("series_name") or "",
+        "item_count": len(members),
+        "items": members,
+    })
 
 
 ANIME_RELATION_ORDER = {
@@ -1911,22 +2093,12 @@ def person_detail(
         else None
     )
     series_summaries = [
-        {
-            "id": str(series.get("series_id") or ""),
-            "source": series.get("source") or source,
-            "media_type": series.get("media_type") or MediaTypes.BOOK.value,
-            "name": series.get("name") or "",
-            "item_count": series.get("item_count")
-            or series.get("book_count")
-            or len(series.get("books") or []),
-            "book_count": series.get("book_count")
-            or len(series.get("books") or []),
-            "poster_urls": [
-                absolute_url(request, book.get("image"))
-                for book in (series.get("books") or [])[:3]
-                if book.get("image")
-            ],
-        }
+        _person_series_summary(
+            series,
+            default_source=source,
+            request=request,
+            user=user,
+        )
         for series in person.get("series") or []
         if series.get("series_id") and series.get("name")
     ]
@@ -1936,6 +2108,45 @@ def person_detail(
             request=request,
             user=user,
         ),
+    )
+    credit_summaries = [
+        media_summary_from_provider(
+            credit,
+            media_type=credit.get("media_type"),
+            source=credit.get("source", source),
+            request=request,
+            user=user,
+            item=credit.get("_catalog_item"),
+        )
+        for credit in person_credits
+        if credit.get("media_type")
+        in {
+            MediaTypes.MOVIE.value,
+            MediaTypes.TV.value,
+            MediaTypes.BOOK.value,
+            MediaTypes.MUSIC.value,
+            MediaTypes.MANGA.value,
+            MediaTypes.ANIME.value,
+        }
+    ]
+    media_type_groups = {}
+    role_groups = {}
+    for credit in credit_summaries:
+        media_type = credit["ref"]["media_type"]
+        media_type_groups.setdefault(media_type, []).append(credit)
+        roles = [
+            role.strip()
+            for role in credit.get("credit_roles") or []
+            if isinstance(role, str) and role.strip()
+        ] or ["Credits"]
+        for role in dict.fromkeys(roles):
+            role_groups.setdefault(media_type, {}).setdefault(role, []).append(
+                credit,
+            )
+    credits_are_complete = (
+        bool(person["credits_complete"])
+        if "credits_complete" in person
+        else source != "anilist" or person.get("credits_next_page") is None
     )
     return {
         "id": str(person.get("person_id") or person_id),
@@ -1953,30 +2164,140 @@ def person_detail(
         "rating_preparation": rating_preparation,
         "credits_page": person.get("credits_page"),
         "credits_next_page": person.get("credits_next_page"),
+        "credits_complete": credits_are_complete,
+        "credits_truncated": bool(person.get("credits_truncated")),
         "series": series_summaries,
-        "credits": {
-            "cast": [
-                media_summary_from_provider(
-                    credit,
-                    media_type=credit.get("media_type"),
-                    source=credit.get("source", source),
-                    request=request,
-                    user=user,
-                    item=credit.get("_catalog_item"),
+        "credits": {"cast": credit_summaries},
+        "completion": (
+            completion_service.completion_for_summaries(
+                user,
+                credit_summaries,
+            )
+            if credits_are_complete
+            else None
+        ),
+        "media_type_completions": (
+            {
+                media_type: completion_service.completion_for_summaries(
+                    user,
+                    summaries,
                 )
-                for credit in person_credits
-                if credit.get("media_type")
-                in {
-                    MediaTypes.MOVIE.value,
-                    MediaTypes.TV.value,
-                    MediaTypes.BOOK.value,
-                    MediaTypes.MUSIC.value,
-                    MediaTypes.MANGA.value,
-                    MediaTypes.ANIME.value,
+                for media_type, summaries in media_type_groups.items()
+            }
+            if user and user.is_authenticated and credits_are_complete
+            else None
+        ),
+        "role_completions": (
+            {
+                media_type: {
+                    role: completion_service.completion_for_summaries(
+                        user,
+                        summaries,
+                    )
+                    for role, summaries in groups.items()
                 }
-            ],
-        },
+                for media_type, groups in role_groups.items()
+            }
+            if user and user.is_authenticated and credits_are_complete
+            else None
+        ),
     }
+
+
+def _person_series_summary(
+    series,
+    *,
+    default_source,
+    request=None,
+    user=None,
+):
+    source = series.get("source") or default_source
+    media_type = series.get("media_type") or MediaTypes.BOOK.value
+    books = series.get("books") or []
+    item_count = (
+        series.get("item_count")
+        or series.get("book_count")
+        or len(books)
+    )
+    persisted = completion_service.persist_complete_series({
+        **series,
+        "source": source,
+        "media_type": media_type,
+        "item_count": item_count,
+        "items": books,
+    })
+    return {
+        "id": str(series.get("series_id") or ""),
+        "source": source,
+        "media_type": media_type,
+        "name": series.get("name") or "",
+        "item_count": item_count,
+        "book_count": series.get("book_count") or len(books),
+        "poster_urls": [
+            absolute_url(request, book.get("image"))
+            for book in books[:3]
+            if book.get("image")
+        ],
+        "completion": (
+            completion_service.completion_for_items(
+                user,
+                persisted.items.all(),
+            )
+            if persisted is not None
+            else None
+        ),
+    }
+
+
+def person_completion(*, source, person_id, user):
+    """Return aggregate completion for one provider person's full credit set."""
+    if not user or not user.is_authenticated:
+        return None
+    if source not in provider_services.SUPPORTED_PERSON_SOURCES:
+        msg = "People pages do not support this provider in v1."
+        raise NotImplementedError(msg)
+    person = (
+        anilist.person_page(
+            person_id,
+            enrich_credit_images=False,
+            request_session=provider_services.person_search_session,
+        )
+        if source == "anilist"
+        else provider_services.get_person_page(source, person_id)
+    )
+    raw_credits = person.get("credits") or []
+    if source == "anilist":
+        raw_credits = person.get("_completion_credits")
+        if raw_credits is None:
+            raw_credits = anilist.person_completion_credits(
+                person_id,
+                person,
+            )
+        if raw_credits is None:
+            return None
+    person_credits = _curate_person_credits(
+        source,
+        person_id,
+        [
+            {**credit, "source": credit.get("source") or source}
+            for credit in raw_credits
+            if credit.get("media_type")
+            in {
+                MediaTypes.MOVIE.value,
+                MediaTypes.TV.value,
+                MediaTypes.BOOK.value,
+                MediaTypes.MUSIC.value,
+                MediaTypes.MANGA.value,
+                MediaTypes.ANIME.value,
+            }
+        ],
+    )
+    return completion_service.completion_for_payloads(
+        user,
+        person_credits,
+        default_source=source,
+        default_media_type="",
+    )
 
 
 def _anime_person_series(
@@ -2027,6 +2348,7 @@ def _anime_person_series(
             poster = summary.get("custom_poster_url") or summary.get("poster_url")
             if poster:
                 posters.append(poster)
+        persisted = completion_service.persist_complete_series(series)
         resolved[series_id] = {
             "id": series_id,
             "source": Sources.MAL.value,
@@ -2034,6 +2356,14 @@ def _anime_person_series(
             "name": series["name"],
             "item_count": series["item_count"],
             "poster_urls": posters,
+            "completion": (
+                completion_service.completion_for_items(
+                    user,
+                    persisted.items.all(),
+                )
+                if persisted is not None
+                else None
+            ),
             "_popularity": popularity,
         }
     return [
@@ -2124,6 +2454,12 @@ def series_detail(*, source, series_id, request=None, user=None):
     raw_items = series.get("items")
     if raw_items is None:
         raw_items = series.get("books") or []
+    persisted = completion_service.persist_complete_series({
+        **series,
+        "source": series.get("source") or source,
+        "media_type": media_type,
+        "items": raw_items,
+    })
     items = [
         media_summary_from_provider(
             item,
@@ -2147,6 +2483,14 @@ def series_detail(*, source, series_id, request=None, user=None):
         "name": series.get("name") or "",
         "item_count": item_count,
         "items": items,
+        "completion": (
+            completion_service.completion_for_items(
+                user,
+                persisted.items.all(),
+            )
+            if persisted is not None
+            else None
+        ),
     }
     if media_type == MediaTypes.BOOK.value:
         payload.update({"book_count": item_count, "books": items})
@@ -2163,7 +2507,7 @@ def book_series_detail(*, source, series_id, request=None, user=None):
     )
 
 
-def company_detail(*, source, company_id):
+def company_detail(*, source, company_id, request=None, user=None):
     """Return a provider company profile for native studio pages."""
     if source not in {Sources.IGDB.value, Sources.MAL.value}:
         msg = "Company pages are only supported for IGDB and MAL in v1."
@@ -2188,16 +2532,45 @@ def company_detail(*, source, company_id):
             "igdb_url": None,
             "provider_url": company.get("provider_url") or None,
             "websites": company.get("websites") or [],
+            "completion": None,
             "catalogs": {
                 "studio": {
                     "available": True,
                     "count": None,
+                    "completion": None,
                 },
             },
         }
 
     logo = company.get("logo") or {}
     parent = company.get("parent") or {}
+    catalogs = (
+        {
+            role: provider_services.get_company_catalog(
+                source,
+                company_id,
+                role,
+            )
+            for role in ("developed", "published")
+        }
+        if user and user.is_authenticated
+        else {"developed": [], "published": []}
+    )
+    role_completions = {
+        role: completion_service.completion_for_payloads(
+            user,
+            games,
+            default_source=Sources.IGDB.value,
+            default_media_type=MediaTypes.GAME.value,
+        )
+        for role, games in catalogs.items()
+    }
+    all_games = {
+        str(game.get("media_id") or game.get("id")): game
+        for games in catalogs.values()
+        for game in games
+        if game.get("media_id") or game.get("id")
+    }
     return {
         "id": str(company.get("id") or company_id),
         "source": source,
@@ -2216,14 +2589,27 @@ def company_detail(*, source, company_id):
             else None
         ),
         "igdb_url": company.get("url") or None,
+        "completion": completion_service.completion_for_payloads(
+            user,
+            all_games.values(),
+            default_source=Sources.IGDB.value,
+            default_media_type=MediaTypes.GAME.value,
+        ),
         "websites": [
             website["url"]
             for website in company.get("websites") or []
             if isinstance(website, dict) and website.get("url")
         ],
         "catalogs": {
-            "developed": {"count": provider_services.company_catalog_count(source, company, "developed")},
-            "published": {"count": provider_services.company_catalog_count(source, company, "published")},
+            role: {
+                "count": provider_services.company_catalog_count(
+                    source,
+                    company,
+                    role,
+                ),
+                "completion": role_completions[role],
+            }
+            for role in ("developed", "published")
         },
     }
 
@@ -2359,6 +2745,17 @@ def company_anime(
             "platform filters are not supported for anime studio catalogs.",
         )
 
+    catalog_filters = {
+        "year": year,
+        "release_status": release_status or None,
+        "rating_min": rating_min,
+        "rating_max": rating_max,
+        "genres": _company_query_values(params, "genre"),
+        "excluded_genres": _company_query_values(
+            params,
+            "exclude_genre",
+        ),
+    }
     page_data = provider_services.get_company_anime(
         source,
         company_id,
@@ -2366,35 +2763,46 @@ def company_anime(
         page_size=page_size,
         sort=sort,
         direction=direction,
-        filters={
-            "year": year,
-            "release_status": release_status or None,
-            "rating_min": rating_min,
-            "rating_max": rating_max,
-            "genres": _company_query_values(params, "genre"),
-            "excluded_genres": _company_query_values(
-                params,
-                "exclude_genre",
-            ),
-        },
+        filters=catalog_filters,
+    )
+    results = [
+        media_summary_from_provider(
+            anime,
+            media_type=MediaTypes.ANIME.value,
+            source=Sources.MAL.value,
+            request=request,
+            user=user,
+        )
+        for anime in page_data.get("results") or []
+    ]
+    next_link = _company_page_link(request, page_data.get("next_page"))
+    previous_link = _company_page_link(
+        request,
+        page_data.get("previous_page"),
+    )
+    completion_catalog = (
+        mal.studio_anime_completion_catalog(
+            company_id,
+            filters=catalog_filters,
+        )
+        if user and user.is_authenticated
+        else None
     )
     return {
         "count": None,
-        "next": _company_page_link(request, page_data.get("next_page")),
-        "previous": _company_page_link(
-            request,
-            page_data.get("previous_page"),
-        ),
-        "results": [
-            media_summary_from_provider(
-                anime,
-                media_type=MediaTypes.ANIME.value,
-                source=Sources.MAL.value,
-                request=request,
-                user=user,
+        "next": next_link,
+        "previous": previous_link,
+        "results": results,
+        "completion": (
+            completion_service.completion_for_payloads(
+                user,
+                completion_catalog["results"],
+                default_source=Sources.MAL.value,
+                default_media_type=MediaTypes.ANIME.value,
             )
-            for anime in page_data.get("results") or []
-        ],
+            if completion_catalog and completion_catalog["complete"]
+            else None
+        ),
     }
 
 
@@ -4102,7 +4510,10 @@ def tv_seasons(*, source, media_id, request=None, user=None):
         request=request,
         user=user,
     )
-    return {"seasons": detail.get("seasons", [])}
+    return {
+        "seasons": detail.get("seasons", []),
+        "completion": detail.get("completion"),
+    }
 
 
 def season_detail(*, source, media_id, season_number, request=None, user=None):
@@ -4126,7 +4537,10 @@ def season_episodes(*, source, media_id, season_number, request=None, user=None)
         request=request,
         user=user,
     )
-    return {"episodes": detail.get("episodes", [])}
+    return {
+        "episodes": detail.get("episodes", []),
+        "completion": detail.get("completion"),
+    }
 
 
 def community_stats(

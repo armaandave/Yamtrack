@@ -230,6 +230,7 @@ final class PeopleListsContractTests: XCTestCase {
             if method == "GET",
                path.hasSuffix("/lists/") || path.hasSuffix("/lists") {
                 let listType = query.first { $0.name == "list_type" }?.value
+                XCTAssertNil(query.first { $0.name == "include_completion" })
                 if listType == "all" {
                     requests.append("all")
                 } else {
@@ -254,6 +255,7 @@ final class PeopleListsContractTests: XCTestCase {
             if method == "GET",
                path.hasSuffix("/lists/9/people/") || path.hasSuffix("/lists/9/people") {
                 XCTAssertEqual(query.first { $0.name == "page" }?.value, "2")
+                XCTAssertNil(query.first { $0.name == "include_completion" })
                 requests.append("page")
                 return PeopleListsURLProtocol.response(
                     request,
@@ -335,6 +337,53 @@ final class PeopleListsContractTests: XCTestCase {
             requests,
             ["all", "membership", "page", "add", "add", "remove", "reorder"]
         )
+    }
+
+    func testPeopleCompletionRepositoryUsesDedicatedEndpoint() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PeopleListsURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let tokenStore = KeychainTokenStore.shared
+        tokenStore.accessToken = "people-completion-access"
+        defer {
+            tokenStore.clear()
+            PeopleListsURLProtocol.handler = nil
+        }
+        let repository = APIPeopleRepository(
+            client: APIClient(
+                baseURL: URL(string: "https://example.com")!,
+                tokenProvider: tokenStore,
+                session: session
+            )
+        )
+
+        PeopleListsURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/v1/people/anilist/950/completion")
+            XCTAssertNil(request.url?.query)
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer people-completion-access"
+            )
+            return PeopleListsURLProtocol.response(
+                request,
+                status: 200,
+                body: """
+                {
+                  "completion": {
+                    "completed_count": 3,
+                    "total_count": 6
+                  }
+                }
+                """
+            )
+        }
+
+        let completion = try await repository.completion(
+            ref: PersonRef(source: "anilist", id: "950")
+        )
+
+        XCTAssertEqual(completion?.countText, "3 of 6")
     }
 
     private static let personEntryJSON = """

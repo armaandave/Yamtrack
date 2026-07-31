@@ -128,7 +128,7 @@ final class PersonDetailViewModel {
                 creditsPage: page
             )
             guard generation == requestGeneration, requestFilter == filter else { return }
-            apply(loaded, requestFilter: requestFilter)
+            append(loaded, requestFilter: requestFilter)
         } catch is CancellationError {
             return
         } catch {
@@ -140,6 +140,18 @@ final class PersonDetailViewModel {
         }
     }
 
+    func reloadLoadedPages() async {
+        let lastLoadedPage = max(detail?.creditsPage ?? 1, 1)
+        await load()
+        guard errorMessage == nil else { return }
+
+        while canLoadMore, (detail?.creditsPage ?? 1) < lastLoadedPage {
+            let previousPage = detail?.creditsPage
+            await loadNextPage()
+            guard detail?.creditsPage != previousPage else { return }
+        }
+    }
+
     private func apply(_ loaded: PersonDetail, requestFilter: MediaFilterState) {
         let loadedFilmography = Self.uniqueFilmography(from: loaded.filmography)
         detail = loaded
@@ -148,6 +160,50 @@ final class PersonDetailViewModel {
             filterOptions = options
         } else if !requestFilter.isActive || filterOptions == .empty {
             filterOptions = Self.options(from: loadedFilmography)
+        }
+    }
+
+    private func append(_ loaded: PersonDetail, requestFilter: MediaFilterState) {
+        let previous = detail
+        let mergedFilmography = Self.uniqueFilmography(
+            from: filmography + loaded.filmography
+        )
+        let mergedSeries = Self.uniqueSeries(
+            from: (previous?.series ?? []) + (loaded.series ?? [])
+        )
+        let creditsComplete = loaded.creditsComplete ?? previous?.creditsComplete
+        let localCompletions = loaded.creditsNextPage == nil && loaded.creditsComplete == true
+            ? Self.completions(from: mergedFilmography)
+            : nil
+
+        detail = PersonDetail(
+            id: loaded.id,
+            source: loaded.source,
+            name: loaded.name,
+            biography: loaded.biography ?? previous?.biography,
+            profileUrl: loaded.profileUrl ?? previous?.profileUrl,
+            knownForDepartment: loaded.knownForDepartment ?? previous?.knownForDepartment,
+            birthDate: loaded.birthDate ?? previous?.birthDate,
+            deathDate: loaded.deathDate ?? previous?.deathDate,
+            placeOfBirth: loaded.placeOfBirth ?? previous?.placeOfBirth,
+            popularity: loaded.popularity ?? previous?.popularity,
+            filterOptions: loaded.filterOptions ?? previous?.filterOptions,
+            ratingPreparation: loaded.ratingPreparation ?? previous?.ratingPreparation,
+            creditsPage: loaded.creditsPage,
+            creditsNextPage: loaded.creditsNextPage,
+            creditsComplete: creditsComplete,
+            series: mergedSeries.isEmpty ? nil : mergedSeries,
+            credits: PersonCredits(cast: mergedFilmography),
+            completion: loaded.completion ?? localCompletions?.overall,
+            mediaTypeCompletions: loaded.mediaTypeCompletions ?? localCompletions?.byMediaType,
+            roleCompletions: loaded.roleCompletions ?? localCompletions?.byRole
+        )
+        filmography = mergedFilmography
+
+        if let options = loaded.filterOptions {
+            filterOptions = options
+        } else if !requestFilter.isActive || filterOptions == .empty {
+            filterOptions = Self.options(from: mergedFilmography)
         }
     }
 
@@ -171,13 +227,21 @@ final class PersonDetailViewModel {
                 guard !Task.isCancelled,
                       generation == requestGeneration,
                       requestFilter == filter else { return }
+                let requestedPage = detail?.creditsPage ?? 1
                 let loaded = try await peopleRepository.detail(
                     ref: ref,
                     filter: requestFilter,
-                    creditsPage: detail?.creditsPage ?? 1
+                    creditsPage: requestedPage
                 )
                 guard generation == requestGeneration, requestFilter == filter else { return }
-                apply(loaded, requestFilter: requestFilter)
+                guard (loaded.creditsPage ?? 1) >= (detail?.creditsPage ?? 1) else {
+                    continue
+                }
+                if requestedPage > 1 {
+                    append(loaded, requestFilter: requestFilter)
+                } else {
+                    apply(loaded, requestFilter: requestFilter)
+                }
                 if loaded.ratingPreparation?.state != .pending {
                     stopPreparationPolling()
                     return
@@ -210,6 +274,62 @@ final class PersonDetailViewModel {
     static func uniqueFilmography(from media: [MediaSummary]) -> [MediaSummary] {
         var seen = Set<String>()
         return media.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func uniqueSeries(from series: [MediaSeriesSummary]) -> [MediaSeriesSummary] {
+        var seen = Set<String>()
+        return series.filter {
+            seen.insert("\($0.source):\($0.mediaType):\($0.id)").inserted
+        }
+    }
+
+    private static func completions(from media: [MediaSummary]) -> (
+        overall: CompletionProgress,
+        byMediaType: [String: CompletionProgress],
+        byRole: [String: [String: CompletionProgress]]
+    ) {
+        let byMediaType = Dictionary(grouping: media, by: \.ref.mediaType)
+        var mediaTypeCompletions: [String: CompletionProgress] = [:]
+        var roleCompletions: [String: [String: CompletionProgress]] = [:]
+
+        for (mediaType, items) in byMediaType {
+            mediaTypeCompletions[mediaType] = completion(from: items)
+            var itemsByRole: [String: [MediaSummary]] = [:]
+            for item in items {
+                let roles = cleanedRoles(item.creditRoles)
+                for role in roles.isEmpty ? ["Credits"] : roles {
+                    itemsByRole[role, default: []].append(item)
+                }
+            }
+            roleCompletions[mediaType] = itemsByRole.mapValues {
+                completion(from: $0)
+            }
+        }
+
+        return (
+            completion(from: media),
+            mediaTypeCompletions,
+            roleCompletions
+        )
+    }
+
+    private static func completion(from media: [MediaSummary]) -> CompletionProgress {
+        CompletionProgress(
+            completedCount: media.lazy.filter {
+                $0.userState?.status == "Completed"
+            }.count,
+            totalCount: media.count
+        )
+    }
+
+    private static func cleanedRoles(_ roles: [String]) -> [String] {
+        var seen = Set<String>()
+        return roles.compactMap { role in
+            let cleaned = role.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty || !seen.insert(cleaned).inserted
+                ? nil
+                : cleaned
+        }
     }
 
     static func options(from media: [MediaSummary]) -> MediaFilterOptionsResponse {
@@ -338,6 +458,7 @@ struct PersonDetailView: View {
                         target: .person(detail.ref),
                         listRepository: listRepository,
                         mediaRepository: mediaRepository,
+                        peopleRepository: peopleRepository,
                         onUnauthorized: onUnauthorized
                     )
                 }
@@ -385,6 +506,15 @@ struct PersonDetailView: View {
         .onChange(of: selectedFilmographyType) { _, _ in
             expandPrimaryCreditRole()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { notification in
+            guard let changedRef = notification.userInfo?["ref"] as? MediaRef,
+                  selectedSeries != nil || viewModel.filmography.contains(where: { $0.ref.id == changedRef.id })
+            else { return }
+            Task {
+                await viewModel.reloadLoadedPages()
+                syncSelectedFilmographyType()
+            }
+        }
     }
 
     private var edgeSwipeBackGesture: some Gesture {
@@ -430,7 +560,7 @@ struct PersonDetailView: View {
             .scrollContentBackground(.hidden)
             .ignoresSafeArea(edges: .top)
             .refreshable {
-                await viewModel.load()
+                await viewModel.reloadLoadedPages()
                 syncSelectedFilmographyType()
             }
         } else if let error = viewModel.errorMessage, viewModel.detail == nil {
@@ -527,6 +657,12 @@ struct PersonDetailView: View {
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 PersonSectionLabel(title: selectedType.sectionTitle)
+
+                if let completion = mediaTypeCompletion(for: selectedType),
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(selectedType.sectionTitle) completion")
+                }
 
                 Spacer()
 
@@ -658,31 +794,41 @@ struct PersonDetailView: View {
 
     private func roleDisclosureRow(_ group: FilmographyCreditGroup, type: FilmographyType) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    if expandedCreditRoles.contains(group.id) {
-                        expandedCreditRoles.remove(group.id)
-                    } else {
-                        expandedCreditRoles.insert(group.id)
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if expandedCreditRoles.contains(group.id) {
+                            expandedCreditRoles.remove(group.id)
+                        } else {
+                            expandedCreditRoles.insert(group.id)
+                        }
                     }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Text(group.compactTitle(for: type))
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.74))
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(group.compactTitle(for: type))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.74))
 
-                    Spacer()
+                        Spacer()
 
-                    Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.44))
+                        Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.44))
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 42)
+                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 42)
-                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                .buttonStyle(.plain)
+                .accessibilityValue(expandedCreditRoles.contains(group.id) ? "Expanded" : "Collapsed")
+
+                if let completion = roleCompletion(for: group, type: type),
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(group.role) completion")
+                }
             }
-            .buttonStyle(.plain)
 
             if expandedCreditRoles.contains(group.id) {
                 filmographyGrid(group.media)
@@ -749,13 +895,20 @@ struct PersonDetailView: View {
                     spacing: 14
                 ) {
                     ForEach(series) { item in
-                        Button {
-                            selectedSeries = item.ref
-                        } label: {
-                            MediaSeriesCard(series: item)
+                        VStack(spacing: 4) {
+                            Button {
+                                selectedSeries = item.ref
+                            } label: {
+                                MediaSeriesCard(series: item)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("View \(item.name) series")
+
+                            if let completion = item.completion, completion.isVisible {
+                                SWCompletionProgressButton(progress: completion)
+                                    .accessibilityLabel("\(item.name) series completion")
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("View \(item.name) series")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -813,6 +966,21 @@ struct PersonDetailView: View {
 
     private func yearOrDate(_ value: String) -> String {
         value.count >= 4 ? String(value.prefix(4)) : value
+    }
+
+    private func mediaTypeCompletion(for type: FilmographyType) -> CompletionProgress? {
+        if let completion = viewModel.detail?.mediaTypeCompletions?[type.rawValue] {
+            return completion
+        }
+        let types = FilmographyType.available(in: viewModel.filmography)
+        return types.count == 1 ? viewModel.detail?.completion : nil
+    }
+
+    private func roleCompletion(
+        for group: FilmographyCreditGroup,
+        type: FilmographyType
+    ) -> CompletionProgress? {
+        viewModel.detail?.roleCompletions?[type.rawValue]?[group.role]
     }
 
     private static let seriesRoleID = "media-series"

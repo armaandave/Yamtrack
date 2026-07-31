@@ -1,5 +1,6 @@
 import Charts
 import SwiftUI
+import UIKit
 
 struct SWStatsSlice: Identifiable {
     let id: String
@@ -92,10 +93,40 @@ struct SWStatsRatingPoint: Identifiable {
     var id: Double { rating }
 }
 
+enum SWStatsChartSelection {
+    static func index(for value: Double?, count: Int) -> Int? {
+        guard let value, value.isFinite, count > 0 else { return nil }
+        let clamped = min(max(value, 0), Double(count - 1))
+        return Int(clamped.rounded())
+    }
+}
+
+private struct StatsChartSelectionPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9, weight: .black))
+            .foregroundStyle(.white.opacity(0.92))
+            .monospacedDigit()
+            .padding(.horizontal, 8)
+            .frame(minHeight: 24)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
 struct SWStatsRatingChart: View {
     let points: [SWStatsRatingPoint]
     let average: Double?
     let tint: Color
+
+    @State private var selectedIndex: Int?
+    @State private var haptics = UISelectionFeedbackGenerator()
 
     static func normalizedPoints(from points: [SWStatsRatingPoint]) -> [SWStatsRatingPoint] {
         let counts = points.reduce(into: [Int: Int]()) { result, point in
@@ -142,6 +173,11 @@ struct SWStatsRatingChart: View {
         Self.normalizedPoints(from: points)
     }
 
+    private var selectedPoint: SWStatsRatingPoint? {
+        guard let selectedIndex, normalizedPoints.indices.contains(selectedIndex) else { return nil }
+        return normalizedPoints[selectedIndex]
+    }
+
     var body: some View {
         Chart {
             ForEach(normalizedPoints) { point in
@@ -158,9 +194,24 @@ struct SWStatsRatingChart: View {
                         endPoint: .top
                     )
                 )
+                .opacity(
+                    selectedIndex == nil || selectedIndex == Int(point.rating * 2)
+                        ? 1
+                        : 0.24
+                )
             }
 
-            if let average {
+            if let selectedPoint {
+                RuleMark(x: .value("Selected rating", selectedPoint.rating * 2))
+                    .foregroundStyle(.white.opacity(0.34))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .annotation(
+                        position: .top,
+                        alignment: selectedPoint.rating > 5 ? .trailing : .leading
+                    ) {
+                        StatsChartSelectionPill(text: selectionText(for: selectedPoint))
+                    }
+            } else if let average {
                 RuleMark(x: .value("Average", min(20, max(0, average * 2))))
                     .foregroundStyle(.white.opacity(0.7))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
@@ -170,6 +221,23 @@ struct SWStatsRatingChart: View {
                             .foregroundStyle(.white.opacity(0.62))
                 }
             }
+        }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                if let plotFrame = proxy.plotFrame {
+                    let frame = geometry[plotFrame]
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .gesture(scrubGesture(proxy: proxy))
+                }
+            }
+        }
+        .onAppear { haptics.prepare() }
+        .onChange(of: normalizedPoints.map(\.id)) { _, _ in
+            selectedIndex = nil
         }
         .chartXScale(domain: -2 ... 22)
         .chartXAxis {
@@ -196,6 +264,38 @@ struct SWStatsRatingChart: View {
             }
         }
         .accessibilityChartDescriptor(StatsRatingChartDescriptor(points: normalizedPoints, average: average))
+        .accessibilityIdentifier("stats.ratingChart")
+    }
+
+    private func scrubGesture(proxy: ChartProxy) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.2)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case let .second(true, drag) = value, let drag else { return }
+                selectPoint(at: drag.location.x, proxy: proxy)
+            }
+            .onEnded { _ in
+                selectedIndex = nil
+            }
+    }
+
+    private func selectPoint(at x: CGFloat, proxy: ChartProxy) {
+        guard
+            let index = SWStatsChartSelection.index(
+                for: proxy.value(atX: x, as: Double.self),
+                count: normalizedPoints.count
+            ),
+            index != selectedIndex
+        else { return }
+        selectedIndex = index
+        haptics.selectionChanged()
+        haptics.prepare()
+    }
+
+    private func selectionText(for point: SWStatsRatingPoint) -> String {
+        let rating = point.rating.formatted(.number.precision(.fractionLength(0...1)))
+        let title = point.count == 1 ? "title" : "titles"
+        return "\(rating) · \(point.count.formatted()) \(title)"
     }
 }
 
@@ -372,6 +472,9 @@ struct SWStatsYearChart: View {
     let points: [SWStatsYearPoint]
     let tint: Color
 
+    @State private var selectedIndex: Int?
+    @State private var haptics = UISelectionFeedbackGenerator()
+
     struct PlotPoint: Identifiable, Equatable {
         let index: Int
         let year: Int
@@ -394,41 +497,50 @@ struct SWStatsYearChart: View {
         Self.plotPoints(from: points)
     }
 
-    private var visibleCount: Int {
-        min(12, max(1, plotPoints.count))
-    }
-
-    private var initialIndex: Double {
-        Double(max(0, plotPoints.count - visibleCount))
+    private var selectedPoint: PlotPoint? {
+        guard let selectedIndex, plotPoints.indices.contains(selectedIndex) else { return nil }
+        return plotPoints[selectedIndex]
     }
 
     private var labelStride: Int {
-        max(1, Int(ceil(Double(visibleCount) / 3)))
+        max(1, Int(ceil(Double(max(plotPoints.count - 1, 1)) / 4)))
     }
 
     private var tickIndices: [Double] {
         let lastIndex = plotPoints.count - 1
         return plotPoints.indices.compactMap { index in
-            index == lastIndex || (index.isMultiple(of: labelStride) && lastIndex - index >= 2)
+            index == 0 || index == lastIndex || index.isMultiple(of: labelStride)
                 ? Double(index)
                 : nil
         }
     }
 
     var body: some View {
-        Chart(plotPoints) { point in
-            BarMark(
-                x: .value("Release year index", Double(point.index)),
-                y: .value("Titles", point.count),
-                width: .fixed(14)
-            )
-            .cornerRadius(3)
-            .foregroundStyle(tint.gradient)
+        Chart {
+            ForEach(plotPoints) { point in
+                BarMark(
+                    x: .value("Release year index", Double(point.index)),
+                    y: .value("Titles", point.count),
+                    width: .ratio(0.7)
+                )
+                .cornerRadius(3)
+                .foregroundStyle(tint.gradient)
+                .opacity(selectedIndex == nil || selectedIndex == point.index ? 1 : 0.24)
+            }
+
+            if let selectedPoint {
+                RuleMark(x: .value("Selected release year", Double(selectedPoint.index)))
+                    .foregroundStyle(.white.opacity(0.34))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .annotation(
+                        position: .top,
+                        alignment: selectedPoint.index > plotPoints.count / 2 ? .trailing : .leading
+                    ) {
+                        StatsChartSelectionPill(text: selectionText(for: selectedPoint))
+                    }
+            }
         }
         .chartXScale(domain: -0.5 ... Double(max(1, plotPoints.count)) - 0.5)
-        .chartScrollableAxes(plotPoints.count > visibleCount ? .horizontal : [])
-        .chartXVisibleDomain(length: Double(visibleCount))
-        .chartScrollPosition(initialX: initialIndex)
         .chartXAxis {
             AxisMarks(values: tickIndices) { value in
                 AxisGridLine().foregroundStyle(.clear)
@@ -457,7 +569,55 @@ struct SWStatsYearChart: View {
                 }
             }
         }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                if let plotFrame = proxy.plotFrame {
+                    let frame = geometry[plotFrame]
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .gesture(scrubGesture(proxy: proxy))
+                }
+            }
+        }
+        .onAppear { haptics.prepare() }
+        .onChange(of: plotPoints.map(\.id)) { _, _ in
+            selectedIndex = nil
+        }
         .accessibilityChartDescriptor(StatsYearChartDescriptor(points: plotPoints))
+        .accessibilityIdentifier("stats.yearChart")
+    }
+
+    private func scrubGesture(proxy: ChartProxy) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.2)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case let .second(true, drag) = value, let drag else { return }
+                selectPoint(at: drag.location.x, proxy: proxy)
+            }
+            .onEnded { _ in
+                selectedIndex = nil
+            }
+    }
+
+    private func selectPoint(at x: CGFloat, proxy: ChartProxy) {
+        guard
+            let index = SWStatsChartSelection.index(
+                for: proxy.value(atX: x, as: Double.self),
+                count: plotPoints.count
+            ),
+            index != selectedIndex
+        else { return }
+        selectedIndex = index
+        haptics.selectionChanged()
+        haptics.prepare()
+    }
+
+    private func selectionText(for point: PlotPoint) -> String {
+        let title = point.count == 1 ? "title" : "titles"
+        return "\(point.year) · \(point.count.formatted()) \(title)"
     }
 }
 

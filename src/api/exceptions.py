@@ -30,6 +30,14 @@ class AllMediaSearchUnavailable(exceptions.APIException):
     default_code = "provider_unavailable"
 
 
+class PeopleSearchUnavailable(exceptions.APIException):
+    """Every provider in a people search failed."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "People search providers are temporarily unavailable."
+    default_code = "provider_unavailable"
+
+
 class ListTypeMismatch(exceptions.APIException):
     """A typed list was used through the wrong entry endpoint."""
 

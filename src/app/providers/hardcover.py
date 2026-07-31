@@ -129,6 +129,56 @@ def search(query, page, *, preserve_ranking_fields=False, timeout=None):
     return data
 
 
+def search_people(query, *, limit=10, timeout=None):
+    """Search Hardcover authors and return normalized person references."""
+    search_query = """
+    query SearchAuthors($query: String!, $per_page: Int!, $page: Int!) {
+      search(
+        query: $query,
+        query_type: "Author",
+        per_page: $per_page,
+        page: $page
+      ) {
+        results
+      }
+    }
+    """
+    try:
+        response = services.api_request(
+            Sources.HARDCOVER.value,
+            "POST",
+            base_url,
+            params={
+                "query": search_query,
+                "variables": {
+                    "query": cap_search_query(query),
+                    "per_page": limit,
+                    "page": 1,
+                },
+            },
+            headers={"Authorization": settings.HARDCOVER_API},
+            timeout=timeout,
+            retry_rate_limits=False,
+            request_session=services.person_search_session,
+        )
+    except requests.exceptions.HTTPError as error:
+        handle_error(error)
+
+    results = response.get("data", {}).get("search", {}).get("results") or {}
+    return [
+        {
+            "source": Sources.HARDCOVER.value,
+            "person_id": str(author["id"]),
+            "name": author.get("name") or "",
+            "profile_url": (author.get("image") or {}).get("url") or None,
+            "known_for_department": "Author",
+        }
+        for hit in results.get("hits") or []
+        if (author := hit.get("document") or {})
+        if author.get("id") is not None and author.get("name")
+    ]
+
+
 def lookup_book_by_isbn(isbn):
     """Return the Hardcover book related to an exact edition ISBN."""
     normalized = str(isbn or "").strip().upper()

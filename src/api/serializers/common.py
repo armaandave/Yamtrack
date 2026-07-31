@@ -6,6 +6,7 @@ from django.db.models.functions import RowNumber
 from django.utils.text import slugify
 from rest_framework import serializers
 
+from api.services import completion as completion_service
 from app import config, single_weight
 from app.models import (
     BasicMedia,
@@ -13,6 +14,7 @@ from app.models import (
     Item,
     MediaLike,
     MediaTypes,
+    Season,
     Sources,
     Status,
 )
@@ -29,6 +31,19 @@ class MediaRefSerializer(serializers.Serializer):
     media_id = serializers.CharField()
     season_number = serializers.IntegerField(required=False, allow_null=True)
     episode_number = serializers.IntegerField(required=False, allow_null=True)
+
+
+class CompletionProgressSerializer(serializers.Serializer):
+    """Finite collection completion counts."""
+
+    completed_count = serializers.IntegerField(min_value=0)
+    total_count = serializers.IntegerField(min_value=0)
+
+
+class PersonCompletionResponseSerializer(serializers.Serializer):
+    """Viewer completion for one provider person."""
+
+    completion = CompletionProgressSerializer(allow_null=True)
 
 
 def absolute_url(request, url):
@@ -368,6 +383,17 @@ def synopsis_from_payload(payload):
 
 
 _UNRESOLVED_ITEM = object()
+COMPLETABLE_RELATED_SECTION_IDS = {
+    "collection",
+    "dlcs",
+    "expanded_games",
+    "expansions",
+    "relations",
+    "remakes",
+    "remasters",
+    "series",
+    "standalone_expansions",
+}
 
 
 def media_summary_from_provider(
@@ -495,22 +521,72 @@ def crew_from_metadata(metadata, request=None):
     ]
 
 
-def seasons_from_metadata(metadata, request=None):
+def seasons_from_metadata(metadata, request=None, user=None):
     """Normalize TV seasons into the native season summary shape."""
     seasons = (metadata.get("related") or {}).get("seasons") or []
+    tracked = {}
+    if user and user.is_authenticated:
+        tracked = {
+            season.item.season_number: season
+            for season in Season.objects.filter(
+                user=user,
+                item__source=metadata.get("source"),
+                item__media_id=str(metadata.get("media_id") or ""),
+                item__season_number__in=[
+                    value.get("season_number")
+                    for value in seasons
+                    if isinstance(value, dict)
+                ],
+            )
+            .select_related("item")
+            .prefetch_related("episodes__item")
+        }
     return [
         {
             "season_number": season.get("season_number"),
             "title": season.get("season_title") or season.get("title") or season.get("name") or "",
-            "episode_count": season.get("episode_count") or season.get("episodes") or season.get("max_progress"),
+            "episode_count": _season_episode_count(season),
             "image_url": image_url(request, season.get("image") or season.get("poster_path"))
             if (season.get("image") or season.get("poster_path"))
             else None,
             "release_date": season.get("first_air_date") or season.get("air_date") or season.get("release_date"),
+            "completion": (
+                completion_service.completion_payload(
+                    len({
+                        episode.item.episode_number
+                        for episode in tracked[season.get("season_number")].episodes.all()
+                    }),
+                    _season_episode_count(season),
+                )
+                if user
+                and user.is_authenticated
+                and season.get("season_number") in tracked
+                else completion_service.completion_payload(
+                    0,
+                    _season_episode_count(season),
+                )
+                if user and user.is_authenticated
+                else None
+            ),
         }
         for season in seasons
         if isinstance(season, dict)
     ]
+
+
+def _season_episode_count(season):
+    value = (
+        season.get("episode_count")
+        or season.get("episodes")
+        or season.get("max_progress")
+        or 0
+    )
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def episodes_from_metadata(metadata, request=None):
@@ -645,6 +721,16 @@ def related_sections_from_payload(related, media_type, source, request=None, use
     sections = []
     for key, title, values in candidates:
         items = []
+        completion = (
+            completion_service.completion_for_payloads(
+                user,
+                values,
+                default_source=source,
+                default_media_type=media_type,
+            )
+            if key in COMPLETABLE_RELATED_SECTION_IDS
+            else None
+        )
         section_values = values if key in {"relations", "series"} else values[:7]
         for value in section_values:
             payload = value.get("item", value) if isinstance(value, dict) else value
@@ -668,7 +754,12 @@ def related_sections_from_payload(related, media_type, source, request=None, use
                 continue
             items.append(summary)
         if items:
-            sections.append({"id": key, "title": title, "items": items})
+            sections.append({
+                "id": key,
+                "title": title,
+                "items": items,
+                "completion": completion,
+            })
     return sections
 
 

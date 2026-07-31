@@ -641,6 +641,47 @@ class ServicesTests(TestCase):
                 platform="TV",
             )
 
+    @patch("app.providers.services.mal.discover_manga")
+    def test_discover_mal_manga_genre(self, discover):
+        discover.return_value = {"results": [{"title": "Berserk"}]}
+
+        result = services.discover(
+            MediaTypes.MANGA.value,
+            source=Sources.MAL.value,
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+        self.assertEqual(result, discover.return_value)
+        discover.assert_called_once_with(
+            page=2,
+            page_size=25,
+            genre="Action",
+        )
+
+    def test_discover_mal_manga_rejects_other_filters(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "year discovery is not supported for manga.",
+        ):
+            services.discover(
+                MediaTypes.MANGA.value,
+                source=Sources.MAL.value,
+                genre="Action",
+                year="2024",
+            )
+        with self.assertRaisesMessage(
+            ValueError,
+            "platform discovery is only supported for games.",
+        ):
+            services.discover(
+                MediaTypes.MANGA.value,
+                source=Sources.MAL.value,
+                genre="Action",
+                platform="Kindle",
+            )
+
     @patch("app.providers.musicbrainz.search")
     def test_search_music(self, mock_search):
         mock_search.return_value = [{"title": "Year Zero"}]
