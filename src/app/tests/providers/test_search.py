@@ -1,7 +1,7 @@
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 from django.core.cache import cache
@@ -25,6 +25,60 @@ requires_provider_network = unittest.skipUnless(
     RUN_PROVIDER_TESTS,
     "Set RUN_PROVIDER_TESTS=1 to run live provider API tests.",
 )
+
+
+def mal_genre_page_html(media_type, media_id, title):
+    if media_type == MediaTypes.ANIME.value:
+        card_class = "js-seasonal-anime js-anime-type-1"
+        details = """
+            <div class="prodsrc"><div class="info">TV (64 eps)</div></div>
+            <span class="js-start_date">20090405</span>
+            <span class="js-score">9.1</span>
+            <span class="js-members">3M</span>
+        """
+    else:
+        card_class = "js-seasonal-anime"
+        details = """
+            <div class="prodsrc">
+                <div class="info"><span class="item">Manga, 1989</span></div>
+            </div>
+            <span class="js-chapter">380</span>
+            <span class="js-volume">42</span>
+            <span class="scormem-item score">9.47</span>
+            <span class="scormem-item member">700K</span>
+        """
+    return f"""
+        <html>
+            <head>
+                <meta property="og:url"
+                      content="https://myanimelist.net/{media_type}/genre/46/Award_Winning">
+                <link rel="next" href="?page=2">
+            </head>
+            <body>
+                <div class="js-categories-seasonal">
+                    <div class="{card_class}">
+                        <div class="title">
+                            <a class="link-title"
+                               href="https://myanimelist.net/{media_type}/{media_id}/{title}">
+                                {title}
+                            </a>
+                        </div>
+                        <div class="image">
+                            <img data-src="https://cdn.myanimelist.net/{media_type}/{media_id}.jpg">
+                        </div>
+                        {details}
+                        <a href="/{media_type}/genre/46/Award_Winning"
+                           title="Award Winning">Award Winning</a>
+                        <div class="synopsis"><div class="preline">Synopsis.</div></div>
+                    </div>
+                </div>
+                <div class="pagination">
+                    <a>1 - 100</a>
+                    <a>201 - 259</a>
+                </div>
+            </body>
+        </html>
+    """
 
 
 class Search(TestCase):
@@ -174,6 +228,10 @@ class Search(TestCase):
     )
     @patch("app.providers.anilist.anime_genre_page")
     @patch(
+        "app.providers.mal._mal_genre_discovery_page",
+        side_effect=requests.Timeout("MAL page unavailable"),
+    )
+    @patch(
         "app.providers.mal._jikan_anime_discovery_page",
         side_effect=requests.Timeout("Jikan unavailable"),
     )
@@ -185,6 +243,7 @@ class Search(TestCase):
         self,
         _genres,
         _jikan_discover,
+        _mal_page,
         anilist_discover,
         _cached_posters,
     ):
@@ -384,6 +443,10 @@ class Search(TestCase):
     )
     @patch("app.providers.anilist.manga_genre_page")
     @patch(
+        "app.providers.mal._mal_genre_discovery_page",
+        side_effect=requests.Timeout("MAL page unavailable"),
+    )
+    @patch(
         "app.providers.mal._jikan_manga_discovery_page",
         side_effect=requests.Timeout("Jikan unavailable"),
     )
@@ -395,6 +458,7 @@ class Search(TestCase):
         self,
         _genres,
         _jikan_discover,
+        _mal_page,
         anilist_discover,
         _cached_posters,
     ):
@@ -470,6 +534,10 @@ class Search(TestCase):
         side_effect=RuntimeError("AniList unavailable"),
     )
     @patch(
+        "app.providers.mal._mal_genre_discovery_page",
+        side_effect=requests.Timeout("MAL page unavailable"),
+    )
+    @patch(
         "app.providers.mal._jikan_manga_discovery_page",
         side_effect=requests.Timeout("Jikan unavailable"),
     )
@@ -477,10 +545,11 @@ class Search(TestCase):
         "app.providers.mal._jikan_manga_genres",
         return_value=[{"id": 1, "name": "Action"}],
     )
-    def test_manga_discover_returns_empty_page_when_both_providers_fail(
+    def test_manga_discover_returns_empty_when_all_providers_fail(
         self,
         _genres,
         _jikan_discover,
+        _mal_page,
         _anilist_discover,
     ):
         cache.clear()
@@ -504,6 +573,308 @@ class Search(TestCase):
         self.assertTrue(
             cache.get(mal.MANGA_DISCOVER_JIKAN_FAILURE_KEY),
         )
+
+    @override_settings(MAL_NSFW=False)
+    def test_award_winning_uses_mal_page_for_anime_and_manga(self):
+        scenarios = (
+            {
+                "media_type": MediaTypes.ANIME.value,
+                "media_id": "5114",
+                "title": "Fullmetal Alchemist",
+                "display_title": "Fullmetal Alchemist: Brotherhood",
+                "discover": mal.discover_anime,
+                "genres": "_jikan_anime_genres",
+                "jikan": "_jikan_anime_discovery_page",
+                "anilist": "_anilist_anime_discovery_page",
+                "posters": "cached_anime_posters",
+            },
+            {
+                "media_type": MediaTypes.MANGA.value,
+                "media_id": "2",
+                "title": "Berserk",
+                "display_title": "Berserk",
+                "discover": mal.discover_manga,
+                "genres": "_jikan_manga_genres",
+                "jikan": "_jikan_manga_discovery_page",
+                "anilist": "_anilist_manga_discovery_page",
+                "posters": "cached_manga_posters",
+            },
+        )
+        for scenario in scenarios:
+            with self.subTest(media_type=scenario["media_type"]):
+                cache.clear()
+                canonical_poster = (
+                    f"https://cdn.myanimelist.net/canonical-"
+                    f"{scenario['media_type']}.jpg"
+                )
+                cache_version = (
+                    mal.ANIME_CACHE_VERSION
+                    if scenario["media_type"] == MediaTypes.ANIME.value
+                    else mal.MANGA_CACHE_VERSION
+                )
+                cache.set(
+                    f"mal_{scenario['media_type']}_{scenario['media_id']}_"
+                    f"{cache_version}",
+                    {"display_title": scenario["display_title"]},
+                )
+                response = Mock(
+                    text=mal_genre_page_html(
+                        scenario["media_type"],
+                        scenario["media_id"],
+                        scenario["title"],
+                    ),
+                )
+                response.raise_for_status.return_value = None
+                with (
+                    patch.object(
+                        mal,
+                        scenario["genres"],
+                        return_value=[
+                            {
+                                "id": 46,
+                                "name": "Award Winning",
+                                "count": 259,
+                            },
+                        ],
+                    ),
+                    patch.object(
+                        mal,
+                        scenario["jikan"],
+                        side_effect=requests.Timeout("Jikan unavailable"),
+                    ) as jikan_discover,
+                    patch.object(
+                        mal.services.session,
+                        "get",
+                        return_value=response,
+                    ) as page_request,
+                    patch.object(mal, scenario["anilist"]) as anilist_discover,
+                    patch.object(
+                        mal,
+                        scenario["posters"],
+                        return_value={scenario["media_id"]: canonical_poster},
+                    ),
+                ):
+                    result = scenario["discover"](
+                        page=1,
+                        page_size=25,
+                        genre="Award Winning",
+                    )
+
+                jikan_discover.assert_called_once_with(
+                    page=1,
+                    page_size=25,
+                    genre_id="46",
+                )
+                self.assertEqual(
+                    page_request.call_args_list[0],
+                    unittest.mock.call(
+                        f"https://myanimelist.net/"
+                        f"{scenario['media_type']}/genre/46",
+                        params={"page": 1, "sfw": "1"},
+                        headers={"User-Agent": "Spine/1.0"},
+                        timeout=3,
+                    ),
+                )
+                anilist_discover.assert_not_called()
+                self.assertEqual(result["total_results"], 259)
+                self.assertEqual(result["total_pages"], 11)
+                item = result["results"][0]
+                self.assertEqual(item["media_id"], scenario["media_id"])
+                self.assertEqual(item["source"], Sources.MAL.value)
+                self.assertEqual(item["media_type"], scenario["media_type"])
+                self.assertEqual(item["image"], canonical_poster)
+                self.assertEqual(item["display_title"], scenario["display_title"])
+
+    def test_mal_genre_page_slices_requested_pagination(self):
+        def page_data(media_type, genre_id, page):
+            first_id = (page - 1) * 100 + 1
+            item_count = 96 if page == 1 else 100 if page == 2 else 59
+            return {
+                "page": page,
+                "per_page": 100,
+                "total_results": 259,
+                "has_next_page": page < 3,
+                "results": [
+                    {"media_id": str(media_id)}
+                    for media_id in range(first_id, first_id + item_count)
+                ],
+            }
+
+        with patch(
+            "app.providers.mal._mal_genre_page_data",
+            side_effect=page_data,
+        ) as genre_page:
+            result = mal._mal_genre_discovery_page(
+                media_type=MediaTypes.MANGA.value,
+                genre_id="46",
+                page=7,
+                page_size=15,
+            )
+
+        self.assertEqual(
+            [item["media_id"] for item in result["results"]],
+            [
+                *[str(media_id) for media_id in range(91, 97)],
+                *[str(media_id) for media_id in range(101, 110)],
+            ],
+        )
+        self.assertEqual(result["page"], 7)
+        self.assertEqual(result["per_page"], 15)
+        self.assertEqual(result["total_results"], 259)
+        self.assertEqual(result["total_pages"], 18)
+        self.assertEqual(
+            genre_page.call_args_list,
+            [
+                unittest.mock.call(MediaTypes.MANGA.value, "46", 1),
+                unittest.mock.call(MediaTypes.MANGA.value, "46", 2),
+            ],
+        )
+
+    @override_settings(MAL_NSFW=False)
+    @patch(
+        "app.providers.mal.services.session.get",
+        side_effect=requests.Timeout("MAL unavailable"),
+    )
+    def test_mal_genre_page_uses_stale_cache_after_timeout(self, page_request):
+        cache.clear()
+        stale = {
+            "page": 1,
+            "per_page": 100,
+            "total_results": 259,
+            "has_next_page": True,
+            "results": [{"media_id": "2"}],
+        }
+        prefix = mal._mal_genre_page_cache_prefix(
+            MediaTypes.MANGA.value,
+            "46",
+            1,
+        )
+        cache.set(f"{prefix}:stale", stale, 60)
+
+        result = mal._mal_genre_page_data(
+            MediaTypes.MANGA.value,
+            "46",
+            1,
+        )
+
+        self.assertEqual(result, stale)
+        page_request.assert_called_once_with(
+            "https://myanimelist.net/manga/genre/46",
+            params={"page": 1, "sfw": "1"},
+            headers={"User-Agent": "Spine/1.0"},
+            timeout=3,
+        )
+
+    def test_mal_genre_page_rejects_malformed_html(self):
+        html = """
+            <meta property="og:url"
+                  content="https://myanimelist.net/manga/genre/46/Award_Winning">
+            <div>MAL changed this page.</div>
+        """
+
+        with self.assertRaisesRegex(ValueError, "malformed manga genre page"):
+            mal._parse_mal_genre_page(
+                html,
+                media_type=MediaTypes.MANGA.value,
+                genre_id="46",
+                page=1,
+            )
+
+    def test_mal_genre_index_parses_exact_names_and_ids(self):
+        result = mal._parse_mal_genre_index(
+            '<a href="/manga/genre/46/Award_Winning">'
+            "Award Winning (507)</a>",
+            MediaTypes.MANGA.value,
+        )
+
+        self.assertEqual(
+            result,
+            [{"id": "46", "name": "Award Winning"}],
+        )
+
+    def test_mal_genre_discovery_uses_fallback_order(self):
+        order = []
+
+        def jikan_provider(**_kwargs):
+            order.append("jikan")
+            raise requests.Timeout("Jikan unavailable")
+
+        def mal_provider(**_kwargs):
+            order.append("mal")
+            raise ValueError("Malformed MAL page")
+
+        def anilist_provider(**kwargs):
+            order.append("anilist")
+            self.assertEqual(kwargs["genre"], "Award Winning")
+            return {
+                "page": kwargs["page"],
+                "per_page": kwargs["page_size"],
+                "total_results": 1,
+                "total_pages": 1,
+                "results": [{"media_id": "2"}],
+            }
+
+        cache.clear()
+        with (
+            patch(
+                "app.providers.mal._mal_genre_index",
+                return_value=[
+                    {"id": 46, "name": "Award Winning"},
+                ],
+            ) as genre_index,
+            patch(
+                "app.providers.mal._mal_genre_discovery_page",
+                side_effect=mal_provider,
+            ),
+        ):
+            result = mal._discover_mal_genre(
+                media_type=MediaTypes.MANGA.value,
+                page=1,
+                page_size=25,
+                genre="award winning",
+                genres_provider=Mock(return_value=[]),
+                jikan_provider=jikan_provider,
+                anilist_provider=anilist_provider,
+                jikan_failure_key="test:mal-genre:jikan-failure",
+            )
+
+        genre_index.assert_called_once_with(MediaTypes.MANGA.value)
+        self.assertEqual(order, ["jikan", "mal", "anilist"])
+        self.assertEqual(result["results"], [{"media_id": "2"}])
+
+    def test_anime_genre_discovery_rejects_false_empty_first_page(self):
+        empty_page = {
+            "page": 1,
+            "per_page": 25,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+        cache.clear()
+        with (
+            patch(
+                "app.providers.mal._mal_genre_discovery_page",
+                return_value=empty_page,
+            ),
+            self.assertRaisesRegex(
+                mal.services.ProviderAPIError,
+                "Anime genre discovery is temporarily unavailable",
+            ),
+        ):
+            mal._discover_mal_genre(
+                media_type=MediaTypes.ANIME.value,
+                page=1,
+                page_size=25,
+                genre="Award Winning",
+                genres_provider=Mock(
+                    return_value=[
+                        {"id": 46, "name": "Award Winning", "count": 259},
+                    ],
+                ),
+                jikan_provider=Mock(return_value=empty_page),
+                anilist_provider=Mock(return_value=empty_page),
+                jikan_failure_key="test:mal-genre:false-empty",
+            )
 
     @requires_provider_network
     def test_mangaupdates(self):

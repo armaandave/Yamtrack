@@ -64,7 +64,14 @@ def person_list_item_payload(list_person, request=None, completion=None):
     }
 
 
-def list_payload(custom_list, request=None, *, include_items=False, include_preview_items=False):
+def list_payload(
+    custom_list,
+    request=None,
+    *,
+    include_items=False,
+    include_preview_items=False,
+    include_completion=False,
+):
     """Serialize a custom list."""
     is_people_list = custom_list.list_type == CustomList.ListType.PEOPLE
     items_count = (
@@ -98,7 +105,9 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             target_type=ContentLike.CUSTOM_LIST,
             target_id=custom_list.id,
         ).count(),
-        "completion": (
+    }
+    if include_items or include_completion:
+        data["completion"] = (
             completion_service.completion_for_items(
                 request.user,
                 custom_list.items.filter(
@@ -107,8 +116,7 @@ def list_payload(custom_list, request=None, *, include_items=False, include_prev
             )
             if not is_people_list and request is not None
             else None
-        ),
-    }
+        )
     if include_preview_items or include_items:
         items, people = [], []
         if is_people_list:
@@ -479,7 +487,14 @@ class ListDetailView(APIView):
         custom_list = self.get_object(request, list_id, include_items=include_items)
         if custom_list is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        return Response(list_payload(custom_list, request=request, include_items=include_items))
+        return Response(
+            list_payload(
+                custom_list,
+                request=request,
+                include_items=include_items,
+                include_completion=True,
+            ),
+        )
 
     def patch(self, request, list_id):
         custom_list = get_object_or_404(CustomList, id=list_id)

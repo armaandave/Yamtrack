@@ -655,16 +655,18 @@ struct PersonDetailView: View {
         )
 
         return VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(spacing: 8) {
                 PersonSectionLabel(title: selectedType.sectionTitle)
+                    .accessibilityIdentifier("person-filmography-section-title")
+
+                Spacer(minLength: 8)
 
                 if let completion = mediaTypeCompletion(for: selectedType),
                    completion.isVisible {
                     SWCompletionProgressButton(progress: completion)
                         .accessibilityLabel("\(selectedType.sectionTitle) completion")
+                        .accessibilityIdentifier("person-filmography-completion")
                 }
-
-                Spacer()
 
                 MediaFilterButton(
                     filter: $viewModel.filter,
@@ -682,15 +684,16 @@ struct PersonDetailView: View {
                     }
                 }
 
-                if types.count > 1 {
-                    Picker("Credit type", selection: $selectedFilmographyType) {
-                        ForEach(types) { type in
-                            Text(type.title).tag(type)
-                        }
+            }
+
+            if types.count > 1 {
+                Picker("Credit type", selection: $selectedFilmographyType) {
+                    ForEach(types) { type in
+                        Text(type.title).tag(type)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: max(75, CGFloat(types.count) * 75))
                 }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity)
             }
 
             ratingPreparationStatus
@@ -796,39 +799,45 @@ struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if expandedCreditRoles.contains(group.id) {
-                            expandedCreditRoles.remove(group.id)
-                        } else {
-                            expandedCreditRoles.insert(group.id)
-                        }
-                    }
+                    toggleCreditRole(group.id)
                 } label: {
-                    HStack(spacing: 10) {
-                        Text(group.compactTitle(for: type))
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.74))
-
-                        Spacer()
-
-                        Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.44))
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                    Text(group.compactTitle(for: type))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityValue(expandedCreditRoles.contains(group.id) ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("person-role-header.\(type.rawValue).\(group.id)")
 
                 if let completion = roleCompletion(for: group, type: type),
                    completion.isVisible {
                     SWCompletionProgressButton(progress: completion)
                         .accessibilityLabel("\(group.role) completion")
+                        .accessibilityIdentifier("person-role-completion.\(type.rawValue).\(group.id)")
                 }
+
+                Button {
+                    toggleCreditRole(group.id)
+                } label: {
+                    Image(systemName: expandedCreditRoles.contains(group.id) ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(group.role) section")
+                .accessibilityValue(expandedCreditRoles.contains(group.id) ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("person-role-chevron.\(type.rawValue).\(group.id)")
             }
+            .padding(.leading, 12)
+            .padding(.trailing, 2)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
+            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
 
             if expandedCreditRoles.contains(group.id) {
                 filmographyGrid(group.media)
@@ -954,6 +963,16 @@ struct PersonDetailView: View {
         }
         if !(viewModel.detail?.series(for: selectedType.rawValue).isEmpty ?? true) {
             expandedCreditRoles.insert(Self.seriesRoleID)
+        }
+    }
+
+    private func toggleCreditRole(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expandedCreditRoles.contains(id) {
+                expandedCreditRoles.remove(id)
+            } else {
+                expandedCreditRoles.insert(id)
+            }
         }
     }
 
@@ -1365,5 +1384,8 @@ private struct PersonSectionLabel: View {
             .font(.system(size: 12, weight: .heavy))
             .foregroundStyle(.white.opacity(0.54))
             .tracking(1.2)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .layoutPriority(1)
     }
 }

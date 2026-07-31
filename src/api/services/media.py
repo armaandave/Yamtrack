@@ -95,6 +95,7 @@ PEOPLE_SEARCH_PROVIDER_LIMIT = 10
 ALL_MEDIA_CANDIDATE_STALE_TTL = 60 * 60 * 24 * 7
 ALL_MEDIA_REFRESH_SCHEDULE_TTL = 60
 DISCOVER_TTL = 60 * 60 * 6
+DISCOVER_EMPTY_TTL = 60 * 5
 DETAIL_TTL = 60 * 60 * 24
 DETAIL_CACHE_VERSION = "v9"
 BOOK_DETAIL_CACHE_VERSION = "v1"
@@ -734,7 +735,17 @@ def discover_media(
             platform=platform,
             sort=sort,
         )
-        cache.set(cache_key, data, DISCOVER_TTL)
+        empty_mal_genre = (
+            source == Sources.MAL.value
+            and media_type in {MediaTypes.ANIME.value, MediaTypes.MANGA.value}
+            and genre
+            and not (data.get("results") or data.get("items"))
+        )
+        cache.set(
+            cache_key,
+            data,
+            DISCOVER_EMPTY_TTL if empty_mal_genre else DISCOVER_TTL,
+        )
 
     raw_results = data.get("results") or data.get("items") or []
     return {

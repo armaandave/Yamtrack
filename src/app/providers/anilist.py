@@ -107,9 +107,32 @@ query (
 }
 """
 
+ANILIST_GENRES = {
+    "Action",
+    "Adventure",
+    "Comedy",
+    "Drama",
+    "Ecchi",
+    "Fantasy",
+    "Hentai",
+    "Horror",
+    "Mahou Shoujo",
+    "Mecha",
+    "Music",
+    "Mystery",
+    "Psychological",
+    "Romance",
+    "Sci-Fi",
+    "Slice of Life",
+    "Sports",
+    "Supernatural",
+    "Thriller",
+}
+
 ANIME_GENRE_QUERY = """
 query (
   $genres: [String]
+  $tags: [String]
   $page: Int!
   $perPage: Int!
   $isAdult: Boolean
@@ -124,7 +147,9 @@ query (
     }
     media(
       type: ANIME
+      idMal_not: 0
       genre_in: $genres
+      tag_in: $tags
       isAdult: $isAdult
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
@@ -158,6 +183,7 @@ query (
 MANGA_GENRE_QUERY = """
 query (
   $genres: [String]
+  $tags: [String]
   $page: Int!
   $perPage: Int!
   $isAdult: Boolean
@@ -172,7 +198,9 @@ query (
     }
     media(
       type: MANGA
+      idMal_not: 0
       genre_in: $genres
+      tag_in: $tags
       isAdult: $isAdult
       sort: [POPULARITY_DESC, SCORE_DESC]
     ) {
@@ -812,6 +840,8 @@ def _media_genre_page(
     include_adult,
     timeout,
 ):
+    genre = str(genre)
+    taxonomy = "genres" if genre in ANILIST_GENRES else "tags"
     response = services.api_request(
         "ANILIST",
         "POST",
@@ -819,7 +849,7 @@ def _media_genre_page(
         params={
             "query": query,
             "variables": {
-                "genres": [str(genre)],
+                taxonomy: [genre],
                 "page": int(page),
                 "perPage": int(page_size),
                 "isAdult": None if include_adult else False,

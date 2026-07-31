@@ -521,7 +521,7 @@ struct SWStatsYearChart: View {
                 BarMark(
                     x: .value("Release year index", Double(point.index)),
                     y: .value("Titles", point.count),
-                    width: .ratio(0.7)
+                    width: .fixed(3)
                 )
                 .cornerRadius(3)
                 .foregroundStyle(tint.gradient)

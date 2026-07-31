@@ -173,7 +173,6 @@ struct StatsView: View {
             selectedMediaType == nil || $0.mediaType == selectedMediaType
         }
         let hasProgressContent = scope.completion?.isVisible == true
-            || (selectedMediaType == nil && !summary.listProgress.isEmpty)
             || !seriesProgress.isEmpty
 
         return VStack(alignment: .leading, spacing: 30) {
@@ -195,21 +194,6 @@ struct StatsView: View {
                 }
 
                 completionSection(scope)
-
-                if selectedMediaType == nil {
-                    progressSection(
-                        title: "List progress",
-                        items: summary.listProgress.map {
-                            StatsCompletionDisplayItem(
-                                id: "list:\($0.id)",
-                                name: $0.name,
-                                detail: "List",
-                                posterUrls: $0.posterUrls,
-                                completion: $0.completion
-                            )
-                        }
-                    )
-                }
 
                 progressSection(
                     title: "Series & collection progress",

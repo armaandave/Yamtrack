@@ -2,7 +2,7 @@ import XCTest
 @testable import Spine
 
 final class CompletionSurfaceModelsTests: XCTestCase {
-    func testListCompletionDecodesForMediaAndPeopleEntries() throws {
+    func testOnlyListDetailExposesCompletion() throws {
         let summaryJSON = """
         {
           "id": 4,
@@ -76,9 +76,9 @@ final class CompletionSurfaceModelsTests: XCTestCase {
             from: Data(personJSON.utf8)
         )
 
-        XCTAssertEqual(summary.completion?.percentageText, "50%")
+        XCTAssertEqual(summary.name, "Six Films")
         XCTAssertEqual(detail.completion?.countText, "3 of 6")
-        XCTAssertEqual(person.completion?.countText, "12 of 24")
+        XCTAssertEqual(person.name, "A Person")
     }
 
     func testPersonCompletionDecodesByMediaTypeAndRole() throws {

@@ -413,13 +413,6 @@ struct AddToListSheet: View {
             )
             .accessibilityAddTraits(isMember ? .isSelected : [])
             .accessibilityIdentifier("add-to-list.list.\(list.id)")
-
-            if list.listType == .media,
-               let completion = list.completion,
-               completion.isVisible {
-                SWCompletionProgressButton(progress: completion)
-                    .accessibilityLabel("\(list.name) completion")
-            }
         }
     }
 

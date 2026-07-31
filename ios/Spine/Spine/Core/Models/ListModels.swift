@@ -14,7 +14,6 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
     let knownForDepartment: String?
     let position: Int?
     let dateAdded: String
-    let completion: CompletionProgress?
 
     var id: Int {
         entryId
@@ -33,7 +32,6 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
         case knownForDepartment
         case position
         case dateAdded
-        case completion
     }
 
     init(
@@ -44,8 +42,7 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
         profileUrl: String?,
         knownForDepartment: String?,
         position: Int?,
-        dateAdded: String,
-        completion: CompletionProgress? = nil
+        dateAdded: String
     ) {
         self.entryId = entryId
         self.personId = personId
@@ -55,7 +52,6 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
         self.knownForDepartment = knownForDepartment
         self.position = position
         self.dateAdded = dateAdded
-        self.completion = completion
     }
 
     init(from decoder: Decoder) throws {
@@ -68,7 +64,6 @@ struct PersonListEntry: Codable, Identifiable, Hashable {
         knownForDepartment = try container.decodeIfPresent(String.self, forKey: .knownForDepartment)
         position = try container.decodeIfPresent(Int.self, forKey: .position)
         dateAdded = try container.decode(String.self, forKey: .dateAdded)
-        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 
@@ -93,7 +88,6 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
     let entriesCount: Int
     let updatedAt: String?
     let likeCount: Int
-    let completion: CompletionProgress?
 
     init(
         id: Int,
@@ -115,8 +109,7 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         peopleCount: Int = 0,
         entriesCount: Int? = nil,
         updatedAt: String? = nil,
-        likeCount: Int,
-        completion: CompletionProgress? = nil
+        likeCount: Int
     ) {
         self.id = id
         self.name = name
@@ -138,7 +131,6 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         self.entriesCount = entriesCount ?? (listType == .people ? peopleCount : itemsCount)
         self.updatedAt = updatedAt
         self.likeCount = likeCount
-        self.completion = completion
     }
 
     enum CodingKeys: String, CodingKey {
@@ -162,7 +154,6 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
         case entriesCount
         case updatedAt
         case likeCount
-        case completion
     }
 
     init(from decoder: Decoder) throws {
@@ -188,7 +179,6 @@ struct CustomListSummary: Codable, Identifiable, Hashable {
             ?? itemsCount
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         likeCount = try container.decode(Int.self, forKey: .likeCount)
-        completion = try container.decodeIfPresent(CompletionProgress.self, forKey: .completion)
     }
 }
 

@@ -14,8 +14,10 @@ struct SWCompletionProgressButton: View {
                     .font(.system(size: 11, weight: .bold))
                 Text(showsCount ? progress.countText : progress.percentageText)
                     .monospacedDigit()
+                    .lineLimit(1)
                     .contentTransition(.numericText())
             }
+            .fixedSize(horizontal: true, vertical: false)
             .font(.system(size: 11, weight: .heavy))
             .foregroundStyle(.green.opacity(0.9))
             .padding(.horizontal, 10)

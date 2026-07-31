@@ -50,6 +50,17 @@ MANGA_CACHE_VERSION = "v3"
 MANGA_POSTER_CACHE_VERSION = "v1"
 MANGA_POSTER_TTL = 60 * 60 * 24 * 30
 MANGA_DISCOVER_JIKAN_FAILURE_KEY = "mal:v1:manga-discover:jikan-failure"
+MAL_GENRE_PAGE_CACHE_VERSION = "v1"
+MAL_GENRE_PAGE_SIZE = 100
+MAL_GENRE_PAGE_FRESH_TTL = 60 * 60 * 6
+MAL_GENRE_PAGE_STALE_TTL = 60 * 60 * 24 * 7
+MAL_DISCOVERY_ERRORS = (
+    requests.RequestException,
+    AttributeError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
 STUDIO_CACHE_VERSION = "v2"
 STUDIO_IDENTITY_TTL = 60 * 60 * 24 * 30
 STUDIO_FRESH_TTL = 60 * 60 * 24
@@ -202,73 +213,16 @@ def search_people(query, *, limit=10, timeout=None):
 
 def discover_anime(*, page=1, page_size=None, genre=None):
     """Discover MAL-addressable anime by genre."""
-    page = int(page)
-    page_size = int(page_size or settings.PER_PAGE)
-    genre = str(genre or "").strip()
-    if page < 1:
-        raise ValueError("page must be at least 1.")
-    if not 1 <= page_size <= ANIME_DISCOVER_MAX_PAGE_SIZE:
-        raise ValueError(
-            f"page_size must be between 1 and {ANIME_DISCOVER_MAX_PAGE_SIZE}.",
-        )
-    if not genre:
-        raise ValueError("genre is required for MAL anime discovery.")
-
-    genres = _jikan_anime_genres(include_all=True)
-    genre_ids = {
-        item["name"].casefold(): str(item["id"])
-        for item in genres
-    }
-    genre_id = genre_ids.get(genre.casefold())
-    if genres and genre_id is None:
-        raise ValueError(f"Unknown MAL anime genre: {genre}")
-
-    if (
-        genre_id is not None
-        and not cache.get(ANIME_DISCOVER_JIKAN_FAILURE_KEY)
-    ):
-        try:
-            data = _jikan_anime_discovery_page(
-                page=page,
-                page_size=page_size,
-                genre_id=genre_id,
-            )
-            cache.delete(ANIME_DISCOVER_JIKAN_FAILURE_KEY)
-            return data
-        except (
-            requests.RequestException,
-            AttributeError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as error:
-            logger.warning(
-                "anime_genre_discovery_jikan_failed genre=%s page=%s "
-                "fallback=anilist type=%s",
-                genre,
-                page,
-                type(error).__name__,
-            )
-            cache.set(
-                ANIME_DISCOVER_JIKAN_FAILURE_KEY,
-                True,
-                ANIME_DISCOVER_JIKAN_FAILURE_TTL,
-            )
-
-    try:
-        return _anilist_anime_discovery_page(
-            genre=genre,
-            page=page,
-            page_size=page_size,
-        )
-    except (
-        requests.RequestException,
-        AttributeError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as error:
-        raise services.ProviderAPIError("anilist", error) from error
+    return _discover_mal_genre(
+        media_type=MediaTypes.ANIME.value,
+        page=page,
+        page_size=page_size,
+        genre=genre,
+        genres_provider=_jikan_anime_genres,
+        jikan_provider=_jikan_anime_discovery_page,
+        anilist_provider=_anilist_anime_discovery_page,
+        jikan_failure_key=ANIME_DISCOVER_JIKAN_FAILURE_KEY,
+    )
 
 
 def _jikan_anime_discovery_page(*, page, page_size, genre_id):
@@ -387,79 +341,16 @@ def _anilist_anime_discovery_page(*, genre, page, page_size):
 
 def discover_manga(*, page=1, page_size=None, genre=None):
     """Discover MAL-addressable manga by genre."""
-    page = int(page)
-    page_size = int(page_size or settings.PER_PAGE)
-    genre = str(genre or "").strip()
-    if page < 1:
-        raise ValueError("page must be at least 1.")
-    if not 1 <= page_size <= ANIME_DISCOVER_MAX_PAGE_SIZE:
-        raise ValueError(
-            f"page_size must be between 1 and {ANIME_DISCOVER_MAX_PAGE_SIZE}.",
-        )
-    if not genre:
-        raise ValueError("genre is required for MAL manga discovery.")
-
-    genres = _jikan_manga_genres(include_all=True)
-    genre_ids = {
-        item["name"].casefold(): str(item["id"])
-        for item in genres
-    }
-    genre_id = genre_ids.get(genre.casefold())
-    if genres and genre_id is None:
-        raise ValueError(f"Unknown MAL manga genre: {genre}")
-
-    if (
-        genre_id is not None
-        and not cache.get(MANGA_DISCOVER_JIKAN_FAILURE_KEY)
-    ):
-        try:
-            data = _jikan_manga_discovery_page(
-                page=page,
-                page_size=page_size,
-                genre_id=genre_id,
-            )
-            cache.delete(MANGA_DISCOVER_JIKAN_FAILURE_KEY)
-            return data
-        except (
-            requests.RequestException,
-            AttributeError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as error:
-            logger.warning(
-                "manga_genre_discovery_jikan_failed genre=%s page=%s "
-                "fallback=anilist type=%s",
-                genre,
-                page,
-                type(error).__name__,
-            )
-            cache.set(
-                MANGA_DISCOVER_JIKAN_FAILURE_KEY,
-                True,
-                ANIME_DISCOVER_JIKAN_FAILURE_TTL,
-            )
-
-    try:
-        return _anilist_manga_discovery_page(
-            genre=genre,
-            page=page,
-            page_size=page_size,
-        )
-    except Exception as error:  # noqa: BLE001 - discovery stays available
-        logger.warning(
-            "manga_genre_discovery_anilist_failed genre=%s page=%s type=%s",
-            genre,
-            page,
-            type(error).__name__,
-        )
-        return {
-            "page": page,
-            "per_page": page_size,
-            "total_results": 0,
-            "total_pages": 0,
-            "results": [],
-        }
+    return _discover_mal_genre(
+        media_type=MediaTypes.MANGA.value,
+        page=page,
+        page_size=page_size,
+        genre=genre,
+        genres_provider=_jikan_manga_genres,
+        jikan_provider=_jikan_manga_discovery_page,
+        anilist_provider=_anilist_manga_discovery_page,
+        jikan_failure_key=MANGA_DISCOVER_JIKAN_FAILURE_KEY,
+    )
 
 
 def _jikan_manga_discovery_page(*, page, page_size, genre_id):
@@ -574,6 +465,372 @@ def _anilist_manga_discovery_page(*, genre, page, page_size):
         "total_pages": page_info.get("lastPage"),
         "results": results,
     }
+
+
+def _discover_mal_genre(
+    *,
+    media_type,
+    page,
+    page_size,
+    genre,
+    genres_provider,
+    jikan_provider,
+    anilist_provider,
+    jikan_failure_key,
+):
+    page = int(page)
+    page_size = int(page_size or settings.PER_PAGE)
+    genre = str(genre or "").strip()
+    if page < 1:
+        raise ValueError("page must be at least 1.")
+    if not 1 <= page_size <= ANIME_DISCOVER_MAX_PAGE_SIZE:
+        raise ValueError(
+            f"page_size must be between 1 and {ANIME_DISCOVER_MAX_PAGE_SIZE}.",
+        )
+    if not genre:
+        raise ValueError(f"genre is required for MAL {media_type} discovery.")
+
+    genres = genres_provider(include_all=True) or _mal_genre_index(media_type)
+    genre_entry = next(
+        (
+            item
+            for item in genres
+            if item["name"].casefold() == genre.casefold()
+        ),
+        None,
+    )
+    if genres and genre_entry is None:
+        raise ValueError(f"Unknown MAL {media_type} genre: {genre}")
+    if genre_entry is not None:
+        genre = str(genre_entry["name"])
+    genre_id = str(genre_entry["id"]) if genre_entry else None
+    known_nonempty = genre_entry is not None
+    exact_error = None
+
+    if genre_id is None:
+        exact_error = RuntimeError("MAL genre mapping is unavailable")
+    elif cache.get(jikan_failure_key):
+        exact_error = RuntimeError("Cached Jikan discovery failure")
+    else:
+        try:
+            data = jikan_provider(
+                page=page,
+                page_size=page_size,
+                genre_id=genre_id,
+            )
+            if _known_genre_page_is_empty(data, page, known_nonempty):
+                raise ValueError("Jikan returned a false empty genre page")
+            cache.delete(jikan_failure_key)
+            return data
+        except MAL_DISCOVERY_ERRORS as error:
+            exact_error = error
+            logger.warning(
+                "%s_genre_discovery_jikan_failed genre=%s page=%s "
+                "fallback=mal_page type=%s",
+                media_type,
+                genre,
+                page,
+                type(error).__name__,
+            )
+            cache.set(
+                jikan_failure_key,
+                True,
+                ANIME_DISCOVER_JIKAN_FAILURE_TTL,
+            )
+
+    if genre_id is not None and (
+        settings.MAL_NSFW or genre_id not in {"12", "49"}
+    ):
+        try:
+            data = _mal_genre_discovery_page(
+                media_type=media_type,
+                genre_id=genre_id,
+                page=page,
+                page_size=page_size,
+            )
+            if _known_genre_page_is_empty(data, page, known_nonempty):
+                raise ValueError("MAL returned a false empty genre page")
+            if data["results"] or page > 1:
+                return data
+            exact_error = ValueError("MAL returned an empty first genre page")
+        except MAL_DISCOVERY_ERRORS as error:
+            exact_error = error
+            logger.warning(
+                "%s_genre_discovery_mal_page_failed genre=%s page=%s "
+                "fallback=anilist type=%s",
+                media_type,
+                genre,
+                page,
+                type(error).__name__,
+            )
+
+    try:
+        data = anilist_provider(
+            genre=genre,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as error:  # noqa: BLE001 - final fallback is contained
+        fallback_error = error
+    else:
+        if data["results"] or page > 1:
+            return data
+        fallback_error = ValueError("AniList returned an empty first genre page")
+        if exact_error is None and not known_nonempty:
+            return data
+
+    if media_type == MediaTypes.MANGA.value:
+        logger.warning(
+            "manga_genre_discovery_unavailable genre=%s page=%s type=%s",
+            genre,
+            page,
+            type(fallback_error).__name__,
+        )
+        return {
+            "page": page,
+            "per_page": page_size,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+
+    error = exact_error or fallback_error
+    details = f"{media_type.title()} genre discovery is temporarily unavailable"
+    raise services.ProviderAPIError(Sources.MAL.value, error, details) from error
+
+
+def _known_genre_page_is_empty(data, page, known_nonempty):
+    return page == 1 and known_nonempty and not (data.get("results") or [])
+
+
+def _mal_genre_discovery_page(*, media_type, genre_id, page, page_size):
+    start = (page - 1) * page_size
+    results = []
+    mal_page = 1
+    while len(results) < start + page_size:
+        data = _mal_genre_page_data(media_type, genre_id, mal_page)
+        results.extend(data["results"])
+        if not data["has_next_page"]:
+            break
+        mal_page += 1
+    total_results = (
+        data["total_results"]
+        if data["has_next_page"]
+        else len(results)
+    )
+    return {
+        "page": page,
+        "per_page": page_size,
+        "total_results": total_results,
+        "total_pages": (
+            (total_results + page_size - 1) // page_size
+            if total_results
+            else 0
+        ),
+        "results": results[start : start + page_size],
+    }
+
+
+def _mal_genre_page_data(media_type, genre_id, page):
+    prefix = _mal_genre_page_cache_prefix(media_type, genre_id, page)
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    if data := cache.get(fresh_key):
+        return data
+
+    stale = cache.get(stale_key)
+    params = {"page": page}
+    if not settings.MAL_NSFW:
+        params["sfw"] = "1"
+    try:
+        response = services.session.get(
+            f"https://myanimelist.net/{media_type}/genre/{genre_id}",
+            params=params,
+            headers={"User-Agent": "Spine/1.0"},
+            timeout=ANIME_DISCOVER_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = _parse_mal_genre_page(
+            response.text,
+            media_type=media_type,
+            genre_id=genre_id,
+            page=page,
+        )
+        cache.set(fresh_key, data, MAL_GENRE_PAGE_FRESH_TTL)
+        cache.set(stale_key, data, MAL_GENRE_PAGE_STALE_TTL)
+        return data
+    except MAL_DISCOVERY_ERRORS:
+        if stale:
+            return stale
+        raise
+
+
+def _mal_genre_index(media_type):
+    prefix = f"mal:{MAL_GENRE_PAGE_CACHE_VERSION}:{media_type}-genre-index"
+    fresh_key = f"{prefix}:fresh"
+    stale_key = f"{prefix}:stale"
+    if data := cache.get(fresh_key):
+        return data
+
+    stale = cache.get(stale_key)
+    try:
+        response = services.session.get(
+            f"https://myanimelist.net/{media_type}.php",
+            headers={"User-Agent": "Spine/1.0"},
+            timeout=ANIME_DISCOVER_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = _parse_mal_genre_index(response.text, media_type)
+        cache.set(fresh_key, data, MAL_GENRE_PAGE_FRESH_TTL)
+        cache.set(stale_key, data, MAL_GENRE_PAGE_STALE_TTL)
+        return data
+    except MAL_DISCOVERY_ERRORS:
+        return stale or []
+
+
+def _parse_mal_genre_index(html, media_type):
+    genres = {}
+    for link in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        match = re.search(rf"/{media_type}/genre/(\d+)(?:/|$)", link["href"])
+        name = re.sub(
+            r"\s*\([\d,]+\)\s*$",
+            "",
+            link.get_text(" ", strip=True),
+        )
+        if match and name:
+            genres[match.group(1)] = {"id": match.group(1), "name": name}
+    if not genres:
+        raise ValueError(f"MAL returned a malformed {media_type} genre index")
+    return sorted(genres.values(), key=lambda item: item["name"].casefold())
+
+
+def _mal_genre_page_cache_prefix(media_type, genre_id, page):
+    return (
+        f"mal:{MAL_GENRE_PAGE_CACHE_VERSION}:{media_type}-genre-page:"
+        f"{genre_id}:p{page}:nsfw{int(settings.MAL_NSFW)}"
+    )
+
+
+def _parse_mal_genre_page(html, *, media_type, genre_id, page):
+    soup = BeautifulSoup(html, "html.parser")
+    canonical = soup.select_one('meta[property="og:url"]')
+    canonical_url = str((canonical or {}).get("content") or "").strip()
+    expected_path = rf"/{media_type}/genre/{genre_id}(?:/|$)"
+    if re.search(expected_path, canonical_url) is None:
+        raise ValueError(f"MAL returned the wrong {media_type} genre page")
+
+    container = soup.select_one(".js-categories-seasonal")
+    if container is None:
+        raise ValueError(f"MAL returned a malformed {media_type} genre page")
+    cards = container.select(".js-seasonal-anime")
+    if not settings.MAL_NSFW:
+        cards = [
+            card
+            for card in cards
+            if not _mal_genre_card_ids(card, media_type).intersection({"12", "49"})
+        ]
+    results = [
+        item
+        for card in cards
+        if (item := _parse_mal_genre_card(card, media_type))
+    ]
+    _resolve_mal_genre_posters(results, media_type)
+
+    total_results = max(
+        (
+            int(match.group(2))
+            for link in soup.select(".pagination a")
+            if (
+                match := re.search(
+                    r"(\d+)\s*-\s*(\d+)",
+                    link.get_text(" ", strip=True),
+                )
+            )
+        ),
+        default=(page - 1) * MAL_GENRE_PAGE_SIZE + len(results),
+    )
+    has_next_page = bool(
+        soup.select_one('link[rel~="next"], a[rel~="next"]'),
+    ) or total_results > page * MAL_GENRE_PAGE_SIZE
+    return {
+        "page": page,
+        "per_page": MAL_GENRE_PAGE_SIZE,
+        "total_results": total_results,
+        "has_next_page": has_next_page,
+        "results": results,
+    }
+
+
+def _parse_mal_genre_card(card, media_type):
+    title_link = card.select_one(".title a.link-title[href], .title a[href]")
+    href = str((title_link or {}).get("href") or "")
+    match = re.search(rf"/{media_type}/(\d+)(?:/|$)", href)
+    title = title_link.get_text(" ", strip=True) if title_link else ""
+    if match is None or not title:
+        return None
+    media_id = match.group(1)
+
+    genre_links = card.select(f'a[href*="/{media_type}/genre/"][title]')
+    genres = list(dict.fromkeys(link.get("title") for link in genre_links))
+
+    image_node = card.select_one(".image img")
+    image = _mal_large_image_url(
+        str(
+            (image_node or {}).get("data-src")
+            or (image_node or {}).get("src")
+            or "",
+        ).strip(),
+    )
+    return {
+        "media_id": media_id,
+        "source": Sources.MAL.value,
+        "source_url": href,
+        "media_type": media_type,
+        "title": title,
+        "display_title": None,
+        "image": image or settings.IMG_NONE,
+        "genres": [genre for genre in genres if genre],
+    }
+
+
+def _mal_genre_card_ids(card, media_type):
+    ids = set(str(card.get("data-genre") or "").split(","))
+    ids.update(
+        match.group(1)
+        for link in card.select(f'a[href*="/{media_type}/genre/"]')
+        if (match := re.search(rf"/{media_type}/genre/(\d+)", link.get("href") or ""))
+    )
+    return ids
+
+
+def _resolve_mal_genre_posters(results, media_type):
+    media_ids = [item["media_id"] for item in results]
+    cache_version = (
+        ANIME_CACHE_VERSION
+        if media_type == MediaTypes.ANIME.value
+        else MANGA_CACHE_VERSION
+    )
+    detail_keys = {
+        media_id: f"{Sources.MAL.value}_{media_type}_{media_id}_{cache_version}"
+        for media_id in media_ids
+    }
+    details = cache.get_many(detail_keys.values())
+    posters = (
+        cached_anime_posters(media_ids)
+        if media_type == MediaTypes.ANIME.value
+        else cached_manga_posters(media_ids)
+    )
+    cache_poster = (
+        _cache_anime_poster
+        if media_type == MediaTypes.ANIME.value
+        else _cache_manga_poster
+    )
+    for item in results:
+        detail = details.get(detail_keys[item["media_id"]])
+        if isinstance(detail, dict) and detail.get("display_title"):
+            item["display_title"] = detail["display_title"]
+        item["image"] = posters.get(item["media_id"]) or item["image"]
+        cache_poster(item["media_id"], item["image"])
 
 
 def anime(media_id, *, timeout=None, retry_rate_limits=True):

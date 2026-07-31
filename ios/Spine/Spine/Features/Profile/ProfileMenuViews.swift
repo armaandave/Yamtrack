@@ -785,7 +785,7 @@ struct ProfileListsView: View {
             )
         } else {
             ForEach(filteredLists) { list in
-                ProfileListRowContainer(list: list) {
+                ProfileListRowContainer {
                     NavigationLink {
                         ProfileListDetailView(
                             listId: list.id,
@@ -915,26 +915,15 @@ struct ProfileListRow: View {
 }
 
 struct ProfileListRowContainer<PrimaryControl: View>: View {
-    let list: CustomListSummary
     private let primaryControl: PrimaryControl
 
-    init(list: CustomListSummary, @ViewBuilder primaryControl: () -> PrimaryControl) {
-        self.list = list
+    init(@ViewBuilder primaryControl: () -> PrimaryControl) {
         self.primaryControl = primaryControl()
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            primaryControl
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if list.listType == .media,
-               let completion = list.completion,
-               completion.isVisible {
-                SWCompletionProgressButton(progress: completion)
-                    .accessibilityLabel("\(list.name) completion")
-            }
-        }
+        primaryControl
+            .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
@@ -966,7 +955,6 @@ final class ProfileListDetailViewModel {
     var filterOptions: MediaFilterOptionsResponse = .empty
     var filteredItems: [MediaSummary] = []
     var people: [PersonListEntry] = []
-    var personCompletionByRef: [PersonRef: CompletionProgress] = [:]
     var isLoading = true
     var isLoadingFilteredItems = false
     var isSaving = false
@@ -975,23 +963,19 @@ final class ProfileListDetailViewModel {
 
     private let listId: Int
     private let listRepository: ListRepository
-    private let peopleRepository: PeopleRepository
     private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
-    private var requestedPersonCompletionRefs = Set<PersonRef>()
 
     init(
         listId: Int,
         listRepository: ListRepository,
-        peopleRepository: PeopleRepository,
         filterOptionsRepository: FilterOptionsRepository? = nil,
         onUnauthorized: @escaping () -> Void
     ) {
         self.listId = listId
         self.listRepository = listRepository
-        self.peopleRepository = peopleRepository
         self.filterOptionsRepository = filterOptionsRepository ?? APIFilterOptionsRepository(client: AppEnvironment.apiClient)
         self.onUnauthorized = onUnauthorized
     }
@@ -1004,15 +988,9 @@ final class ProfileListDetailViewModel {
         people
     }
 
-    func completion(for person: PersonListEntry) -> CompletionProgress? {
-        person.completion ?? personCompletionByRef[person.ref]
-    }
-
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
-        personCompletionByRef = [:]
-        requestedPersonCompletionRefs = []
         isLoading = list == nil
         isLoadingFilteredItems = false
         errorMessage = nil
@@ -1124,31 +1102,6 @@ final class ProfileListDetailViewModel {
             return
         }
         await loadNextPeoplePage()
-    }
-
-    func loadPersonCompletionIfNeeded(_ person: PersonListEntry) async {
-        let ref = person.ref
-        guard person.completion == nil,
-              personCompletionByRef[ref] == nil,
-              requestedPersonCompletionRefs.insert(ref).inserted else {
-            return
-        }
-        let generation = requestGeneration
-
-        do {
-            let completion = try await peopleRepository.completion(ref: ref)
-            guard generation == requestGeneration,
-                  let completion else {
-                return
-            }
-            personCompletionByRef[ref] = completion
-        } catch is CancellationError {
-            return
-        } catch {
-            if case APIError.unauthorized = error {
-                onUnauthorized()
-            }
-        }
     }
 
     func retryNextPage() async {
@@ -1451,7 +1404,6 @@ struct ProfileListDetailView: View {
         _viewModel = State(initialValue: ProfileListDetailViewModel(
             listId: listId,
             listRepository: listRepository,
-            peopleRepository: peopleRepository,
             onUnauthorized: onUnauthorized
         ))
     }
@@ -1925,13 +1877,6 @@ struct ProfileListDetailView: View {
                     .accessibilityLabel(personAccessibilityLabel(person))
                     .accessibilityHint("Opens person details")
 
-                    if let completion = viewModel.completion(for: person), completion.isVisible {
-                        SWCompletionProgressButton(progress: completion)
-                            .accessibilityLabel("\(person.name) filmography completion")
-                    }
-                }
-                .task {
-                    await viewModel.loadPersonCompletionIfNeeded(person)
                 }
                 .task {
                     await viewModel.loadNextPeoplePageIfNeeded(currentPerson: person)

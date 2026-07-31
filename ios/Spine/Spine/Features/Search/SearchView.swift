@@ -723,7 +723,7 @@ private struct FeaturedListsDiscovery: View {
             List {
                 Section("Featured Lists") {
                     ForEach(lists) { list in
-                        ProfileListRowContainer(list: list) {
+                        ProfileListRowContainer {
                             Button {
                                 onSelect(list.id)
                             } label: {

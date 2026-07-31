@@ -227,10 +227,15 @@ class AniListProviderTests(TestCase):
                 },
             ],
         )
+        self.assertEqual(
+            result["page_info"],
+            request_mock.return_value["data"]["Page"]["pageInfo"],
+        )
         request = request_mock.call_args
         self.assertEqual(request.args[0], "ANILIST")
         self.assertEqual(request.args[1], "POST")
         self.assertEqual(request.args[2], "https://graphql.anilist.co")
+        self.assertIn("idMal_not: 0", request.kwargs["params"]["query"])
         self.assertEqual(
             request.kwargs["params"]["variables"],
             {
@@ -297,6 +302,10 @@ class AniListProviderTests(TestCase):
                 },
             ],
         )
+        self.assertEqual(
+            result["page_info"],
+            request_mock.return_value["data"]["Page"]["pageInfo"],
+        )
         request = request_mock.call_args
         self.assertEqual(
             request.kwargs["params"]["variables"],
@@ -308,11 +317,54 @@ class AniListProviderTests(TestCase):
             },
         )
         self.assertIn("type: MANGA", request.kwargs["params"]["query"])
+        self.assertIn("idMal_not: 0", request.kwargs["params"]["query"])
         self.assertIn("genre_in: $genres", request.kwargs["params"]["query"])
+        self.assertIn("tag_in: $tags", request.kwargs["params"]["query"])
         self.assertIn("chapters", request.kwargs["params"]["query"])
         self.assertIn("volumes", request.kwargs["params"]["query"])
         self.assertEqual(request.kwargs["timeout"], 3)
         self.assertFalse(request.kwargs["retry_rate_limits"])
+
+    @patch("app.providers.anilist.services.api_request")
+    def test_genre_pages_use_exact_tags_for_non_anilist_genres(
+        self,
+        request_mock,
+    ):
+        request_mock.return_value = {
+            "data": {
+                "Page": {
+                    "pageInfo": {},
+                    "media": [],
+                },
+            },
+        }
+        cases = [
+            (anilist.anime_genre_page, "Military", "type: ANIME"),
+            (anilist.manga_genre_page, "Shounen", "type: MANGA"),
+            (anilist.manga_genre_page, "Award Winning", "type: MANGA"),
+        ]
+
+        for page_function, genre, media_type_query in cases:
+            with self.subTest(genre=genre):
+                page_function(
+                    genre,
+                    page=2,
+                    page_size=10,
+                    include_adult=True,
+                )
+
+                params = request_mock.call_args.kwargs["params"]
+                self.assertEqual(
+                    params["variables"],
+                    {
+                        "tags": [genre],
+                        "page": 2,
+                        "perPage": 10,
+                        "isAdult": None,
+                    },
+                )
+                self.assertIn(media_type_query, params["query"])
+                self.assertIn("tag_in: $tags", params["query"])
 
     def test_rating_distribution_sorts_merges_and_rejects_invalid_buckets(self):
         result = anilist._normalize_score_distribution(

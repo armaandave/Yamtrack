@@ -80,7 +80,11 @@ class CompletionProgressAPITests(TestCase):
             CustomListItem(custom_list=custom_list, item=planned_item),
         ])
 
-        list_response = self.client.get(f"/api/v1/lists/{custom_list.id}/")
+        list_response = self.client.get(
+            f"/api/v1/lists/{custom_list.id}/",
+            {"include_items": "false"},
+        )
+        summaries_response = self.client.get("/api/v1/lists/")
         library_response = self.client.get(
             "/api/v1/tracking/",
             {"media_type": MediaTypes.MOVIE.value},
@@ -88,6 +92,7 @@ class CompletionProgressAPITests(TestCase):
 
         expected = {"completed_count": 1, "total_count": 2}
         self.assertEqual(list_response.data["completion"], expected)
+        self.assertNotIn("completion", summaries_response.data["results"][0])
         self.assertEqual(library_response.data["completion"], expected)
 
     def test_latest_repeat_status_is_canonical(self):
