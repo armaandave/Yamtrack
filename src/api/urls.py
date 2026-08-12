@@ -55,6 +55,8 @@ from api.views.media import (
     MediaReviewsView,
     MediaSearchView,
     MediaSourcesView,
+    MusicBasicDetailView,
+    MusicEnrichmentDetailView,
     MusicRecordingDetailView,
     PeopleSearchView,
     PersonCompletionView,
@@ -142,6 +144,16 @@ urlpatterns = [
         "media/<str:source>/<str:media_type>/<str:media_id>/external-ratings/",
         MediaExternalRatingsView.as_view(),
         name="api-media-external-ratings",
+    ),
+    path(
+        "media/musicbrainz/music/<uuid:release_group_mbid>/basic/",
+        MusicBasicDetailView.as_view(),
+        name="api-music-basic-detail",
+    ),
+    path(
+        "media/musicbrainz/music/<uuid:release_group_mbid>/enrichment/",
+        MusicEnrichmentDetailView.as_view(),
+        name="api-music-enrichment-detail",
     ),
     path(
         "media/musicbrainz/music/<uuid:release_group_mbid>/recordings/<uuid:recording_mbid>/",

@@ -169,16 +169,11 @@ struct StatsView: View {
     private func statsContent(_ summary: StatsSummary) -> some View {
         let scope = StatsScopeSnapshot(summary: summary, mediaType: selectedMediaType)
         let accent = StatsPalette.accent(for: selectedMediaType)
-        let seriesProgress = summary.seriesProgress.filter {
-            selectedMediaType == nil || $0.mediaType == selectedMediaType
-        }
-        let hasProgressContent = scope.completion?.isVisible == true
-            || !seriesProgress.isEmpty
 
         return VStack(alignment: .leading, spacing: 30) {
             mediaPicker(summary)
 
-            if scope.isEmpty && !hasProgressContent {
+            if scope.isEmpty {
                 StatsEmptyView(
                     title: "No \(scope.title.lowercased()) stats yet",
                     message: "Choose another media type or period to explore your history."
@@ -192,22 +187,6 @@ struct StatsView: View {
                         accent: accent
                     )
                 }
-
-                completionSection(scope)
-
-                progressSection(
-                    title: "Series & collection progress",
-                    items: seriesProgress.compactMap { series in
-                        guard let completion = series.completion else { return nil }
-                        return StatsCompletionDisplayItem(
-                            id: "series:\(series.source):\(series.mediaType):\(series.id)",
-                            name: series.name,
-                            detail: MediaTypeTheme.theme(for: series.mediaType).displayName,
-                            posterUrls: series.posterUrls,
-                            completion: completion
-                        )
-                    }
-                )
 
                 if selectedMediaType == nil, !scope.isEmpty {
                     personSection(summary)
@@ -223,49 +202,6 @@ struct StatsView: View {
                     tasteSections(scope, accent: accent)
                     mediaGrids(scope)
                 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func completionSection(_ scope: StatsScopeSnapshot) -> some View {
-        if let completion = scope.completion, completion.isVisible {
-            StatsSection(title: "Completion") {
-                StatsSurface {
-                    HStack(spacing: 14) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(.green.opacity(0.84))
-                            .frame(width: 38, height: 38)
-                            .background(.green.opacity(0.1), in: Circle())
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(scope.title)
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.9))
-                            Text("Completed titles")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.44))
-                        }
-
-                        Spacer()
-
-                        SWCompletionProgressButton(progress: completion)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func progressSection(
-        title: String,
-        items: [StatsCompletionDisplayItem]
-    ) -> some View {
-        let visibleItems = items.filter(\.completion.isVisible)
-        if !visibleItems.isEmpty {
-            StatsSection(title: title) {
-                StatsCompletionRows(items: Array(visibleItems.prefix(8)))
             }
         }
     }
@@ -501,7 +437,6 @@ private struct StatsScopeSnapshot {
     let metadataCoverage: StatsMetadataCoverage
     let topRated: [StatsTopRatedItem]
     let mostLogged: [StatsMostLoggedItem]
-    let completion: CompletionProgress?
     let isAllTime: Bool
 
     init(summary: StatsSummary, mediaType: String?) {
@@ -529,7 +464,6 @@ private struct StatsScopeSnapshot {
                 metadataCoverage = media.metadataCoverage
                 topRated = media.topRated
                 mostLogged = media.mostLogged
-                completion = media.completion
             } else {
                 completedCount = 0
                 diaryEntryCount = 0
@@ -546,7 +480,6 @@ private struct StatsScopeSnapshot {
                 metadataCoverage = .empty
                 topRated = []
                 mostLogged = []
-                completion = nil
             }
         } else {
             let typedPoints = SWStatsRatingChart.normalizedPoints(from: summary.mediaTypes)
@@ -572,7 +505,6 @@ private struct StatsScopeSnapshot {
             metadataCoverage = summary.metadataCoverage
             topRated = summary.topRated
             mostLogged = summary.mostLogged
-            completion = summary.overview.completion
         }
     }
 
@@ -769,87 +701,6 @@ private struct StatsSurface<Content: View>: View {
             .overlay {
                 shape.strokeBorder(.white.opacity(0.08), lineWidth: 1)
             }
-    }
-}
-
-private struct StatsCompletionDisplayItem: Identifiable {
-    let id: String
-    let name: String
-    let detail: String
-    let posterUrls: [String]
-    let completion: CompletionProgress
-}
-
-private struct StatsCompletionRows: View {
-    let items: [StatsCompletionDisplayItem]
-
-    var body: some View {
-        StatsSurface {
-            VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    HStack(spacing: 12) {
-                        StatsProgressArtwork(urls: item.posterUrls)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .lineLimit(2)
-                            Text(item.detail)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.42))
-                        }
-
-                        Spacer(minLength: 8)
-
-                        SWCompletionProgressButton(progress: item.completion)
-                    }
-                    .padding(.vertical, 9)
-
-                    if index < items.count - 1 {
-                        Divider().overlay(.white.opacity(0.06))
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct StatsProgressArtwork: View {
-    let urls: [String]
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            if urls.isEmpty {
-                Image(systemName: "rectangle.stack.fill")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.36))
-                    .frame(width: 46, height: 46)
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-            } else {
-                ForEach(Array(urls.prefix(3).enumerated()), id: \.offset) { index, url in
-                    SpineAsyncImage(url: URL(string: url)) { phase in
-                        if case let .success(image) = phase {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            Color.white.opacity(0.06)
-                        }
-                    }
-                    .frame(width: 30, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(.black.opacity(0.45), lineWidth: 1)
-                    }
-                    .offset(x: CGFloat(index) * 9)
-                    .zIndex(Double(3 - index))
-                }
-            }
-        }
-        .frame(width: 50, height: 46, alignment: .leading)
-        .accessibilityHidden(true)
     }
 }
 

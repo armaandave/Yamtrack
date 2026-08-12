@@ -495,7 +495,7 @@ struct ProfileView: View {
     @State private var selectedPerson: PersonRef?
     @State private var isSettingsPresented = false
     @State private var hofPickerSlot: FavoriteSlot?
-    @State private var heroCollapseProgress: CGFloat = 0
+    @State private var heroScrollOffset: CGFloat = 0
     @State private var topSafeAreaInset: CGFloat = 0
     @State private var isProfileBackdropSearchPresented = false
 
@@ -698,7 +698,11 @@ struct ProfileView: View {
                             .padding(.top, 120)
                     } else if let profile = viewModel.profile {
                         VStack(alignment: .leading, spacing: 24) {
-                            hero(profile, collapseProgress: reduceMotion ? 0 : heroCollapseProgress)
+                            hero(
+                                profile,
+                                collapseProgress: reduceMotion ? 0 : ProfileHeroCollapse.progress(for: heroScrollOffset),
+                                layoutProgress: reduceMotion ? 0 : ProfileHeroCollapse.layoutProgress(for: heroScrollOffset)
+                            )
                             if isOwnProfile {
                                 inProgressSection
                                     .padding(.horizontal, 16)
@@ -723,7 +727,7 @@ struct ProfileView: View {
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 max(0, geometry.contentOffset.y)
             } action: { _, offset in
-                heroCollapseProgress = ProfileHeroCollapse.progress(for: offset)
+                heroScrollOffset = offset
             }
 
             if isPushedProfile {
@@ -788,16 +792,16 @@ struct ProfileView: View {
         .accessibilityLabel("Settings")
     }
 
-    private func hero(_ profile: UserProfile, collapseProgress: CGFloat) -> some View {
+    private func hero(_ profile: UserProfile, collapseProgress: CGFloat, layoutProgress: CGFloat) -> some View {
         let allSlots = favoriteSlots(from: profile)
         let backdropURL = profileBackdropURL(from: profile)
         let musicClearance = HallOfFameCrownLayout.aboveMusicClearance(
             for: allSlots,
-            collapseProgress: collapseProgress
+            collapseProgress: layoutProgress
         )
-        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: collapseProgress) + musicClearance
-        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: collapseProgress) + musicClearance
-        let crownNameSpacing = ProfileHeroBackdropLayout.crownNameSpacing(for: collapseProgress)
+        let crownHeight = ProfileHeroBackdropLayout.crownHeight(for: layoutProgress) + musicClearance
+        let heroMinHeight = ProfileHeroBackdropLayout.heroMinHeight(for: layoutProgress) + musicClearance
+        let crownNameSpacing = ProfileHeroBackdropLayout.crownNameSpacing(for: layoutProgress)
         let backdropContentOffset = backdropURL == nil ? 0 : ProfileHeroBackdropLayout.contentTopOffset
 
         return ZStack(alignment: .top) {
@@ -1294,10 +1298,24 @@ struct FavoriteSlot: Identifiable {
 }
 
 enum ProfileHeroCollapse {
-    static let scrollDistance: CGFloat = 100
+    static let scrollDistance: CGFloat = 260
+    static let layoutScrollDistance: CGFloat = 340
 
     static func progress(for scrollOffset: CGFloat) -> CGFloat {
-        min(1, max(0, scrollOffset / scrollDistance))
+        easedProgress(for: scrollOffset, over: scrollDistance)
+    }
+
+    static func layoutProgress(for scrollOffset: CGFloat) -> CGFloat {
+        clampedProgress(for: scrollOffset, over: layoutScrollDistance)
+    }
+
+    private static func easedProgress(for scrollOffset: CGFloat, over distance: CGFloat) -> CGFloat {
+        let progress = clampedProgress(for: scrollOffset, over: distance)
+        return progress * progress * (3 - 2 * progress)
+    }
+
+    private static func clampedProgress(for scrollOffset: CGFloat, over distance: CGFloat) -> CGFloat {
+        min(1, max(0, scrollOffset / distance))
     }
 }
 

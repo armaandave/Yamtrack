@@ -358,6 +358,40 @@ class MusicRecordingDetailView(APIView):
             raise
 
 
+class MusicDetailStageView(APIView):
+    """Return one stage of MusicBrainz album detail."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SearchRateThrottle]
+    include_music_enrichment = False
+
+    def initial(self, request, *args, **kwargs):
+        exposure.require_media_type(MediaTypes.MUSIC.value)
+        return super().initial(request, *args, **kwargs)
+
+    def get(self, request, release_group_mbid):
+        return Response(
+            media_service.media_detail(
+                source="musicbrainz",
+                media_type=MediaTypes.MUSIC.value,
+                media_id=str(release_group_mbid),
+                request=request,
+                user=request.user if request.user.is_authenticated else None,
+                include_music_enrichment=self.include_music_enrichment,
+            ),
+        )
+
+
+class MusicBasicDetailView(MusicDetailStageView):
+    """Basic release-group detail without deferred music metadata."""
+
+
+class MusicEnrichmentDetailView(MusicDetailStageView):
+    """Deferred cover art and representative release detail for one album."""
+
+    include_music_enrichment = True
+
+
 class PersonDetailView(APIView):
     """Provider-backed person detail for native clients."""
 

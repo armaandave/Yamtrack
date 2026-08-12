@@ -52,6 +52,32 @@ def refresh_all_media_search_candidate(media_type, query, page, source):
     )
 
 
+@shared_task(name="Refresh music search", ignore_result=True)
+def refresh_music_search(media_type, query, page, source, preserve_ranking_fields=False):
+    """Refresh one stale music search entry."""
+    from api.services.media import refresh_music_search as refresh
+
+    return refresh(
+        media_type=media_type,
+        query=query,
+        page=page,
+        source=source,
+        preserve_ranking_fields=preserve_ranking_fields,
+    )
+
+
+@shared_task(name="Refresh music detail", ignore_result=True)
+def refresh_music_detail(source, media_id, include_music_enrichment):
+    """Refresh one stale music detail entry."""
+    from api.services.media import refresh_music_detail as refresh
+
+    return refresh(
+        source=source,
+        media_id=media_id,
+        include_music_enrichment=include_music_enrichment,
+    )
+
+
 @shared_task(name="Refresh AniList person page", ignore_result=True)
 def refresh_anilist_person_page(person_id, page, marker=None):
     """Refresh one stale AniList filmography page."""

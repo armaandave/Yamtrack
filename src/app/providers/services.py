@@ -279,6 +279,8 @@ def get_media_metadata(
     source,
     season_numbers=None,
     episode_number=None,
+    *,
+    include_music_enrichment=True,
 ):
     """Return the metadata for the selected media."""
     if source == Sources.MANUAL.value:
@@ -321,7 +323,11 @@ def get_media_metadata(
             else openlibrary.book(media_id)
         ),
         MediaTypes.COMIC.value: lambda: comicvine.comic(media_id),
-        MediaTypes.MUSIC.value: lambda: musicbrainz.music(media_id),
+        MediaTypes.MUSIC.value: lambda: (
+            musicbrainz.music(media_id)
+            if include_music_enrichment
+            else musicbrainz.music(media_id, include_enrichment=False)
+        ),
     }
     return metadata_retrievers[media_type]()
 

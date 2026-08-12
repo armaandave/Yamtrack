@@ -1,6 +1,13 @@
 import SwiftUI
 import UIKit
 
+enum MusicEnrichmentState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed
+}
+
 @MainActor
 @Observable
 final class MediaDetailViewModel {
@@ -17,6 +24,7 @@ final class MediaDetailViewModel {
     var quickActionErrorMessage: String?
     var progressErrorMessage: String?
     var likeErrorMessage: String?
+    var musicEnrichmentState = MusicEnrichmentState.idle
 
     private let ref: MediaRef
     private let mediaRepository: MediaRepository
@@ -53,12 +61,35 @@ final class MediaDetailViewModel {
             let loaded = try await mediaRepository.detail(ref: ref)
             detail = loaded
             reviews = loaded.reviews ?? []
-            await loadTrackingIfNeeded(for: loaded)
-            await loadReviews()
+            async let enrichment: Void = loadMusicEnrichmentIfNeeded(for: loaded)
+            async let tracking: Void = loadTrackingIfNeeded(for: loaded)
+            async let reviewLoad: Void = loadReviews()
+            _ = await (enrichment, tracking, reviewLoad)
         } catch is CancellationError {
             return
         } catch {
             errorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    private func loadMusicEnrichmentIfNeeded(for loaded: MediaDetail) async {
+        guard loaded.ref.mediaType == "music" else {
+            musicEnrichmentState = .idle
+            return
+        }
+        musicEnrichmentState = .loading
+        do {
+            let enriched = try await mediaRepository.enrichedMusicDetail(ref: ref)
+            guard detail?.id == loaded.id else { return }
+            detail = enriched
+            musicEnrichmentState = .loaded
+        } catch is CancellationError {
+            musicEnrichmentState = .idle
+        } catch {
+            musicEnrichmentState = .failed
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
@@ -1597,10 +1628,7 @@ private struct MediaDetailPageView: View {
            detail.ref.mediaId == changedRef.mediaId {
             return true
         }
-        return (detail.relatedSections ?? []).contains { section in
-            section.completion?.isVisible == true
-                && section.items.contains { $0.ref.id == changedRef.id }
-        }
+        return false
     }
 
     @ViewBuilder
@@ -2701,6 +2729,7 @@ private struct MediaDetailPageView: View {
             MusicAlbumTracklistSection(
                 release: detail.music?.representativeRelease,
                 albumCredits: detail.music?.artistCredit ?? [],
+                enrichmentState: viewModel.musicEnrichmentState,
                 onSelectTrack: { track in
                     presentedSong = MusicSongSelection(
                         album: detail.ref,
@@ -2813,8 +2842,7 @@ private struct MediaDetailPageView: View {
 
     private func seasonsSection(_ detail: MediaDetail) -> some View {
         SeasonsSection(
-            seasons: detail.seasons ?? [],
-            completion: detail.completion
+            seasons: detail.seasons ?? []
         ) { season in
             presentedRef = MediaRef(
                 itemId: nil,
@@ -5310,13 +5338,34 @@ private struct DetailFactRowView: View {
 private struct MusicAlbumTracklistSection: View {
     let release: MusicRepresentativeRelease?
     let albumCredits: [MusicArtistCredit]
+    let enrichmentState: MusicEnrichmentState
     let onSelectTrack: (MusicTrack) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionLabel(title: "Tracklist")
 
-            if let release, hasTracks(release) {
+            if enrichmentState == .loading {
+                LazyVStack(spacing: 0) {
+                    ForEach(1...4, id: \.self) { position in
+                        HStack(spacing: 12) {
+                            Text("\(position)")
+                                .frame(width: 28, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Loading track title")
+                                Text("Loading artist")
+                                    .font(.caption)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 10)
+                    }
+                }
+                .redacted(reason: .placeholder)
+                .foregroundStyle(.white.opacity(0.7))
+                .accessibilityHidden(true)
+                .accessibilityIdentifier("music.tracklist.loading")
+            } else if let release, hasTracks(release) {
                 LazyVStack(spacing: 0) {
                     ForEach(release.media, id: \.position) { medium in
                         if release.discCount > 1 || release.media.count > 1 {
@@ -6368,53 +6417,40 @@ private enum CreditTab {
 
 private struct SeasonsSection: View {
     let seasons: [SeasonSummary]
-    let completion: CompletionProgress?
     let onSelect: (SeasonSummary) -> Void
 
     var body: some View {
         if !seasons.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    SectionLabel(title: "Seasons")
-                    Spacer()
-                    if let completion, completion.isVisible {
-                        SWCompletionProgressButton(progress: completion)
-                    }
-                }
+                SectionLabel(title: "Seasons")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(seasons) { season in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Button {
-                                    onSelect(season)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        MediaArtwork(
-                                            url: season.imageUrl,
-                                            title: season.title,
-                                            slot: .seasonCard,
-                                            mediaType: "season"
-                                        )
-                                        Text(season.title)
-                                            .font(.system(size: 12, weight: .heavy))
-                                            .foregroundStyle(.white)
-                                            .lineLimit(2)
-                                        if let count = season.episodeCount {
-                                            Text("\(count) episodes")
-                                                .font(.system(size: 11, weight: .semibold))
-                                                .foregroundStyle(.white.opacity(0.55))
-                                                .lineLimit(1)
-                                        }
+                            Button {
+                                onSelect(season)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    MediaArtwork(
+                                        url: season.imageUrl,
+                                        title: season.title,
+                                        slot: .seasonCard,
+                                        mediaType: "season"
+                                    )
+                                    Text(season.title)
+                                        .font(.system(size: 12, weight: .heavy))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(2)
+                                    if let count = season.episodeCount {
+                                        Text("\(count) episodes")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.55))
+                                            .lineLimit(1)
                                     }
-                                    .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Open \(season.title)")
-
-                                if let completion = season.completion, completion.isVisible {
-                                    SWCompletionProgressButton(progress: completion)
-                                }
+                                .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open \(season.title)")
                             .frame(width: MediaDetailLayout.seasonPosterSize.width, alignment: .topLeading)
                         }
                     }
@@ -6720,12 +6756,6 @@ private struct RecommendationsSection: View {
                     }
 
                     Spacer()
-
-                    if Self.completionSectionIDs.contains(section.id),
-                       let completion = section.completion,
-                       completion.isVisible {
-                        SWCompletionProgressButton(progress: completion)
-                    }
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -6775,17 +6805,6 @@ private struct RecommendationsSection: View {
         }
     }
 
-    private static let completionSectionIDs: Set<String> = [
-        "series",
-        "collection",
-        "relations",
-        "dlcs",
-        "expansions",
-        "standalone_expansions",
-        "remasters",
-        "remakes",
-        "expanded_games",
-    ]
 }
 
 private extension JSONValue {

@@ -14,6 +14,7 @@ protocol MediaRepository {
     func searchAll(query: String) async throws -> MediaSearchResponse
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary>
     func detail(ref: MediaRef) async throws -> MediaDetail
+    func enrichedMusicDetail(ref: MediaRef) async throws -> MediaDetail
     func series(ref: SeriesRef) async throws -> SeriesDetail
     func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
@@ -80,6 +81,10 @@ extension MediaRepository {
 
     func discover(_ request: MediaDiscoverRequest) async throws -> PagedResponse<MediaSummary> {
         fatalError("Not implemented")
+    }
+
+    func enrichedMusicDetail(ref: MediaRef) async throws -> MediaDetail {
+        try await detail(ref: ref)
     }
 
     func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse {
@@ -499,7 +504,9 @@ struct APIMediaRepository: MediaRepository {
             query.append(URLQueryItem(name: "episode_number", value: String(episodeNumber)))
         }
         let path: String
-        if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
+        if ref.mediaType == "music" && ref.source == "musicbrainz" {
+            path = "/media/musicbrainz/music/\(ref.mediaId)/basic/"
+        } else if ref.mediaType == "season", let seasonNumber = ref.seasonNumber {
             path = "/media/\(ref.source)/tv/\(ref.mediaId)/seasons/\(seasonNumber)/"
         } else {
             path = "/media/\(ref.source)/\(ref.mediaType)/\(ref.mediaId)/"
@@ -508,6 +515,14 @@ struct APIMediaRepository: MediaRepository {
             path,
             query: query,
             authenticated: client.tokenProvider.accessToken != nil
+        )
+    }
+
+    func enrichedMusicDetail(ref: MediaRef) async throws -> MediaDetail {
+        try await client.get(
+            "/media/musicbrainz/music/\(ref.mediaId)/enrichment/",
+            authenticated: client.tokenProvider.accessToken != nil,
+            requestTimeout: 30
         )
     }
 

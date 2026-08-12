@@ -544,14 +544,12 @@ struct MediaLogView: View {
                     HStack(alignment: .top, spacing: 8) {
                         seasonChip(
                             title: "Whole Show",
-                            seasonNumber: nil,
-                            completion: viewModel.detail.completion
+                            seasonNumber: nil
                         )
                         ForEach(viewModel.detail.seasons ?? []) { season in
                             seasonChip(
                                 title: "S\(season.seasonNumber)",
-                                seasonNumber: season.seasonNumber,
-                                completion: season.completion
+                                seasonNumber: season.seasonNumber
                             )
                         }
                     }
@@ -562,33 +560,26 @@ struct MediaLogView: View {
 
     private func seasonChip(
         title: String,
-        seasonNumber: Int?,
-        completion: CompletionProgress?
+        seasonNumber: Int?
     ) -> some View {
-        VStack(spacing: 0) {
-            Button {
-                viewModel.selectedSeasonNumber = seasonNumber
-            } label: {
-                Text(title)
-                    .font(.system(size: 13, weight: .heavy))
-                    .foregroundStyle(viewModel.selectedSeasonNumber == seasonNumber ? .black : .white.opacity(0.82))
-                    .padding(.horizontal, 13)
-                    .frame(height: 34)
-                    .background(
-                        viewModel.selectedSeasonNumber == seasonNumber ? .white.opacity(0.92) : .black.opacity(0.24),
-                        in: Capsule()
-                    )
-                    .overlay {
-                        Capsule().stroke(.white.opacity(viewModel.selectedSeasonNumber == seasonNumber ? 0 : 0.1))
-                    }
-            }
-            .buttonStyle(.plain)
-            .frame(minHeight: 44)
-
-            if let completion, completion.isVisible {
-                SWCompletionProgressButton(progress: completion)
-            }
+        Button {
+            viewModel.selectedSeasonNumber = seasonNumber
+        } label: {
+            Text(title)
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(viewModel.selectedSeasonNumber == seasonNumber ? .black : .white.opacity(0.82))
+                .padding(.horizontal, 13)
+                .frame(height: 34)
+                .background(
+                    viewModel.selectedSeasonNumber == seasonNumber ? .white.opacity(0.92) : .black.opacity(0.24),
+                    in: Capsule()
+                )
+                .overlay {
+                    Capsule().stroke(.white.opacity(viewModel.selectedSeasonNumber == seasonNumber ? 0 : 0.1))
+                }
         }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
     }
 
     private var finishedFields: some View {

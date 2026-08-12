@@ -610,7 +610,7 @@ final class MusicContractTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: MediaLensStore.persistenceKey), "book")
     }
 
-    func testMusicSearchUsesExactQueryAndGenericDetailPath() async throws {
+    func testMusicSearchUsesBasicThenEnrichedDetailPaths() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MusicContractURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -657,9 +657,17 @@ final class MusicContractTests: XCTestCase {
 
         XCTAssertEqual(
             MusicContractURLProtocol.lastRequest?.url?.absoluteString,
-            "https://example.com/api/v1/media/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/"
+            "https://example.com/api/v1/media/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/basic/"
         )
         XCTAssertEqual(detail.ref.mediaType, "music")
+
+        let enriched = try await repository.enrichedMusicDetail(ref: detail.ref)
+
+        XCTAssertEqual(
+            MusicContractURLProtocol.lastRequest?.url?.absoluteString,
+            "https://example.com/api/v1/media/musicbrainz/music/3bd76d40-7f0e-36b7-9348-91a33afee20e/enrichment/"
+        )
+        XCTAssertNotNil(enriched.music?.representativeRelease)
     }
 
     func testAllMediaSearchUsesScopeAndDecodesUnavailableTypes() async throws {

@@ -64,8 +64,7 @@ struct HallOfFameCrownLayout {
         guard count > 0 else { return [] }
 
         let collapseProgress = clampedCollapseProgress(collapseProgress)
-        let horizontalRemaining = horizontalRemaining(for: collapseProgress)
-        let verticalRemaining = verticalRemaining(for: collapseProgress)
+        let remaining = 1 - collapseProgress
         let collapsedScale: CGFloat = 0.28
         let maxAngle = maxAngle(for: count)
         let angles: [Double]
@@ -94,11 +93,11 @@ struct HallOfFameCrownLayout {
 
             return HallOfFameCrownPlacement(
                 index: index,
-                x: x * horizontalRemaining,
-                y: y * verticalRemaining,
-                rotation: .degrees(degrees * 0.58 * rotationDirection * Double(1 - collapseProgress)),
+                x: x * remaining,
+                y: y * remaining,
+                rotation: .degrees(degrees * 0.58 * rotationDirection * Double(remaining)),
                 scale: scale + (collapsedScale - scale) * collapseProgress,
-                zIndex: zIndex * Double(1 - collapseProgress)
+                zIndex: zIndex * Double(remaining)
             )
         }
     }
@@ -117,7 +116,7 @@ struct HallOfFameCrownLayout {
         return HallOfFameCrownPlacement(
             index: 0,
             x: 0,
-            y: expandedY * verticalRemaining(for: collapseProgress),
+            y: expandedY * (1 - collapseProgress),
             rotation: .zero,
             scale: expandedScale + (collapsedScale - expandedScale) * collapseProgress,
             zIndex: 10 * Double(1 - collapseProgress)
@@ -137,7 +136,7 @@ struct HallOfFameCrownLayout {
         let cardSize = cardSize(for: max(arrangement.below.count, 1))
         let musicSize = visualSize(for: music, cardSize: cardSize)
         return (musicSize.height + musicAvatarGap(forLowerCount: arrangement.below.count))
-            * verticalRemaining(for: collapseProgress)
+            * (1 - clampedCollapseProgress(collapseProgress))
     }
 
     static func musicAvatarGap(forLowerCount count: Int) -> CGFloat {
@@ -163,16 +162,6 @@ struct HallOfFameCrownLayout {
         default:
             CGSize(width: 50, height: 75)
         }
-    }
-
-    static func verticalRemaining(for collapseProgress: CGFloat) -> CGFloat {
-        let collapseProgress = clampedCollapseProgress(collapseProgress)
-        return 1 - collapseProgress * collapseProgress
-    }
-
-    private static func horizontalRemaining(for collapseProgress: CGFloat) -> CGFloat {
-        let remaining = 1 - collapseProgress
-        return remaining * remaining
     }
 
     private static func clampedCollapseProgress(_ collapseProgress: CGFloat) -> CGFloat {

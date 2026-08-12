@@ -2,12 +2,15 @@ import hashlib
 import logging
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import date
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
+from redis.exceptions import LockError, RedisError
 
 from app import helpers
 from app.models import MediaTypes, Sources
@@ -27,6 +30,7 @@ SEARCH_CACHE_TTL = 6 * 60 * 60
 LISTENBRAINZ_FAILURE_CACHE_TTL = 5 * 60
 DETAIL_CACHE_TTL = 24 * 60 * 60
 MISSING_COVER_CACHE_TTL = 6 * 60 * 60
+CACHE_LOCK_TIMEOUT = 120
 SEARCH_CANDIDATE_LIMIT = 100
 ARTIST_RELEASE_GROUP_LIMIT = 500
 ARTIST_RELEASE_GROUP_PAGE_SIZE = 100
@@ -391,7 +395,7 @@ def person_page(artist_mbid):
     )
 
 
-def music(release_group_mbid):
+def music(release_group_mbid, *, include_enrichment=True):
     """Return one release group normalized to Spine's media metadata contract."""
     release_group_mbid = str(release_group_mbid)
     group = lookup_release_group(release_group_mbid)
@@ -402,35 +406,7 @@ def music(release_group_mbid):
     source_url = (
         f"https://musicbrainz.org/release-group/{_path_value(release_group_mbid)}"
     )
-    cover_art = lookup_cover_art(release_group_mbid)
-    has_cover = any(
-        image.get("front")
-        for image in (cover_art or {}).get("images", [])
-        if isinstance(image, dict)
-    )
     rating = group.get("rating") or {}
-    representative_release = None
-    try:
-        resolved = resolve_representative_release(
-            release_group_mbid,
-            group.get("title") or "",
-        )
-        if resolved["release"] is not None:
-            representative_release = _representative_release(
-                resolved["release"],
-                resolved["reason"],
-            )
-            logger.info(
-                "Selected MusicBrainz representative release group=%s release=%s reason=%s",
-                release_group_mbid,
-                representative_release["release_mbid"],
-                resolved["reason"],
-            )
-    except (services.ProviderAPIError, AttributeError, KeyError, TypeError, ValueError):
-        logger.exception(
-            "MusicBrainz representative release resolution failed for group=%s",
-            release_group_mbid,
-        )
 
     data = {
         "media_id": release_group_mbid,
@@ -439,7 +415,7 @@ def music(release_group_mbid):
         "media_type": MediaTypes.MUSIC.value,
         "title": group.get("title") or "",
         "subtitle": artist,
-        "image": _cover_art_url(release_group_mbid) if has_cover else settings.IMG_NONE,
+        "image": settings.IMG_NONE,
         "release_date": first_release_date,
         "max_progress": 1,
         "genres": _genre_names(group.get("genres")),
@@ -468,12 +444,27 @@ def music(release_group_mbid):
             "cover_art": {
                 "source": "cover_art_archive",
                 "release_group_mbid": release_group_mbid,
-                "fallback_used": not has_cover,
+                "fallback_used": True,
             },
-            "representative_release": representative_release,
+            "representative_release": None,
         },
     }
+    if not include_enrichment:
+        return data
+
+    cover_art, representative_release = _music_enrichment(
+        release_group_mbid,
+        group.get("title") or "",
+    )
+    has_cover = any(
+        image.get("front")
+        for image in (cover_art or {}).get("images", [])
+        if isinstance(image, dict)
+    )
+    data["music"]["cover_art"]["fallback_used"] = not has_cover
+    data["music"]["representative_release"] = representative_release
     if has_cover:
+        data["image"] = _cover_art_url(release_group_mbid)
         data.update(
             {
                 "poster_width": 500,
@@ -482,6 +473,39 @@ def music(release_group_mbid):
             },
         )
     return data
+
+
+def _music_enrichment(release_group_mbid, title):
+    """Load independent Cover Art Archive and MusicBrainz detail together."""
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cover_future = executor.submit(lookup_cover_art, release_group_mbid)
+        release_future = executor.submit(
+            resolve_representative_release,
+            release_group_mbid,
+            title,
+        )
+        cover_art = cover_future.result()
+        try:
+            resolved = release_future.result()
+            representative_release = (
+                _representative_release(resolved["release"], resolved["reason"])
+                if resolved["release"] is not None
+                else None
+            )
+            if representative_release is not None:
+                logger.info(
+                    "Selected MusicBrainz representative release group=%s release=%s reason=%s",
+                    release_group_mbid,
+                    representative_release["release_mbid"],
+                    resolved["reason"],
+                )
+        except (services.ProviderAPIError, AttributeError, KeyError, TypeError, ValueError):
+            logger.exception(
+                "MusicBrainz representative release resolution failed for group=%s",
+                release_group_mbid,
+            )
+            representative_release = None
+    return cover_art, representative_release
 
 
 def browse_releases(release_group_mbid, *, limit=100, offset=0):
@@ -1030,42 +1054,64 @@ def lookup_cover_art(release_group_mbid):
     """Return release-group Cover Art Archive JSON, or None for a cached miss."""
     mbid = _path_value(release_group_mbid)
     cache_key = f"coverartarchive_{CACHE_VERSION}_release_group_{mbid}"
-    cached = cache.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return None if cached is False else cached
 
-    try:
-        data = services.api_request(
-            COVER_ART_PROVIDER,
-            "GET",
-            f"{COVER_ART_URL}/release-group/{mbid}",
-            headers=_headers(),
-            request_session=services.session,
-        )
-    except requests.exceptions.JSONDecodeError as error:
-        raise services.ProviderAPIError(
-            COVER_ART_PROVIDER,
-            error,
-            "invalid JSON response",
-        ) from error
-    except requests.exceptions.HTTPError as error:
-        if error.response is not None and error.response.status_code == requests.codes.not_found:
-            cache.set(cache_key, False, MISSING_COVER_CACHE_TTL)
-            return None
-        raise services.ProviderAPIError(COVER_ART_PROVIDER, error) from error
-    except requests.RequestException as error:
-        raise services.ProviderAPIError(COVER_ART_PROVIDER, error) from error
+    def fetch():
+        try:
+            return services.api_request(
+                COVER_ART_PROVIDER,
+                "GET",
+                f"{COVER_ART_URL}/release-group/{mbid}",
+                headers=_headers(),
+                request_session=services.session,
+            )
+        except requests.exceptions.JSONDecodeError as error:
+            raise services.ProviderAPIError(
+                COVER_ART_PROVIDER,
+                error,
+                "invalid JSON response",
+            ) from error
+        except requests.exceptions.HTTPError as error:
+            if error.response is not None and error.response.status_code == requests.codes.not_found:
+                return False
+            raise services.ProviderAPIError(COVER_ART_PROVIDER, error) from error
+        except requests.RequestException as error:
+            raise services.ProviderAPIError(COVER_ART_PROVIDER, error) from error
 
-    cache.set(cache_key, data, DETAIL_CACHE_TTL)
-    return data
+    data = _cached(
+        cache_key,
+        DETAIL_CACHE_TTL,
+        fetch,
+        missing_timeout=MISSING_COVER_CACHE_TTL,
+    )
+    return None if data is False else data
 
 
-def _cached(cache_key, timeout, fetch):
+def _cached(cache_key, timeout, fetch, *, missing_timeout=None):
     data = cache.get(cache_key, _CACHE_MISS)
-    if data is _CACHE_MISS:
+    if data is not _CACHE_MISS:
+        return data
+
+    lock_factory = getattr(cache, "lock", None)
+    if lock_factory is None:
         data = fetch()
-        cache.set(cache_key, data, timeout)
-    return data
+        cache.set(cache_key, data, missing_timeout if data is False else timeout)
+        return data
+
+    lock = lock_factory(f"{cache_key}:flight", timeout=CACHE_LOCK_TIMEOUT + 2, sleep=0.05)
+    if not lock.acquire(blocking=True, blocking_timeout=CACHE_LOCK_TIMEOUT):
+        raise services.ProviderAPIError(
+            Sources.MUSICBRAINZ.value,
+            TimeoutError("cache single-flight deadline exceeded"),
+        )
+    try:
+        data = cache.get(cache_key, _CACHE_MISS)
+        if data is _CACHE_MISS:
+            data = fetch()
+            cache.set(cache_key, data, missing_timeout if data is False else timeout)
+        return data
+    finally:
+        with suppress(LockError, RedisError, ConnectionError, OSError):
+            lock.release()
 
 
 def _release_group_query(query):

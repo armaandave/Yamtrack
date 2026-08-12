@@ -89,6 +89,9 @@ from app.utils.color import build_accent_palette, compute_and_store_poster_accen
 SEARCH_TTL = 60 * 60 * 6
 SEARCH_CACHE_VERSION = "v3"
 MUSIC_SEARCH_CACHE_VERSION = "v5"
+MUSIC_CACHE_STALE_TTL = 60 * 60 * 24 * 7
+MUSIC_CACHE_LOCK_TIMEOUT = 120
+MUSIC_REFRESH_SCHEDULE_TTL = 60
 ALL_MEDIA_SEARCH_TIMEOUT = 8
 PEOPLE_SEARCH_TIMEOUT = 4
 PEOPLE_SEARCH_PROVIDER_LIMIT = 10
@@ -101,7 +104,7 @@ DETAIL_CACHE_VERSION = "v9"
 BOOK_DETAIL_CACHE_VERSION = "v1"
 MOVIE_DETAIL_CACHE_VERSION = "v1"
 EPISODE_DETAIL_CACHE_VERSION = "v1"
-MUSIC_DETAIL_CACHE_VERSION = "v1"
+MUSIC_DETAIL_CACHE_VERSION = "v2"
 ANIME_DETAIL_CACHE_VERSION = "v6"
 MANGA_DETAIL_CACHE_VERSION = "v1"
 PERSON_PREPARATION_LOCK_TIMEOUT = 60 * 15
@@ -164,9 +167,9 @@ def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fie
         page=page,
         preserve_ranking_fields=preserve_ranking_fields,
     )
-    data = cache.get(cache_key)
-    if data is None:
-        data = provider_services.search(
+
+    def fetch():
+        return provider_services.search(
             media_type,
             query,
             page,
@@ -174,16 +177,40 @@ def _search_data(*, media_type, query, page=1, source=None, preserve_ranking_fie
             preserve_ranking_fields=preserve_ranking_fields,
             timeout=timeout,
         )
-        cache.set(cache_key, data, SEARCH_TTL)
+
+    if media_type == MediaTypes.MUSIC.value:
+        data = _music_cache_data(
+            cache_key,
+            SEARCH_TTL,
+            fetch,
+            lambda: _schedule_music_refresh(
+                cache_key,
+                "refresh_music_search",
+                media_type,
+                query,
+                page,
+                source,
+                preserve_ranking_fields,
+            ),
+        )
+    else:
+        data = cache.get(cache_key)
+        if data is None:
+            data = fetch()
+            cache.set(cache_key, data, SEARCH_TTL)
     return source, data
 
 
-def _candidate_is_fresh(cache_key):
+def _cache_is_fresh(cache_key, fresh_ttl):
     validation = cache.get(f"{cache_key}:validation")
     try:
-        return time.time() - float(validation["validated_at"]) <= SEARCH_TTL
+        return time.time() - float(validation["validated_at"]) <= fresh_ttl
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _candidate_is_fresh(cache_key):
+    return _cache_is_fresh(cache_key, SEARCH_TTL)
 
 
 def _cache_candidate(cache_key, data):
@@ -192,6 +219,112 @@ def _cache_candidate(cache_key, data):
         f"{cache_key}:validation",
         {"validated_at": time.time()},
         ALL_MEDIA_CANDIDATE_STALE_TTL,
+    )
+
+
+def _cache_music_data(cache_key, data):
+    cache.set(cache_key, data, MUSIC_CACHE_STALE_TTL)
+    cache.set(
+        f"{cache_key}:validation",
+        {"validated_at": time.time()},
+        MUSIC_CACHE_STALE_TTL,
+    )
+
+
+def _schedule_music_refresh(cache_key, task_name, *args):
+    schedule_key = f"{cache_key}:refresh-scheduled"
+    try:
+        if not cache.add(schedule_key, 1, timeout=MUSIC_REFRESH_SCHEDULE_TTL):
+            return False
+        from app import tasks
+
+        getattr(tasks, task_name).delay(*args)
+    except (
+        KombuOperationalError,
+        ConnectionInterrupted,
+        RedisError,
+        ConnectionError,
+        OSError,
+    ) as error:
+        with suppress(ConnectionInterrupted, RedisError, ConnectionError, OSError):
+            cache.delete(schedule_key)
+        logger.warning("Music refresh enqueue failed task=%s type=%s", task_name, type(error).__name__)
+        return False
+    return True
+
+
+def _music_cache_data(cache_key, fresh_ttl, fetch, schedule_refresh):
+    data = cache.get(cache_key)
+    if data is not None:
+        if not _cache_is_fresh(cache_key, fresh_ttl):
+            schedule_refresh()
+        return data
+
+    lock = _candidate_lock(cache_key, MUSIC_CACHE_LOCK_TIMEOUT)
+    if lock is None:
+        data = fetch()
+        _cache_music_data(cache_key, data)
+        return data
+
+    acquired = lock.acquire(blocking=True, blocking_timeout=MUSIC_CACHE_LOCK_TIMEOUT)
+    if not acquired:
+        raise TimeoutError("music cache single-flight deadline exceeded")
+    try:
+        data = cache.get(cache_key)
+        if data is None:
+            data = fetch()
+            _cache_music_data(cache_key, data)
+        return data
+    finally:
+        with suppress(LockError, RedisError, ConnectionError, OSError):
+            lock.release()
+
+
+def _refresh_music_cache(cache_key, fresh_ttl, fetch):
+    lock = _candidate_lock(cache_key, MUSIC_CACHE_LOCK_TIMEOUT)
+    acquired = False
+    try:
+        if cache.get(cache_key) is not None and _cache_is_fresh(cache_key, fresh_ttl):
+            return {"outcome": "skipped_fresh"}
+        if lock is not None:
+            acquired = lock.acquire(blocking=False)
+            if not acquired:
+                return {"outcome": "deduplicated"}
+            if cache.get(cache_key) is not None and _cache_is_fresh(cache_key, fresh_ttl):
+                return {"outcome": "skipped_fresh"}
+        _cache_music_data(cache_key, fetch())
+    except Exception as error:  # noqa: BLE001 - keep stale music data on refresh failures
+        logger.warning("Music cache refresh failed type=%s", type(error).__name__)
+        return {"outcome": "failed", "exception_type": type(error).__name__}
+    else:
+        return {"outcome": "refreshed"}
+    finally:
+        cache.delete(f"{cache_key}:refresh-scheduled")
+        if acquired:
+            with suppress(LockError, RedisError, ConnectionError, OSError):
+                lock.release()
+
+
+def refresh_music_search(*, media_type, query, page, source, preserve_ranking_fields=False):
+    """Refresh one stale music search result in a Celery worker."""
+    cache_key = _search_cache_key(
+        media_type=media_type,
+        source=source,
+        query=query,
+        page=page,
+        preserve_ranking_fields=preserve_ranking_fields,
+    )
+    return _refresh_music_cache(
+        cache_key,
+        SEARCH_TTL,
+        lambda: provider_services.search(
+            media_type,
+            query,
+            page,
+            source,
+            preserve_ranking_fields=preserve_ranking_fields,
+            timeout=None,
+        ),
     )
 
 
@@ -779,14 +912,15 @@ def _external_rating_item(ref, metadata):
     return get_or_create_item_from_metadata(ref, metadata)
 
 
-def media_detail(*, source, media_type, media_id, request=None, user=None, season_number=None, episode_number=None):  # noqa: C901, PLR0912, PLR0915
-    """Fetch provider metadata and normalize it for the API."""
-    if media_type == MediaTypes.EPISODE.value and (
-        season_number in (None, "") or episode_number in (None, "")
-    ):
-        raise ValueError("season_number and episode_number are required for episodes.")
-    season_number = int(season_number) if season_number not in (None, "") else None
-    episode_number = int(episode_number) if episode_number not in (None, "") else None
+def _detail_cache_key(
+    *,
+    source,
+    media_type,
+    media_id,
+    season_number,
+    episode_number,
+    include_music_enrichment,
+):
     cache_version = DETAIL_CACHE_VERSION
     if media_type == MediaTypes.EPISODE.value:
         cache_version = f"{cache_version}:episode-{EPISODE_DETAIL_CACHE_VERSION}"
@@ -795,26 +929,104 @@ def media_detail(*, source, media_type, media_id, request=None, user=None, seaso
     elif media_type == MediaTypes.MOVIE.value:
         cache_version = f"{cache_version}:movie-{MOVIE_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.MUSIC.value:
-        cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}"
+        stage = "enriched" if include_music_enrichment else "basic"
+        cache_version = f"{cache_version}:music-{MUSIC_DETAIL_CACHE_VERSION}:{stage}"
     elif media_type == MediaTypes.ANIME.value:
         cache_version = f"{cache_version}:anime-{ANIME_DETAIL_CACHE_VERSION}"
     elif media_type == MediaTypes.MANGA.value:
         cache_version = f"{cache_version}:manga-{MANGA_DETAIL_CACHE_VERSION}"
-    cache_key = (
+    return (
         f"api:{cache_version}:detail:{source}:{media_type}:{media_id}:"
         f"s{season_number}:e{episode_number}:u{getattr(settings, 'TMDB_LANG', 'en')}"
     )
-    metadata = cache.get(cache_key)
-    if metadata is None:
-        season_numbers = [season_number] if season_number is not None else None
-        metadata = provider_services.get_media_metadata(
-            media_type,
-            media_id,
-            source,
-            season_numbers,
-            episode_number,
+
+
+def _music_detail_metadata(*, source, media_id, include_music_enrichment):
+    return provider_services.get_media_metadata(
+        MediaTypes.MUSIC.value,
+        media_id,
+        source,
+        include_music_enrichment=include_music_enrichment,
+    )
+
+
+def refresh_music_detail(*, source, media_id, include_music_enrichment):
+    """Refresh one stale music detail entry in a Celery worker."""
+    cache_key = _detail_cache_key(
+        source=source,
+        media_type=MediaTypes.MUSIC.value,
+        media_id=media_id,
+        season_number=None,
+        episode_number=None,
+        include_music_enrichment=include_music_enrichment,
+    )
+    return _refresh_music_cache(
+        cache_key,
+        DETAIL_TTL,
+        lambda: _music_detail_metadata(
+            source=source,
+            media_id=media_id,
+            include_music_enrichment=include_music_enrichment,
+        ),
+    )
+
+
+def media_detail(  # noqa: C901
+    *,
+    source,
+    media_type,
+    media_id,
+    request=None,
+    user=None,
+    season_number=None,
+    episode_number=None,
+    include_music_enrichment=True,
+):
+    """Fetch provider metadata and normalize it for the API."""
+    if media_type == MediaTypes.EPISODE.value and (
+        season_number in (None, "") or episode_number in (None, "")
+    ):
+        raise ValueError("season_number and episode_number are required for episodes.")
+    season_number = int(season_number) if season_number not in (None, "") else None
+    episode_number = int(episode_number) if episode_number not in (None, "") else None
+    cache_key = _detail_cache_key(
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        season_number=season_number,
+        episode_number=episode_number,
+        include_music_enrichment=include_music_enrichment,
+    )
+
+    if media_type == MediaTypes.MUSIC.value:
+        metadata = _music_cache_data(
+            cache_key,
+            DETAIL_TTL,
+            lambda: _music_detail_metadata(
+                source=source,
+                media_id=media_id,
+                include_music_enrichment=include_music_enrichment,
+            ),
+            lambda: _schedule_music_refresh(
+                cache_key,
+                "refresh_music_detail",
+                source,
+                media_id,
+                include_music_enrichment,
+            ),
         )
-        cache.set(cache_key, metadata, DETAIL_TTL)
+    else:
+        metadata = cache.get(cache_key)
+        if metadata is None:
+            season_numbers = [season_number] if season_number is not None else None
+            metadata = provider_services.get_media_metadata(
+                media_type,
+                media_id,
+                source,
+                season_numbers,
+                episode_number,
+            )
+            cache.set(cache_key, metadata, DETAIL_TTL)
 
     primary_metadata = metadata
     if media_type == MediaTypes.ANIME.value:

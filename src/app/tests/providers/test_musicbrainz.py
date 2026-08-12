@@ -1,6 +1,9 @@
 import json
 import os
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -614,6 +617,56 @@ class MusicBrainzTests(TestCase):
         self.assertIsNone(result["music"]["representative_release"])
         self.assertNotIn("poster_width", result)
 
+    @patch("app.providers.musicbrainz.resolve_representative_release")
+    @patch("app.providers.musicbrainz.lookup_cover_art")
+    @patch("app.providers.musicbrainz.lookup_release_group")
+    def test_basic_music_detail_skips_deferred_enrichment(
+        self,
+        lookup_release_group,
+        lookup_cover_art,
+        resolve_release,
+    ):
+        lookup_release_group.return_value = {
+            "id": RELEASE_GROUP_MBID,
+            "title": "Year Zero",
+        }
+
+        result = musicbrainz.music(RELEASE_GROUP_MBID, include_enrichment=False)
+
+        self.assertEqual(result["title"], "Year Zero")
+        self.assertEqual(result["image"], settings.IMG_NONE)
+        self.assertIsNone(result["music"]["representative_release"])
+        lookup_cover_art.assert_not_called()
+        resolve_release.assert_not_called()
+
+    @patch("app.providers.musicbrainz.resolve_representative_release")
+    @patch("app.providers.musicbrainz.lookup_cover_art")
+    def test_music_enrichment_starts_cover_and_release_work_together(
+        self,
+        lookup_cover_art,
+        resolve_release,
+    ):
+        cover_started = threading.Event()
+        release_started = threading.Event()
+
+        def cover(_mbid):
+            cover_started.set()
+            self.assertTrue(release_started.wait(0.5))
+            return None
+
+        def release(_mbid, _title):
+            release_started.set()
+            self.assertTrue(cover_started.wait(0.5))
+            return {"release": None, "reason": None, "release_mbid": None}
+
+        lookup_cover_art.side_effect = cover
+        resolve_release.side_effect = release
+
+        musicbrainz._music_enrichment(RELEASE_GROUP_MBID, "Year Zero")
+
+        lookup_cover_art.assert_called_once_with(RELEASE_GROUP_MBID)
+        resolve_release.assert_called_once_with(RELEASE_GROUP_MBID, "Year Zero")
+
     def test_lucene_escaping_preserves_unicode_and_escapes_reserved_tokens(self):
         self.assertEqual(musicbrainz.escape_lucene("Beyoncé 千と千尋"), "Beyoncé 千と千尋")
         for token in (
@@ -1134,6 +1187,51 @@ class MusicBrainzTests(TestCase):
         self.assertEqual(first, response)
         self.assertEqual(second, response)
         api_request.assert_called_once()
+
+    def test_cache_single_flight_runs_one_cold_fetch(self):
+        class FakeLock:
+            def __init__(self, lock):
+                self.lock = lock
+
+            def acquire(self, *, blocking, blocking_timeout):
+                return self.lock.acquire(blocking, blocking_timeout)
+
+            def release(self):
+                self.lock.release()
+
+        class FakeCache:
+            def __init__(self):
+                self.data = {}
+                self.flight = threading.Lock()
+
+            def get(self, key, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key, value, _timeout):
+                self.data[key] = value
+
+            def lock(self, _key, **_kwargs):
+                return FakeLock(self.flight)
+
+        provider_cache = FakeCache()
+        fetch_count = 0
+        fetch_lock = threading.Lock()
+
+        def fetch():
+            nonlocal fetch_count
+            with fetch_lock:
+                fetch_count += 1
+            time.sleep(0.05)
+            return {"id": RELEASE_GROUP_MBID}
+
+        with (
+            patch.object(musicbrainz, "cache", provider_cache),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = list(executor.map(lambda _index: musicbrainz._cached("cold", 60, fetch), range(2)))
+
+        self.assertEqual(fetch_count, 1)
+        self.assertEqual(results, [{"id": RELEASE_GROUP_MBID}] * 2)
 
     @patch("app.providers.musicbrainz.services.api_request")
     def test_cover_art_success_uses_general_session_and_cache(self, api_request):

@@ -186,8 +186,8 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
             collapseProgress: 0.5
         )
 
-        XCTAssertEqual(midpoint[0].x, expanded[0].x * 0.25, accuracy: 0.001)
-        XCTAssertEqual(midpoint[0].y, expanded[0].y * 0.75, accuracy: 0.001)
+        XCTAssertEqual(midpoint[0].x, expanded[0].x * 0.5, accuracy: 0.001)
+        XCTAssertEqual(midpoint[0].y, expanded[0].y * 0.5, accuracy: 0.001)
         XCTAssertEqual(midpoint[0].rotation.degrees, expanded[0].rotation.degrees * 0.5, accuracy: 0.001)
         XCTAssertEqual(midpoint[0].scale, (expanded[0].scale + 0.28) / 2, accuracy: 0.001)
     }
@@ -266,7 +266,7 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertEqual(expanded.y, -130.3, accuracy: 0.001)
         XCTAssertEqual(expanded.rotation, .zero)
         XCTAssertEqual(expanded.scale, 1.04, accuracy: 0.001)
-        XCTAssertEqual(halfway.y, -97.725, accuracy: 0.001)
+        XCTAssertEqual(halfway.y, -65.15, accuracy: 0.001)
         XCTAssertEqual(collapsed.y, 0, accuracy: 0.001)
         XCTAssertEqual(collapsed.scale, 0.28, accuracy: 0.001)
     }
@@ -291,11 +291,11 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         }
     }
 
-    func testAboveMusicClearanceUsesExistingVerticalCurve() {
+    func testAboveMusicClearanceUsesSharedCollapseProgress() {
         let evenSlots = slots(["movie", "music"])
 
         XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 0), 104.3, accuracy: 0.001)
-        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 0.5), 78.225, accuracy: 0.001)
+        XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 0.5), 52.15, accuracy: 0.001)
         XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: evenSlots, collapseProgress: 1), 0)
         XCTAssertEqual(HallOfFameCrownLayout.aboveMusicClearance(for: slots(["music"]), collapseProgress: 0), 0)
     }
@@ -305,10 +305,18 @@ final class HallOfFameCrownLayoutTests: XCTestCase {
         XCTAssertEqual(ProfileHeroCollapse.progress(for: -24), 0)
     }
 
-    func testProfileHeroCollapseProgressMapsFirstHundredPoints() {
-        XCTAssertEqual(ProfileHeroCollapse.progress(for: 50), 0.5)
-        XCTAssertEqual(ProfileHeroCollapse.progress(for: 100), 1)
-        XCTAssertEqual(ProfileHeroCollapse.progress(for: 140), 1)
+    func testProfileHeroCollapseProgressUsesLongEasedDistance() {
+        XCTAssertEqual(ProfileHeroCollapse.progress(for: 65), 0.15625, accuracy: 0.001)
+        XCTAssertEqual(ProfileHeroCollapse.progress(for: 130), 0.5, accuracy: 0.001)
+        XCTAssertEqual(ProfileHeroCollapse.progress(for: 260), 1)
+        XCTAssertEqual(ProfileHeroCollapse.progress(for: 300), 1)
+    }
+
+    func testProfileHeroLayoutCollapsesMoreSlowly() {
+        XCTAssertEqual(ProfileHeroCollapse.layoutProgress(for: -24), 0)
+        XCTAssertEqual(ProfileHeroCollapse.layoutProgress(for: 170), 0.5, accuracy: 0.001)
+        XCTAssertLessThan(ProfileHeroCollapse.layoutProgress(for: 260), 1)
+        XCTAssertEqual(ProfileHeroCollapse.layoutProgress(for: 340), 1)
     }
 
     private func media(index: Int, mediaType: String) -> MediaSummary {

@@ -502,36 +502,17 @@ struct CompanyDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Button {
-                    let isExpanding = !expandedRoles.contains(role)
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if isExpanding {
-                            expandedRoles.insert(role)
-                        } else {
-                            expandedRoles.remove(role)
-                        }
-                    }
-                    if isExpanding {
-                        Task { await viewModel.loadCatalog(for: role) }
-                    }
+                    toggleRole(role)
                 } label: {
-                    HStack(spacing: 10) {
-                        Text(roleDisclosureTitle(role, detail: detail))
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.74))
-
-                        Spacer()
-
-                        Image(systemName: expandedRoles.contains(role) ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.44))
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                    Text(roleDisclosureTitle(role, detail: detail))
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(roleDisclosureTitle(role, detail: detail))
                 .accessibilityValue(expandedRoles.contains(role) ? "Expanded" : "Collapsed")
 
                 if let completion = viewModel.completion(for: role, in: detail),
@@ -539,11 +520,42 @@ struct CompanyDetailView: View {
                     SWCompletionProgressButton(progress: completion)
                         .accessibilityLabel("\(role.creditRole) completion")
                 }
+
+                Button {
+                    toggleRole(role)
+                } label: {
+                    Image(systemName: expandedRoles.contains(role) ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(role.creditRole) section")
+                .accessibilityValue(expandedRoles.contains(role) ? "Expanded" : "Collapsed")
             }
+            .padding(.leading, 12)
+            .padding(.trailing, 2)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
+            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
 
             if expandedRoles.contains(role) {
                 roleCatalog(role)
             }
+        }
+    }
+
+    private func toggleRole(_ role: CompanyCatalogRole) {
+        let isExpanding = !expandedRoles.contains(role)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if isExpanding {
+                expandedRoles.insert(role)
+            } else {
+                expandedRoles.remove(role)
+            }
+        }
+        if isExpanding {
+            Task { await viewModel.loadCatalog(for: role) }
         }
     }
 

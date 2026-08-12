@@ -904,20 +904,13 @@ struct PersonDetailView: View {
                     spacing: 14
                 ) {
                     ForEach(series) { item in
-                        VStack(spacing: 4) {
-                            Button {
-                                selectedSeries = item.ref
-                            } label: {
-                                MediaSeriesCard(series: item)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("View \(item.name) series")
-
-                            if let completion = item.completion, completion.isVisible {
-                                SWCompletionProgressButton(progress: completion)
-                                    .accessibilityLabel("\(item.name) series completion")
-                            }
+                        Button {
+                            selectedSeries = item.ref
+                        } label: {
+                            MediaSeriesCard(series: item)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View \(item.name) series")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

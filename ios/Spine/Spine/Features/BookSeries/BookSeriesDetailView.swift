@@ -163,17 +163,24 @@ struct SeriesDetailView: View {
             )
         } else if let detail = viewModel.detail {
             ScrollView {
-                HStack(spacing: 12) {
-                    Text(itemCountTitle(for: detail))
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.56))
+                GeometryReader { proxy in
+                    let columnWidth = (proxy.size.width - 24) / 4
+                    let firstPosterInset = max(0, (columnWidth - PosterSlot.tagGrid.size.width) / 2)
 
-                    Spacer()
+                    HStack(spacing: 8) {
+                        Text(itemCountTitle(for: detail))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.56))
 
-                    if let completion = detail.completion, completion.isVisible {
-                        SWCompletionProgressButton(progress: completion)
+                        if let completion = detail.completion, completion.isVisible {
+                            SWCompletionProgressButton(progress: completion)
+                        }
+
+                        Spacer()
                     }
+                    .padding(.leading, firstPosterInset)
                 }
+                .frame(height: 44)
                 .padding(.horizontal, 16)
 
                 LazyVGrid(
