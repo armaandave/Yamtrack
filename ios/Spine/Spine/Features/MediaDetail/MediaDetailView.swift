@@ -1217,6 +1217,9 @@ private struct MediaDetailPageView: View {
                     dismissRatingPicker()
                 }
             }
+            .simultaneousGesture(
+                TapGesture().onEnded { dismissRatingPicker() }
+            )
             .scrollContentBackground(.hidden)
             .ignoresSafeArea(edges: .top)
 
@@ -4277,7 +4280,6 @@ private struct ActionRail: View {
     private static let buttonSize: CGFloat = 48
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var glassNamespace
     @State private var isPressing = false
     @State private var pressHaptics = UIImpactFeedbackGenerator(style: .light)
     @State private var actionHaptics = UISelectionFeedbackGenerator()
@@ -4299,20 +4301,26 @@ private struct ActionRail: View {
     var onRating: (Int) -> Void = { _ in }
 
     var body: some View {
-        GlassEffectContainer(spacing: 16) {
-            VStack(spacing: -10) {
-                if showsEye, ratingPicker.isPresented {
-                    ratingComposer
-                        .transition(.opacity)
-                }
-
-                rail
+        VStack(spacing: -10) {
+            if showsEye, ratingPicker.isPresented {
+                ratingComposer
+                    .transition(.opacity)
             }
+
+            rail
         }
+        .frame(width: surfaceWidth)
+        .glassEffect(.regular.interactive(), in: glassShape)
         .onAppear {
             pressHaptics.prepare()
             actionHaptics.prepare()
         }
+    }
+
+    private var surfaceWidth: CGFloat {
+        let buttonCount = 2 + (showsEye ? 1 : 0) + (showsRating ? 1 : 0)
+        let railWidth = CGFloat(buttonCount) * Self.buttonSize + 10
+        return ratingPicker.isPresented ? max(railWidth, 183) : railWidth
     }
 
     private var glassShape: RoundedRectangle {
@@ -4358,9 +4366,6 @@ private struct ActionRail: View {
             )
         }
         .padding(5)
-        .glassEffect(.clear.interactive(), in: glassShape)
-        .glassEffectID("media-actions", in: glassNamespace)
-        .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -4377,10 +4382,6 @@ private struct ActionRail: View {
     private var ratingComposer: some View {
         ZStack {
             StarRatingPill(halfSteps: $ratingPicker.draftHalfSteps)
-                .glassEffect(.clear.interactive(), in: glassShape)
-                .glassEffectID("media-rating", in: glassNamespace)
-                .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
-                .glassEffectTransition(.matchedGeometry)
 
             if ratingPicker.showsConfirm {
                 Button(action: confirmRating) {
@@ -4391,17 +4392,14 @@ private struct ActionRail: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isEyeLoading || isLikeLoading)
-                .glassEffect(.clear.interactive(), in: glassShape)
                 .offset(x: 71.25)
-                .glassEffectID("media-rating-confirm", in: glassNamespace)
-                .glassEffectUnion(id: "media-actions-surface", namespace: glassNamespace)
-                .glassEffectTransition(.materialize)
                 .transition(.offset(x: 23.75).combined(with: .opacity))
                 .accessibilityLabel("Confirm rating")
                 .accessibilityIdentifier("media-detail.rating-confirm")
             }
         }
         .frame(width: 280, height: 60)
+        .offset(x: ratingPicker.showsConfirm ? -9.75 : 0)
         .animation(
             reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.84),
             value: ratingPicker.showsConfirm

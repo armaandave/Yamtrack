@@ -32,8 +32,20 @@ struct AppShellView: View {
         return URL(string: avatarUrl)
     }
 
+    private var tabSelection: Binding<AppTab> {
+        Binding(
+            get: { selectedTab },
+            set: { tab in
+                if tab == .search, selectedTab == .search {
+                    searchFocusRequest += 1
+                }
+                selectedTab = tab
+            }
+        )
+    }
+
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: tabSelection) {
             HomeView(
                 profileRepository: session.repositories.profile,
                 mediaRepository: session.repositories.media,
@@ -119,15 +131,9 @@ struct AppShellView: View {
             }
             .ignoresSafeArea(.container, edges: .bottom)
             .tabItem {
-                Group {
-                    if selectedTab == .diary {
-                        Image("TabDiaryHollow")
-                            .renderingMode(.template)
-                    } else {
-                        Image(systemName: "calendar")
-                    }
-                }
-                .accessibilityLabel("Diary")
+                Image(systemName: "calendar")
+                    .environment(\.symbolVariants, .none)
+                    .accessibilityLabel("Diary")
             }
             .tag(AppTab.diary)
 
@@ -182,11 +188,7 @@ struct AppShellView: View {
             selectedTab = .home
         }
         .background {
-            TabBarSelectionObserver { index in
-                guard AppTab(tabBarIndex: index) == .search,
-                      selectedTab == .search else { return }
-                searchFocusRequest += 1
-            }
+            TabBarSelectionObserver()
         }
         .onChange(of: scenePhase) {
             guard scenePhase == .active else { return }
@@ -247,10 +249,8 @@ enum AppTab: Hashable {
 }
 
 private struct TabBarSelectionObserver: UIViewControllerRepresentable {
-    let onSelect: (Int) -> Void
-
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSelect: onSelect)
+        Coordinator()
     }
 
     func makeUIViewController(context: Context) -> ObserverViewController {
@@ -263,7 +263,6 @@ private struct TabBarSelectionObserver: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: ObserverViewController, context: Context) {
-        context.coordinator.onSelect = onSelect
         controller.onAttach = { [weak controller] in
             guard let tabBarController = controller?.tabBarController else { return }
             context.coordinator.observe(tabBarController)
@@ -280,13 +279,8 @@ private struct TabBarSelectionObserver: UIViewControllerRepresentable {
     }
 
     final class Coordinator: NSObject, UITabBarControllerDelegate {
-        var onSelect: (Int) -> Void
         weak var tabBarController: UITabBarController?
         weak var previousDelegate: UITabBarControllerDelegate?
-
-        init(onSelect: @escaping (Int) -> Void) {
-            self.onSelect = onSelect
-        }
 
         func observe(_ tabBarController: UITabBarController) {
             if self.tabBarController === tabBarController {
@@ -315,7 +309,6 @@ private struct TabBarSelectionObserver: UIViewControllerRepresentable {
             if AppTab(tabBarIndex: index) == .profile {
                 tabBarController.tabBar.items?[index].selectedImage = tabBarController.tabBar.items?[index].image
             }
-            onSelect(index)
         }
     }
 

@@ -19,37 +19,24 @@ struct StoryGraphImportView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                Text("Export your library from StoryGraph, then upload the .csv file here.")
-                Link("Open StoryGraph", destination: URL(string: "https://app.thestorygraph.com/")!)
-            }
-
-            Section("Import Mode") {
-                Picker("Import Mode", selection: $mode) {
-                    ForEach(ImportMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(isBusy)
-
-                Text(modeDetail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Button {
-                    chooseFile()
-                } label: {
-                    Label("Choose StoryGraph CSV", systemImage: "doc.text")
-                }
-                .disabled(isBusy)
-            }
-        }
+        SettingsImportLandingPage(
+            source: "StoryGraph",
+            headline: "Bring your reading story.",
+            instructions: "Export your library from StoryGraph, then upload the CSV file here.",
+            linkTitle: "Open StoryGraph",
+            linkURL: URL(string: "https://app.thestorygraph.com/")!,
+            systemName: "chart.bar.doc.horizontal.fill",
+            tint: Color(red: 0.34, green: 0.68, blue: 0.98),
+            mode: $mode,
+            modeDetail: modeDetail,
+            fileTitle: "Choose StoryGraph CSV",
+            fileSystemName: "doc.text.fill",
+            isBusy: isBusy,
+            chooseFile: chooseFile
+        )
         .navigationTitle("StoryGraph Import")
         .navigationBarTitleDisplayMode(.inline)
+        .preferredColorScheme(.dark)
         .confirmationDialog(
             "This replaces existing book tracking and book diary entries before importing. This can't be undone.",
             isPresented: $isOverwriteConfirmationPresented,

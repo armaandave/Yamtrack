@@ -1621,12 +1621,12 @@ private struct ProfileStatChip: View {
             }
 
             Text(title)
-                .font(.system(size: 8.5, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.5))
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
         }
-        .frame(width: 67, height: 50)
+        .frame(maxWidth: .infinity, minHeight: 56)
         .background(
             .white.opacity(0.055),
             in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
@@ -2099,8 +2099,7 @@ private struct ProfileSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: ProfileSettingsViewModel
     @State private var importStatusSource: ImportStatusSource?
-    @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var isProfileBackdropSearchPresented = false
+    @State private var isLogoutConfirmationPresented = false
 
     let profile: UserProfile?
     let onProfileUpdated: (UserProfile) -> Void
@@ -2141,38 +2140,60 @@ private struct ProfileSettingsSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if let profile {
-                    accountSection(profile)
-                    profileSaveSection
-                    enabledMediaSection
-                }
+            ZStack {
+                SpinePageBackground()
 
-                Section("Import") {
-                    importSectionContent
-                }
+                GeometryReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        GlassEffectContainer(spacing: 18) {
+                            VStack(alignment: .leading, spacing: 28) {
+                                if let currentProfile {
+                                    settingsHero(currentProfile)
+                                    accountLinks(currentProfile)
+                                }
 
-                Section("App") {
-                    LabeledContent("API Base URL", value: AppConfig.apiBaseURL.absoluteString)
-                    LabeledContent("API Prefix", value: AppConfig.apiPrefix)
-                }
+                                SettingsGroup(title: "Bring your history") {
+                                    SettingsGlassCard {
+                                        importSectionContent
+                                    }
+                                }
 
-                Section {
-                    Link("Music metadata provided by MusicBrainz", destination: URL(string: "https://musicbrainz.org/")!)
-                    Link("Cover art provided by the Cover Art Archive", destination: URL(string: "https://coverartarchive.org/")!)
-                    Link("Steam review data provided by Steam®", destination: URL(string: "https://store.steampowered.com/")!)
-                } header: {
-                    Text("Data Sources")
-                } footer: {
-                    Text("©2026 Valve Corporation. Steam and the Steam logo are trademarks and/or registered trademarks of Valve Corporation in the U.S. and/or other countries.")
-                }
+                                SettingsGroup(title: "Spine") {
+                                    SettingsGlassCard {
+                                        NavigationLink {
+                                            SettingsAboutView()
+                                        } label: {
+                                            SettingsNavigationRow(
+                                                title: "About Spine",
+                                                detail: "Version, service, and data credits",
+                                                systemName: "info.circle.fill",
+                                                tint: Color(red: 0.43, green: 0.63, blue: 1)
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
 
-                Section {
-                    Button(role: .destructive) {
-                        dismiss()
-                        onLogout()
-                    } label: {
-                        Label("Logout", systemImage: "rectangle.portrait.and.arrow.right")
+                                Button(role: .destructive) {
+                                    isLogoutConfirmationPresented = true
+                                } label: {
+                                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                                        .font(.headline)
+                                        .foregroundStyle(.red.opacity(0.9))
+                                        .frame(maxWidth: .infinity, minHeight: 52)
+                                }
+                                .tint(.red.opacity(0.09))
+                                .buttonStyle(.glass)
+
+                                Text("Your library stays on your Spine account.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.white.opacity(0.38))
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .frame(width: max(0, proxy.size.width - 36), alignment: .leading)
+                        }
+                        .padding(.bottom, 36)
+                        .frame(width: proxy.size.width)
                     }
                 }
             }
@@ -2181,14 +2202,6 @@ private struct ProfileSettingsSheet: View {
             .task {
                 viewModel.load(profile: profile)
                 await viewModel.loadOptions()
-            }
-            .onChange(of: selectedPhotoItem) { _, newItem in
-                Swift.Task<Void, Never> {
-                    if let updated = await viewModel.saveAvatar(from: newItem) {
-                        onProfileUpdated(updated)
-                    }
-                    selectedPhotoItem = nil
-                }
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2216,206 +2229,137 @@ private struct ProfileSettingsSheet: View {
                     )
                 }
             }
-            .fullScreenCover(isPresented: $isProfileBackdropSearchPresented) {
-                ProfileBackdropSearchView(
-                    mediaRepository: mediaRepository,
-                    profileRepository: profileRepository,
-                    currentBackdropURL: viewModel.profile?.profileBackdropUrl ?? profile?.profileBackdropUrl,
-                    onUnauthorized: onUnauthorized
-                ) { response in
-                    applyProfileBackdrop(response)
-                }
-            }
-        }
-    }
-
-    private func accountSection(_ profile: UserProfile) -> some View {
-        let isSavingAvatar = viewModel.isSavingAvatar
-        let avatarUrl = viewModel.profile?.avatarUrl ?? profile.avatarUrl
-
-        return Section("Account") {
-            HStack(spacing: 14) {
-                SpineAsyncImage(url: URL(string: avatarUrl ?? "")) { phase in
-                    if case let .success(image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Image(systemName: "person.crop.circle.fill")
-                            .resizable()
-                            .foregroundStyle(.secondary)
-                            .padding(5)
-                    }
-                }
-                .frame(width: 54, height: 54)
-                .clipShape(Circle())
-                .background(.secondary.opacity(0.12), in: Circle())
-
-                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                    Label(isSavingAvatar ? "Uploading" : "Change Photo", systemImage: "photo")
-                }
-                .disabled(isSavingAvatar)
-
-                Spacer()
-
-            if avatarUrl != nil {
-                Button("Remove", role: .destructive) {
-                    Swift.Task<Void, Never> {
-                            if let updated = await viewModel.removeAvatar() {
-                                onProfileUpdated(updated)
-                            }
-                        }
-                    }
-                    .disabled(isSavingAvatar)
-                }
-            }
-
-            Button {
-                isProfileBackdropSearchPresented = true
-            } label: {
-                Label("Choose Profile Backdrop", systemImage: "photo.on.rectangle")
-            }
-
-            if (viewModel.profile?.profileBackdropUrl ?? profile.profileBackdropUrl) != nil {
-                Button("Remove Profile Backdrop", role: .destructive) {
-                    Swift.Task<Void, Never> {
-                        do {
-                            let response = try await profileRepository.clearProfileBackdrop()
-                            applyProfileBackdrop(response)
-                        } catch {
-                            viewModel.errorMessage = error.localizedDescription
-                        }
-                    }
-                }
-            }
-
-            editableField("Display Name", text: $viewModel.displayName)
-            fieldError("display_name", "displayName")
-
-            editableField("Username", text: $viewModel.username)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            fieldError("username")
-
-            if let email = profile.email?.trimmedNonEmpty {
-                LabeledContent("Email", value: email)
-            }
-
-            editableField("Bio", text: $viewModel.bio, axis: .vertical)
-                .lineLimit(3...5)
-            fieldError("bio")
-
-            Toggle("Private account", isOn: $viewModel.isPrivate)
-            fieldError("is_private", "profile_private")
-        }
-    }
-
-    private func applyProfileBackdrop(_ response: ProfileBackdropSaveResponse) {
-        guard let base = viewModel.profile ?? profile else { return }
-        let updated = base.replacingProfileBackdrop(response)
-        viewModel.load(profile: updated)
-        onProfileUpdated(updated)
-    }
-
-    private var profileSaveSection: some View {
-        Section {
-            saveButton("Save Changes", isSaving: viewModel.isSavingProfile, isDisabled: !viewModel.hasProfileChanges) {
-                if let updated = await viewModel.saveProfile() {
-                    onProfileUpdated(updated)
-                    dismiss()
-                }
-            }
-
-            statusMessages
-        }
-    }
-
-    private var enabledMediaSection: some View {
-        Section("Enabled Media") {
-            if viewModel.isLoadingOptions {
-                ProgressView()
-            } else {
-                ForEach(viewModel.mediaTypes, id: \.self) { mediaType in
-                    Toggle(
-                        MediaTypeTheme.theme(for: mediaType).displayName,
-                        isOn: enabledMediaBinding(mediaType)
-                    )
-                }
-            }
-
-            fieldError("enabled_media_types")
-
-            saveButton(
-                "Save Enabled Media",
-                isSaving: viewModel.isSavingPreferences,
-                isDisabled: !viewModel.hasPreferenceChanges
+            .confirmationDialog(
+                "Sign out of Spine?",
+                isPresented: $isLogoutConfirmationPresented,
+                titleVisibility: .visible
             ) {
-                if let updated = await viewModel.savePreferences() {
-                    onProfileUpdated(updated)
+                Button("Sign Out", role: .destructive) {
+                    dismiss()
+                    onLogout()
                 }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("You can sign in again at any time.")
             }
         }
+        .preferredColorScheme(.dark)
     }
 
-    private func enabledMediaBinding(_ mediaType: String) -> Binding<Bool> {
-        Binding(
-            get: { viewModel.enabledMediaTypes.contains(mediaType) },
-            set: { isEnabled in
-                if isEnabled {
-                    viewModel.enabledMediaTypes.insert(mediaType)
-                } else {
-                    viewModel.enabledMediaTypes.remove(mediaType)
-                }
-            }
-        )
+    private var currentProfile: UserProfile? {
+        viewModel.profile ?? profile
     }
 
-    @ViewBuilder
-    private var statusMessages: some View {
-        if let error = viewModel.errorMessage?.trimmedNonEmpty {
-            Label(error, systemImage: "exclamationmark.triangle")
-                .font(.footnote)
-                .foregroundStyle(.red)
-        } else if let success = viewModel.successMessage?.trimmedNonEmpty {
-            Label(success, systemImage: "checkmark.circle")
-                .font(.footnote)
-                .foregroundStyle(.green)
-        }
-    }
+    private func settingsHero(_ profile: UserProfile) -> some View {
+        let backdropURL = profile.profileBackdropUrl?.trimmedNonEmpty ?? profile.profileBackdropItem?.displayBackdropURL
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
 
-    private func saveButton(_ title: String, isSaving: Bool, isDisabled: Bool, action: @escaping () async -> Void) -> some View {
-        Button {
-            Swift.Task<Void, Never> { await action() }
-        } label: {
-            HStack {
-                Group {
-                    if isSaving {
-                        Text("Saving...")
-                        Spacer()
-                        ProgressView()
-                    } else {
-                        Text(title)
+        return GeometryReader { proxy in
+            ZStack(alignment: .bottomLeading) {
+                if let backdropURL {
+                    SpineAsyncImage(url: URL(string: backdropURL)) { phase in
+                        if case let .success(image) = phase {
+                            image.resizable().scaledToFill()
+                        } else {
+                            SettingsHeroFallback()
+                        }
                     }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+                } else {
+                    SettingsHeroFallback()
                 }
-                .spineContentTransition(value: isSaving)
+
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.84)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                HStack(alignment: .bottom, spacing: 14) {
+                    SettingsAvatar(profile: profile, size: 74)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(profile.displayName)
+                            .font(.title2.bold())
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        Text("@\(profile.username)")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.58))
+
+                        Label(profile.isPrivate ? "Private" : "Public", systemImage: profile.isPrivate ? "lock.fill" : "globe")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.78))
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(18)
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .disabled(isDisabled || isSaving)
+        .frame(maxWidth: .infinity)
+        .frame(height: 210)
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(.white.opacity(0.14), lineWidth: 1) }
+        .shadow(color: .black.opacity(0.32), radius: 24, y: 14)
+        .accessibilityElement(children: .combine)
     }
 
-    private func editableField(_ title: String, text: Binding<String>, axis: Axis = .horizontal) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField(title, text: text, axis: axis)
-        }
-    }
+    private func accountLinks(_ profile: UserProfile) -> some View {
+        SettingsGroup(title: "Your space") {
+            SettingsGlassCard {
+                VStack(spacing: 0) {
+                    NavigationLink {
+                        SettingsProfileView(
+                            viewModel: viewModel,
+                            fallbackProfile: profile,
+                            profileRepository: profileRepository,
+                            mediaRepository: mediaRepository,
+                            onProfileUpdated: onProfileUpdated,
+                            onUnauthorized: onUnauthorized
+                        )
+                    } label: {
+                        SettingsNavigationRow(
+                            title: "Profile",
+                            detail: "Photo, name, bio, and privacy",
+                            systemName: "person.crop.circle.fill",
+                            tint: Color(red: 0.64, green: 0.48, blue: 0.98)
+                        )
+                    }
+                    .buttonStyle(.plain)
 
-    @ViewBuilder
-    private func fieldError(_ keys: String...) -> some View {
-        if let message = keys.lazy.compactMap({ viewModel.fieldErrors[$0] }).first {
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.red)
+                    SettingsDivider()
+
+                    NavigationLink {
+                        SettingsPreferencesView(viewModel: viewModel, onProfileUpdated: onProfileUpdated)
+                    } label: {
+                        SettingsNavigationRow(
+                            title: "Media & preferences",
+                            detail: "Types, dates, and notifications",
+                            systemName: "slider.horizontal.3",
+                            tint: Color(red: 0.21, green: 0.78, blue: 0.72)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    SettingsDivider()
+
+                    NavigationLink {
+                        SettingsPasswordView(viewModel: viewModel)
+                    } label: {
+                        SettingsNavigationRow(
+                            title: "Password",
+                            detail: "Update your sign-in password",
+                            systemName: "key.fill",
+                            tint: Color(red: 0.96, green: 0.67, blue: 0.27)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
@@ -2427,24 +2371,53 @@ private struct ProfileSettingsSheet: View {
             NavigationLink {
                 LetterboxdImportView(coordinator: importCoordinator)
             } label: {
-                Label("Import from Letterboxd", systemImage: "square.and.arrow.down")
+                SettingsNavigationRow(
+                    title: "Letterboxd",
+                    detail: "Movies, diary, lists, and likes",
+                    systemName: "film.stack.fill",
+                    tint: Color(red: 0.96, green: 0.47, blue: 0.20)
+                )
             }
+            .buttonStyle(.plain)
+
             NavigationLink {
                 StoryGraphImportView(coordinator: storygraphImportCoordinator)
             } label: {
-                Label("Import from StoryGraph", systemImage: "doc.text")
+                SettingsNavigationRow(
+                    title: "StoryGraph",
+                    detail: "Books and reading history",
+                    systemName: "chart.bar.doc.horizontal.fill",
+                    tint: Color(red: 0.34, green: 0.68, blue: 0.98)
+                )
             }
+            .buttonStyle(.plain)
+
             NavigationLink {
                 GoodreadsImportView(coordinator: goodreadsImportCoordinator)
             } label: {
-                Label("Import from Goodreads", systemImage: "doc.text")
+                SettingsNavigationRow(
+                    title: "Goodreads",
+                    detail: "Books and reading history",
+                    systemName: "books.vertical.fill",
+                    tint: Color(red: 0.60, green: 0.75, blue: 0.36)
+                )
             }
+            .buttonStyle(.plain)
         } else if importCoordinator.phase != .idle {
-            letterboxdImportStatus
+            VStack(alignment: .leading, spacing: 12) {
+                letterboxdImportStatus
+            }
+            .padding(16)
         } else if storygraphImportCoordinator.phase != .idle {
-            storygraphImportStatus
+            VStack(alignment: .leading, spacing: 12) {
+                storygraphImportStatus
+            }
+            .padding(16)
         } else {
-            goodreadsImportStatus
+            VStack(alignment: .leading, spacing: 12) {
+                goodreadsImportStatus
+            }
+            .padding(16)
         }
     }
 
@@ -2663,6 +2636,911 @@ private struct ProfileSettingsSheet: View {
             Image(systemName: systemName)
                 .foregroundStyle(tint)
         }
+    }
+}
+
+private struct SettingsProfileView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var viewModel: ProfileSettingsViewModel
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isBackdropSearchPresented = false
+
+    let fallbackProfile: UserProfile
+    let profileRepository: ProfileRepository
+    let mediaRepository: MediaRepository
+    let onProfileUpdated: (UserProfile) -> Void
+    let onUnauthorized: () -> Void
+
+    private var profile: UserProfile {
+        viewModel.profile ?? fallbackProfile
+    }
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    profilePhotoSection
+                    identitySection
+                    privacySection
+                    SettingsStatusMessage(viewModel: viewModel)
+
+                    SettingsSaveButton(
+                        title: "Save Profile",
+                        isSaving: viewModel.isSavingProfile,
+                        isDisabled: !viewModel.hasProfileChanges
+                    ) {
+                        if let updated = await viewModel.saveProfile() {
+                            onProfileUpdated(updated)
+                            dismiss()
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: selectedPhotoItem) { _, item in
+            Task {
+                if let updated = await viewModel.saveAvatar(from: item) {
+                    onProfileUpdated(updated)
+                }
+                selectedPhotoItem = nil
+            }
+        }
+        .fullScreenCover(isPresented: $isBackdropSearchPresented) {
+            ProfileBackdropSearchView(
+                mediaRepository: mediaRepository,
+                profileRepository: profileRepository,
+                currentBackdropURL: profile.profileBackdropUrl,
+                onUnauthorized: onUnauthorized
+            ) { response in
+                applyBackdrop(response)
+            }
+        }
+    }
+
+    private var profilePhotoSection: some View {
+        SettingsGroup(title: "How you appear") {
+            SettingsGlassCard {
+                VStack(spacing: 18) {
+                    HStack(spacing: 16) {
+                        SettingsAvatar(profile: profile, size: 82)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                Label(viewModel.isSavingAvatar ? "Uploading" : "Change Photo", systemImage: "camera.fill")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .disabled(viewModel.isSavingAvatar)
+
+                            if profile.avatarUrl != nil {
+                                Button("Remove Photo", role: .destructive) {
+                                    Task {
+                                        if let updated = await viewModel.removeAvatar() {
+                                            onProfileUpdated(updated)
+                                        }
+                                    }
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .disabled(viewModel.isSavingAvatar)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    SettingsDivider()
+
+                    Button {
+                        isBackdropSearchPresented = true
+                    } label: {
+                        SettingsActionRow(
+                            title: "Choose Profile Backdrop",
+                            systemName: "photo.on.rectangle.angled"
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    if profile.profileBackdropUrl != nil {
+                        SettingsDivider()
+
+                        Button(role: .destructive) {
+                            Task { await removeBackdrop() }
+                        } label: {
+                            SettingsActionRow(
+                                title: "Remove Profile Backdrop",
+                                systemName: "trash.fill",
+                                tint: .red
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private var identitySection: some View {
+        SettingsGroup(title: "Identity") {
+            SettingsGlassCard {
+                VStack(spacing: 14) {
+                    SettingsTextField(title: "Display name", text: $viewModel.displayName)
+                    SettingsFieldError(viewModel: viewModel, keys: ["display_name", "displayName"])
+                    SettingsTextField(title: "Username", text: $viewModel.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SettingsFieldError(viewModel: viewModel, keys: ["username"])
+
+                    if let email = profile.email?.trimmedNonEmpty {
+                        SettingsReadOnlyField(title: "Email", value: email)
+                    }
+
+                    SettingsTextField(title: "Pronouns", text: $viewModel.pronouns)
+                    SettingsFieldError(viewModel: viewModel, keys: ["pronouns"])
+                    SettingsTextField(title: "Location", text: $viewModel.location)
+                    SettingsFieldError(viewModel: viewModel, keys: ["location"])
+                    SettingsTextField(title: "Bio", text: $viewModel.bio, axis: .vertical)
+                        .lineLimit(3...6)
+                    SettingsFieldError(viewModel: viewModel, keys: ["bio"])
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private var privacySection: some View {
+        SettingsGroup(title: "Privacy") {
+            SettingsGlassCard {
+                Toggle(isOn: $viewModel.isPrivate) {
+                    SettingsControlLabel(
+                        title: "Private Account",
+                        detail: "You approve new followers.",
+                        systemName: "lock.fill",
+                        tint: Color(red: 0.54, green: 0.60, blue: 0.96)
+                    )
+                }
+                .tint(.white)
+                .padding(16)
+
+                SettingsFieldError(viewModel: viewModel, keys: ["is_private", "profile_private"])
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private func applyBackdrop(_ response: ProfileBackdropSaveResponse) {
+        let updated = profile.replacingProfileBackdrop(response)
+        viewModel.load(profile: updated)
+        onProfileUpdated(updated)
+    }
+
+    private func removeBackdrop() async {
+        do {
+            applyBackdrop(try await profileRepository.clearProfileBackdrop())
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct SettingsPreferencesView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var viewModel: ProfileSettingsViewModel
+    let onProfileUpdated: (UserProfile) -> Void
+
+    private let mediaColumns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+    ]
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    mediaTypesSection
+                    formatsSection
+                    notificationSection
+                    SettingsStatusMessage(viewModel: viewModel)
+
+                    SettingsSaveButton(
+                        title: "Save Preferences",
+                        isSaving: viewModel.isSavingPreferences,
+                        isDisabled: !viewModel.hasPreferenceChanges
+                    ) {
+                        if let updated = await viewModel.savePreferences() {
+                            onProfileUpdated(updated)
+                            dismiss()
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
+            }
+        }
+        .navigationTitle("Media & Preferences")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var mediaTypesSection: some View {
+        SettingsGroup(title: "Your media") {
+            SettingsGlassCard {
+                if viewModel.isLoadingOptions {
+                    ProgressView("Loading media types")
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                } else {
+                    LazyVGrid(columns: mediaColumns, spacing: 10) {
+                        ForEach(viewModel.mediaTypes, id: \.self) { mediaType in
+                            SettingsMediaTypeButton(
+                                mediaType: mediaType,
+                                isSelected: viewModel.enabledMediaTypes.contains(mediaType)
+                            ) {
+                                toggleMediaType(mediaType)
+                            }
+                        }
+                    }
+                    .padding(14)
+                }
+
+                SettingsFieldError(viewModel: viewModel, keys: ["enabled_media_types"])
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private var formatsSection: some View {
+        SettingsGroup(title: "Dates & logging") {
+            SettingsGlassCard {
+                VStack(spacing: 0) {
+                    SettingsChoicePicker(
+                        title: "Date Format",
+                        systemName: "calendar",
+                        tint: Color(red: 0.37, green: 0.72, blue: 0.98),
+                        selection: $viewModel.dateFormat,
+                        choices: viewModel.settingsOptions.dateFormats
+                    )
+                    SettingsDivider()
+                    SettingsChoicePicker(
+                        title: "Time Format",
+                        systemName: "clock.fill",
+                        tint: Color(red: 0.58, green: 0.51, blue: 0.96),
+                        selection: $viewModel.timeFormat,
+                        choices: viewModel.settingsOptions.timeFormats
+                    )
+                    SettingsDivider()
+                    SettingsChoicePicker(
+                        title: "Week Starts",
+                        systemName: "calendar.badge.clock",
+                        tint: Color(red: 0.96, green: 0.55, blue: 0.30),
+                        selection: $viewModel.weekStartDay,
+                        choices: viewModel.settingsOptions.weekStartDays
+                    )
+                    SettingsDivider()
+                    SettingsChoicePicker(
+                        title: "Quick Log Date",
+                        systemName: "bolt.fill",
+                        tint: Color(red: 0.93, green: 0.74, blue: 0.25),
+                        selection: $viewModel.quickWatchDate,
+                        choices: viewModel.settingsOptions.quickWatchDates
+                    )
+                }
+            }
+        }
+    }
+
+    private var notificationSection: some View {
+        SettingsGroup(title: "Notifications") {
+            SettingsGlassCard {
+                VStack(spacing: 0) {
+                    Toggle(isOn: $viewModel.releaseNotificationsEnabled) {
+                        SettingsControlLabel(
+                            title: "Release Updates",
+                            detail: "New episodes and release dates",
+                            systemName: "bell.badge.fill",
+                            tint: Color(red: 0.98, green: 0.45, blue: 0.39)
+                        )
+                    }
+                    .tint(.white)
+                    .padding(16)
+
+                    SettingsDivider()
+
+                    Toggle(isOn: $viewModel.dailyDigestEnabled) {
+                        SettingsControlLabel(
+                            title: "Daily Digest",
+                            detail: "One summary of what is coming",
+                            systemName: "sun.max.fill",
+                            tint: Color(red: 0.96, green: 0.72, blue: 0.23)
+                        )
+                    }
+                    .tint(.white)
+                    .padding(16)
+                }
+            }
+        }
+    }
+
+    private func toggleMediaType(_ mediaType: String) {
+        if viewModel.enabledMediaTypes.contains(mediaType) {
+            viewModel.enabledMediaTypes.remove(mediaType)
+        } else {
+            viewModel.enabledMediaTypes.insert(mediaType)
+        }
+    }
+}
+
+private struct SettingsPasswordView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var viewModel: ProfileSettingsViewModel
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.yellow)
+
+                        Text("Keep your account secure.")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+
+                        Text("Use at least eight characters for your new password.")
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
+
+                    SettingsGlassCard {
+                        VStack(spacing: 14) {
+                            SettingsSecureField(title: "Current password", text: $viewModel.oldPassword)
+                            SettingsFieldError(viewModel: viewModel, keys: ["old_password"])
+                            SettingsSecureField(title: "New password", text: $viewModel.newPassword)
+                            SettingsFieldError(viewModel: viewModel, keys: ["new_password"])
+                            SettingsSecureField(title: "Confirm new password", text: $viewModel.newPasswordConfirm)
+                            SettingsFieldError(viewModel: viewModel, keys: ["new_password_confirm"])
+                        }
+                        .padding(16)
+                    }
+
+                    SettingsStatusMessage(viewModel: viewModel)
+
+                    SettingsSaveButton(
+                        title: "Update Password",
+                        isSaving: viewModel.isSavingPassword,
+                        isDisabled: viewModel.oldPassword.isEmpty || viewModel.newPassword.isEmpty || viewModel.newPasswordConfirm.isEmpty
+                    ) {
+                        if await viewModel.changePassword() {
+                            dismiss()
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .navigationTitle("Password")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SettingsAboutView: View {
+    private var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    private var build: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+    }
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(spacing: 10) {
+                        SpineWordmark()
+                            .frame(maxWidth: .infinity)
+
+                        Text("One home for everything you watch, read, play, and hear.")
+                            .font(.title3.bold())
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.vertical, 12)
+
+                    SettingsGroup(title: "App") {
+                        SettingsGlassCard {
+                            VStack(spacing: 0) {
+                                SettingsValueRow(title: "Version", value: "\(version) (\(build))")
+                                SettingsDivider()
+                                SettingsValueRow(title: "API Service", value: AppConfig.apiBaseURL.host() ?? AppConfig.apiBaseURL.absoluteString)
+                                SettingsDivider()
+                                SettingsValueRow(title: "API Path", value: AppConfig.apiPrefix)
+                            }
+                        }
+                    }
+
+                    SettingsGroup(title: "Data sources") {
+                        SettingsGlassCard {
+                            VStack(spacing: 0) {
+                                SettingsCreditLink(
+                                    title: "MusicBrainz",
+                                    detail: "Music metadata",
+                                    url: URL(string: "https://musicbrainz.org/")!
+                                )
+                                SettingsDivider()
+                                SettingsCreditLink(
+                                    title: "Cover Art Archive",
+                                    detail: "Album artwork",
+                                    url: URL(string: "https://coverartarchive.org/")!
+                                )
+                                SettingsDivider()
+                                SettingsCreditLink(
+                                    title: "Steam",
+                                    detail: "Game review data",
+                                    url: URL(string: "https://store.steampowered.com/")!
+                                )
+                            }
+                        }
+                    }
+
+                    Text("©2026 Valve Corporation. Steam and the Steam logo are trademarks or registered trademarks of Valve Corporation.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.38))
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
+            }
+        }
+        .navigationTitle("About")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(title.uppercased())
+                .font(.system(size: 12, weight: .black))
+                .tracking(1.1)
+                .foregroundStyle(.white.opacity(0.46))
+                .padding(.leading, 3)
+
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsGlassCard<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.025), in: shape)
+            .glassEffect(.regular.tint(.white.opacity(0.035)), in: shape)
+            .overlay { shape.strokeBorder(.white.opacity(0.09), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.14), radius: 14, y: 7)
+    }
+}
+
+private struct SettingsNavigationRow: View {
+    let title: String
+    let detail: String
+    let systemName: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 13) {
+            SettingsIcon(systemName: systemName, tint: tint)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.46))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(.white.opacity(0.28))
+        }
+        .padding(14)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct SettingsActionRow: View {
+    let title: String
+    let systemName: String
+    var tint: Color = .white
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemName)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 24)
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(tint)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(.white.opacity(0.26))
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+private struct SettingsControlLabel: View {
+    let title: String
+    let detail: String
+    let systemName: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 13) {
+            SettingsIcon(systemName: systemName, tint: tint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+        }
+    }
+}
+
+private struct SettingsIcon: View {
+    let systemName: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: systemName)
+            .symbolRenderingMode(.hierarchical)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 40, height: 40)
+            .background(
+                LinearGradient(
+                    colors: [tint.opacity(0.95), tint.opacity(0.58)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .shadow(color: tint.opacity(0.22), radius: 8, y: 4)
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(.white.opacity(0.075))
+            .frame(height: 1)
+            .padding(.leading, 66)
+    }
+}
+
+private struct SettingsAvatar: View {
+    let profile: UserProfile
+    let size: CGFloat
+
+    var body: some View {
+        SpineAsyncImage(url: URL(string: profile.avatarUrl ?? "")) { phase in
+            if case let .success(image) = phase {
+                image.resizable().scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .foregroundStyle(.white.opacity(0.34))
+                    .padding(size * 0.1)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(.white.opacity(0.08), in: Circle())
+        .clipShape(Circle())
+        .overlay { Circle().strokeBorder(.white.opacity(0.24), lineWidth: 1) }
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 7)
+        .accessibilityLabel(profile.displayName)
+    }
+}
+
+private struct SettingsHeroFallback: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.33, green: 0.22, blue: 0.52),
+                    Color(red: 0.08, green: 0.23, blue: 0.27),
+                    SpinePalette.pageBackground,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 76, weight: .bold))
+                .foregroundStyle(.white.opacity(0.09))
+                .offset(x: 100, y: -22)
+        }
+    }
+}
+
+private struct SettingsTextField: View {
+    let title: String
+    @Binding var text: String
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title.uppercased())
+                .font(.caption2.bold())
+                .tracking(0.7)
+                .foregroundStyle(.white.opacity(0.42))
+            TextField(title, text: $text, axis: axis)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(0.09), lineWidth: 1)
+                }
+        }
+    }
+}
+
+private struct SettingsSecureField: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title.uppercased())
+                .font(.caption2.bold())
+                .tracking(0.7)
+                .foregroundStyle(.white.opacity(0.42))
+            SecureField(title, text: $text)
+                .textContentType(.password)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(0.09), lineWidth: 1)
+                }
+        }
+    }
+}
+
+private struct SettingsReadOnlyField: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title.uppercased())
+                .font(.caption2.bold())
+                .tracking(0.7)
+                .foregroundStyle(.white.opacity(0.42))
+            Text(value)
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+}
+
+private struct SettingsFieldError: View {
+    let viewModel: ProfileSettingsViewModel
+    let keys: [String]
+
+    var body: some View {
+        if let message = keys.lazy.compactMap({ viewModel.fieldErrors[$0] }).first {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct SettingsStatusMessage: View {
+    let viewModel: ProfileSettingsViewModel
+
+    var body: some View {
+        if let error = viewModel.errorMessage?.trimmedNonEmpty {
+            SettingsMessageCard(message: error, systemName: "exclamationmark.triangle.fill", tint: .red)
+        } else if let success = viewModel.successMessage?.trimmedNonEmpty {
+            SettingsMessageCard(message: success, systemName: "checkmark.circle.fill", tint: .green)
+        }
+    }
+}
+
+private struct SettingsMessageCard: View {
+    let message: String
+    let systemName: String
+    let tint: Color
+
+    var body: some View {
+        Label(message, systemImage: systemName)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct SettingsSaveButton: View {
+    let title: String
+    let isSaving: Bool
+    let isDisabled: Bool
+    let action: () async -> Void
+
+    var body: some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack(spacing: 10) {
+                if isSaving {
+                    ProgressView()
+                        .tint(.black)
+                }
+                Text(isSaving ? "Saving" : title)
+            }
+            .font(.headline)
+            .foregroundStyle(isDisabled ? .white.opacity(0.38) : .black)
+            .frame(maxWidth: .infinity, minHeight: 52)
+        }
+        .tint(isDisabled ? .white.opacity(0.08) : .white)
+        .buttonStyle(.glassProminent)
+        .disabled(isDisabled || isSaving)
+    }
+}
+
+private struct SettingsMediaTypeButton: View {
+    let mediaType: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        let theme = MediaTypeTheme.theme(for: mediaType)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+
+        Button(action: action) {
+            VStack(spacing: 8) {
+                MediaTypeGlyph(theme: theme, size: 18)
+                    .frame(height: 22)
+                Text(theme.displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(maxWidth: .infinity, minHeight: 76)
+            .background(isSelected ? theme.statsColor.opacity(0.22) : .black.opacity(0.18), in: shape)
+            .overlay { shape.strokeBorder(isSelected ? theme.statsColor.opacity(0.7) : .white.opacity(0.07), lineWidth: 1) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(theme.displayName)
+        .accessibilityValue(isSelected ? "Enabled" : "Disabled")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct SettingsChoicePicker: View {
+    let title: String
+    let systemName: String
+    let tint: Color
+    @Binding var selection: String
+    let choices: [PreferenceChoice]
+
+    var body: some View {
+        HStack(spacing: 13) {
+            SettingsIcon(systemName: systemName, tint: tint)
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+            Spacer()
+            Picker(title, selection: $selection) {
+                if choices.isEmpty {
+                    Text(selection).tag(selection)
+                } else {
+                    ForEach(choices) { choice in
+                        Text(choice.label).tag(choice.value)
+                    }
+                }
+            }
+            .labelsHidden()
+            .tint(.white.opacity(0.72))
+        }
+        .padding(14)
+    }
+}
+
+private struct SettingsValueRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.48))
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(16)
+    }
+}
+
+private struct SettingsCreditLink: View {
+    let title: String
+    let detail: String
+    let url: URL
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white.opacity(0.38))
+            }
+            .padding(16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

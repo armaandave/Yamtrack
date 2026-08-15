@@ -56,7 +56,67 @@ final class DiaryPaginationTests: XCTestCase {
         XCTAssertEqual(repository.requestedPages, [nil, "2", "2"])
     }
 
-    private func diaryEntry(id: Int, title: String, customPosterURL: String? = nil) throws -> DiaryEntry {
+    func testLoadAllFetchesRemainingPagesAndCachesMonths() async throws {
+        let june = try diaryEntry(id: 1, title: "June", consumedAt: "2026-06-20T12:00:00Z")
+        let may = try diaryEntry(id: 2, title: "May", consumedAt: "2026-05-20T12:00:00Z")
+        let april = try diaryEntry(id: 3, title: "April", consumedAt: "2026-04-20T12:00:00Z")
+        let repository = ScriptedDiaryPaginationRepository(results: [
+            .success(PagedResponse(count: 3, next: "https://example.com/api/diary/?page=2", previous: nil, results: [june])),
+            .success(PagedResponse(count: 3, next: "https://example.com/api/diary/?page=3", previous: nil, results: [may])),
+            .success(PagedResponse(count: 3, next: nil, previous: nil, results: [april])),
+        ])
+        let viewModel = DiaryViewModel(diaryRepository: repository, onUnauthorized: {})
+
+        await viewModel.loadAll()
+
+        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2, 3])
+        XCTAssertEqual(viewModel.monthSections.map(\.entries.first?.id), [1, 2, 3])
+        XCTAssertEqual(repository.requestedPages, [nil, "2", "3"])
+        XCTAssertTrue(viewModel.hasLoadedAllEntries)
+    }
+
+    func testLoadAllIfNeededFinishesAnExistingPartialLoad() async throws {
+        let first = try diaryEntry(id: 1, title: "First")
+        let second = try diaryEntry(id: 2, title: "Second", consumedAt: "2026-05-20T12:00:00Z")
+        let repository = ScriptedDiaryPaginationRepository(results: [
+            .success(PagedResponse(
+                count: 2,
+                next: "https://example.com/api/diary/?page=2",
+                previous: nil,
+                results: [first]
+            )),
+            .success(PagedResponse(count: 2, next: nil, previous: nil, results: [second])),
+        ])
+        let viewModel = DiaryViewModel(diaryRepository: repository, onUnauthorized: {})
+
+        await viewModel.load()
+        await viewModel.loadAllIfNeeded()
+
+        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2])
+        XCTAssertEqual(repository.requestedPages, [nil, "2"])
+        XCTAssertTrue(viewModel.hasLoadedAllEntries)
+    }
+
+    func testMonthSectionsKeepStableIDsAndCombineMatchingMonths() throws {
+        let july = try diaryEntry(id: 1, title: "July", consumedAt: "2026-07-20T12:00:00Z")
+        let juneOne = try diaryEntry(id: 2, title: "June One", consumedAt: "2026-06-20T12:00:00Z")
+        let may = try diaryEntry(id: 3, title: "May", consumedAt: "2026-05-20T12:00:00Z")
+        let juneTwo = try diaryEntry(id: 4, title: "June Two", consumedAt: "2026-06-10T12:00:00Z")
+        let april = try diaryEntry(id: 5, title: "April", consumedAt: "2026-04-20T12:00:00Z")
+        let original = DiaryMonthSection.sections(from: [juneOne, may])
+
+        let updated = DiaryMonthSection.sections(from: [july, juneOne, may, juneTwo, april])
+
+        XCTAssertEqual(updated.map(\.id), [updated[0].title, original[0].id, original[1].id, updated[3].title])
+        XCTAssertEqual(updated[1].entries.map(\.id), [2, 4])
+    }
+
+    private func diaryEntry(
+        id: Int,
+        title: String,
+        customPosterURL: String? = nil,
+        consumedAt: String = "2026-06-20T12:00:00Z"
+    ) throws -> DiaryEntry {
         let encodedCustomPosterURL = customPosterURL.map { "\"\($0)\"" } ?? "null"
         return try JSONDecoder.api.decode(
             DiaryEntry.self,
@@ -71,7 +131,7 @@ final class DiaryPaginationTests: XCTestCase {
                 "poster_url": "https://example.com/original.jpg",
                 "custom_poster_url": \(encodedCustomPosterURL)
               },
-              "consumed_at": "2026-06-20T12:00:00Z",
+              "consumed_at": "\(consumedAt)",
               "rating": null,
               "review_title": "",
               "review": "",
@@ -82,8 +142,8 @@ final class DiaryPaginationTests: XCTestCase {
               "visibility": "public",
               "like_count": 0,
               "viewer_has_liked": false,
-              "created_at": "2026-06-20T12:00:00Z",
-              "updated_at": "2026-06-20T12:00:00Z"
+              "created_at": "\(consumedAt)",
+              "updated_at": "\(consumedAt)"
             }
             """.data(using: .utf8)!
         )

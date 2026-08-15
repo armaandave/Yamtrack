@@ -1732,14 +1732,6 @@ struct ProfileListDetailView: View {
                     .font(.system(size: 12, weight: .heavy))
                     .foregroundStyle(.white.opacity(0.72))
 
-                if list.listType == .media,
-                   let completion = list.completion,
-                   completion.isVisible {
-                    SWCompletionProgressButton(progress: completion)
-                        .accessibilityLabel("\(list.name) completion")
-                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
-                }
-
                 if list.listType == .people {
                     Text("People")
                         .font(.system(size: 11, weight: .heavy))
@@ -1756,6 +1748,14 @@ struct ProfileListDetailView: View {
                         .padding(.horizontal, 8)
                         .frame(height: 22)
                         .background(.white.opacity(0.13), in: Capsule())
+                }
+
+                if list.listType == .media,
+                   let completion = list.completion,
+                   completion.isVisible {
+                    SWCompletionProgressButton(progress: completion)
+                        .accessibilityLabel("\(list.name) completion")
+                        .shadow(color: .black.opacity(0.28), radius: 10, y: 5)
                 }
             }
 

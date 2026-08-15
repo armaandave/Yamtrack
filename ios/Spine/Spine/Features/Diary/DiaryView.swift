@@ -3,12 +3,18 @@ import SwiftUI
 @MainActor
 @Observable
 final class DiaryViewModel {
-    var entries: [DiaryEntry] = []
+    var entries: [DiaryEntry] = [] {
+        didSet {
+            monthSections = DiaryMonthSection.sections(from: entries)
+        }
+    }
+    private(set) var monthSections: [DiaryMonthSection] = []
     var filter: MediaFilterState
     var filterOptions: MediaFilterOptionsResponse = .empty
     var isBootstrapping = true
     var isLoading = false
     var isLoadingNextPage = false
+    var isLoadingAllPages = false
     var errorMessage: String?
     var nextPageErrorMessage: String?
 
@@ -23,6 +29,10 @@ final class DiaryViewModel {
 
     var hasMorePages: Bool {
         nextPage != nil
+    }
+
+    var hasLoadedAllEntries: Bool {
+        nextPage == nil && !isLoadingAllPages
     }
 
     init(
@@ -54,6 +64,28 @@ final class DiaryViewModel {
         await load()
     }
 
+    func loadAllIfNeeded(loadsFilterOptions: Bool = false) async {
+        guard !isInitialLoadInFlight else { return }
+        if didLoad {
+            await loadRemainingPages()
+            return
+        }
+        isInitialLoadInFlight = true
+        defer { isInitialLoadInFlight = false }
+
+        if loadsFilterOptions {
+            await loadFilterOptions()
+            guard !Task.isCancelled else { return }
+        }
+        await loadAll()
+    }
+
+    func loadAll() async {
+        await load()
+        guard !Task.isCancelled, errorMessage == nil else { return }
+        await loadRemainingPages()
+    }
+
     func load() async {
         requestGeneration += 1
         let generation = requestGeneration
@@ -64,6 +96,7 @@ final class DiaryViewModel {
             nextPage = nil
         }
         presentedFilter = requestFilter
+        isLoadingAllPages = false
         isLoading = true
         errorMessage = nil
         nextPageErrorMessage = nil
@@ -105,7 +138,7 @@ final class DiaryViewModel {
     }
 
     func loadNextPage() async {
-        guard !isLoading, !isLoadingNextPage, let page = nextPage else { return }
+        guard !isLoading, !isLoadingNextPage, !isLoadingAllPages, let page = nextPage else { return }
         let generation = requestGeneration
         let requestFilter = diaryRequestFilter
         isLoadingNextPage = true
@@ -122,6 +155,37 @@ final class DiaryViewModel {
             let existingIDs = Set(entries.map(\.id))
             entries += response.results.filter { !existingIDs.contains($0.id) }
             nextPage = APIPageCursor.nextPage(from: response.next)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
+            nextPageErrorMessage = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func loadRemainingPages() async {
+        guard !isLoading, !isLoadingNextPage, !isLoadingAllPages, nextPage != nil else { return }
+        let generation = requestGeneration
+        let requestFilter = diaryRequestFilter
+        isLoadingAllPages = true
+        nextPageErrorMessage = nil
+        defer {
+            if generation == requestGeneration, requestFilter == diaryRequestFilter {
+                isLoadingAllPages = false
+            }
+        }
+
+        do {
+            while let page = nextPage {
+                let response = try await diaryRepository.page(filter: requestFilter, page: page)
+                guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
+                let existingIDs = Set(entries.map(\.id))
+                entries += response.results.filter { !existingIDs.contains($0.id) }
+                nextPage = APIPageCursor.nextPage(from: response.next)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -160,6 +224,7 @@ final class DiaryViewModel {
         nextPageErrorMessage = nil
         isLoading = true
         isLoadingNextPage = false
+        isLoadingAllPages = false
     }
 
     private var diaryRequestFilter: MediaFilterState {
@@ -390,7 +455,6 @@ struct DiaryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: DiaryViewModel
     @State private var monthDisplayMode: DiaryMonthDisplayMode = .expanded
-    @State private var pendingMonthAnchor: String?
 
     private let diaryRepository: DiaryRepository
     private let mediaRepository: MediaRepository
@@ -424,59 +488,21 @@ struct DiaryView: View {
             ZStack {
                 SpinePageBackground()
 
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            header
-                            mediaPicker
+                ScrollViewReader { diaryProxy in
+                    ScrollViewReader { monthProxy in
+                        ZStack {
+                            diaryScroll(monthProxy: monthProxy)
+                                .opacity(monthDisplayMode == .expanded ? 1 : 0)
+                                .allowsHitTesting(monthDisplayMode == .expanded)
+                                .accessibilityHidden(monthDisplayMode != .expanded)
+                                .zIndex(monthDisplayMode == .expanded ? 1 : 0)
 
-                            Group {
-                                if viewModel.isBootstrapping || (viewModel.isLoading && viewModel.entries.isEmpty) {
-                                    ProgressView()
-                                        .tint(.white)
-                                        .frame(maxWidth: .infinity, minHeight: 320)
-                                } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
-                                    DiaryStateCard(
-                                        title: "Could not load diary",
-                                        systemImage: "exclamationmark.triangle",
-                                        message: error
-                                    )
-                                } else if viewModel.entries.isEmpty {
-                                    DiaryStateCard(
-                                        title: "No diary entries",
-                                        systemImage: "calendar",
-                                        message: "Logs you create from media pages will appear here."
-                                    )
-                                } else {
-                                    DiaryEntryList(
-                                        entries: viewModel.entries,
-                                        monthDisplayMode: monthDisplayMode,
-                                        onMonthHeaderTap: { sectionID in
-                                            toggleMonthDisplay(for: sectionID, proxy: proxy)
-                                        }
-                                    ) { entry in
-                                        DiaryLogDetailView(
-                                            entryId: entry.id,
-                                            diaryRepository: diaryRepository,
-                                            mediaRepository: mediaRepository,
-                                            trackingRepository: trackingRepository,
-                                            currentUserId: currentUserId,
-                                            selectedTab: selectedTab,
-                                            onSelectTab: onSelectTab,
-                                            onUnauthorized: onUnauthorized
-                                        )
-                                    }
-                                    paginationFooter
-                                }
-                            }
-                            .spineContentTransition(value: contentPhase)
+                            monthIndexScroll(diaryProxy: diaryProxy)
+                                .opacity(monthDisplayMode == .collapsed ? 1 : 0)
+                                .allowsHitTesting(monthDisplayMode == .collapsed)
+                                .accessibilityHidden(monthDisplayMode != .collapsed)
+                                .zIndex(monthDisplayMode == .collapsed ? 1 : 0)
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 18)
-                        .padding(.bottom, 28)
-                    }
-                    .refreshable {
-                        await viewModel.load()
                     }
                 }
             }
@@ -486,40 +512,133 @@ struct DiaryView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .task {
-                await viewModel.loadIfNeeded(loadsFilterOptions: true)
+                await viewModel.loadAllIfNeeded(loadsFilterOptions: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .letterboxdImportDidSucceed)) { _ in
-                Task { await viewModel.load() }
+                Task { await reloadDiary() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .storygraphImportDidSucceed)) { _ in
-                Task { await viewModel.load() }
+                Task { await reloadDiary() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .diaryEntriesDidChange)) { _ in
-                Task { await viewModel.load() }
+                Task { await reloadDiary() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .mediaStateDidChange)) { _ in
-                Task { await viewModel.load() }
+                Task { await reloadDiary() }
             }
         }
     }
 
-    private func toggleMonthDisplay(for sectionID: String, proxy: ScrollViewProxy) {
-        pendingMonthAnchor = sectionID
-        let animation: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.2)
-
-        withAnimation(animation) {
-            monthDisplayMode = monthDisplayMode == .expanded ? .collapsed : .expanded
-        }
-
-        Task { @MainActor in
-            await Task.yield()
-            guard pendingMonthAnchor == sectionID else { return }
-
-            withAnimation(animation) {
-                proxy.scrollTo(sectionID, anchor: .top)
+    private func diaryScroll(monthProxy: ScrollViewProxy) -> some View {
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                header
+                mediaPicker
+                diaryContent(monthProxy: monthProxy)
+                    .spineContentTransition(value: contentPhase)
             }
-            pendingMonthAnchor = nil
+            .padding(.horizontal, 14)
+            .padding(.top, 18)
+            .padding(.bottom, 28)
         }
+        .refreshable {
+            await viewModel.loadAll()
+        }
+    }
+
+    @ViewBuilder
+    private func diaryContent(monthProxy: ScrollViewProxy) -> some View {
+        if viewModel.isBootstrapping || (viewModel.isLoading && viewModel.entries.isEmpty) {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity, minHeight: 320)
+        } else if let error = viewModel.errorMessage, viewModel.entries.isEmpty {
+            DiaryStateCard(
+                title: "Could not load diary",
+                systemImage: "exclamationmark.triangle",
+                message: error
+            )
+        } else if viewModel.entries.isEmpty {
+            DiaryStateCard(
+                title: "No diary entries",
+                systemImage: "calendar",
+                message: "Logs you create from media pages will appear here."
+            )
+        } else {
+            DiaryEntryList(
+                monthSections: viewModel.monthSections,
+                onMonthHeaderTap: monthIndexAction(proxy: monthProxy)
+            ) { entry in
+                DiaryLogDetailView(
+                    entryId: entry.id,
+                    diaryRepository: diaryRepository,
+                    mediaRepository: mediaRepository,
+                    trackingRepository: trackingRepository,
+                    currentUserId: currentUserId,
+                    selectedTab: selectedTab,
+                    onSelectTab: onSelectTab,
+                    onUnauthorized: onUnauthorized
+                )
+            }
+            preloadFooter
+        }
+    }
+
+    private func monthIndexScroll(diaryProxy: ScrollViewProxy) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                mediaPicker
+                DiaryMonthIndex(monthSections: viewModel.monthSections) { sectionID in
+                    showDiary(sectionID, proxy: diaryProxy)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 18)
+            .padding(.bottom, 28)
+        }
+    }
+
+    private func monthIndexAction(proxy: ScrollViewProxy) -> ((String) -> Void)? {
+        guard viewModel.hasLoadedAllEntries else { return nil }
+        return { sectionID in showMonthIndex(sectionID, proxy: proxy) }
+    }
+
+    private func showMonthIndex(_ sectionID: String, proxy: ScrollViewProxy) {
+        scrollWithoutAnimation(proxy, to: sectionID)
+        withAnimation(monthTransitionAnimation) {
+            monthDisplayMode = .collapsed
+        }
+    }
+
+    private func showDiary(_ sectionID: String, proxy: ScrollViewProxy) {
+        scrollWithoutAnimation(proxy, to: sectionID)
+        withAnimation(monthTransitionAnimation) {
+            monthDisplayMode = .expanded
+        }
+    }
+
+    private func scrollWithoutAnimation(_ proxy: ScrollViewProxy, to sectionID: String) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(sectionID, anchor: .top)
+        }
+    }
+
+    private var monthTransitionAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: SpineMotion.standardDuration)
+    }
+
+    private func reloadDiary(loadsFilterOptions: Bool = false) async {
+        withAnimation(monthTransitionAnimation) {
+            monthDisplayMode = .expanded
+        }
+        if loadsFilterOptions {
+            await viewModel.loadFilterOptions()
+            guard !Task.isCancelled else { return }
+        }
+        await viewModel.loadAll()
     }
 
     private var contentPhase: SpineContentPhase {
@@ -543,10 +662,7 @@ struct DiaryView: View {
                 scope: .diary,
                 options: viewModel.filterOptions
             ) {
-                Task {
-                    await viewModel.loadFilterOptions()
-                    await viewModel.load()
-                }
+                Task { await reloadDiary(loadsFilterOptions: true) }
             }
         }
         .padding(.bottom, 14)
@@ -562,10 +678,7 @@ struct DiaryView: View {
             isCompact: true
         ) { selectedType in
             viewModel.filter.mediaType = selectedType.isEmpty ? nil : selectedType
-            Task {
-                await viewModel.loadFilterOptions()
-                await viewModel.load()
-            }
+            Task { await reloadDiary(loadsFilterOptions: true) }
         }
         .padding(.bottom, 14)
     }
@@ -578,38 +691,24 @@ struct DiaryView: View {
     }
 
     @ViewBuilder
-    private var paginationFooter: some View {
-        VStack(spacing: 0) {
-            Group {
-                if viewModel.isLoadingNextPage {
-                    ProgressView()
-                        .tint(.white)
-                } else if let error = viewModel.nextPageErrorMessage {
-                    DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
-                } else {
-                    Color.clear
+    private var preloadFooter: some View {
+        if viewModel.isLoadingAllPages {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity, minHeight: 56)
+        } else if let error = viewModel.nextPageErrorMessage {
+            VStack(spacing: 12) {
+                DiaryStateCard(title: "Could not load more", systemImage: "exclamationmark.triangle", message: error)
+
+                Button("Try Again") {
+                    Task { await viewModel.loadRemainingPages() }
                 }
+                .buttonStyle(.plain)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white.opacity(0.86))
             }
-            .frame(maxWidth: .infinity, minHeight: 56)
-            .spineContentTransition(value: paginationPhase)
-
-            Color.clear
-                .frame(height: 1)
+            .padding(.bottom, 14)
         }
-        .task(id: viewModel.entries.last?.id) {
-            guard let last = viewModel.entries.last else { return }
-            await viewModel.loadNextPageIfNeeded(currentEntry: last)
-        }
-    }
-
-    private var paginationPhase: String {
-        if viewModel.isLoadingNextPage {
-            return "loading"
-        }
-        if viewModel.nextPageErrorMessage != nil {
-            return "error"
-        }
-        return viewModel.hasMorePages ? "available" : "empty"
     }
 }
 

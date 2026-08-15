@@ -19,37 +19,24 @@ struct GoodreadsImportView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                Text("Export your library from Goodreads, then upload the .csv file here.")
-                Link("Open Goodreads Import/Export", destination: URL(string: "https://www.goodreads.com/review/import")!)
-            }
-
-            Section("Import Mode") {
-                Picker("Import Mode", selection: $mode) {
-                    ForEach(ImportMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(isBusy)
-
-                Text(modeDetail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Button {
-                    chooseFile()
-                } label: {
-                    Label("Choose Goodreads CSV", systemImage: "doc.text")
-                }
-                .disabled(isBusy)
-            }
-        }
+        SettingsImportLandingPage(
+            source: "Goodreads",
+            headline: "Bring your bookshelf.",
+            instructions: "Export your library from Goodreads, then upload the CSV file here.",
+            linkTitle: "Open Goodreads Import/Export",
+            linkURL: URL(string: "https://www.goodreads.com/review/import")!,
+            systemName: "books.vertical.fill",
+            tint: Color(red: 0.60, green: 0.75, blue: 0.36),
+            mode: $mode,
+            modeDetail: modeDetail,
+            fileTitle: "Choose Goodreads CSV",
+            fileSystemName: "doc.text.fill",
+            isBusy: isBusy,
+            chooseFile: chooseFile
+        )
         .navigationTitle("Goodreads Import")
         .navigationBarTitleDisplayMode(.inline)
+        .preferredColorScheme(.dark)
         .confirmationDialog(
             "This replaces existing book tracking and book diary entries before importing. This can't be undone.",
             isPresented: $isOverwriteConfirmationPresented,

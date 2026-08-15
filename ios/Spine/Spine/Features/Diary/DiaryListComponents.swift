@@ -6,35 +6,38 @@ enum DiaryMonthDisplayMode {
 }
 
 struct DiaryEntryList<Destination: View>: View {
-    let entries: [DiaryEntry]
+    let monthSections: [DiaryMonthSection]
     let artworkOverride: DiaryEntryArtworkOverride?
-    let monthDisplayMode: DiaryMonthDisplayMode
     let onMonthHeaderTap: ((String) -> Void)?
     @ViewBuilder let destination: (DiaryEntry) -> Destination
 
     init(
         entries: [DiaryEntry],
         artworkOverride: DiaryEntryArtworkOverride? = nil,
-        monthDisplayMode: DiaryMonthDisplayMode = .expanded,
         onMonthHeaderTap: ((String) -> Void)? = nil,
         @ViewBuilder destination: @escaping (DiaryEntry) -> Destination
     ) {
-        self.entries = entries
+        self.monthSections = DiaryMonthSection.sections(from: entries)
         self.artworkOverride = artworkOverride
-        self.monthDisplayMode = monthDisplayMode
+        self.onMonthHeaderTap = onMonthHeaderTap
+        self.destination = destination
+    }
+
+    init(
+        monthSections: [DiaryMonthSection],
+        artworkOverride: DiaryEntryArtworkOverride? = nil,
+        onMonthHeaderTap: ((String) -> Void)? = nil,
+        @ViewBuilder destination: @escaping (DiaryEntry) -> Destination
+    ) {
+        self.monthSections = monthSections
+        self.artworkOverride = artworkOverride
         self.onMonthHeaderTap = onMonthHeaderTap
         self.destination = destination
     }
 
     var body: some View {
         ForEach(monthSections) { section in
-            if monthDisplayMode == .collapsed {
-                monthHeader(for: section)
-                    .padding(.bottom, 8)
-                    .id(section.id)
-            } else {
-                expandedSection(section)
-            }
+            expandedSection(section)
         }
     }
 
@@ -69,7 +72,6 @@ struct DiaryEntryList<Destination: View>: View {
     private func monthHeader(for section: DiaryMonthSection) -> some View {
         DiaryMonthHeader(
             title: section.title,
-            isCollapsed: monthDisplayMode == .collapsed,
             action: headerAction(for: section)
         )
     }
@@ -78,14 +80,36 @@ struct DiaryEntryList<Destination: View>: View {
         guard let onMonthHeaderTap else { return nil }
         return { onMonthHeaderTap(section.id) }
     }
+}
 
-    private var monthSections: [DiaryMonthSection] {
-        entries.reduce(into: []) { sections, entry in
+struct DiaryMonthIndex: View {
+    let monthSections: [DiaryMonthSection]
+    let onMonthHeaderTap: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(monthSections) { section in
+                DiaryMonthHeader(
+                    title: section.title,
+                    isCollapsed: true,
+                    action: { onMonthHeaderTap(section.id) }
+                )
+                .id(section.id)
+            }
+        }
+    }
+}
+
+extension DiaryMonthSection {
+    static func sections(from entries: [DiaryEntry]) -> [DiaryMonthSection] {
+        var sectionIndexes: [String: Int] = [:]
+        return entries.reduce(into: []) { sections, entry in
             let title = DiaryDateFormatter.monthHeader(from: entry.consumedAt ?? entry.createdAt) ?? "Undated"
-            if sections.last?.title == title {
-                sections[sections.count - 1].entries.append(entry)
+            if let index = sectionIndexes[title] {
+                sections[index].entries.append(entry)
             } else {
-                sections.append(DiaryMonthSection(id: "\(sections.count)-\(title)", title: title, entries: [entry]))
+                sectionIndexes[title] = sections.count
+                sections.append(DiaryMonthSection(id: title, title: title, entries: [entry]))
             }
         }
     }

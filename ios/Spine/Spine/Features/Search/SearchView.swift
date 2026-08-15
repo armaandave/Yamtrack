@@ -327,7 +327,7 @@ struct ProfileBackdropSearchView: View {
 private struct SearchViewContent: View {
     @State private var viewModel: SearchViewModel
     @State private var isMediaLensExpanded = false
-    @State private var isSearchFocused = false
+    @State private var isSearchActive = false
     @State private var draftText = ""
     @State private var recentMedia: [MediaSummary] = []
     @State private var featuredLists: [CustomListSummary] = []
@@ -392,7 +392,11 @@ private struct SearchViewContent: View {
                         onClear: {
                             viewModel.clear()
                         },
-                        onFocusChange: { isSearchFocused = $0 },
+                        onFocusChange: { focused in
+                            if focused {
+                                isSearchActive = true
+                            }
+                        },
                         focusRequest: focusRequest
                     )
 
@@ -405,7 +409,7 @@ private struct SearchViewContent: View {
                         errorMessage: viewModel.errorMessage,
                         unavailableMediaTypes: viewModel.unavailableMediaTypes,
                         showsMediaTypes: selectedSearchType == APIConstants.allMedia,
-                        isSearchFocused: isSearchFocused,
+                        isSearchActive: isSearchActive,
                         recentMedia: recentMedia,
                         featuredLists: featuredLists,
                         showsFeaturedDiscovery: listRepository != nil,
@@ -467,6 +471,9 @@ private struct SearchViewContent: View {
                     validateSelectedMediaType()
                     loadRecentMedia()
                     Task { await searchCurrentQuery(mediaType: selectedSearchType) }
+                }
+                .onDisappear {
+                    isSearchActive = false
                 }
                 .task(id: draftText) {
                     try? await Task.sleep(for: .milliseconds(300))
@@ -585,7 +592,7 @@ private struct SearchResultsSection: View {
     let errorMessage: String?
     let unavailableMediaTypes: [String]
     let showsMediaTypes: Bool
-    let isSearchFocused: Bool
+    let isSearchActive: Bool
     let recentMedia: [MediaSummary]
     let featuredLists: [CustomListSummary]
     let showsFeaturedDiscovery: Bool
@@ -624,7 +631,7 @@ private struct SearchResultsSection: View {
                 selectedMediaType: selectedMediaType,
                 isLoading: isLoading,
                 showsMediaTypes: showsMediaTypes,
-                isSearchFocused: isSearchFocused,
+                isSearchActive: isSearchActive,
                 recentMedia: recentMedia,
                 featuredLists: featuredLists,
                 showsFeaturedDiscovery: showsFeaturedDiscovery,
@@ -641,7 +648,7 @@ private struct SearchResultsSection: View {
         if !results.isEmpty { return .results(resultRevision) }
         if isLoading { return .loading }
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .noResults }
-        if showsFeaturedDiscovery, !isSearchFocused { return .featured(featuredLists.count) }
+        if showsFeaturedDiscovery, !isSearchActive { return .featured(featuredLists.count) }
         return recentMedia.isEmpty ? .prompt : .recent
     }
 }
@@ -651,7 +658,7 @@ private struct SearchEmptyState: View {
     let selectedMediaType: String
     let isLoading: Bool
     let showsMediaTypes: Bool
-    let isSearchFocused: Bool
+    let isSearchActive: Bool
     let recentMedia: [MediaSummary]
     let featuredLists: [CustomListSummary]
     let showsFeaturedDiscovery: Bool
@@ -663,7 +670,7 @@ private struct SearchEmptyState: View {
     var body: some View {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading {
             SearchNoResultsState(query: query, selectedMediaType: selectedMediaType)
-        } else if showsFeaturedDiscovery, !isSearchFocused {
+        } else if showsFeaturedDiscovery, !isSearchActive {
             FeaturedListsDiscovery(
                 lists: featuredLists,
                 isLoading: isFeaturedLoading,
@@ -693,6 +700,7 @@ private struct SearchEmptyState: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color.black)
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 }
