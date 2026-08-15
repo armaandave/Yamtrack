@@ -9,7 +9,13 @@ from api.views.auth import (
     RefreshView,
     RegisterView,
 )
-from api.views.diary import DiaryDetailView, DiaryLikeView, DiaryListView, DiaryTagsView
+from api.views.diary import (
+    DiaryDetailView,
+    DiaryLikeView,
+    DiaryListView,
+    DiaryMonthsView,
+    DiaryTagsView,
+)
 from api.views.health import HealthView, MetaView
 from api.views.imports import (
     ExportCSVView,
@@ -197,6 +203,7 @@ urlpatterns = [
     path("tracking/<str:source>/<str:media_type>/<str:media_id>/actions/<str:action>/", TrackingActionView.as_view(), name="api-tracking-action"),
     path("tracking/<str:source>/<str:media_type>/<str:media_id>/", TrackingDetailView.as_view(), name="api-tracking-detail"),
     path("diary/", DiaryListView.as_view(), name="api-diary-list"),
+    path("diary/months/", DiaryMonthsView.as_view(), name="api-diary-months"),
     path("diary/tags/", DiaryTagsView.as_view(), name="api-diary-tags"),
     path("diary/<int:entry_id>/", DiaryDetailView.as_view(), name="api-diary-detail"),
     path("diary/<int:entry_id>/like/", DiaryLikeView.as_view(), name="api-diary-like"),

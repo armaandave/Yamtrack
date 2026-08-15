@@ -609,11 +609,9 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "api.exceptions.api_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "120/hour",
-        "user": "1000/hour",
         "auth": "20/minute",
         "search": "60/minute",
     },

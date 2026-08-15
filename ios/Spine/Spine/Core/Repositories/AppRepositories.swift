@@ -190,6 +190,8 @@ protocol DiaryRepository {
     func list(filter: DiaryFilter) async throws -> [DiaryEntry]
     func list(tag: String?) async throws -> [DiaryEntry]
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry>
+    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary]
+    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry]
     func recent(limit: Int) async throws -> [DiaryEntry]
     func detail(id: Int) async throws -> DiaryEntry
     func create(_ request: DiaryEntryWriteRequest) async throws -> DiaryEntry
@@ -238,6 +240,22 @@ extension DiaryRepository {
             liked: filter.liked
         ))
         return PagedResponse(count: results.count, next: nil, previous: nil, results: results)
+    }
+
+    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary] {
+        let counts = Dictionary(grouping: try await list(filter: filter)) { entry in
+            String((entry.consumedAt ?? entry.createdAt ?? "").prefix(7))
+        }
+        return counts
+            .filter { $0.key.count == 7 }
+            .map { DiaryMonthSummary(month: $0.key, count: $0.value.count) }
+            .sorted { $0.month > $1.month }
+    }
+
+    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry] {
+        try await list(filter: filter).filter {
+            (String(($0.consumedAt ?? $0.createdAt ?? "").prefix(7))) == month
+        }
     }
 
     func list(filter: DiaryFilter) async throws -> [DiaryEntry] {
@@ -889,6 +907,28 @@ struct APIDiaryRepository: DiaryRepository {
 
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
         try await client.get("/diary/", query: filter.queryItems(page: page), authenticated: true)
+    }
+
+    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary] {
+        try await client.get("/diary/months/", query: filter.queryItems(), authenticated: true)
+    }
+
+    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry] {
+        var page: String?
+        var entries: [DiaryEntry] = []
+        repeat {
+            var query = filter.queryItems(page: page)
+            query.append(URLQueryItem(name: "month", value: month))
+            query.append(URLQueryItem(name: "page_size", value: "100"))
+            let response: PagedResponse<DiaryEntry> = try await client.get(
+                "/diary/",
+                query: query,
+                authenticated: true
+            )
+            entries += response.results
+            page = APIPageCursor.nextPage(from: response.next)
+        } while page != nil
+        return entries
     }
 
     func recent(limit: Int) async throws -> [DiaryEntry] {

@@ -230,6 +230,20 @@ struct APIClient: Sendable {
     }
 
     private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let first = try await performOnce(request)
+        guard first.1.statusCode == 429,
+              let rawDelay = first.1.value(forHTTPHeaderField: "Retry-After"),
+              let delay = TimeInterval(rawDelay),
+              (0 ... 10).contains(delay) else {
+            return first
+        }
+
+        // ponytail: one bounded retry prevents retry storms; add a shared gate if scoped limits need more coordination.
+        try await Task.sleep(for: .seconds(delay))
+        return try await performOnce(request)
+    }
+
+    private func performOnce(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: request)

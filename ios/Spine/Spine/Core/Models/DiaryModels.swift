@@ -21,6 +21,13 @@ struct DiaryEntry: Codable, Identifiable {
     let updatedAt: String?
 }
 
+struct DiaryMonthSummary: Codable, Identifiable, Equatable {
+    let month: String
+    let count: Int
+
+    var id: String { month }
+}
+
 struct DiaryMedia: Codable {
     let ref: MediaRef
     let title: String

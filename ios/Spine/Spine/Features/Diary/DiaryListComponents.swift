@@ -83,18 +83,18 @@ struct DiaryEntryList<Destination: View>: View {
 }
 
 struct DiaryMonthIndex: View {
-    let monthSections: [DiaryMonthSection]
+    let months: [DiaryMonthSummary]
     let onMonthHeaderTap: (String) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(monthSections) { section in
+            ForEach(months) { month in
                 DiaryMonthHeader(
-                    title: section.title,
+                    title: DiaryDateFormatter.monthHeader(fromMonthID: month.id) ?? month.id,
                     isCollapsed: true,
-                    action: { onMonthHeaderTap(section.id) }
+                    action: { onMonthHeaderTap(month.id) }
                 )
-                .id(section.id)
+                .id(month.id)
             }
         }
     }
@@ -104,12 +104,14 @@ extension DiaryMonthSection {
     static func sections(from entries: [DiaryEntry]) -> [DiaryMonthSection] {
         var sectionIndexes: [String: Int] = [:]
         return entries.reduce(into: []) { sections, entry in
-            let title = DiaryDateFormatter.monthHeader(from: entry.consumedAt ?? entry.createdAt) ?? "Undated"
-            if let index = sectionIndexes[title] {
+            let rawDate = entry.consumedAt ?? entry.createdAt
+            let id = DiaryDateFormatter.monthID(from: rawDate) ?? "undated"
+            let title = DiaryDateFormatter.monthHeader(from: rawDate) ?? "Undated"
+            if let index = sectionIndexes[id] {
                 sections[index].entries.append(entry)
             } else {
-                sectionIndexes[title] = sections.count
-                sections.append(DiaryMonthSection(id: title, title: title, entries: [entry]))
+                sectionIndexes[id] = sections.count
+                sections.append(DiaryMonthSection(id: id, title: title, entries: [entry]))
             }
         }
     }
@@ -477,6 +479,16 @@ enum DiaryDateFormatter {
     static func monthHeader(from rawValue: String?) -> String? {
         guard let date = date(from: rawValue) else { return nil }
         return date.formatted(.dateTime.month(.wide).year())
+    }
+
+    static func monthHeader(fromMonthID monthID: String) -> String? {
+        monthHeader(from: "\(monthID)-01")
+    }
+
+    static func monthID(from rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let value = String(rawValue.prefix(7))
+        return dateOnlyFormatter.date(from: "\(value)-01") == nil ? nil : value
     }
 
     static func exactDate(from rawValue: String?) -> String? {

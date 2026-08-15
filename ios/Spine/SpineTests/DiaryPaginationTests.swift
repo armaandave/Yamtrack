@@ -24,6 +24,7 @@ final class DiaryPaginationTests: XCTestCase {
         await viewModel.loadIfNeeded()
 
         XCTAssertEqual(repository.requestedPages.count, 1)
+        XCTAssertEqual(repository.monthIndexRequests, 1)
         XCTAssertEqual(viewModel.entries.map(\.id), [1])
     }
 
@@ -56,28 +57,29 @@ final class DiaryPaginationTests: XCTestCase {
         XCTAssertEqual(repository.requestedPages, [nil, "2", "2"])
     }
 
-    func testLoadAllFetchesRemainingPagesAndCachesMonths() async throws {
+    func testInitialLoadFetchesOnePageAndSmallMonthIndex() async throws {
         let june = try diaryEntry(id: 1, title: "June", consumedAt: "2026-06-20T12:00:00Z")
-        let may = try diaryEntry(id: 2, title: "May", consumedAt: "2026-05-20T12:00:00Z")
-        let april = try diaryEntry(id: 3, title: "April", consumedAt: "2026-04-20T12:00:00Z")
         let repository = ScriptedDiaryPaginationRepository(results: [
             .success(PagedResponse(count: 3, next: "https://example.com/api/diary/?page=2", previous: nil, results: [june])),
-            .success(PagedResponse(count: 3, next: "https://example.com/api/diary/?page=3", previous: nil, results: [may])),
-            .success(PagedResponse(count: 3, next: nil, previous: nil, results: [april])),
+        ], monthIndex: [
+            DiaryMonthSummary(month: "2026-06", count: 1),
+            DiaryMonthSummary(month: "2026-05", count: 1),
+            DiaryMonthSummary(month: "2026-04", count: 1),
         ])
         let viewModel = DiaryViewModel(diaryRepository: repository, onUnauthorized: {})
 
-        await viewModel.loadAll()
+        await viewModel.loadIfNeeded()
 
-        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2, 3])
-        XCTAssertEqual(viewModel.monthSections.map(\.entries.first?.id), [1, 2, 3])
-        XCTAssertEqual(repository.requestedPages, [nil, "2", "3"])
-        XCTAssertTrue(viewModel.hasLoadedAllEntries)
+        XCTAssertEqual(viewModel.entries.map(\.id), [1])
+        XCTAssertEqual(viewModel.monthIndex.map(\.id), ["2026-06", "2026-05", "2026-04"])
+        XCTAssertEqual(repository.requestedPages, [nil])
+        XCTAssertEqual(repository.monthIndexRequests, 1)
+        XCTAssertTrue(viewModel.hasMorePages)
     }
 
-    func testLoadAllIfNeededFinishesAnExistingPartialLoad() async throws {
+    func testSelectingMonthFetchesOnlyThatMonth() async throws {
         let first = try diaryEntry(id: 1, title: "First")
-        let second = try diaryEntry(id: 2, title: "Second", consumedAt: "2026-05-20T12:00:00Z")
+        let may = try diaryEntry(id: 2, title: "May", consumedAt: "2026-05-20T12:00:00Z")
         let repository = ScriptedDiaryPaginationRepository(results: [
             .success(PagedResponse(
                 count: 2,
@@ -85,16 +87,18 @@ final class DiaryPaginationTests: XCTestCase {
                 previous: nil,
                 results: [first]
             )),
-            .success(PagedResponse(count: 2, next: nil, previous: nil, results: [second])),
-        ])
+        ], entriesByMonth: ["2026-05": [may]])
         let viewModel = DiaryViewModel(diaryRepository: repository, onUnauthorized: {})
 
         await viewModel.load()
-        await viewModel.loadAllIfNeeded()
+        let loaded = await viewModel.loadMonth("2026-05")
 
-        XCTAssertEqual(viewModel.entries.map(\.id), [1, 2])
-        XCTAssertEqual(repository.requestedPages, [nil, "2"])
-        XCTAssertTrue(viewModel.hasLoadedAllEntries)
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(viewModel.entries.map(\.id), [2])
+        XCTAssertEqual(viewModel.loadedMonth, "2026-05")
+        XCTAssertEqual(repository.requestedPages, [nil])
+        XCTAssertEqual(repository.requestedMonths, ["2026-05"])
+        XCTAssertFalse(viewModel.hasMorePages)
     }
 
     func testMonthSectionsKeepStableIDsAndCombineMatchingMonths() throws {
@@ -107,7 +111,7 @@ final class DiaryPaginationTests: XCTestCase {
 
         let updated = DiaryMonthSection.sections(from: [july, juneOne, may, juneTwo, april])
 
-        XCTAssertEqual(updated.map(\.id), [updated[0].title, original[0].id, original[1].id, updated[3].title])
+        XCTAssertEqual(updated.map(\.id), ["2026-07", original[0].id, original[1].id, "2026-04"])
         XCTAssertEqual(updated[1].entries.map(\.id), [2, 4])
     }
 
@@ -153,15 +157,35 @@ final class DiaryPaginationTests: XCTestCase {
 @MainActor
 private final class ScriptedDiaryPaginationRepository: DiaryRepository {
     private var results: [Result<PagedResponse<DiaryEntry>, Error>]
+    private let monthIndex: [DiaryMonthSummary]
+    private let entriesByMonth: [String: [DiaryEntry]]
     private(set) var requestedPages: [String?] = []
+    private(set) var monthIndexRequests = 0
+    private(set) var requestedMonths: [String] = []
 
-    init(results: [Result<PagedResponse<DiaryEntry>, Error>]) {
+    init(
+        results: [Result<PagedResponse<DiaryEntry>, Error>],
+        monthIndex: [DiaryMonthSummary] = [],
+        entriesByMonth: [String: [DiaryEntry]] = [:]
+    ) {
         self.results = results
+        self.monthIndex = monthIndex
+        self.entriesByMonth = entriesByMonth
     }
 
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
         requestedPages.append(page)
         return try results.removeFirst().get()
+    }
+
+    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary] {
+        monthIndexRequests += 1
+        return monthIndex
+    }
+
+    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry] {
+        requestedMonths.append(month)
+        return entriesByMonth[month] ?? []
     }
 
     func list(tag: String?) async throws -> [DiaryEntry] { fatalError("Not used") }
