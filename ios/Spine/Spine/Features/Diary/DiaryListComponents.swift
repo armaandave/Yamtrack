@@ -9,17 +9,20 @@ struct DiaryEntryList<Destination: View>: View {
     let monthSections: [DiaryMonthSection]
     let artworkOverride: DiaryEntryArtworkOverride?
     let onMonthHeaderTap: ((String) -> Void)?
+    let loadingMonthID: String?
     @ViewBuilder let destination: (DiaryEntry) -> Destination
 
     init(
         entries: [DiaryEntry],
         artworkOverride: DiaryEntryArtworkOverride? = nil,
         onMonthHeaderTap: ((String) -> Void)? = nil,
+        loadingMonthID: String? = nil,
         @ViewBuilder destination: @escaping (DiaryEntry) -> Destination
     ) {
         self.monthSections = DiaryMonthSection.sections(from: entries)
         self.artworkOverride = artworkOverride
         self.onMonthHeaderTap = onMonthHeaderTap
+        self.loadingMonthID = loadingMonthID
         self.destination = destination
     }
 
@@ -27,11 +30,13 @@ struct DiaryEntryList<Destination: View>: View {
         monthSections: [DiaryMonthSection],
         artworkOverride: DiaryEntryArtworkOverride? = nil,
         onMonthHeaderTap: ((String) -> Void)? = nil,
+        loadingMonthID: String? = nil,
         @ViewBuilder destination: @escaping (DiaryEntry) -> Destination
     ) {
         self.monthSections = monthSections
         self.artworkOverride = artworkOverride
         self.onMonthHeaderTap = onMonthHeaderTap
+        self.loadingMonthID = loadingMonthID
         self.destination = destination
     }
 
@@ -72,6 +77,7 @@ struct DiaryEntryList<Destination: View>: View {
     private func monthHeader(for section: DiaryMonthSection) -> some View {
         DiaryMonthHeader(
             title: section.title,
+            isLoading: loadingMonthID == section.id,
             action: headerAction(for: section)
         )
     }
@@ -83,18 +89,18 @@ struct DiaryEntryList<Destination: View>: View {
 }
 
 struct DiaryMonthIndex: View {
-    let months: [DiaryMonthSummary]
+    let monthSections: [DiaryMonthSection]
     let onMonthHeaderTap: (String) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(months) { month in
+            ForEach(monthSections) { section in
                 DiaryMonthHeader(
-                    title: DiaryDateFormatter.monthHeader(fromMonthID: month.id) ?? month.id,
+                    title: section.title,
                     isCollapsed: true,
-                    action: { onMonthHeaderTap(month.id) }
+                    action: { onMonthHeaderTap(section.id) }
                 )
-                .id(month.id)
+                .id(section.id)
             }
         }
     }
@@ -131,6 +137,7 @@ struct DiaryMonthSection: Identifiable {
 struct DiaryMonthHeader: View {
     let title: String
     var isCollapsed = false
+    var isLoading = false
     var action: (() -> Void)? = nil
 
     @ViewBuilder
@@ -140,8 +147,9 @@ struct DiaryMonthHeader: View {
                 label
             }
             .buttonStyle(.plain)
+            .disabled(isLoading)
             .accessibilityLabel(title)
-            .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+            .accessibilityValue(isLoading ? "Loading" : (isCollapsed ? "Collapsed" : "Expanded"))
             .accessibilityHint(isCollapsed ? "Shows diary entries for all months" : "Hides diary entries for all months")
         } else {
             label
@@ -155,10 +163,16 @@ struct DiaryMonthHeader: View {
             Spacer()
 
             if action != nil {
-                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.44))
-                    .accessibilityHidden(true)
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white.opacity(0.44))
+                } else {
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.44))
+                        .accessibilityHidden(true)
+                }
             }
         }
         .font(.system(size: 13, weight: .heavy))
@@ -479,10 +493,6 @@ enum DiaryDateFormatter {
     static func monthHeader(from rawValue: String?) -> String? {
         guard let date = date(from: rawValue) else { return nil }
         return date.formatted(.dateTime.month(.wide).year())
-    }
-
-    static func monthHeader(fromMonthID monthID: String) -> String? {
-        monthHeader(from: "\(monthID)-01")
     }
 
     static func monthID(from rawValue: String?) -> String? {

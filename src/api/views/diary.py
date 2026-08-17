@@ -1,11 +1,6 @@
-from datetime import datetime
-
-from django.db.models import Count, Prefetch, Q
-from django.db.models.functions import TruncMonth
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,58 +17,6 @@ from app.services import delete_diary_entry
 from social.models import ContentLike
 
 
-def _month_bounds(value):
-    if not value or len(value) != 7:
-        raise ValidationError({"month": ["Use YYYY-MM."]})
-    try:
-        start = datetime.strptime(value, "%Y-%m").replace(tzinfo=timezone.get_current_timezone())
-    except ValueError as error:
-        raise ValidationError({"month": ["Use YYYY-MM."]}) from error
-    end = start.replace(
-        year=start.year + (start.month == 12),
-        month=1 if start.month == 12 else start.month + 1,
-    )
-    return start, end
-
-
-def _filtered_diary_entries(request):
-    entries = DiaryEntry.objects.filter(
-        user=request.user,
-        item__media_type__in=exposure.media_types(),
-    )
-    rating_scope_queryset = entries
-    item_id = request.query_params.get("item_id")
-    tag = request.query_params.get("tag", "").strip().lower()
-    if item_id:
-        entries = entries.filter(item_id=item_id)
-    if tag:
-        entries = entries.filter(tags__name=tag)
-    if request.query_params.get("has_review") == "true":
-        entries = entries.filter(Q(review__gt="") | Q(review_title__gt=""))
-    if request.query_params.get("liked") == "true":
-        entries = entries.filter(liked=True)
-    filter_service.ensure_filter_metadata(entries, request.query_params)
-    entries = filter_service.apply_item_filters(entries, request.query_params)
-    entries = filter_service.apply_rating_range(entries, request.query_params, "rating")
-    entries = filter_service.apply_watched_range(entries, request.query_params, "consumed_at")
-    entries = filter_service.apply_user_status_filter(
-        entries,
-        request.user,
-        request.query_params.get("status"),
-    )
-    if month := request.query_params.get("month"):
-        start, end = _month_bounds(month)
-        entries = entries.filter(consumed_at__gte=start, consumed_at__lt=end)
-    return filter_service.order_queryset(
-        entries,
-        request.query_params,
-        your_rating_field="rating",
-        default_sort="consumed_at",
-        extra_sorts={"consumed_at": "consumed_at", "created_at": "created_at"},
-        rating_scope_queryset=rating_scope_queryset,
-    )
-
-
 class DiaryListView(APIView):
     """List or create diary entries."""
 
@@ -83,7 +26,10 @@ class DiaryListView(APIView):
         viewer_posters = CustomPosterPreference.objects.filter(user=request.user)
         viewer_backdrops = CustomBackdropPreference.objects.filter(user=request.user)
         entries = (
-            _filtered_diary_entries(request)
+            DiaryEntry.objects.filter(
+                user=request.user,
+                item__media_type__in=exposure.media_types(),
+            )
             .select_related("item", "user")
             .prefetch_related(
                 "tags",
@@ -98,6 +44,37 @@ class DiaryListView(APIView):
                     to_attr="viewer_custom_backdrop_preferences",
                 ),
             )
+            .order_by("-consumed_at", "-id")
+        )
+        rating_scope_queryset = entries
+        item_id = request.query_params.get("item_id")
+        tag = request.query_params.get("tag", "").strip().lower()
+        has_review = request.query_params.get("has_review") == "true"
+        liked = request.query_params.get("liked") == "true"
+        if item_id:
+            entries = entries.filter(item_id=item_id)
+        if tag:
+            entries = entries.filter(tags__name=tag)
+        if has_review:
+            entries = entries.filter(Q(review__gt="") | Q(review_title__gt=""))
+        if liked:
+            entries = entries.filter(liked=True)
+        filter_service.ensure_filter_metadata(entries, request.query_params)
+        entries = filter_service.apply_item_filters(entries, request.query_params)
+        entries = filter_service.apply_rating_range(entries, request.query_params, "rating")
+        entries = filter_service.apply_watched_range(entries, request.query_params, "consumed_at")
+        entries = filter_service.apply_user_status_filter(
+            entries,
+            request.user,
+            request.query_params.get("status"),
+        )
+        entries = filter_service.order_queryset(
+            entries,
+            request.query_params,
+            your_rating_field="rating",
+            default_sort="consumed_at",
+            extra_sorts={"consumed_at": "consumed_at", "created_at": "created_at"},
+            rating_scope_queryset=rating_scope_queryset,
         )
 
         paginator = StandardResultsSetPagination()
@@ -122,26 +99,6 @@ class DiaryListView(APIView):
             diary_service.diary_payload(entry, request=request, viewer=request.user),
             status=status.HTTP_201_CREATED,
         )
-
-
-class DiaryMonthsView(APIView):
-    """Return the small month index used by native diary navigation."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        months = (
-            _filtered_diary_entries(request)
-            .order_by()
-            .annotate(month=TruncMonth("consumed_at"))
-            .values("month")
-            .annotate(count=Count("id", distinct=True))
-            .order_by("-month")
-        )
-        return Response([
-            {"month": row["month"].strftime("%Y-%m"), "count": row["count"]}
-            for row in months
-        ])
 
 
 class DiaryDetailView(APIView):

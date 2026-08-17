@@ -1,5 +1,6 @@
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils.http import urlencode
@@ -28,6 +29,7 @@ from app.models import BasicMedia, DiaryEntry, MediaTypes, Status
 from app.providers import anilist
 from app.providers import services as provider_services
 from lists.models import CustomList, CustomListItem
+from social.models import ContentLike
 
 
 class MediaSearchView(MediaExposureMixin, APIView):
@@ -687,13 +689,28 @@ class MediaReviewsView(MediaExposureMixin, APIView):
             entries = entries.exclude(visibility="private")
         entries = entries.select_related("item", "user").prefetch_related("tags")
         if request.query_params.get("sort", "popular") == "recent":
-            entries = entries.order_by("-created_at")
+            entries = entries.order_by("-created_at", "-id")
         else:
-            entries = entries.order_by("-liked", "-created_at")
+            like_counts = (
+                ContentLike.objects.filter(
+                    target_type=ContentLike.DIARY_ENTRY,
+                    target_id=OuterRef("pk"),
+                )
+                .values("target_id")
+                .annotate(count=Count("id"))
+                .values("count")
+            )
+            entries = entries.annotate(
+                review_like_count=Coalesce(
+                    Subquery(like_counts, output_field=IntegerField()),
+                    Value(0),
+                ),
+            ).order_by("-review_like_count", "-created_at", "-id")
 
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(entries, request, view=self)
         viewer = request.user if request.user.is_authenticated else None
+        diary_service.prime_diary_likes(page, viewer)
         return paginator.get_paginated_response(
             [diary_service.diary_payload(entry, request=request, viewer=viewer) for entry in page],
         )

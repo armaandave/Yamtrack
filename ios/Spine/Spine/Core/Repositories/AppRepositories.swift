@@ -19,6 +19,7 @@ protocol MediaRepository {
     func externalRatings(ref: MediaRef) async throws -> MediaExternalRatingsResponse
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse
     func reviews(ref: MediaRef) async throws -> [MediaReview]
+    func reviewPage(ref: MediaRef, page: String?) async throws -> PagedResponse<MediaReview>
     func anilistReviews(ref: MediaRef, page: Int) async throws -> AniListReviewPage
     func posters(ref: MediaRef) async throws -> [PosterOption]
     func savePoster(ref: MediaRef, posterURL: String) async throws -> PosterSaveResponse
@@ -101,6 +102,11 @@ extension MediaRepository {
 
     func setLiked(ref: MediaRef, liked: Bool) async throws -> MediaLikeResponse {
         fatalError("Not implemented")
+    }
+
+    func reviewPage(ref: MediaRef, page _: String?) async throws -> PagedResponse<MediaReview> {
+        let reviews = try await reviews(ref: ref)
+        return PagedResponse(count: reviews.count, next: nil, previous: nil, results: reviews)
     }
 
     func anilistReviews(ref _: MediaRef, page: Int) async throws -> AniListReviewPage {
@@ -190,8 +196,6 @@ protocol DiaryRepository {
     func list(filter: DiaryFilter) async throws -> [DiaryEntry]
     func list(tag: String?) async throws -> [DiaryEntry]
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry>
-    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary]
-    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry]
     func recent(limit: Int) async throws -> [DiaryEntry]
     func detail(id: Int) async throws -> DiaryEntry
     func create(_ request: DiaryEntryWriteRequest) async throws -> DiaryEntry
@@ -240,22 +244,6 @@ extension DiaryRepository {
             liked: filter.liked
         ))
         return PagedResponse(count: results.count, next: nil, previous: nil, results: results)
-    }
-
-    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary] {
-        let counts = Dictionary(grouping: try await list(filter: filter)) { entry in
-            String((entry.consumedAt ?? entry.createdAt ?? "").prefix(7))
-        }
-        return counts
-            .filter { $0.key.count == 7 }
-            .map { DiaryMonthSummary(month: $0.key, count: $0.value.count) }
-            .sorted { $0.month > $1.month }
-    }
-
-    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry] {
-        try await list(filter: filter).filter {
-            (String(($0.consumedAt ?? $0.createdAt ?? "").prefix(7))) == month
-        }
     }
 
     func list(filter: DiaryFilter) async throws -> [DiaryEntry] {
@@ -575,9 +563,16 @@ struct APIMediaRepository: MediaRepository {
     }
 
     func reviews(ref: MediaRef) async throws -> [MediaReview] {
+        try await reviewPage(ref: ref, page: nil).results
+    }
+
+    func reviewPage(ref: MediaRef, page: String?) async throws -> PagedResponse<MediaReview> {
         var query = [
             URLQueryItem(name: "sort", value: "popular"),
         ]
+        if let page {
+            query.append(URLQueryItem(name: "page", value: page))
+        }
         if let seasonNumber = ref.seasonNumber {
             query.append(URLQueryItem(name: "season_number", value: String(seasonNumber)))
         }
@@ -586,14 +581,13 @@ struct APIMediaRepository: MediaRepository {
         }
         do {
             let mediaType = ref.mediaType == "season" ? "tv" : ref.mediaType
-            let response: PagedResponse<MediaReview> = try await client.get(
+            return try await client.get(
                 "/media/\(ref.source)/\(mediaType)/\(ref.mediaId)/reviews/",
                 query: query,
                 authenticated: client.tokenProvider.accessToken != nil
             )
-            return response.results
         } catch APIError.httpStatus(404, _), APIError.httpStatus(501, _) {
-            return []
+            return PagedResponse(count: 0, next: nil, previous: nil, results: [])
         }
     }
 
@@ -906,29 +900,9 @@ struct APIDiaryRepository: DiaryRepository {
     }
 
     func page(filter: MediaFilterState, page: String?) async throws -> PagedResponse<DiaryEntry> {
-        try await client.get("/diary/", query: filter.queryItems(page: page), authenticated: true)
-    }
-
-    func months(filter: MediaFilterState) async throws -> [DiaryMonthSummary] {
-        try await client.get("/diary/months/", query: filter.queryItems(), authenticated: true)
-    }
-
-    func entries(filter: MediaFilterState, month: String) async throws -> [DiaryEntry] {
-        var page: String?
-        var entries: [DiaryEntry] = []
-        repeat {
-            var query = filter.queryItems(page: page)
-            query.append(URLQueryItem(name: "month", value: month))
-            query.append(URLQueryItem(name: "page_size", value: "100"))
-            let response: PagedResponse<DiaryEntry> = try await client.get(
-                "/diary/",
-                query: query,
-                authenticated: true
-            )
-            entries += response.results
-            page = APIPageCursor.nextPage(from: response.next)
-        } while page != nil
-        return entries
+        var query = filter.queryItems(page: page)
+        query.append(URLQueryItem(name: "page_size", value: "100"))
+        return try await client.get("/diary/", query: query, authenticated: true)
     }
 
     func recent(limit: Int) async throws -> [DiaryEntry] {

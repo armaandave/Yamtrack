@@ -5403,7 +5403,7 @@ class ApiV1FoundationTests(TestCase):
             title="Fight Club",
             image="https://example.com/fight-club.jpg",
         )
-        DiaryEntry.objects.create(
+        popular_entry = DiaryEntry.objects.create(
             user=user,
             item=item,
             consumed_at=timezone.now(),
@@ -5411,6 +5411,11 @@ class ApiV1FoundationTests(TestCase):
             review="Sharp and strange.",
             review_title="Mayhem",
             visibility="public",
+        )
+        ContentLike.objects.create(
+            user=user,
+            target_type=ContentLike.DIARY_ENTRY,
+            target_id=popular_entry.id,
         )
         DiaryEntry.objects.create(
             user=user,
@@ -5428,6 +5433,8 @@ class ApiV1FoundationTests(TestCase):
             [entry["review"] for entry in response.data["results"]],
             ["Sharp and strange.", "Hidden."],
         )
+        self.assertEqual(response.data["results"][0]["review"], "Sharp and strange.")
+        self.assertEqual(response.data["results"][0]["like_count"], 1)
 
     def test_diary_media_embed_includes_artwork_fields(self):
         user = get_user_model().objects.create_user(username="diary-art", password="strong-password-123")

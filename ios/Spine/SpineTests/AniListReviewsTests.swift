@@ -109,6 +109,28 @@ final class AniListReviewsTests: XCTestCase {
         XCTAssertNil(viewModel.paginationError)
     }
 
+    func testMediaReviewPaginationLoadsEveryPageWithoutDuplicates() async {
+        let repository = MediaReviewRepositoryStub(results: [
+            mediaPage(next: "2", ids: [1, 2]),
+            mediaPage(next: nil, ids: [2, 3]),
+        ])
+        let viewModel = MediaReviewsViewModel(
+            ref: makeDetail(mediaType: "movie", rating: [:]).ref,
+            mediaRepository: repository
+        )
+
+        await viewModel.loadInitial()
+        async let first: Void = viewModel.loadNextPage()
+        async let second: Void = viewModel.loadNextPage()
+        _ = await (first, second)
+
+        XCTAssertEqual(viewModel.reviews.map(\.id), [1, 2, 3])
+        XCTAssertEqual(viewModel.reviewCount, 3)
+        XCTAssertNil(viewModel.nextPage)
+        let requestedPages = await repository.requestedPages
+        XCTAssertEqual(requestedPages, [nil, "2"])
+    }
+
     private func makeDetail(
         mediaType: String,
         rating: [String: JSONValue]
@@ -155,6 +177,28 @@ final class AniListReviewsTests: XCTestCase {
             }
         )
     }
+
+    private func mediaPage(next: String?, ids: [Int]) -> PagedResponse<MediaReview> {
+        PagedResponse(
+            count: 3,
+            next: next.map { "https://example.com/api/v1/media/tmdb/movie/1/reviews/?page=\($0)" },
+            previous: nil,
+            results: ids.map {
+                MediaReview(
+                    id: $0,
+                    user: UserSummary(id: $0, username: "reviewer\($0)", displayName: "Reviewer \($0)", avatarUrl: nil),
+                    rating: "4.5",
+                    reviewTitle: nil,
+                    review: "Review \($0)",
+                    containsSpoilers: false,
+                    likeCount: 0,
+                    viewerHasLiked: false,
+                    consumedAt: nil,
+                    createdAt: nil
+                )
+            }
+        )
+    }
 }
 
 private enum AniListReviewTestError: LocalizedError {
@@ -175,6 +219,32 @@ private actor AniListReviewRepositoryStub: MediaRepository {
         requestedPages.append(page)
         await Task.yield()
         return try results.removeFirst().get()
+    }
+
+    func meta() async throws -> MetaResponse { fatalError("Not used") }
+    func search(query _: String, mediaType _: String) async throws -> [MediaSummary] { fatalError("Not used") }
+    func detail(ref _: MediaRef) async throws -> MediaDetail { fatalError("Not used") }
+    func reviews(ref _: MediaRef) async throws -> [MediaReview] { fatalError("Not used") }
+    func posters(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func savePoster(ref _: MediaRef, posterURL _: String) async throws -> PosterSaveResponse { fatalError("Not used") }
+    func backdrops(ref _: MediaRef) async throws -> [PosterOption] { fatalError("Not used") }
+    func saveBackdrop(ref _: MediaRef, backdropURL _: String) async throws -> BackdropSaveResponse { fatalError("Not used") }
+    func logos(ref _: MediaRef) async throws -> [LogoOption] { fatalError("Not used") }
+    func saveLogo(ref _: MediaRef, logoURL _: String) async throws -> LogoSaveResponse { fatalError("Not used") }
+}
+
+private actor MediaReviewRepositoryStub: MediaRepository {
+    private var results: [PagedResponse<MediaReview>]
+    private(set) var requestedPages: [String?] = []
+
+    init(results: [PagedResponse<MediaReview>]) {
+        self.results = results
+    }
+
+    func reviewPage(ref _: MediaRef, page: String?) async throws -> PagedResponse<MediaReview> {
+        requestedPages.append(page)
+        await Task.yield()
+        return results.removeFirst()
     }
 
     func meta() async throws -> MetaResponse { fatalError("Not used") }

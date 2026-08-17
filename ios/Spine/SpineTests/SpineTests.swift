@@ -6010,6 +6010,7 @@ final class SpineTests: XCTestCase {
 
         XCTAssertEqual(viewModel.detail?.title, "Liquid Form")
         XCTAssertEqual(viewModel.reviews.count, 2)
+        XCTAssertEqual(viewModel.reviewCount, 2)
         XCTAssertEqual(viewModel.reviews.first?.viewerHasLiked, false)
 
         guard let review = viewModel.reviews.first else {

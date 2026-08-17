@@ -9,31 +9,30 @@ final class DiaryViewModel {
         }
     }
     private(set) var monthSections: [DiaryMonthSection] = []
-    private(set) var monthIndex: [DiaryMonthSummary] = []
     var filter: MediaFilterState
     var filterOptions: MediaFilterOptionsResponse = .empty
     var isBootstrapping = true
     var isLoading = false
     var isLoadingNextPage = false
-    var isLoadingMonthIndex = false
-    var isLoadingMonth = false
+    var isLoadingAllPages = false
     var errorMessage: String?
     var nextPageErrorMessage: String?
-    var monthIndexErrorMessage: String?
 
     private let diaryRepository: DiaryRepository
     private let filterOptionsRepository: FilterOptionsRepository
     private let onUnauthorized: () -> Void
     private var nextPage: String?
     private var requestGeneration = 0
-    private var monthIndexGeneration = 0
     private var didLoad = false
     private var isInitialLoadInFlight = false
-    private(set) var loadedMonth: String?
     private var presentedFilter: MediaFilterState?
 
     var hasMorePages: Bool {
         nextPage != nil
+    }
+
+    var hasLoadedAllEntries: Bool {
+        didLoad && !isLoading && !isLoadingNextPage && !isLoadingAllPages && nextPage == nil
     }
 
     init(
@@ -62,9 +61,7 @@ final class DiaryViewModel {
             await loadFilterOptions()
             guard !Task.isCancelled else { return }
         }
-        async let entriesLoad: Void = load()
-        async let monthsLoad: Void = loadMonthIndex()
-        _ = await (entriesLoad, monthsLoad)
+        await load()
     }
 
     func load() async {
@@ -77,6 +74,7 @@ final class DiaryViewModel {
             nextPage = nil
         }
         presentedFilter = requestFilter
+        isLoadingAllPages = false
         isLoading = true
         errorMessage = nil
         nextPageErrorMessage = nil
@@ -95,7 +93,6 @@ final class DiaryViewModel {
             guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
             entries = response.results
             nextPage = APIPageCursor.nextPage(from: response.next)
-            loadedMonth = nil
             didLoad = true
         } catch is CancellationError {
             wasCancelled = true
@@ -119,7 +116,7 @@ final class DiaryViewModel {
     }
 
     func loadNextPage() async {
-        guard !isLoading, !isLoadingNextPage, !isLoadingMonth, let page = nextPage else { return }
+        guard !isLoading, !isLoadingNextPage, !isLoadingAllPages, let page = nextPage else { return }
         let generation = requestGeneration
         let requestFilter = diaryRequestFilter
         isLoadingNextPage = true
@@ -147,67 +144,34 @@ final class DiaryViewModel {
         }
     }
 
-    func loadMonthIndex(force: Bool = false) async {
+    func loadRemainingPages() async {
+        guard !isLoading, !isLoadingNextPage, !isLoadingAllPages, nextPage != nil else { return }
+        let generation = requestGeneration
         let requestFilter = diaryRequestFilter
-        guard !isLoadingMonthIndex,
-              force || monthIndex.isEmpty else { return }
-        monthIndexGeneration += 1
-        let generation = monthIndexGeneration
-        isLoadingMonthIndex = true
-        monthIndexErrorMessage = nil
+        isLoadingAllPages = true
+        nextPageErrorMessage = nil
         defer {
-            if generation == monthIndexGeneration {
-                isLoadingMonthIndex = false
+            if generation == requestGeneration, requestFilter == diaryRequestFilter {
+                isLoadingAllPages = false
             }
         }
 
         do {
-            let summaries = try await diaryRepository.months(filter: requestFilter)
-            guard generation == monthIndexGeneration, requestFilter == diaryRequestFilter else { return }
-            monthIndex = summaries
+            while let page = nextPage {
+                let response = try await diaryRepository.page(filter: requestFilter, page: page)
+                guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
+                let existingIDs = Set(entries.map(\.id))
+                entries += response.results.filter { !existingIDs.contains($0.id) }
+                nextPage = APIPageCursor.nextPage(from: response.next)
+            }
         } catch is CancellationError {
             return
         } catch {
-            guard generation == monthIndexGeneration, requestFilter == diaryRequestFilter else { return }
-            monthIndexErrorMessage = error.localizedDescription
+            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return }
+            nextPageErrorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
                 onUnauthorized()
             }
-        }
-    }
-
-    func loadMonth(_ month: String) async -> Bool {
-        if loadedMonth == month { return true }
-        guard !isLoadingMonth else { return false }
-        requestGeneration += 1
-        let generation = requestGeneration
-        let requestFilter = diaryRequestFilter
-        isLoadingMonth = true
-        monthIndexErrorMessage = nil
-        defer {
-            if generation == requestGeneration {
-                isLoadingMonth = false
-            }
-        }
-
-        do {
-            let loadedEntries = try await diaryRepository.entries(filter: requestFilter, month: month)
-            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return false }
-            entries = loadedEntries
-            nextPage = nil
-            loadedMonth = month
-            presentedFilter = requestFilter
-            didLoad = true
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            guard generation == requestGeneration, requestFilter == diaryRequestFilter else { return false }
-            monthIndexErrorMessage = error.localizedDescription
-            if case APIError.unauthorized = error {
-                onUnauthorized()
-            }
-            return false
         }
     }
 
@@ -231,19 +195,14 @@ final class DiaryViewModel {
         guard presentedFilter != requestFilter else { return }
 
         requestGeneration += 1
-        monthIndexGeneration += 1
         presentedFilter = requestFilter
         entries = []
-        monthIndex = []
         nextPage = nil
-        loadedMonth = nil
         errorMessage = nil
         nextPageErrorMessage = nil
-        monthIndexErrorMessage = nil
         isLoading = true
         isLoadingNextPage = false
-        isLoadingMonthIndex = false
-        isLoadingMonth = false
+        isLoadingAllPages = false
     }
 
     private var diaryRequestFilter: MediaFilterState {
@@ -474,7 +433,6 @@ struct DiaryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: DiaryViewModel
     @State private var monthDisplayMode: DiaryMonthDisplayMode = .expanded
-    @State private var pendingDiaryAnchor: String?
     @State private var pendingMonthAnchor: String?
 
     private let diaryRepository: DiaryRepository
@@ -524,13 +482,17 @@ struct DiaryView: View {
                                 .accessibilityHidden(monthDisplayMode != .collapsed)
                                 .zIndex(monthDisplayMode == .collapsed ? 1 : 0)
                         }
-                        .onChange(of: viewModel.monthIndex) { _, months in
-                            guard !months.isEmpty, let sectionID = pendingMonthAnchor else { return }
+                        .onChange(of: viewModel.hasLoadedAllEntries) { _, isReady in
+                            guard isReady, let sectionID = pendingMonthAnchor else { return }
                             showMonthIndex(sectionID, proxy: monthProxy)
                         }
-                        .onChange(of: viewModel.loadedMonth) { _, month in
-                            guard let month, month == pendingDiaryAnchor else { return }
-                            showDiary(month, proxy: diaryProxy)
+                        .onChange(of: viewModel.isLoading) { _, isLoading in
+                            guard !isLoading else { return }
+                            prepareMonthIndexIfNeeded()
+                        }
+                        .onChange(of: viewModel.isLoadingNextPage) { _, isLoading in
+                            guard !isLoading else { return }
+                            prepareMonthIndexIfNeeded()
                         }
                     }
                 }
@@ -596,7 +558,8 @@ struct DiaryView: View {
         } else {
             DiaryEntryList(
                 monthSections: viewModel.monthSections,
-                onMonthHeaderTap: monthIndexAction(proxy: monthProxy)
+                onMonthHeaderTap: monthIndexAction(proxy: monthProxy),
+                loadingMonthID: viewModel.isLoadingAllPages ? pendingMonthAnchor : nil
             ) { entry in
                 DiaryLogDetailView(
                     entryId: entry.id,
@@ -618,19 +581,9 @@ struct DiaryView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 mediaPicker
-                DiaryMonthIndex(months: viewModel.monthIndex) { sectionID in
-                    if viewModel.loadedMonth == sectionID {
-                        showDiary(sectionID, proxy: diaryProxy)
-                        return
-                    }
-                    pendingDiaryAnchor = sectionID
-                    Task {
-                        if !(await viewModel.loadMonth(sectionID)) {
-                            pendingDiaryAnchor = nil
-                        }
-                    }
+                DiaryMonthIndex(monthSections: viewModel.monthSections) { sectionID in
+                    showDiary(sectionID, proxy: diaryProxy)
                 }
-                monthIndexFooter
             }
             .padding(.horizontal, 14)
             .padding(.top, 18)
@@ -641,12 +594,20 @@ struct DiaryView: View {
     private func monthIndexAction(proxy: ScrollViewProxy) -> (String) -> Void {
         { sectionID in
             pendingMonthAnchor = sectionID
-            if viewModel.monthIndex.isEmpty {
-                Task { await viewModel.loadMonthIndex() }
-            } else {
+            if viewModel.hasLoadedAllEntries {
                 showMonthIndex(sectionID, proxy: proxy)
+            } else {
+                prepareMonthIndexIfNeeded()
             }
         }
+    }
+
+    private func prepareMonthIndexIfNeeded() {
+        guard pendingMonthAnchor != nil,
+              !viewModel.isLoading,
+              !viewModel.isLoadingNextPage,
+              !viewModel.isLoadingAllPages else { return }
+        Task { await viewModel.loadRemainingPages() }
     }
 
     private func showMonthIndex(_ sectionID: String, proxy: ScrollViewProxy) {
@@ -658,7 +619,6 @@ struct DiaryView: View {
     }
 
     private func showDiary(_ sectionID: String, proxy: ScrollViewProxy) {
-        pendingDiaryAnchor = nil
         scrollWithoutAnimation(proxy, to: sectionID)
         withAnimation(monthTransitionAnimation) {
             monthDisplayMode = .expanded
@@ -678,7 +638,6 @@ struct DiaryView: View {
     }
 
     private func reloadDiary(loadsFilterOptions: Bool = false) async {
-        pendingDiaryAnchor = nil
         pendingMonthAnchor = nil
         withAnimation(monthTransitionAnimation) {
             monthDisplayMode = .expanded
@@ -687,9 +646,7 @@ struct DiaryView: View {
             await viewModel.loadFilterOptions()
             guard !Task.isCancelled else { return }
         }
-        async let entriesLoad: Void = viewModel.load()
-        async let monthsLoad: Void = viewModel.loadMonthIndex(force: true)
-        _ = await (entriesLoad, monthsLoad)
+        await viewModel.load()
     }
 
     private var contentPhase: SpineContentPhase {
@@ -757,18 +714,6 @@ struct DiaryView: View {
         .task(id: viewModel.entries.last?.id) {
             guard let last = viewModel.entries.last else { return }
             await viewModel.loadNextPageIfNeeded(currentEntry: last)
-        }
-    }
-
-    @ViewBuilder
-    private var monthIndexFooter: some View {
-        if viewModel.isLoadingMonth {
-            ProgressView()
-                .tint(.white)
-                .frame(maxWidth: .infinity, minHeight: 56)
-        } else if let error = viewModel.monthIndexErrorMessage {
-            DiaryStateCard(title: "Could not load month", systemImage: "exclamationmark.triangle", message: error)
-                .padding(.top, 8)
         }
     }
 }

@@ -13,6 +13,15 @@ final class MediaDetailArtworkTests: XCTestCase {
         let original = makeDetail()
         let viewModel = makeViewModel(mediaRepository: ArtworkScriptedMediaRepository(results: []))
         viewModel.detail = original
+        var changedRef: MediaRef?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .mediaStateDidChange,
+            object: nil,
+            queue: nil
+        ) { notification in
+            changedRef = notification.userInfo?["ref"] as? MediaRef
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
 
         let selectedPosterURL = "https://example.com/selected-poster.jpg"
         viewModel.applyPosterSave(PosterSaveResponse(
@@ -41,6 +50,7 @@ final class MediaDetailArtworkTests: XCTestCase {
         XCTAssertEqual(updated.customPosterUrl, selectedPosterURL)
         XCTAssertEqual(updated.displayPosterURL, selectedPosterURL)
         XCTAssertEqual(updated.posterAccentColor, "#123456")
+        XCTAssertEqual(changedRef, original.ref)
 
         XCTAssertEqual(updated.backdropUrl, original.backdropUrl)
         XCTAssertEqual(updated.customBackdropUrl, selectedBackdropURL)

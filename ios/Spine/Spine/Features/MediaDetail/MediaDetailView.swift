@@ -13,6 +13,7 @@ enum MusicEnrichmentState: Equatable {
 final class MediaDetailViewModel {
     var detail: MediaDetail?
     var reviews: [MediaReview] = []
+    var reviewCount = 0
     var tracking: TrackingState?
     var isLoading = true
     var isLoadingReviews = false
@@ -61,6 +62,7 @@ final class MediaDetailViewModel {
             let loaded = try await mediaRepository.detail(ref: ref)
             detail = loaded
             reviews = loaded.reviews ?? []
+            reviewCount = reviews.count
             async let enrichment: Void = loadMusicEnrichmentIfNeeded(for: loaded)
             async let tracking: Void = loadTrackingIfNeeded(for: loaded)
             async let reviewLoad: Void = loadReviews()
@@ -149,7 +151,9 @@ final class MediaDetailViewModel {
         defer { isLoadingReviews = false }
 
         do {
-            reviews = try await mediaRepository.reviews(ref: ref)
+            let page = try await mediaRepository.reviewPage(ref: ref, page: nil)
+            reviews = page.results
+            reviewCount = page.count
         } catch {
             reviewsErrorMessage = error.localizedDescription
             if case APIError.unauthorized = error {
@@ -527,7 +531,9 @@ final class MediaDetailViewModel {
     }
 
     func applyPosterSave(_ response: PosterSaveResponse) {
+        guard let ref = detail?.ref else { return }
         detail = detail?.replacingPoster(with: response)
+        MediaStateChange.post(ref: ref)
     }
 
     func applyBackdropSave(_ response: BackdropSaveResponse) {
@@ -1121,6 +1127,7 @@ private struct MediaDetailPageView: View {
     @State private var isPosterPickerPresented = false
     @State private var isBackdropPickerPresented = false
     @State private var isLogoPickerPresented = false
+    @State private var isReviewsPresented = false
     @State private var isAniListReviewsPresented = false
     @State private var pendingPosterSave: PosterSaveResponse?
     @State private var pendingBackdropSave: BackdropSaveResponse?
@@ -1449,6 +1456,15 @@ private struct MediaDetailPageView: View {
                     pendingPosterSave = response
                     presentedSheet = nil
                 }
+            }
+        }
+        .fullScreenCover(isPresented: $isReviewsPresented) {
+            if let detail = viewModel.detail {
+                MediaReviewsView(
+                    detail: detail,
+                    mediaRepository: mediaRepository,
+                    onUnauthorized: onUnauthorized
+                )
             }
         }
         .fullScreenCover(isPresented: $isAniListReviewsPresented) {
@@ -2636,11 +2652,16 @@ private struct MediaDetailPageView: View {
                         }
                     )
                 }
-                if detail.ref.mediaType != "episode" || (detail.community?.ratingCount ?? 0) > 0 {
+                if detail.ref.mediaType != "episode"
+                    || (detail.community?.ratingCount ?? 0) > 0
+                    || viewModel.reviewCount > 0 {
                     SpineRatingDistributionSection(
                         community: detail.community,
-                        mediaType: detail.ref.mediaType
-                    )
+                        mediaType: detail.ref.mediaType,
+                        reviewCount: viewModel.reviewCount
+                    ) {
+                        isReviewsPresented = true
+                    }
                 }
                 if let rating = AniListRatingSummary(detail: detail) {
                     AniListRatingCard(summary: rating) {
@@ -2695,12 +2716,6 @@ private struct MediaDetailPageView: View {
                         presentEpisode(episode, from: detail)
                     }
                 }
-                ReviewsSection(
-                    reviews: viewModel.reviews,
-                    isLoading: viewModel.isLoadingReviews,
-                    error: viewModel.reviewsErrorMessage,
-                    mediaType: detail.ref.mediaType
-                )
                 RecommendationsSection(
                     sections: relatedSections(detail).filter {
                         detail.ref.mediaType != "anime" || $0.id != "series"
@@ -2727,8 +2742,11 @@ private struct MediaDetailPageView: View {
             trackingSummarySection(detail)
             SpineRatingDistributionSection(
                 community: detail.community,
-                mediaType: detail.ref.mediaType
-            )
+                mediaType: detail.ref.mediaType,
+                reviewCount: viewModel.reviewCount
+            ) {
+                isReviewsPresented = true
+            }
             MusicAlbumTracklistSection(
                 release: detail.music?.representativeRelease,
                 albumCredits: detail.music?.artistCredit ?? [],
@@ -2749,12 +2767,6 @@ private struct MediaDetailPageView: View {
                 onCompanySelected: { company in
                     presentedCompany = company
                 }
-            )
-            ReviewsSection(
-                reviews: viewModel.reviews,
-                isLoading: viewModel.isLoadingReviews,
-                error: viewModel.reviewsErrorMessage,
-                mediaType: detail.ref.mediaType
             )
             RecommendationsSection(sections: relatedSections(detail)) { item in
                 presentedRef = item.ref
@@ -5628,6 +5640,92 @@ struct AniListRatingSummary: Equatable {
 
 @MainActor
 @Observable
+final class MediaReviewsViewModel {
+    var reviews: [MediaReview] = []
+    var reviewCount = 0
+    var nextPage: String?
+    var isLoadingInitial = false
+    var isLoadingMore = false
+    var initialError: String?
+    var paginationError: String?
+
+    private let ref: MediaRef
+    private let mediaRepository: MediaRepository
+    private let onUnauthorized: () -> Void
+
+    init(
+        ref: MediaRef,
+        mediaRepository: MediaRepository,
+        onUnauthorized: @escaping () -> Void = {}
+    ) {
+        self.ref = ref
+        self.mediaRepository = mediaRepository
+        self.onUnauthorized = onUnauthorized
+    }
+
+    func loadInitial() async {
+        guard reviews.isEmpty, !isLoadingInitial else { return }
+        isLoadingInitial = true
+        initialError = nil
+        defer { isLoadingInitial = false }
+
+        do {
+            apply(try await mediaRepository.reviewPage(ref: ref, page: nil))
+        } catch is CancellationError {
+            return
+        } catch {
+            initialError = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func retryInitial() async {
+        reviews = []
+        reviewCount = 0
+        nextPage = nil
+        await loadInitial()
+    }
+
+    func loadNextPage() async {
+        guard let page = nextPage, !isLoadingInitial, !isLoadingMore else { return }
+        isLoadingMore = true
+        paginationError = nil
+        defer { isLoadingMore = false }
+
+        do {
+            apply(try await mediaRepository.reviewPage(ref: ref, page: page))
+        } catch is CancellationError {
+            return
+        } catch {
+            paginationError = error.localizedDescription
+            if case APIError.unauthorized = error {
+                onUnauthorized()
+            }
+        }
+    }
+
+    func shouldLoadNext(after reviewID: Int) -> Bool {
+        guard
+            nextPage != nil,
+            let index = reviews.firstIndex(where: { $0.id == reviewID })
+        else { return false }
+        return index >= max(reviews.count - 5, 0)
+    }
+
+    private func apply(_ page: PagedResponse<MediaReview>) {
+        var seen = Set(reviews.map(\.id))
+        reviews.append(contentsOf: page.results.filter { seen.insert($0.id).inserted })
+        reviewCount = page.count
+        nextPage = APIPageCursor.nextPage(from: page.next)
+        initialError = nil
+        paginationError = nil
+    }
+}
+
+@MainActor
+@Observable
 final class AniListReviewsViewModel {
     var reviews: [AniListReview] = []
     var nextPage: Int?
@@ -5843,6 +5941,276 @@ private struct AniListRatingCard: View {
             ? Double(bucket.count) / Double(summary.ratingCount) * 100
             : 0
         return "\(bucket.score) score, \(bucket.count.formatted()) ratings, \(percentage.formatted(.number.precision(.fractionLength(0)))) percent"
+    }
+}
+
+private struct MediaReviewsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: MediaReviewsViewModel
+
+    private let detail: MediaDetail
+
+    init(
+        detail: MediaDetail,
+        mediaRepository: MediaRepository,
+        onUnauthorized: @escaping () -> Void
+    ) {
+        self.detail = detail
+        _viewModel = State(
+            initialValue: MediaReviewsViewModel(
+                ref: detail.ref,
+                mediaRepository: mediaRepository,
+                onUnauthorized: onUnauthorized
+            )
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            SpinePageBackground()
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    reviewsContent
+                }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+        }
+        .task {
+            await viewModel.loadInitial()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            reviewPoster
+                .frame(width: 40, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(headerLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+                Text(detail.displayTitle)
+                    .font(.system(size: 19, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(.white.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close reviews")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.white.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var reviewPoster: some View {
+        SpineAsyncImage(url: detail.displayPosterURL.flatMap(URL.init(string:))) { phase in
+            switch phase {
+            case let .success(image):
+                image
+                    .resizable()
+                    .scaledToFill()
+            default:
+                let theme = MediaTypeTheme.theme(for: detail.ref.mediaType)
+                LinearGradient(
+                    colors: theme.gradientColors,
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .overlay {
+                    Image(systemName: theme.symbolName)
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var reviewsContent: some View {
+        if viewModel.isLoadingInitial, viewModel.reviews.isEmpty {
+            ProgressView("Loading reviews…")
+                .tint(.white)
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity, minHeight: 220)
+        } else if let error = viewModel.initialError, viewModel.reviews.isEmpty {
+            errorState(message: error) {
+                Task { await viewModel.retryInitial() }
+            }
+            .frame(minHeight: 220)
+        } else if viewModel.reviews.isEmpty {
+            Text("No written reviews.")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.58))
+                .frame(maxWidth: .infinity, minHeight: 220)
+        } else {
+            ForEach(viewModel.reviews) { review in
+                MediaReviewRow(review: review, mediaType: detail.ref.mediaType)
+                    .padding(.horizontal, 16)
+                    .task {
+                        guard viewModel.shouldLoadNext(after: review.id) else { return }
+                        await viewModel.loadNextPage()
+                    }
+
+                if review.id != viewModel.reviews.last?.id {
+                    Divider()
+                        .overlay(.white.opacity(0.08))
+                        .padding(.horizontal, 16)
+                }
+            }
+            paginationState
+        }
+    }
+
+    @ViewBuilder
+    private var paginationState: some View {
+        if viewModel.isLoadingMore {
+            ProgressView()
+                .tint(.white)
+                .frame(maxWidth: .infinity)
+                .padding(24)
+        } else if let error = viewModel.paginationError {
+            errorState(message: error) {
+                Task { await viewModel.loadNextPage() }
+            }
+        }
+    }
+
+    private func errorState(message: String, retry: @escaping () -> Void) -> some View {
+        VStack(spacing: 10) {
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.red.opacity(0.82))
+                .multilineTextAlignment(.center)
+            Button("Retry", action: retry)
+                .font(.system(size: 13, weight: .heavy))
+                .buttonStyle(.bordered)
+                .tint(.white)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+    }
+
+    private var headerLabel: String {
+        guard viewModel.reviewCount > 0 else { return "Reviews for…" }
+        let noun = viewModel.reviewCount == 1 ? "review" : "reviews"
+        return "\(viewModel.reviewCount.formatted()) \(noun) for…"
+    }
+}
+
+private struct MediaReviewRow: View {
+    @State private var revealsSpoiler = false
+
+    let review: MediaReview
+    let mediaType: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                reviewerAvatar
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(review.user.displayName)
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    HStack(spacing: 7) {
+                        Text("@\(review.user.username)")
+                        if let date = review.createdAt?.shortDateLabel {
+                            Text(date)
+                        }
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.46))
+                }
+
+                Spacer()
+
+                if let rating = review.rating {
+                    Label(
+                        rating.starRatingLabel(mediaType: mediaType),
+                        systemImage: "star.fill"
+                    )
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(.white.opacity(0.86))
+                }
+            }
+
+            if review.containsSpoilers, !revealsSpoiler {
+                Button {
+                    revealsSpoiler = true
+                } label: {
+                    Label("This review contains spoilers. Tap to reveal.", systemImage: "eye.slash.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.yellow.opacity(0.84))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(.yellow.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Reveals the review title and text")
+            } else {
+                if let title = review.reviewTitle?.nilIfEmpty {
+                    Text(title)
+                        .font(.system(size: 16, weight: .heavy))
+                        .foregroundStyle(.white)
+                }
+
+                Text(review.review)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if review.likeCount > 0 {
+                Text("\(review.likeCount.formatted()) \(review.likeCount == 1 ? "like" : "likes")")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+        }
+        .padding(.vertical, 18)
+    }
+
+    private var reviewerAvatar: some View {
+        SpineAsyncImage(url: review.user.avatarUrl.flatMap(URL.init(string:))) { phase in
+            switch phase {
+            case let .success(image):
+                image
+                    .resizable()
+                    .scaledToFill()
+            default:
+                Circle()
+                    .fill(.white.opacity(0.08))
+                    .overlay {
+                        Image(systemName: "person.fill")
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+            }
+        }
+        .frame(width: 42, height: 42)
+        .clipShape(Circle())
+        .accessibilityHidden(true)
     }
 }
 
@@ -6171,6 +6539,8 @@ private func aniListDestination(_ rawValue: String?) -> URL? {
 private struct SpineRatingDistributionSection: View {
     let community: CommunityStats?
     let mediaType: String
+    let reviewCount: Int
+    let onSeeReviews: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -6206,6 +6576,21 @@ private struct SpineRatingDistributionSection: View {
                 }
                 .frame(height: 96, alignment: .bottom)
             }
+
+            if reviewCount > 0 {
+                Button(action: onSeeReviews) {
+                    HStack(spacing: 5) {
+                        Text(reviewsButtonTitle)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .heavy))
+                    }
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(.white.opacity(0.82))
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityHint("Opens every written review")
+            }
         }
         .padding(14)
         .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 16))
@@ -6226,6 +6611,10 @@ private struct SpineRatingDistributionSection: View {
 
     private var maxCount: Int {
         max(buckets.map(\.count).max() ?? 1, 1)
+    }
+
+    private var reviewsButtonTitle: String {
+        reviewCount == 1 ? "See 1 review" : "See all \(reviewCount.formatted()) reviews"
     }
 }
 
@@ -6647,72 +7036,6 @@ private struct EpisodeCardStill: View {
                 .font(.title2)
                 .foregroundStyle(.white.opacity(0.56))
         }
-    }
-}
-
-private struct ReviewsSection: View {
-    let reviews: [MediaReview]
-    let isLoading: Bool
-    let error: String?
-    let mediaType: String
-
-    var body: some View {
-        Group {
-            if isLoading || !reviews.isEmpty || error != nil {
-                VStack(alignment: .leading, spacing: 14) {
-                    SectionLabel(title: "Reviews")
-                    if !reviews.isEmpty {
-                        ForEach(reviews.prefix(3)) { review in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text(review.user.displayName)
-                                        .font(.system(size: 13, weight: .heavy))
-                                        .foregroundStyle(.white)
-                                    Spacer()
-                                    if let rating = review.rating {
-                                        Label(
-                                            rating.starRatingLabel(mediaType: mediaType),
-                                            systemImage: "star.fill"
-                                        )
-                                            .font(.system(size: 11, weight: .heavy))
-                                            .foregroundStyle(.white.opacity(0.85))
-                                    }
-                                }
-                                if let title = review.reviewTitle, !title.isEmpty {
-                                    Text(title)
-                                        .font(.system(size: 14, weight: .heavy))
-                                        .foregroundStyle(.white)
-                                }
-                                Text(review.containsSpoilers ? "Spoiler review" : review.review)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.68))
-                                    .lineLimit(4)
-                            }
-                            .padding(12)
-                            .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                    } else if isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(maxWidth: .infinity, minHeight: 80)
-                    }
-                    if let error {
-                        Text(error)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.red.opacity(0.8))
-                    }
-                }
-            }
-        }
-        .spineContentTransition(value: contentPhase)
-    }
-
-    private var contentPhase: SpineContentPhase {
-        .resolve(
-            isLoading: isLoading,
-            hasContent: !reviews.isEmpty,
-            hasError: error != nil
-        )
     }
 }
 
